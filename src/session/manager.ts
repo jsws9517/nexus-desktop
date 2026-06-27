@@ -6,8 +6,8 @@ import { Session, StoredMessage } from './types.js';
 export class SessionManager {
   private store: SessionStore;
 
-  constructor() {
-    this.store = new SessionStore();
+  constructor(customDbPath?: string) {
+    this.store = new SessionStore(customDbPath);
   }
 
   create(name: string, provider: string, model: string): Session {

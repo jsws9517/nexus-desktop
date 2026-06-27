@@ -1,11 +1,20 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { Session, StoredMessage } from './types.js';
 
-const DATA_DIR = join(homedir(), '.llm-agent');
-const DB_PATH = join(DATA_DIR, 'sessions.db');
+const DB_PATH = (() => {
+  import('fs').then(fs => {
+    const dir = process.env.LLMA_DATA_DIR
+      ? join(process.env.LLMA_DATA_DIR, '.llm-agent')
+      : join(homedir(), '.llm-agent');
+    fs.mkdirSync(dir, { recursive: true });
+  });
+  return process.env.LLMA_DATA_DIR
+    ? join(process.env.LLMA_DATA_DIR, '.llm-agent', 'sessions.db')
+    : join(homedir(), '.llm-agent', 'sessions.db');
+})();
 
 const INIT_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -36,11 +45,31 @@ CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
 
 export class SessionStore {
   private db: Database.Database;
+  private static tempDatabasePaths: Set<string> = new Set();
 
-  constructor() {
-    mkdirSync(DATA_DIR, { recursive: true });
-    this.db = new Database(DB_PATH);
+  constructor(customDbPath?: string) {
+    const dbPath = customDbPath || DB_PATH;
+    const dir = dirname(dbPath);
+    mkdirSync(dir, { recursive: true });
+    this.db = new Database(dbPath);
     this.db.exec(INIT_SQL);
+
+    // Register temp database for cleanup
+    if (customDbPath) {
+      SessionStore.tempDatabasePaths.add(dbPath);
+    }
+  }
+
+  static async cleanupTempDatabases(): Promise<void> {
+    for (const dbPath of SessionStore.tempDatabasePaths) {
+      try {
+        const fs = await import('fs/promises');
+        await fs.unlink(dbPath);
+      } catch {
+        // ignore
+      }
+    }
+    SessionStore.tempDatabasePaths.clear();
   }
 
   createSession(session: Session): void {
@@ -114,7 +143,7 @@ export class SessionStore {
 
   private rowToSession(row: Record<string, unknown>): Session {
     return {
-      id: String(row.id),
+      id: row.id ? String(row.id) : '',
       name: row.name ? String(row.name) : '',
       provider: String(row.provider),
       model: String(row.model),
