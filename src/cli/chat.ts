@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { createInterface } from 'readline';
+import { createInterface, emitKeypressEvents } from 'readline';
 import { Agent } from '../agent.js';
 
 export function registerChatCommand(program: Command): void {
@@ -32,7 +32,8 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
   const id = await agent.startSession(undefined, sessionId);
   const promptName = agent.config.getPromptName();
   console.log(chalk.green(`Session started: ${id}`));
-  console.log(chalk.gray('Type /help for commands, /exit to quit\n'));
+  console.log(chalk.gray('Type /help for commands, /exit to quit'));
+  console.log(chalk.gray('Use PageUp/PageDown to browse prompts, Ctrl+O to toggle detail mode\n'));
 
   const rl = createInterface({
     input: process.stdin,
@@ -40,10 +41,90 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
     prompt: chalk.cyan(`${promptName}> `),
   });
 
+  emitKeypressEvents(process.stdin, rl);
+
+  // Prevent readline from intercepting our custom keys (Ctrl+O operate-and-get-next,
+  // PageUp/PageDown history navigation). We handle them via keypress events.
+  const originalTtyWrite = (rl as any)._ttyWrite.bind(rl);
+  (rl as any)._ttyWrite = function (s: string, key: { name?: string; ctrl?: boolean }) {
+    if (key && (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && key.name === 'o'))) {
+      return;
+    }
+    return originalTtyWrite(s, key);
+  };
+
+  let promptHistoryIndex = -1;
+  let draftInput = '';
+
+  function getUserMessages(): string[] {
+    return agent.context.getMessages()
+      .filter((m) => m.role === 'user')
+      .map((m) => m.content);
+  }
+
+  function setLine(text: string): void {
+    process.nextTick(() => {
+      rl.write(null, { ctrl: true, name: 'e' });
+      rl.write(null, { ctrl: true, name: 'u' });
+      rl.write(text);
+    });
+  }
+
+  let lastDetailMode = agent.detailMode;
+
+  process.stdin.on('keypress', (_str, key) => {
+    if (key.ctrl && key.name === 'o') {
+      const mode = agent.toggleDetailMode();
+      const label = mode ? chalk.green('FULL') : chalk.yellow('COMPACT');
+      if (agent.isBusy()) {
+        // Suppress output during reasoning to avoid breaking compact progress
+        return;
+      }
+      console.log(`\n[Detail mode: ${label}]`);
+      rl.prompt();
+      lastDetailMode = mode;
+      return;
+    }
+
+    if (key.name === 'pageup') {
+      const userMessages = getUserMessages();
+      if (userMessages.length === 0) return;
+
+      if (promptHistoryIndex === -1) {
+        draftInput = rl.line;
+      }
+
+      const nextIndex = promptHistoryIndex + 1;
+      if (nextIndex < userMessages.length) {
+        promptHistoryIndex = nextIndex;
+        setLine(userMessages[userMessages.length - 1 - promptHistoryIndex]);
+      }
+    } else if (key.name === 'pagedown') {
+      if (promptHistoryIndex === -1) return;
+
+      const userMessages = getUserMessages();
+      const nextIndex = promptHistoryIndex - 1;
+      if (nextIndex >= 0) {
+        promptHistoryIndex = nextIndex;
+        setLine(userMessages[userMessages.length - 1 - promptHistoryIndex]);
+      } else {
+        promptHistoryIndex = -1;
+        setLine(draftInput);
+      }
+    }
+  });
+
   rl.prompt();
 
   rl.on('line', async (line) => {
+    if (agent.isBusy()) {
+      // Drop spurious line events triggered by readline during reasoning
+      return;
+    }
+
     const input = line.trim();
+    promptHistoryIndex = -1;
+    draftInput = '';
     if (!input) {
       rl.prompt();
       return;
@@ -63,6 +144,13 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
     } catch (err) {
       console.error(chalk.red(`\nError: ${err instanceof Error ? err.message : String(err)}`));
     }
+
+    if (lastDetailMode !== agent.detailMode) {
+      const label = agent.detailMode ? chalk.green('FULL') : chalk.yellow('COMPACT');
+      console.log(chalk.gray(`[Detail mode: ${label}]`));
+      lastDetailMode = agent.detailMode;
+    }
+
     rl.prompt();
   });
 
@@ -109,6 +197,10 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
       console.log('  /mcp          - List MCP server connections');
       console.log('  /skills       - List loaded skills/plugins');
       console.log('  /plugins      - Alias for /skills');
+      console.log(chalk.gray('\nShortcuts:'));
+      console.log(chalk.gray('  PageUp        - Browse to older prompt in this session'));
+      console.log(chalk.gray('  PageDown      - Browse to newer prompt (or back to draft)'));
+      console.log(chalk.gray('  Ctrl+O        - Toggle detail mode (compact / full)'));
       return false;
 
     case 'session':

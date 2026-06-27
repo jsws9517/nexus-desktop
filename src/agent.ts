@@ -1,3 +1,4 @@
+import chalk from 'chalk';
 import { ConfigManager } from './config/index.js';
 import { LLMProvider, createProvider } from './llm/provider.js';
 import { ContextManager } from './llm/context-manager.js';
@@ -5,7 +6,12 @@ import { SessionManager } from './session/manager.js';
 import { ClientManager } from './mcp/client-manager.js';
 import { SkillRegistry } from './skills/registry.js';
 import { AcpProtocol } from './acp/protocol.js';
-import { Message, ChatChunk, ToolCall, ToolResult } from './types.js';
+import { Message, ToolCall, ToolResult } from './types.js';
+
+interface ReasoningEntry {
+  assistantText: string;
+  toolCalls: Array<{ name: string; resultSummary: string }>;
+}
 
 export class Agent {
   config: ConfigManager;
@@ -16,7 +22,12 @@ export class Agent {
   skills: SkillRegistry;
   acp: AcpProtocol;
 
+  detailMode = false; // false = compact (default), true = full
+  compactLimit = 4;
+
   private currentSessionId?: string;
+  private reasoningLog: ReasoningEntry[] = [];
+  private busy = false;
 
   constructor() {
     this.config = new ConfigManager();
@@ -63,6 +74,15 @@ export class Agent {
     return session.id;
   }
 
+  toggleDetailMode(): boolean {
+    this.detailMode = !this.detailMode;
+    return this.detailMode;
+  }
+
+  isBusy(): boolean {
+    return this.busy;
+  }
+
   async chat(userInput: string): Promise<void> {
     if (!this.currentSessionId) {
       await this.startSession();
@@ -73,27 +93,58 @@ export class Agent {
     this.session.addMessage(this.currentSessionId!, userMessage);
 
     await this.context.compress();
-    await this.runLlmTurn();
+
+    this.reasoningLog = [];
+    this.busy = true;
+
+    // Snapshot the display mode for this entire reasoning chain
+    const showDetail = this.detailMode;
+
+    try {
+      if (!showDetail) {
+        process.stdout.write(chalk.gray('[Thinking'));
+      }
+
+      await this.runLlmTurn(showDetail);
+
+      if (!showDetail) {
+        process.stdout.write(chalk.gray(']\n'));
+        this.renderCompactOutput();
+      }
+    } finally {
+      this.busy = false;
+    }
   }
 
-  private async runLlmTurn(): Promise<void> {
+  private async runLlmTurn(showDetail: boolean): Promise<void> {
     const tools = [...this.mcp.getAllTools(), ...this.skills.getTools()];
     let assistantMessage = '';
     let pendingToolCalls: ToolCall[] = [];
+
+    const entry: ReasoningEntry = { assistantText: '', toolCalls: [] };
+    if (!showDetail) {
+      this.reasoningLog.push(entry);
+    }
 
     const stream = this.provider.chat(this.context.getMessages(), tools);
 
     for await (const chunk of stream) {
       if (chunk.type === 'text' && chunk.text) {
         assistantMessage += chunk.text;
-        process.stdout.write(chunk.text);
+        if (showDetail) {
+          process.stdout.write(chunk.text);
+        } else {
+          entry.assistantText += chunk.text;
+        }
       }
       if (chunk.type === 'tool_call' && chunk.toolCall) {
         pendingToolCalls.push(chunk.toolCall);
       }
     }
 
-    process.stdout.write('\n');
+    if (showDetail) {
+      process.stdout.write('\n');
+    }
 
     // Store assistant message (with tool calls if any)
     if (assistantMessage || pendingToolCalls.length > 0) {
@@ -107,11 +158,16 @@ export class Agent {
     }
 
     // Execute ALL tool calls before re-running LLM
-    // OpenAI requires all tool messages to immediately follow the assistant message with tool_calls
     for (const toolCall of pendingToolCalls) {
-      console.log(`\n[Tool: ${toolCall.name}]`);
+      if (showDetail) {
+        console.log(`\n[Tool: ${toolCall.name}]`);
+      }
       const result = await this.executeTool(toolCall);
-      console.log(`[Result]: ${result.content.slice(0, 200)}${result.content.length > 200 ? '...' : ''}\n`);
+      if (showDetail) {
+        console.log(`[Result]: ${result.content.slice(0, 200)}${result.content.length > 200 ? '...' : ''}\n`);
+      } else {
+        entry.toolCalls.push({ name: toolCall.name, resultSummary: result.content.slice(0, 200) });
+      }
 
       const toolMsg: Message = {
         role: 'tool',
@@ -122,9 +178,38 @@ export class Agent {
       this.session.addMessage(this.currentSessionId!, toolMsg);
     }
 
+    if (!showDetail && pendingToolCalls.length > 0) {
+      process.stdout.write('.');
+    }
+
     // If there were tool calls, re-run LLM with results
     if (pendingToolCalls.length > 0) {
-      await this.runLlmTurn();
+      await this.runLlmTurn(showDetail);
+    }
+  }
+
+  private renderCompactOutput(): void {
+    const startIdx = Math.max(0, this.reasoningLog.length - this.compactLimit);
+
+    for (let i = startIdx; i < this.reasoningLog.length; i++) {
+      const entry = this.reasoningLog[i];
+      const isLast = i === this.reasoningLog.length - 1;
+
+      if (!isLast) {
+        console.log(chalk.gray(`\n[Step ${i + 1}/${this.reasoningLog.length}]`));
+      }
+
+      process.stdout.write(entry.assistantText);
+
+      for (const tc of entry.toolCalls) {
+        console.log(`\n[Tool: ${tc.name}]`);
+        console.log(`[Result]: ${tc.resultSummary}${tc.resultSummary.length >= 200 ? '...' : ''}`);
+      }
+    }
+
+    if (this.reasoningLog.length > this.compactLimit) {
+      const hidden = this.reasoningLog.length - this.compactLimit;
+      console.log(chalk.gray(`\n(${hidden} earlier reasoning steps hidden — press Ctrl+O for full details)`));
     }
   }
 

@@ -4,7 +4,7 @@ import { LLMProvider } from './provider.js';
 export class ContextManager {
   private messages: Message[] = [];
   private pinnedIndices: Set<number> = new Set();
-  private maxMessages = 50;
+  private maxMessages = 200;
   private tokenBudget = 8000;
   private provider?: LLMProvider;
 
@@ -49,15 +49,33 @@ export class ContextManager {
   }
 
   private enforceLimits(): void {
-    // First check message count
     while (this.messages.length > this.maxMessages + this.pinnedIndices.size) {
       const firstUnpinned = this.messages.findIndex((_, i) => !this.pinnedIndices.has(i));
       if (firstUnpinned === -1) break;
-      this.messages.splice(firstUnpinned, 1);
+
+      let removeCount = 1;
+
+      // If removing an assistant message with toolCalls, also remove the paired tool messages
+      // to preserve the required sequence for OpenAI/Anthropic APIs.
+      const msg = this.messages[firstUnpinned];
+      if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+        const toolCallIds = new Set(msg.toolCalls.map((tc) => tc.id));
+        let i = firstUnpinned + 1;
+        while (i < this.messages.length) {
+          const next = this.messages[i];
+          if (next.role !== 'tool' || !next.toolCallId) break;
+          if (!toolCallIds.has(next.toolCallId)) break;
+          removeCount++;
+          i++;
+        }
+      }
+
+      this.messages.splice(firstUnpinned, removeCount);
+
       // Adjust pinned indices
       const newPinned = new Set<number>();
       for (const idx of this.pinnedIndices) {
-        if (idx > firstUnpinned) newPinned.add(idx - 1);
+        if (idx > firstUnpinned) newPinned.add(idx - removeCount);
         else if (idx < firstUnpinned) newPinned.add(idx);
       }
       this.pinnedIndices = newPinned;
