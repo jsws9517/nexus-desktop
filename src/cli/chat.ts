@@ -43,7 +43,7 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
 
   emitKeypressEvents(process.stdin, rl);
 
-  // Prevent readline from intercepting our custom keys (Ctrl+O operate-and-get-next,
+  // Prevent readline from intercepting our custom keys (crl+O operate-and-get-next,
   // PageUp/PageDown history navigation). We handle them via keypress events.
   const originalTtyWrite = (rl as any)._ttyWrite.bind(rl);
   (rl as any)._ttyWrite = function (s: string, key: { name?: string; ctrl?: boolean }) {
@@ -116,10 +116,10 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
 
   rl.prompt();
 
-  rl.on('line', async (line) => {
+  const handleLine = async (line: string): Promise<boolean> => {
     if (agent.isBusy()) {
       // Drop spurious line events triggered by readline during reasoning
-      return;
+      return false;
     }
 
     const input = line.trim();
@@ -127,7 +127,7 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
     draftInput = '';
     if (!input) {
       rl.prompt();
-      return;
+      return false;
     }
 
     if (input.startsWith('/')) {
@@ -135,7 +135,7 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
       if (!handled) {
         rl.prompt();
       }
-      return;
+      return true;
     }
 
     process.stdout.write(chalk.yellow('agent> '));
@@ -152,6 +152,11 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
     }
 
     rl.prompt();
+    return true;
+  };
+
+  rl.on('line', async (line) => {
+    await handleLine(line);
   });
 
   rl.on('close', async () => {
