@@ -1,16 +1,19 @@
 {
-  "name": "llm-agent",
+  "name": "nexus-agent",
   "version": "1.0.0",
-  "description": "A simple LLM Code Agent with MCP, Skills, and ACP support",
-  "main": "dist/index.js",
+  "description": "NexusAgent - A powerful LLM Code Agent with MCP, Skills, and ACP support",
+  "main": "dist/src/index.js",
   "bin": {
-    "agent": "./dist/cli/index.js"
+    "nexus": "./dist/src/cli/index.js",
+    "agent": "./dist/src/cli/index.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli/index.ts",
     "start": "node dist/cli/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test dist/tests/**/*.test.js",
+    "test:dev": "tsx --test src/tests/**/*.test.ts"
   },
   "keywords": [
     "llm",
