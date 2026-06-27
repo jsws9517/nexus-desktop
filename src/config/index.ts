@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { Config, ConfigSchema } from './types.js';
+import { hasClaudeConfig, hasBeenAutoImported, importFromClaude, markAutoImported } from './claude-import.js';
 
 const CONFIG_DIR = join(homedir(), '.llm-agent');
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
@@ -26,7 +27,16 @@ export class ConfigManager {
   private config: Config;
 
   constructor() {
+    const isFirstRun = !existsSync(CONFIG_PATH);
     this.config = this.load();
+
+    // Auto-import from Claude Code on first run
+    if (isFirstRun && hasClaudeConfig() && !hasBeenAutoImported()) {
+      importFromClaude(this, true);
+      markAutoImported();
+      // Reload after import
+      this.config = this.load();
+    }
   }
 
   private load(): Config {

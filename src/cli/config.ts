@@ -1,9 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { readFileSync, existsSync, mkdirSync, cpSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import { ConfigManager } from '../config/index.js';
+import { importFromClaude } from '../config/claude-import.js';
 
 export function registerConfigCommand(program: Command): void {
   const configCmd = program.command('config').description('Configuration management');
@@ -13,105 +11,20 @@ export function registerConfigCommand(program: Command): void {
     .description('Import MCP servers and skills from Claude Code config (~/.claude.json)')
     .action(() => {
       const config = new ConfigManager();
-      const claudeJsonPath = join(homedir(), '.claude.json');
-      const claudeSkillsDir = join(homedir(), '.claude', 'skills');
-      const agentSkillsDir = join(homedir(), '.llm-agent', 'skills');
+      const result = importFromClaude(config, false);
 
-      let importedMcp = 0;
-      let skippedMcp = 0;
-      let importedSkills = 0;
-      let skippedSkills = 0;
-
-      // ---- Import MCP Servers ----
-      if (existsSync(claudeJsonPath)) {
-        try {
-          const claudeConfig = JSON.parse(readFileSync(claudeJsonPath, 'utf-8'));
-          const mcpServers = claudeConfig.mcpServers || {};
-
-          for (const [name, srv] of Object.entries(mcpServers)) {
-            const server = srv as Record<string, unknown>;
-            const command = String(server.command || '');
-            if (!command) {
-              skippedMcp++;
-              continue;
-            }
-            // Skip if already exists
-            const existing = config.getMcpServers();
-            if (existing && name in existing) {
-              console.log(chalk.gray(`  MCP "${name}" already exists, skipping`));
-              skippedMcp++;
-              continue;
-            }
-            config.addMcpServer(name, {
-              command,
-              args: Array.isArray(server.args) ? server.args.map(String) : undefined,
-              env: server.env && typeof server.env === 'object'
-                ? Object.fromEntries(Object.entries(server.env as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
-                : undefined,
-              autoStart: true,
-            });
-            console.log(chalk.green(`  + MCP "${name}"`));
-            importedMcp++;
-          }
-        } catch (err) {
-          console.log(chalk.red(`Failed to read ~/.claude.json: ${err instanceof Error ? err.message : String(err)}`));
-        }
-      } else {
-        console.log(chalk.yellow('~/.claude.json not found'));
+      if (result.mcpImported > 0) {
+        console.log(chalk.green(`\nImported ${result.mcpImported} MCP server(s) from Claude Code`));
       }
-
-      // ---- Import Skills ----
-      // Claude Code skills are in ~/.claude/skills/ with index.json
-      if (existsSync(claudeSkillsDir)) {
-        const indexPath = join(claudeSkillsDir, 'index.json');
-        if (existsSync(indexPath)) {
-          try {
-            const index = JSON.parse(readFileSync(indexPath, 'utf-8'));
-            const skills = index.skills || [];
-            mkdirSync(agentSkillsDir, { recursive: true });
-
-            // Copy index.json for loader metadata
-            try {
-              cpSync(indexPath, join(agentSkillsDir, 'index.json'));
-            } catch {
-              // Non-fatal
-            }
-
-            for (const skill of skills) {
-              const skillName = skill.name;
-              const skillPath = join(claudeSkillsDir, skill.path.replace(/^\.\//, ''));
-
-              const targetDir = join(agentSkillsDir, skillName);
-              if (existsSync(targetDir)) {
-                console.log(chalk.gray(`  Skill "${skillName}" already exists, skipping`));
-                skippedSkills++;
-                continue;
-              }
-
-              // Copy skill directory (both JS and SKILL.md formats)
-              try {
-                cpSync(skillPath, targetDir, { recursive: true });
-                console.log(chalk.green(`  + Skill "${skillName}"`));
-                importedSkills++;
-              } catch {
-                skippedSkills++;
-              }
-            }
-          } catch (err) {
-            console.log(chalk.red(`Failed to read skills index: ${err instanceof Error ? err.message : String(err)}`));
-          }
-        } else {
-          console.log(chalk.yellow('No skills/index.json found in ~/.claude/skills/'));
-        }
-      } else {
-        console.log(chalk.yellow('~/.claude/skills/ not found'));
+      if (result.skillsImported > 0) {
+        console.log(chalk.green(`Imported ${result.skillsImported} skill(s) from Claude Code`));
       }
-
-      console.log(chalk.bold('\nImport Summary:'));
-      console.log(`  MCP servers: ${chalk.green(importedMcp + ' imported')}, ${chalk.gray(skippedMcp + ' skipped')}`);
-      console.log(`  Skills: ${chalk.green(importedSkills + ' imported')}, ${chalk.gray(skippedSkills + ' skipped')}`);
-      console.log(chalk.gray('  JS skills expose tools; SKILL.md skills provide context via init()'));
-
+      if (result.mcpImported === 0 && result.skillsImported === 0) {
+        console.log(chalk.gray('Nothing new to import from Claude Code config'));
+      }
+      if (result.mcpSkipped > 0 || result.skillsSkipped > 0) {
+        console.log(chalk.gray(`Skipped: ${result.mcpSkipped} MCP, ${result.skillsSkipped} skills (already exist)`));
+      }
     });
 
   configCmd
@@ -163,15 +76,12 @@ export function registerConfigCommand(program: Command): void {
       const config = new ConfigManager();
       const parts = key.split('.');
 
-      if (parts.length === 2 && parts[0] === 'provider') {
-        // e.g. config set provider.openai.model gpt-4o
+      if (parts.length >= 3 && parts[0] === 'provider') {
         const providerName = parts[1];
-        const field = parts[2];
-        if (field) {
-          config.setProviderField(providerName, field, value);
-          console.log(chalk.green(`Set ${key} = ${value}`));
-          return;
-        }
+        const field = parts.slice(2).join('.');
+        config.setProviderField(providerName, field, value);
+        console.log(chalk.green(`Set ${key} = ${value}`));
+        return;
       }
 
       if (key === 'activeProvider') {
