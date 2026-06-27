@@ -2,6 +2,12 @@ import OpenAI from 'openai';
 import { Message, ChatChunk, ToolDefinition } from '../types.js';
 import { LLMProvider } from './provider.js';
 
+interface PendingToolCall {
+  id: string;
+  name: string;
+  argsBuffer: string;
+}
+
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
   readonly name = 'openai';
@@ -62,27 +68,73 @@ export class OpenAIProvider implements LLMProvider {
       stream: true,
     });
 
+    // Track partial tool calls across chunks (OpenAI streams tool args incrementally)
+    const pendingTools: Map<number, PendingToolCall> = new Map();
+
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
       if (delta?.content) {
+        // Flush any pending tool calls before yielding text
+        for (const [, pt] of pendingTools) {
+          const args = this.tryParseArgs(pt.argsBuffer);
+          if (args !== undefined) {
+            yield { type: 'tool_call', toolCall: { id: pt.id, name: pt.name, arguments: args } };
+          }
+        }
+        pendingTools.clear();
         yield { type: 'text', text: delta.content };
       }
+
       if (delta?.tool_calls) {
         for (const tc of delta.tool_calls) {
-          if (tc.function?.name) {
-            yield {
-              type: 'tool_call',
-              toolCall: {
-                id: tc.id || `call_${Date.now()}`,
-                name: tc.function.name,
-                arguments: tc.function.arguments ? JSON.parse(tc.function.arguments) : {},
-              },
-            };
+          const index = tc.index ?? 0;
+          const existing = pendingTools.get(index);
+
+          if (tc.id && tc.function?.name) {
+            // New tool call
+            pendingTools.set(index, {
+              id: tc.id,
+              name: tc.function.name,
+              argsBuffer: tc.function.arguments || '',
+            });
+          } else if (existing && tc.function?.arguments) {
+            // Append to existing tool call arguments
+            existing.argsBuffer += tc.function.arguments;
           }
         }
       }
+
+      // When a chunk has neither content nor tool_calls, flush pending tools
+      if (!delta?.content && !delta?.tool_calls) {
+        for (const [, pt] of pendingTools) {
+          const args = this.tryParseArgs(pt.argsBuffer);
+          if (args !== undefined) {
+            yield { type: 'tool_call', toolCall: { id: pt.id, name: pt.name, arguments: args } };
+          }
+        }
+        pendingTools.clear();
+      }
     }
+
+    // Flush any remaining pending tools at stream end
+    for (const [, pt] of pendingTools) {
+      const args = this.tryParseArgs(pt.argsBuffer);
+      if (args !== undefined) {
+        yield { type: 'tool_call', toolCall: { id: pt.id, name: pt.name, arguments: args } };
+      }
+    }
+    pendingTools.clear();
+
     yield { type: 'done' };
+  }
+
+  private tryParseArgs(buffer: string): Record<string, unknown> | undefined {
+    if (!buffer) return undefined;
+    try {
+      return JSON.parse(buffer) as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
   }
 
   async complete(messages: Message[]): Promise<string> {
