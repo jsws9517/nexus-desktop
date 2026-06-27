@@ -1,6 +1,6 @@
-# LLM Agent
+# NexusAgent
 
-A simple TypeScript CLI agent supporting multiple LLM providers, MCP tools, session management, skills/plugins, and ACP protocol.
+A powerful TypeScript CLI agent connecting multiple LLM providers, MCP tools, skills/plugins, and ACP protocol — the intelligent hub for your development workflow.
 
 ## Features
 
@@ -25,36 +25,36 @@ Config file is auto-created at `~/.llm-agent/config.json`:
 
 ```bash
 # List configuration
-agent config list
+nexus config list
 
 # Set API key
-agent config set provider.anthropic.apiKey YOUR_KEY
+nexus config set provider.anthropic.apiKey YOUR_KEY
 
 # Switch provider
-agent config switch openai
+nexus config switch openai
 
 # Add MCP server
-agent config mcp add filesystem --command npx --args -y @modelcontextprotocol/server-filesystem /path/to/allow
+nexus config mcp add filesystem --command npx --args -y @modelcontextprotocol/server-filesystem /path/to/allow
 ```
 
 ## Usage
 
 ```bash
 # Interactive chat
-agent
-agent chat
+nexus
+nexus chat
 
 # Resume a session
-agent chat --session <id>
+nexus chat --session <id>
 
 # Single prompt
-agent run "Explain quantum computing"
+nexus run "Explain quantum computing"
 
 # Session management
-agent session list
-agent session resume <id>
-agent session rename <id> <name>
-agent session delete <id>
+nexus session list
+nexus session resume <id>
+nexus session rename <id> <name>
+nexus session delete <id>
 ```
 
 ## Interactive Commands
@@ -95,3 +95,7 @@ npm run dev        # Run with tsx
 npm run build      # Compile TypeScript
 npm run typecheck  # Check types
 ```
+
+## License
+
+ISC
