@@ -1,9 +1,129 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { readFileSync, existsSync, mkdirSync, cpSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 import { ConfigManager } from '../config/index.js';
 
 export function registerConfigCommand(program: Command): void {
   const configCmd = program.command('config').description('Configuration management');
+
+  configCmd
+    .command('import-claude')
+    .description('Import MCP servers and skills from Claude Code config (~/.claude.json)')
+    .action(() => {
+      const config = new ConfigManager();
+      const claudeJsonPath = join(homedir(), '.claude.json');
+      const claudeSkillsDir = join(homedir(), '.claude', 'skills');
+      const agentSkillsDir = join(homedir(), '.llm-agent', 'skills');
+
+      let importedMcp = 0;
+      let skippedMcp = 0;
+      let importedSkills = 0;
+      let skippedSkills = 0;
+
+      // ---- Import MCP Servers ----
+      if (existsSync(claudeJsonPath)) {
+        try {
+          const claudeConfig = JSON.parse(readFileSync(claudeJsonPath, 'utf-8'));
+          const mcpServers = claudeConfig.mcpServers || {};
+
+          for (const [name, srv] of Object.entries(mcpServers)) {
+            const server = srv as Record<string, unknown>;
+            const command = String(server.command || '');
+            if (!command) {
+              skippedMcp++;
+              continue;
+            }
+            // Skip if already exists
+            const existing = config.getMcpServers();
+            if (existing && name in existing) {
+              console.log(chalk.gray(`  MCP "${name}" already exists, skipping`));
+              skippedMcp++;
+              continue;
+            }
+            config.addMcpServer(name, {
+              command,
+              args: Array.isArray(server.args) ? server.args.map(String) : undefined,
+              env: server.env && typeof server.env === 'object'
+                ? Object.fromEntries(Object.entries(server.env as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+                : undefined,
+              autoStart: true,
+            });
+            console.log(chalk.green(`  + MCP "${name}"`));
+            importedMcp++;
+          }
+        } catch (err) {
+          console.log(chalk.red(`Failed to read ~/.claude.json: ${err instanceof Error ? err.message : String(err)}`));
+        }
+      } else {
+        console.log(chalk.yellow('~/.claude.json not found'));
+      }
+
+      // ---- Import Skills ----
+      // Claude Code skills are in ~/.claude/skills/ with index.json
+      // Only skills with JS entry files can be imported (our system uses JS modules)
+      if (existsSync(claudeSkillsDir)) {
+        const indexPath = join(claudeSkillsDir, 'index.json');
+        if (existsSync(indexPath)) {
+          try {
+            const index = JSON.parse(readFileSync(indexPath, 'utf-8'));
+            const skills = index.skills || [];
+            mkdirSync(agentSkillsDir, { recursive: true });
+
+            for (const skill of skills) {
+              const skillName = skill.name;
+              const skillPath = join(claudeSkillsDir, skill.path.replace(/^\.\//, ''));
+
+              // Find JS entry file
+              const jsFiles = ['index.js', 'skill.js', 'index.mjs', 'skill.mjs'];
+              let entryFile: string | undefined;
+              for (const f of jsFiles) {
+                if (existsSync(join(skillPath, f))) {
+                  entryFile = f;
+                  break;
+                }
+              }
+
+              if (!entryFile) {
+                console.log(chalk.gray(`  Skill "${skillName}" has no JS entry, skipping (SKILL.md format not supported)`));
+                skippedSkills++;
+                continue;
+              }
+
+              const targetDir = join(agentSkillsDir, skillName);
+              if (existsSync(targetDir)) {
+                console.log(chalk.gray(`  Skill "${skillName}" already exists, skipping`));
+                skippedSkills++;
+                continue;
+              }
+
+              // Copy skill directory
+              try {
+                cpSync(skillPath, targetDir, { recursive: true });
+                console.log(chalk.green(`  + Skill "${skillName}"`));
+                importedSkills++;
+              } catch {
+                skippedSkills++;
+              }
+            }
+          } catch (err) {
+            console.log(chalk.red(`Failed to read skills index: ${err instanceof Error ? err.message : String(err)}`));
+          }
+        } else {
+          console.log(chalk.yellow('No skills/index.json found in ~/.claude/skills/'));
+        }
+      } else {
+        console.log(chalk.yellow('~/.claude/skills/ not found'));
+      }
+
+      console.log(chalk.bold('\nImport Summary:'));
+      console.log(`  MCP servers: ${chalk.green(importedMcp + ' imported')}, ${chalk.gray(skippedMcp + ' skipped')}`);
+      console.log(`  Skills: ${chalk.green(importedSkills + ' imported')}, ${chalk.gray(skippedSkills + ' skipped')}`);
+      if (skippedSkills > 0) {
+        console.log(chalk.gray('  (Skipped skills use SKILL.md format; only JS module skills are supported)'));
+      }
+    });
 
   configCmd
     .command('list')
