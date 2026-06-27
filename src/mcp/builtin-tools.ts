@@ -3,6 +3,51 @@ import { execSync } from 'child_process';
 import { BuiltinTool } from './types.js';
 import { ToolResult } from '../types.js';
 
+// Dangerous commands that should never be executed automatically
+const DANGEROUS_COMMANDS = new Set([
+  'rm', 'del', 'rmdir', 'format', 'mkfs', 'fdisk', 'dd', 'shred',
+  'mv', 'move', 'ren', 'rename',
+]);
+
+function getBaseCommand(command: string): string {
+  const trimmed = command.trim();
+  // Skip common prefixes
+  const withoutPrefix = trimmed.replace(/^(sudo|nohup|time)\s+/i, '');
+  const match = withoutPrefix.match(/^[\"']?([^\s\"';|&<>]+)/);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function isDangerousCommand(command: string): boolean {
+  const base = getBaseCommand(command);
+  return DANGEROUS_COMMANDS.has(base);
+}
+
+function isPrivateUrl(urlStr: string): boolean {
+  try {
+    const url = new URL(urlStr);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return true;
+    }
+    const hostname = url.hostname.toLowerCase();
+    if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
+    if (hostname === '0.0.0.0' || hostname === '::1' || hostname === '::') return true;
+
+    const parts = hostname.split('.').map(Number);
+    if (parts.length === 4 && parts.every((n) => !isNaN(n) && n >= 0 && n <= 255)) {
+      const [a, b, ,] = parts;
+      if (a === 10) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 127) return true;
+      if (a === 0) return true;
+      if (a === 169 && b === 254) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export const BUILTIN_TOOLS: BuiltinTool[] = [
   {
     name: 'file_read',
@@ -66,7 +111,9 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       if (!command) {
         return { content: 'Empty command', isError: true };
       }
-      // Security: command originates from LLM tool calls; execute in controlled environment only
+      if (isDangerousCommand(command)) {
+        return { content: `Command blocked for security: "${getBaseCommand(command)}" is not allowed`, isError: true };
+      }
       try {
         const result = execSync(command, {
           encoding: 'utf-8',
@@ -97,6 +144,9 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const url = String(args.url || '');
+      if (isPrivateUrl(url)) {
+        return { content: 'URL blocked: internal/private addresses are not allowed', isError: true };
+      }
       try {
         const response = await fetch(url);
         if (!response.ok) {
