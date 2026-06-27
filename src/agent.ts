@@ -17,7 +17,6 @@ export class Agent {
   acp: AcpProtocol;
 
   private currentSessionId?: string;
-  private isRunning = false;
 
   constructor() {
     this.config = new ConfigManager();
@@ -74,60 +73,10 @@ export class Agent {
     this.session.addMessage(this.currentSessionId!, userMessage);
 
     await this.context.compress();
-
-    const tools = [
-      ...this.mcp.getAllTools(),
-      ...this.skills.getTools(),
-    ];
-
-    let assistantMessage = '';
-    let pendingToolCalls: ToolCall[] = [];
-
-    const stream = this.provider.chat(this.context.getMessages(), tools);
-
-    for await (const chunk of stream) {
-      if (chunk.type === 'text' && chunk.text) {
-        assistantMessage += chunk.text;
-        process.stdout.write(chunk.text);
-      }
-      if (chunk.type === 'tool_call' && chunk.toolCall) {
-        pendingToolCalls.push(chunk.toolCall);
-      }
-    }
-
-    process.stdout.write('\n');
-
-    // Store assistant message
-    if (assistantMessage || pendingToolCalls.length > 0) {
-      const msg: Message = {
-        role: 'assistant',
-        content: assistantMessage,
-        toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
-      };
-      this.context.add(msg);
-      this.session.addMessage(this.currentSessionId!, msg);
-    }
-
-    // Execute tool calls
-    for (const toolCall of pendingToolCalls) {
-      console.log(`\n[Tool: ${toolCall.name}]`);
-      const result = await this.executeTool(toolCall);
-      console.log(`[Result]: ${result.content.slice(0, 200)}${result.content.length > 200 ? '...' : ''}\n`);
-
-      const toolMsg: Message = {
-        role: 'tool',
-        content: result.content,
-        toolCallId: toolCall.id,
-      };
-      this.context.add(toolMsg);
-      this.session.addMessage(this.currentSessionId!, toolMsg);
-
-      // Re-run LLM with tool result
-      await this.continueChat();
-    }
+    await this.runLlmTurn();
   }
 
-  private async continueChat(): Promise<void> {
+  private async runLlmTurn(): Promise<void> {
     const tools = [...this.mcp.getAllTools(), ...this.skills.getTools()];
     let assistantMessage = '';
     let pendingToolCalls: ToolCall[] = [];
@@ -146,6 +95,7 @@ export class Agent {
 
     process.stdout.write('\n');
 
+    // Store assistant message (with tool calls if any)
     if (assistantMessage || pendingToolCalls.length > 0) {
       const msg: Message = {
         role: 'assistant',
@@ -156,6 +106,8 @@ export class Agent {
       this.session.addMessage(this.currentSessionId!, msg);
     }
 
+    // Execute ALL tool calls before re-running LLM
+    // OpenAI requires all tool messages to immediately follow the assistant message with tool_calls
     for (const toolCall of pendingToolCalls) {
       console.log(`\n[Tool: ${toolCall.name}]`);
       const result = await this.executeTool(toolCall);
@@ -168,7 +120,11 @@ export class Agent {
       };
       this.context.add(toolMsg);
       this.session.addMessage(this.currentSessionId!, toolMsg);
-      await this.continueChat();
+    }
+
+    // If there were tool calls, re-run LLM with results
+    if (pendingToolCalls.length > 0) {
+      await this.runLlmTurn();
     }
   }
 
