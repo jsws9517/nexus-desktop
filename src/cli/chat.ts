@@ -105,6 +105,9 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
       console.log('  /clear        - Clear the current context');
       console.log('  /provider     - Show current provider');
       console.log('  /tools        - List available tools');
+      console.log('  /mcp          - List MCP server connections');
+      console.log('  /skills       - List loaded skills/plugins');
+      console.log('  /plugins      - Alias for /skills');
       return false;
 
     case 'session':
@@ -125,6 +128,31 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
       console.log(chalk.bold(`Available tools (${tools.length}):`));
       for (const t of tools) {
         console.log(`  ${chalk.cyan(t.name)} - ${t.description}`);
+      }
+      return false;
+
+    case 'mcp':
+      const conns = agent.mcp.listConnections();
+      if (conns.length === 0) {
+        console.log(chalk.gray('No external MCP servers connected.'));
+      } else {
+        console.log(chalk.bold(`MCP Servers (${conns.length}):`));
+        for (const c of conns) {
+          console.log(`  ${chalk.cyan(c.name)} - ${c.toolCount} tools [${c.status}]`);
+        }
+      }
+      return false;
+
+    case 'skills':
+    case 'plugins':
+      const skills = agent.skills.list();
+      if (skills.length === 0) {
+        console.log(chalk.gray('No skills loaded. Place modules in ~/.llm-agent/skills/'));
+      } else {
+        console.log(chalk.bold(`Skills (${skills.length}):`));
+        for (const s of skills) {
+          console.log(`  ${chalk.cyan(s.name)} v${s.version}${s.description ? ' - ' + s.description : ''}`);
+        }
       }
       return false;
 
