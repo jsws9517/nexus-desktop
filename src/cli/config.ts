@@ -27,6 +27,27 @@ export function registerConfigCommand(program: Command): void {
     });
 
   configCmd
+    .command('add-provider <name>')
+    .description('Add a new LLM provider')
+    .requiredOption('-t, --type <type>', 'Provider type: anthropic, openai, custom')
+    .requiredOption('-k, --apiKey <key>', 'API key')
+    .requiredOption('-m, --model <model>', 'Model name')
+    .option('-u, --baseUrl <url>', 'Custom base URL (for compatible APIs)')
+    .action((name: string, options: { type: string; apiKey: string; model: string; baseUrl?: string }) => {
+      const config = new ConfigManager();
+      config.setProvider(name, {
+        type: options.type as 'anthropic' | 'openai' | 'custom',
+        apiKey: options.apiKey,
+        model: options.model,
+        baseUrl: options.baseUrl,
+      });
+      console.log(chalk.green(`Added provider: ${name} (${options.type} / ${options.model})`));
+      if (options.baseUrl) {
+        console.log(chalk.gray(`  Base URL: ${options.baseUrl}`));
+      }
+    });
+
+  configCmd
     .command('set <key> <value>')
     .description('Set a configuration value')
     .action((key: string, value: string) => {
