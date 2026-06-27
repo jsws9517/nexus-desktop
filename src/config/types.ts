@@ -31,6 +31,7 @@ export const ConfigSchema = z.object({
   providers: z.record(ProviderConfigSchema),
   mcpServers: z.record(ServerConfigSchema).optional(),
   acp: AcpConfigSchema.optional(),
+  promptName: z.string().optional(),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;

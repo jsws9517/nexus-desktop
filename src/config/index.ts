@@ -126,4 +126,13 @@ export class ConfigManager {
     this.config.acp = acp;
     this.save();
   }
+
+  getPromptName(): string {
+    return this.config.promptName || 'you';
+  }
+
+  setPromptName(name: string): void {
+    this.config.promptName = name;
+    this.save();
+  }
 }

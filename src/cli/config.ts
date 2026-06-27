@@ -35,6 +35,7 @@ export function registerConfigCommand(program: Command): void {
       const cfg = config.get();
       console.log(chalk.bold('Configuration:'));
       console.log(`  Active provider: ${chalk.cyan(cfg.activeProvider)}`);
+      console.log(`  Prompt name: ${chalk.cyan(cfg.promptName || 'you')}`);
       console.log(chalk.bold('  Providers:'));
       for (const [name, p] of Object.entries(cfg.providers)) {
         const marker = name === cfg.activeProvider ? chalk.green('*') : ' ';
@@ -100,6 +101,15 @@ export function registerConfigCommand(program: Command): void {
       const config = new ConfigManager();
       config.setActiveProvider(provider);
       console.log(chalk.green(`Switched to provider: ${provider}`));
+    });
+
+  configCmd
+    .command('set-name <name>')
+    .description('Set the chat prompt name (default: you)')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      config.setPromptName(name);
+      console.log(chalk.green(`Chat prompt name set to: ${name}`));
     });
 
   const mcpCmd = configCmd.command('mcp').description('MCP server management');

@@ -30,13 +30,14 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
   await agent.init();
 
   const id = await agent.startSession(undefined, sessionId);
+  const promptName = agent.config.getPromptName();
   console.log(chalk.green(`Session started: ${id}`));
   console.log(chalk.gray('Type /help for commands, /exit to quit\n'));
 
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: chalk.cyan('you> '),
+    prompt: chalk.cyan(`${promptName}> `),
   });
 
   rl.prompt();

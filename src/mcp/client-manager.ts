@@ -24,6 +24,7 @@ export class ClientManager {
       command: config.command,
       args: config.args || [],
       env: config.env as Record<string, string>,
+      stderr: 'pipe',
     });
 
     await client.connect(transport);
