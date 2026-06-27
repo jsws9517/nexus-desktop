@@ -1,0 +1,39 @@
+{
+  "name": "llm-agent",
+  "version": "1.0.0",
+  "description": "A simple LLM Code Agent with MCP, Skills, and ACP support",
+  "main": "dist/index.js",
+  "bin": {
+    "agent": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli/index.ts",
+    "start": "node dist/cli/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "mcp",
+    "cli"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.0.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.11.1",
+    "chalk": "^5.6.2",
+    "commander": "^15.0.0",
+    "openai": "^6.45.0",
+    "zod": "3.25.76"
+  }
+}
