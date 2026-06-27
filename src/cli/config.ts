@@ -62,7 +62,6 @@ export function registerConfigCommand(program: Command): void {
 
       // ---- Import Skills ----
       // Claude Code skills are in ~/.claude/skills/ with index.json
-      // Only skills with JS entry files can be imported (our system uses JS modules)
       if (existsSync(claudeSkillsDir)) {
         const indexPath = join(claudeSkillsDir, 'index.json');
         if (existsSync(indexPath)) {
@@ -71,25 +70,16 @@ export function registerConfigCommand(program: Command): void {
             const skills = index.skills || [];
             mkdirSync(agentSkillsDir, { recursive: true });
 
+            // Copy index.json for loader metadata
+            try {
+              cpSync(indexPath, join(agentSkillsDir, 'index.json'));
+            } catch {
+              // Non-fatal
+            }
+
             for (const skill of skills) {
               const skillName = skill.name;
               const skillPath = join(claudeSkillsDir, skill.path.replace(/^\.\//, ''));
-
-              // Find JS entry file
-              const jsFiles = ['index.js', 'skill.js', 'index.mjs', 'skill.mjs'];
-              let entryFile: string | undefined;
-              for (const f of jsFiles) {
-                if (existsSync(join(skillPath, f))) {
-                  entryFile = f;
-                  break;
-                }
-              }
-
-              if (!entryFile) {
-                console.log(chalk.gray(`  Skill "${skillName}" has no JS entry, skipping (SKILL.md format not supported)`));
-                skippedSkills++;
-                continue;
-              }
 
               const targetDir = join(agentSkillsDir, skillName);
               if (existsSync(targetDir)) {
@@ -98,7 +88,7 @@ export function registerConfigCommand(program: Command): void {
                 continue;
               }
 
-              // Copy skill directory
+              // Copy skill directory (both JS and SKILL.md formats)
               try {
                 cpSync(skillPath, targetDir, { recursive: true });
                 console.log(chalk.green(`  + Skill "${skillName}"`));
@@ -120,9 +110,8 @@ export function registerConfigCommand(program: Command): void {
       console.log(chalk.bold('\nImport Summary:'));
       console.log(`  MCP servers: ${chalk.green(importedMcp + ' imported')}, ${chalk.gray(skippedMcp + ' skipped')}`);
       console.log(`  Skills: ${chalk.green(importedSkills + ' imported')}, ${chalk.gray(skippedSkills + ' skipped')}`);
-      if (skippedSkills > 0) {
-        console.log(chalk.gray('  (Skipped skills use SKILL.md format; only JS module skills are supported)'));
-      }
+      console.log(chalk.gray('  JS skills expose tools; SKILL.md skills provide context via init()'));
+
     });
 
   configCmd
