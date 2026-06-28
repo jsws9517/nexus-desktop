@@ -25,6 +25,11 @@ export class Agent {
   detailMode = true;
   compactLimit = 4;
 
+  /** ACP server callback: receive LLM output text instead of stdout */
+  onOutput?: (text: string) => void;
+  /** Suppress tool call console output (used in ACP server mode) */
+  suppressToolOutput = false;
+
   private currentSessionId?: string;
   private reasoningLog: ReasoningEntry[] = [];
   private busy = false;
@@ -145,7 +150,7 @@ export class Agent {
     const showDetail = this.detailMode;
 
     try {
-      if (!showDetail) {
+      if (!showDetail && !this.onOutput) {
         this.compactStartTime = Date.now();
         process.stdout.write(chalk.dim('Thought'));
       }
@@ -178,7 +183,9 @@ export class Agent {
       for await (const chunk of stream) {
         if (chunk.type === 'text' && chunk.text) {
           assistantMessage += chunk.text;
-          if (showDetail) {
+          if (this.onOutput) {
+            this.onOutput(chunk.text);
+          } else if (showDetail) {
             process.stdout.write(chunk.text);
           } else {
             entry.assistantText += chunk.text;
@@ -195,7 +202,7 @@ export class Agent {
 
     if (signal.aborted) return;
 
-    if (showDetail) {
+    if (showDetail && !this.onOutput) {
       process.stdout.write('\n');
     }
 
@@ -214,11 +221,11 @@ export class Agent {
     for (const toolCall of pendingToolCalls) {
       if (signal.aborted) return;
 
-      if (showDetail) {
+      if (showDetail && !this.suppressToolOutput) {
         console.log(`\n[Tool: ${toolCall.name}]`);
       }
       const result = await this.executeTool(toolCall);
-      if (showDetail) {
+      if (showDetail && !this.suppressToolOutput) {
         console.log(`[Result]: ${result.content.slice(0, 200)}${result.content.length > 200 ? '...' : ''}\n`);
       } else {
         entry.toolCalls.push({ name: toolCall.name, resultSummary: result.content.slice(0, 200) });
@@ -233,7 +240,7 @@ export class Agent {
       this.session.addMessage(this.currentSessionId!, toolMsg);
     }
 
-    if (!showDetail && pendingToolCalls.length > 0) {
+    if (!showDetail && pendingToolCalls.length > 0 && !this.onOutput) {
       process.stdout.write('.');
     }
 
