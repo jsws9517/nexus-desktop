@@ -1,4 +1,4 @@
-import { ToolDefinition } from '../types.js';
+import { ToolDefinition, ToolResult } from '../types.js';
 
 export interface AgentContext {
   callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
@@ -11,5 +11,6 @@ export interface Skill {
   description?: string;
   init?(ctx: AgentContext): Promise<void>;
   tools?: ToolDefinition[];
+  callTool?(name: string, args: Record<string, unknown>): Promise<ToolResult>;
   handleCommand?(cmd: string, args: string[]): Promise<string>;
 }

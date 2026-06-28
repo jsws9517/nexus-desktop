@@ -6,7 +6,7 @@ export interface LLMProvider {
   readonly name: string;
   readonly model: string;
 
-  chat(messages: Message[], tools?: ToolDefinition[]): AsyncIterable<ChatChunk>;
+  chat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk>;
   complete(messages: Message[]): Promise<string>;
   countTokens(text: string): number;
 }

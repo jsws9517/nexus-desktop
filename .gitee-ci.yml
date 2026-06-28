@@ -1,0 +1,29 @@
+stages:
+  - build
+  - test
+
+build:
+  stage: build
+  image: node:22-alpine
+  script:
+    - npm ci
+    - npm run typecheck
+    - npm run build
+  cache:
+    paths:
+      - node_modules/
+  artifacts:
+    paths:
+      - dist/
+
+test:
+  stage: test
+  image: node:22-alpine
+  dependencies:
+    - build
+  script:
+    - npm test
+    - node dist/src/cli/index.js --help
+  cache:
+    paths:
+      - node_modules/

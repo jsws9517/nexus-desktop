@@ -22,12 +22,14 @@ export class Agent {
   skills: SkillRegistry;
   acp: AcpProtocol;
 
-  detailMode = false; // false = compact (default), true = full
+  detailMode = true;
   compactLimit = 4;
 
   private currentSessionId?: string;
   private reasoningLog: ReasoningEntry[] = [];
   private busy = false;
+  private abortController = new AbortController();
+  private compactStartTime?: number;
 
   constructor() {
     this.config = new ConfigManager();
@@ -46,6 +48,28 @@ export class Agent {
       await this.mcp.connectAll(cfg.mcpServers);
     }
     await this.skills.load();
+  }
+
+  async switchModel(modelId: string): Promise<string> {
+    const currentModel = this.provider.model;
+    const cfg = this.config.get();
+    const providerName = cfg.activeProvider;
+    const providerCfg = cfg.providers[providerName]!;
+
+    // 持久化到 config
+    this.config.setProviderField(providerName, 'model', modelId);
+
+    // 重建 provider（同 type/apiKey/baseUrl，新 model）
+    this.provider = createProvider(
+      providerCfg.type,
+      providerCfg.apiKey,
+      modelId,
+      providerCfg.baseUrl,
+      providerCfg.options,
+    );
+    this.context.setProvider(this.provider);
+
+    return `${currentModel} → ${modelId}`;
   }
 
   async switchProvider(name: string): Promise<void> {
@@ -83,6 +107,12 @@ export class Agent {
     return this.busy;
   }
 
+  /** Abort the current chat operation (called on ESC). Safe to call even when idle. */
+  abort(): void {
+    this.abortController.abort();
+    this.busy = false;
+  }
+
   async chat(userInput: string): Promise<void> {
     if (!this.currentSessionId) {
       await this.startSession();
@@ -95,6 +125,8 @@ export class Agent {
     await this.context.compress();
 
     this.reasoningLog = [];
+    this.abortController = new AbortController();
+    const signal = this.abortController.signal;
     this.busy = true;
 
     // Snapshot the display mode for this entire reasoning chain
@@ -102,13 +134,15 @@ export class Agent {
 
     try {
       if (!showDetail) {
-        process.stdout.write(chalk.gray('[Thinking'));
+        this.compactStartTime = Date.now();
+        process.stdout.write(chalk.dim('Thought'));
       }
 
-      await this.runLlmTurn(showDetail);
+      await this.runLlmTurn(showDetail, signal);
+
+      if (signal.aborted) return;
 
       if (!showDetail) {
-        process.stdout.write(chalk.gray(']\n'));
         this.renderCompactOutput();
       }
     } finally {
@@ -116,7 +150,7 @@ export class Agent {
     }
   }
 
-  private async runLlmTurn(showDetail: boolean): Promise<void> {
+  private async runLlmTurn(showDetail: boolean, signal: AbortSignal): Promise<void> {
     const tools = [...this.mcp.getAllTools(), ...this.skills.getTools()];
     let assistantMessage = '';
     let pendingToolCalls: ToolCall[] = [];
@@ -126,21 +160,28 @@ export class Agent {
       this.reasoningLog.push(entry);
     }
 
-    const stream = this.provider.chat(this.context.getMessages(), tools);
+    try {
+      const stream = this.provider.chat(this.context.getMessages(), tools, signal);
 
-    for await (const chunk of stream) {
-      if (chunk.type === 'text' && chunk.text) {
-        assistantMessage += chunk.text;
-        if (showDetail) {
-          process.stdout.write(chunk.text);
-        } else {
-          entry.assistantText += chunk.text;
+      for await (const chunk of stream) {
+        if (chunk.type === 'text' && chunk.text) {
+          assistantMessage += chunk.text;
+          if (showDetail) {
+            process.stdout.write(chunk.text);
+          } else {
+            entry.assistantText += chunk.text;
+          }
+        }
+        if (chunk.type === 'tool_call' && chunk.toolCall) {
+          pendingToolCalls.push(chunk.toolCall);
         }
       }
-      if (chunk.type === 'tool_call' && chunk.toolCall) {
-        pendingToolCalls.push(chunk.toolCall);
-      }
+    } catch (e) {
+      if (signal.aborted) return;
+      throw e;
     }
+
+    if (signal.aborted) return;
 
     if (showDetail) {
       process.stdout.write('\n');
@@ -159,6 +200,8 @@ export class Agent {
 
     // Execute ALL tool calls before re-running LLM
     for (const toolCall of pendingToolCalls) {
+      if (signal.aborted) return;
+
       if (showDetail) {
         console.log(`\n[Tool: ${toolCall.name}]`);
       }
@@ -184,36 +227,70 @@ export class Agent {
 
     // If there were tool calls, re-run LLM with results
     if (pendingToolCalls.length > 0) {
-      await this.runLlmTurn(showDetail);
+      await this.runLlmTurn(showDetail, signal);
     }
   }
 
   private renderCompactOutput(): void {
+    const elapsed = this.compactStartTime
+      ? Math.round((Date.now() - this.compactStartTime) / 1000)
+      : 0;
+
+    // "Thought for Xs (ctrl+o to expand)"
+    process.stdout.write(
+      chalk.dim(` for ${elapsed}s (ctrl+o to expand)\n`),
+    );
+
     const startIdx = Math.max(0, this.reasoningLog.length - this.compactLimit);
 
     for (let i = startIdx; i < this.reasoningLog.length; i++) {
       const entry = this.reasoningLog[i];
-      const isLast = i === this.reasoningLog.length - 1;
 
-      if (!isLast) {
-        console.log(chalk.gray(`\n[Step ${i + 1}/${this.reasoningLog.length}]`));
+      // Main text with bullet point
+      if (entry.assistantText) {
+        console.log(chalk.white(`• ${entry.assistantText}`));
       }
 
-      process.stdout.write(entry.assistantText);
+      // Tool calls with tree structure
+      const allTools = entry.toolCalls;
+      if (allTools.length > 0) {
+        const maxShow = 3;
+        const shown = allTools.slice(0, maxShow);
+        const hidden = allTools.length - maxShow;
 
-      for (const tc of entry.toolCalls) {
-        console.log(`\n[Tool: ${tc.name}]`);
-        console.log(`[Result]: ${tc.resultSummary}${tc.resultSummary.length >= 200 ? '...' : ''}`);
+        for (let j = 0; j < shown.length; j++) {
+          const tc = shown[j]!;
+          const isLastTool = j === shown.length - 1 && hidden === 0;
+          const branch = isLastTool ? chalk.dim('└ ') : chalk.dim('├ ');
+          const summary = tc.resultSummary
+            .slice(0, 60)
+            .replace(/[/\\]/g, '/')
+            .replace(/\n/g, ' ');
+          console.log(`${branch}${chalk.cyan(tc.name)}(${chalk.dim(summary)})`);
+        }
+
+        if (hidden > 0) {
+          console.log(
+            chalk.dim(`└ ... +${hidden} tool uses (ctrl+o to expand)`),
+          );
+        }
       }
     }
 
     if (this.reasoningLog.length > this.compactLimit) {
       const hidden = this.reasoningLog.length - this.compactLimit;
-      console.log(chalk.gray(`\n(${hidden} earlier reasoning steps hidden — press Ctrl+O for full details)`));
+      console.log(
+        chalk.dim(`\n(${hidden} earlier reasoning steps hidden — press Ctrl+O for full details)`),
+      );
     }
   }
 
   async executeTool(call: ToolCall): Promise<ToolResult> {
+    // Check skills first
+    const skillResult = await this.skills.callTool(call.name, call.arguments);
+    if (skillResult) return skillResult;
+
+    // Fall back to MCP/builtin tools
     return this.mcp.callTool(call.name, call.arguments);
   }
 

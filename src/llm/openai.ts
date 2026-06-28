@@ -60,13 +60,13 @@ export class OpenAIProvider implements LLMProvider {
     }));
   }
 
-  async *chat(messages: Message[], tools?: ToolDefinition[]): AsyncIterable<ChatChunk> {
+  async *chat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
     const stream = await this.client.chat.completions.create({
       model: this.model,
       messages: this.toOpenAIMessages(messages),
       tools: this.toTools(tools),
       stream: true,
-    });
+    }, { signal });
 
     // Track partial tool calls across chunks (OpenAI streams tool args incrementally)
     const pendingTools: Map<number, PendingToolCall> = new Map();

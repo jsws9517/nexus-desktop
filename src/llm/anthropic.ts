@@ -51,7 +51,7 @@ export class AnthropicProvider implements LLMProvider {
     }));
   }
 
-  async *chat(messages: Message[], tools?: ToolDefinition[]): AsyncIterable<ChatChunk> {
+  async *chat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
     const anthropicMessages = this.toAnthropicMessages(
       messages.filter((m) => m.role !== 'system')
     );
@@ -63,7 +63,7 @@ export class AnthropicProvider implements LLMProvider {
       system: systemMessage?.content,
       messages: anthropicMessages,
       tools: this.toTools(tools),
-    });
+    }, { signal });
 
     for await (const event of stream) {
       if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {

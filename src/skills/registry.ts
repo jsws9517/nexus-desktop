@@ -1,4 +1,4 @@
-import { ToolDefinition } from '../types.js';
+import { ToolDefinition, ToolResult } from '../types.js';
 import { Skill, AgentContext } from './types.js';
 import { loadSkills } from './loader.js';
 
@@ -38,6 +38,21 @@ export class SkillRegistry {
       }
     }
     return tools;
+  }
+
+  /** Execute a tool belonging to a skill. Returns undefined if no skill owns the tool. */
+  async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult | undefined> {
+    for (const skill of this.skills) {
+      // Check if this tool belongs to the skill
+      if (skill.tools?.some((t) => t.name === name) || skill.name === name) {
+        if (skill.callTool) {
+          return skill.callTool(name, args);
+        }
+        // Fallback: skill has tool definition but no callTool — return instructions to use its SKILL.md content
+        return { content: `Skill "${skill.name}" is loaded but does not support direct tool invocation.` };
+      }
+    }
+    return undefined; // Not a skill tool
   }
 
   async handleCommand(skillName: string, cmd: string, args: string[]): Promise<string | undefined> {
