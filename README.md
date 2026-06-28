@@ -8,7 +8,7 @@ A powerful TypeScript CLI agent connecting multiple LLM providers, MCP tools, sk
 - **Session Management**: Persistent chat sessions with SQLite storage, cross-process recovery
 - **Long Context Handling**: Sliding window + automatic summarization
 - **MCP Tools**: Connect to external MCP servers + built-in tools (file_read, file_write, exec_command, fetch_url)
-- **Skills/Plugins**: Dynamic loading from `~/.llm-agent/skills/`
+- **Skills/Plugins**: Dynamic loading from `~/.nexus/skills/`
 - **ACP Protocol**: Agent-to-agent communication support
 
 ## Installation
@@ -21,7 +21,7 @@ npm link  # or npm install -g
 
 ## Configuration
 
-Config file is auto-created at `~/.llm-agent/config.json`:
+Config file is auto-created at `~/.nexus/config.json`:
 
 ```bash
 # List configuration
@@ -68,10 +68,10 @@ During chat, type:
 
 ## Skills
 
-Place skill modules in `~/.llm-agent/skills/`:
+Place skill modules in `~/.nexus/skills/`:
 
 ```javascript
-// ~/.llm-agent/skills/my-skill.js
+// ~/.nexus/skills/my-skill.js
 export default {
   name: 'my-skill',
   version: '1.0.0',

@@ -30,9 +30,11 @@ export class Agent {
   private busy = false;
   private abortController = new AbortController();
   private compactStartTime?: number;
+  private enableAcp?: boolean;
 
-  constructor() {
+  constructor(enableAcp?: boolean) {
     this.config = new ConfigManager();
+    this.enableAcp = enableAcp;
     const providerConfig = this.config.getProvider();
     this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options);
     this.mcp = new ClientManager();
@@ -44,6 +46,13 @@ export class Agent {
 
   async init(): Promise<void> {
     const cfg = this.config.get();
+
+    // Determine ACP mode: CLI flag > config
+    const shouldEnableAcp = this.enableAcp ?? cfg.acp?.enabled ?? false;
+    if (shouldEnableAcp) {
+      await this.acp.start(cfg.acp);
+    }
+
     if (cfg.mcpServers) {
       await this.mcp.connectAll(cfg.mcpServers);
     }

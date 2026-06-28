@@ -5,7 +5,7 @@ import { createRequire } from 'module';
 import { Skill } from './types.js';
 import { ToolResult } from '../types.js';
 
-const SKILLS_DIR = join(homedir(), '.llm-agent', 'skills');
+const SKILLS_DIR = join(homedir(), '.nexus', 'skills');
 
 export async function loadSkills(): Promise<Skill[]> {
   const skills: Skill[] = [];
