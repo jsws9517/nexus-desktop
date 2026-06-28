@@ -26,7 +26,7 @@ program.action(async () => {
     // ACP server mode: stdio JSON-RPC
     const { Agent } = await import('../agent.js');
     const { AcpServer } = await import('../acp/server.js');
-    const agent = new Agent(true);
+    const agent = new Agent(true, true);
     await agent.init();
     const server = new AcpServer(agent);
     await server.start();
