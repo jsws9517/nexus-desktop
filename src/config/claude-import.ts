@@ -5,8 +5,8 @@ import { ConfigManager } from './index.js';
 
 const CLAUDE_JSON = join(homedir(), '.claude.json');
 const CLAUDE_SKILLS_DIR = join(homedir(), '.claude', 'skills');
-const AGENT_SKILLS_DIR = join(homedir(), '.llm-agent', 'skills');
-const IMPORT_FLAG = join(homedir(), '.llm-agent', '.claude-imported');
+const AGENT_SKILLS_DIR = join(homedir(), '.nexus', 'skills');
+const IMPORT_FLAG = join(homedir(), '.nexus', '.claude-imported');
 
 export interface ImportResult {
   mcpImported: number;

@@ -405,7 +405,7 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
     case 'plugins':
       const skills = agent.skills.list();
       if (skills.length === 0) {
-        console.log(chalk.gray('No skills loaded. Place modules in ~/.llm-agent/skills/'));
+        console.log(chalk.gray('No skills loaded. Place modules in ~/.nexus/skills/'));
       } else {
         console.log(chalk.bold(`Skills(skills.length}):`));
         for (const s of skills) {
