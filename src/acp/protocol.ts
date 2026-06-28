@@ -66,10 +66,10 @@ export class AcpProtocol {
     this.port = config?.port ?? this.getRandomPort();
 
     // Placeholder: actual server start would go here (HTTP/stdio/MCP sampling)
-    console.log(chalk.green(`[ACP] Agent-to-agent protocol enabled on port ${this.port}`));
+    process.stderr.write(chalk.green(`[ACP] Agent-to-agent protocol enabled on port ${this.port}\n`));
 
     if (this.agents.size > 0) {
-      console.log(chalk.dim(`[ACP] Registered ${this.agents.size} agent(s)`));
+      process.stderr.write(chalk.dim(`[ACP] Registered ${this.agents.size} agent(s)\n`));
     }
   }
 
@@ -79,7 +79,7 @@ export class AcpProtocol {
     // Placeholder: actual server shutdown would go here
     this.enabled = false;
     this.port = undefined;
-    console.log(chalk.gray('[ACP] Protocol stopped'));
+    process.stderr.write(chalk.gray('[ACP] Protocol stopped\n'));
   }
 
   private getRandomPort(): number {
@@ -149,6 +149,6 @@ export class AcpProtocol {
       throw new Error(`Agent ${message.to} not found`);
     }
     // Delivery implementation depends on transport (stdio / HTTP / MCP sampling)
-    console.log(`[ACP] Deliver to ${agent.name}:`, message.type);
+    process.stderr.write(`[ACP] Deliver to ${agent.name}: ${message.type}\n`);
   }
 }
