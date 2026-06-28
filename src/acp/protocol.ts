@@ -6,6 +6,27 @@ export interface AcpAgent {
   name: string;
   endpoint: string;
   capabilities: string[];
+  skillsPath?: string;
+}
+
+function isValidAcpEndpoint(endpoint: string): boolean {
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+
+    const hostname = url.hostname;
+
+    // Block private IP ranges to prevent SSRF
+    if (hostname === 'localhost' || hostname === '127.0.0.1') return false;
+    if (hostname.startsWith('10.')) return false;
+    if (hostname.startsWith('192.168.')) return false;
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)) return false;
+    if (hostname.startsWith('0.') || hostname.startsWith('::1')) return false;
+
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface AcpMessage {
@@ -143,12 +164,40 @@ export class AcpProtocol {
   }
 
   private async deliver(message: AcpMessage): Promise<void> {
-    // Placeholder: actual delivery via MCP sampling or HTTP in future
     const agent = this.agents.get(message.to);
     if (!agent) {
       throw new Error(`Agent ${message.to} not found`);
     }
-    // Delivery implementation depends on transport (stdio / HTTP / MCP sampling)
+
+    // HTTP transport with SSRF protection
+    if (agent.endpoint.startsWith('http://') || agent.endpoint.startsWith('https://')) {
+      if (!isValidAcpEndpoint(agent.endpoint)) {
+        throw new Error(`Agent endpoint rejected: ${agent.endpoint}`);
+      }
+      const url = agent.endpoint.endsWith('/') ? agent.endpoint : `${agent.endpoint}/`;
+      const response = await fetch(`${url}acp/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(message),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      // If this was a task, expect a response message in the body
+      if (message.type === 'task') {
+        try {
+          const responseBody = await response.json() as AcpMessage;
+          if (responseBody.type === 'response') {
+            this.receive(responseBody);
+          }
+        } catch {
+          // Non-JSON response, ignore
+        }
+      }
+      return;
+    }
+
+    // Placeholder: stdio / MCP sampling transport not implemented
     process.stderr.write(`[ACP] Deliver to ${agent.name}: ${message.type}\n`);
   }
 }

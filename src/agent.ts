@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import { resolve } from 'path';
 import { ConfigManager } from './config/index.js';
 import { LLMProvider, createProvider } from './llm/provider.js';
 import { ContextManager } from './llm/context-manager.js';
@@ -61,10 +62,26 @@ export class Agent {
       await this.acp.start(cfg.acp);
     }
 
+    // Collect external skill paths from ACP config (validate for path traversal)
+    const extraPaths: string[] = [];
+    const isSafePath = (p: string): boolean => {
+      const normalized = resolve(p);
+      if (normalized.includes('\x00')) return false;
+      return !normalized.split(/[\/\\]/).some((seg: string) => seg === '..');
+    };
+    if (cfg.acp?.skillsPath && isSafePath(cfg.acp.skillsPath)) {
+      extraPaths.push(cfg.acp.skillsPath);
+    }
+    for (const agent of cfg.acp?.agents || []) {
+      if (agent.skillsPath && isSafePath(agent.skillsPath)) {
+        extraPaths.push(agent.skillsPath);
+      }
+    }
+
     if (cfg.mcpServers) {
       await this.mcp.connectAll(cfg.mcpServers);
     }
-    await this.skills.load();
+    await this.skills.load(undefined, extraPaths);
   }
 
   async switchModel(modelId: string): Promise<string> {
@@ -310,7 +327,26 @@ export class Agent {
     if (skillResult) return skillResult;
 
     // Fall back to MCP/builtin tools
-    return this.mcp.callTool(call.name, call.arguments);
+    try {
+      return await this.mcp.callTool(call.name, call.arguments);
+    } catch (err) {
+      // If configured ACP agents have matching capabilities, try forwarding
+      const acpCfg = this.config.getAcpConfig();
+      if (acpCfg?.agents) {
+        for (const agent of acpCfg.agents) {
+          if (agent.capabilities.includes(call.name) || agent.capabilities.includes('*')) {
+            try {
+              this.acp.registerAgent(agent);
+              const msg = await this.acp.sendTask(agent.id, { tool: call.name, args: call.arguments }, 'nexus');
+              return { content: typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload) };
+            } catch {
+              // Continue to next agent
+            }
+          }
+        }
+      }
+      throw err;
+    }
   }
 
   getCurrentSessionId(): string | undefined {

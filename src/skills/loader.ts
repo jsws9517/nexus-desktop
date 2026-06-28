@@ -1,40 +1,62 @@
 import { readdirSync, statSync, existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve, isAbsolute } from 'path';
 import { homedir } from 'os';
 import { createRequire } from 'module';
 import { Skill } from './types.js';
 import { ToolResult } from '../types.js';
 
 const SKILLS_DIR = join(homedir(), '.nexus', 'skills');
+const CLAUDE_SKILLS_DIR = join(homedir(), '.claude', 'skills');
 
-export async function loadSkills(): Promise<Skill[]> {
+function isSafePath(p: string): boolean {
+  if (!isAbsolute(p)) return false;
+  const normalized = resolve(p);
+  if (normalized.includes('\x00')) return false;
+  return !normalized.split(/[\/\\]/).some((seg) => seg === '..');
+}
+
+export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
   const skills: Skill[] = [];
-  if (!existsSync(SKILLS_DIR)) return skills;
+  const loadedNames = new Set<string>();
 
-  // Load index.json if exists (Claude Code format)
-  const indexPath = join(SKILLS_DIR, 'index.json');
-  const indexData = existsSync(indexPath)
-    ? JSON.parse(readFileSync(indexPath, 'utf-8')) as { skills?: Array<{ name: string; path: string; metadata?: { version?: string; description?: string } }> }
-    : undefined;
+  // Filter extraPaths for safety
+  const safeExtras = (extraPaths || []).filter(isSafePath);
+  const paths = [SKILLS_DIR, CLAUDE_SKILLS_DIR, ...safeExtras];
 
-  const entries = readdirSync(SKILLS_DIR);
+  for (const basePath of paths) {
+    if (!existsSync(basePath)) continue;
 
-  for (const entry of entries) {
-    const fullPath = join(SKILLS_DIR, entry);
-    const stat = statSync(fullPath);
-    if (!stat.isDirectory()) continue;
+    // Load index.json if exists (Claude Code format)
+    const indexPath = join(basePath, 'index.json');
+    const indexData = existsSync(indexPath)
+      ? JSON.parse(readFileSync(indexPath, 'utf-8')) as { skills?: Array<{ name: string; path: string; metadata?: { version?: string; description?: string } }> }
+      : undefined;
 
-    // Try to load as standard JS skill module (with skill.json metadata)
-    const jsSkill = await tryLoadJsSkill(fullPath, entry, indexData);
-    if (jsSkill) {
-      skills.push(jsSkill);
-      continue;
-    }
+    const entries = readdirSync(basePath);
 
-    // Try to load as SKILL.md skill (prompt-based with callable tool)
-    const mdSkill = tryLoadMdSkill(fullPath, entry, indexData);
-    if (mdSkill) {
-      skills.push(mdSkill);
+    for (const entry of entries) {
+      const fullPath = join(basePath, entry);
+      const stat = statSync(fullPath);
+      if (!stat.isDirectory()) continue;
+
+      // Try to load as standard JS skill module (with skill.json metadata)
+      const jsSkill = await tryLoadJsSkill(fullPath, entry, indexData);
+      if (jsSkill) {
+        if (!loadedNames.has(jsSkill.name)) {
+          skills.push(jsSkill);
+          loadedNames.add(jsSkill.name);
+        }
+        continue;
+      }
+
+      // Try to load as SKILL.md skill (prompt-based with callable tool)
+      const mdSkill = tryLoadMdSkill(fullPath, entry, indexData);
+      if (mdSkill) {
+        if (!loadedNames.has(mdSkill.name)) {
+          skills.push(mdSkill);
+          loadedNames.add(mdSkill.name);
+        }
+      }
     }
   }
 

@@ -23,7 +23,9 @@ export const AcpConfigSchema = z.object({
     name: z.string(),
     endpoint: z.string(),
     capabilities: z.array(z.string()),
+    skillsPath: z.string().optional(),
   })).optional(),
+  skillsPath: z.string().optional(),
 });
 
 export const ConfigSchema = z.object({
