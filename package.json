@@ -1,6 +1,6 @@
 {
   "name": "nexus-coder",
-  "version": "1.0.1",
+  "version": "1.0.2-0",
   "description": "NexusAgent - A powerful LLM Code Agent with MCP, Skills, and ACP support",
   "main": "dist/src/index.js",
   "bin": {
@@ -23,7 +23,12 @@
   ],
   "author": "",
   "license": "ISC",
-  "files": ["dist/src/", "bin/", "package.json", "README.md"],
+  "files": [
+    "dist/src/",
+    "bin/",
+    "package.json",
+    "README.md"
+  ],
   "type": "module",
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
