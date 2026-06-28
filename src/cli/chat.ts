@@ -105,10 +105,12 @@ export function registerChatCommand(program: Command): void {
       if (options.borderMode) {
         process.env.NEXUS_BORDER_MODE = options.borderMode;
       }
+      const globalOpts = program.opts();
+      const enableAcp = globalOpts.acp === true ? true : globalOpts.acp === false ? false : undefined;
       if (options.message) {
-        await runSingleMessage(options.message, options.session);
+        await runSingleMessage(options.message, options.session, enableAcp);
       } else {
-        await startInteractiveChat(options.session);
+        await startInteractiveChat(options.session, enableAcp);
       }
     });
 
@@ -116,12 +118,14 @@ export function registerChatCommand(program: Command): void {
     .command('run <prompt>')
     .description('Execute a single prompt and exit')
     .action(async (prompt: string) => {
-      await runSingleMessage(prompt);
+      const globalOpts = program.opts();
+      const enableAcp = globalOpts.acp === true ? true : globalOpts.acp === false ? false : undefined;
+      await runSingleMessage(prompt, undefined, enableAcp);
     });
 }
 
-export async function startInteractiveChat(sessionId?: string): Promise<void> {
-  const agent = new Agent();
+export async function startInteractiveChat(sessionId?: string, enableAcp?: boolean): Promise<void> {
+  const agent = new Agent(enableAcp);
   await agent.init();
 
   const id = await agent.startSession(undefined, sessionId);
@@ -306,8 +310,8 @@ export async function startInteractiveChat(sessionId?: string): Promise<void> {
   });
 }
 
-async function runSingleMessage(message: string, sessionId?: string): Promise<void> {
-  const agent = new Agent();
+async function runSingleMessage(message: string, sessionId?: string, enableAcp?: boolean): Promise<void> {
+  const agent = new Agent(enableAcp);
   await agent.init();
   await agent.startSession(undefined, sessionId);
 

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import chalk from 'chalk';
 
 export interface AcpAgent {
   id: string;
@@ -17,9 +18,17 @@ export interface AcpMessage {
   timestamp: number;
 }
 
+export interface AcpConfig {
+  enabled?: boolean;
+  port?: number;
+  agents?: AcpAgent[];
+}
+
 export class AcpProtocol {
   private agents: Map<string, AcpAgent> = new Map();
   private pendingResponses: Map<string, (msg: AcpMessage) => void> = new Map();
+  private enabled = false;
+  private port?: number;
 
   registerAgent(agent: AcpAgent): void {
     this.agents.set(agent.id, agent);
@@ -31,6 +40,52 @@ export class AcpProtocol {
 
   listAgents(): AcpAgent[] {
     return Array.from(this.agents.values());
+  }
+
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  getPort(): number | undefined {
+    return this.port;
+  }
+
+  async start(config?: AcpConfig): Promise<void> {
+    if (this.enabled) return;
+
+    this.enabled = true;
+
+    // Register agents from config
+    if (config?.agents) {
+      for (const agent of config.agents) {
+        this.registerAgent(agent);
+      }
+    }
+
+    // Generate random port if not specified
+    this.port = config?.port ?? this.getRandomPort();
+
+    // Placeholder: actual server start would go here (HTTP/stdio/MCP sampling)
+    console.log(chalk.green(`[ACP] Agent-to-agent protocol enabled on port ${this.port}`));
+
+    if (this.agents.size > 0) {
+      console.log(chalk.dim(`[ACP] Registered ${this.agents.size} agent(s)`));
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (!this.enabled) return;
+
+    // Placeholder: actual server shutdown would go here
+    this.enabled = false;
+    this.port = undefined;
+    console.log(chalk.gray('[ACP] Protocol stopped'));
+  }
+
+  private getRandomPort(): number {
+    const min = 3000;
+    const max = 9000;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
   async sendTask(to: string, payload: unknown, from: string): Promise<AcpMessage> {

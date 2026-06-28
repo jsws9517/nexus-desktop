@@ -10,7 +10,9 @@ const program = new Command();
 program
   .name('agent')
   .description('LLM Code Agent - A simple CLI agent with MCP, Skills, and ACP support')
-  .version('1.0.0');
+  .version('1.0.0')
+  .option('--acp', 'Enable ACP agent-to-agent communication')
+  .option('--no-acp', 'Explicitly disable ACP mode');
 
 registerChatCommand(program);
 registerSessionCommand(program);
@@ -19,7 +21,9 @@ registerConfigCommand(program);
 // Default command: chat
 program.action(async () => {
   const { startInteractiveChat } = await import('./chat.js');
-  await startInteractiveChat();
+  const opts = program.opts();
+  const enableAcp = opts.acp === true ? true : opts.acp === false ? false : undefined;
+  await startInteractiveChat(undefined, enableAcp);
 });
 
 program.parse();

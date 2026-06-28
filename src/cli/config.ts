@@ -151,4 +151,104 @@ export function registerConfigCommand(program: Command): void {
       config.removeMcpServer(name);
       console.log(chalk.green(`Removed MCP server: ${name}`));
     });
+
+  // ACP configuration commands
+  const acpCmd = configCmd.command('acp').description('ACP agent-to-agent configuration');
+
+  acpCmd
+    .command('enable')
+    .description('Enable ACP mode in configuration')
+    .action(() => {
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpConfig = cfg.acp || {};
+      acpConfig.enabled = true;
+      config.setAcpConfig(acpConfig);
+      console.log(chalk.green('ACP mode enabled in configuration'));
+    });
+
+  acpCmd
+    .command('disable')
+    .description('Disable ACP mode in configuration')
+    .action(() => {
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpConfig = cfg.acp || {};
+      acpConfig.enabled = false;
+      config.setAcpConfig(acpConfig);
+      console.log(chalk.green('ACP mode disabled in configuration'));
+    });
+
+  acpCmd
+    .command('add-agent <name>')
+    .description('Add an ACP agent')
+    .requiredOption('-e, --endpoint <url>', 'Agent endpoint URL')
+    .requiredOption('-c, --capabilities <list>', 'Comma-separated capabilities (e.g., chat,code,mcp)')
+    .action((name: string, options: { endpoint: string; capabilities: string }) => {
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpConfig = cfg.acp || {};
+      const agents = acpConfig.agents || [];
+
+      const id = name.toLowerCase().replace(/\s+/g, '-');
+      agents.push({
+        id,
+        name,
+        endpoint: options.endpoint,
+        capabilities: options.capabilities.split(',').map((c: string) => c.trim()).filter(Boolean),
+      });
+
+      acpConfig.agents = agents;
+      config.setAcpConfig(acpConfig);
+      console.log(chalk.green(`Added ACP agent: ${name} (${id})`));
+      console.log(chalk.gray(`  Endpoint: ${options.endpoint}`));
+      console.log(chalk.gray(`  Capabilities: ${options.capabilities}`));
+    });
+
+  acpCmd
+    .command('list-agents')
+    .description('List registered ACP agents')
+    .action(() => {
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpConfig = cfg.acp;
+      const agents = acpConfig?.agents || [];
+
+      if (agents.length === 0) {
+        console.log(chalk.gray('No ACP agents configured'));
+        return;
+      }
+
+      console.log(chalk.bold(`ACP Agents (${agents.length}):`));
+      for (const agent of agents) {
+        console.log(`  ${chalk.cyan(agent.name)} (${agent.id})`);
+        console.log(`    Endpoint: ${agent.endpoint}`);
+        console.log(`    Capabilities: ${agent.capabilities.join(', ')}`);
+      }
+    });
+
+  acpCmd
+    .command('remove-agent <name>')
+    .description('Remove an ACP agent')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpConfig = cfg.acp;
+      if (!acpConfig?.agents || acpConfig.agents.length === 0) {
+        console.log(chalk.gray('No ACP agents configured'));
+        return;
+      }
+
+      const id = name.toLowerCase().replace(/\s+/g, '-');
+      const beforeCount = acpConfig.agents.length;
+      acpConfig.agents = acpConfig.agents.filter((a) => a.id !== id && a.name !== name);
+
+      if (acpConfig.agents.length === beforeCount) {
+        console.log(chalk.yellow(`Agent not found: ${name}`));
+        return;
+      }
+
+      config.setAcpConfig(acpConfig);
+      console.log(chalk.green(`Removed ACP agent: ${name}`));
+    });
 }
