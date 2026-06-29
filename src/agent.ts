@@ -152,6 +152,21 @@ export class Agent {
       await this.startSession();
     }
 
+    // Add system prompt for ACP server mode to encourage tool use
+    const acpTools = this.getAcpTools();
+    if (this.isAcpServer && acpTools.length > 0) {
+      const hasSystem = this.context.getMessages().some((m) => m.role === 'system');
+      if (!hasSystem) {
+        this.context.add({
+          role: 'system',
+          content: `你是一个智能助手，可以根据用户请求调用工具完成任务。
+当前可用的工具包括本地工具和由 ACP 智能体提供的远程工具。
+当用户明确要求调用某个工具时（如 text2image-free-CogView、text2image-trial-aliyun 等），请严格按照要求调用相应的工具，不要自行决定使用其他工具代替。
+如果某个工具调用失败，请报告具体的错误信息。`,
+        });
+      }
+    }
+
     const userMessage: Message = { role: 'user', content: userInput };
     this.context.add(userMessage);
     this.session.addMessage(this.currentSessionId!, userMessage);
@@ -186,6 +201,17 @@ export class Agent {
 
   private async runLlmTurn(showDetail: boolean, signal: AbortSignal): Promise<void> {
     const tools = [...this.mcp.getAllTools(), ...this.skills.getTools(), ...this.getAcpTools()];
+
+    // Debug: log tool count in ACP server mode
+    if (this.isAcpServer) {
+      process.stderr.write(`[ACP Debug] Tools: ${tools.length} total`);
+      const acpToolNames = this.getAcpTools().map((t) => t.name);
+      if (acpToolNames.length > 0) {
+        process.stderr.write(` | ACP: ${acpToolNames.join(', ')}`);
+      }
+      process.stderr.write('\n');
+    }
+
     let assistantMessage = '';
     let pendingToolCalls: ToolCall[] = [];
 
@@ -329,7 +355,7 @@ export class Agent {
         for (const t of agent.tools) {
           tools.push({
             name: t.name,
-            description: `[via ${agent.name}] ${t.description}`,
+            description: `${t.description} (由 ${agent.name} agent 提供)`,
             inputSchema: (t.inputSchema || { type: 'object', properties: {} }) as Record<string, unknown>,
           });
         }
