@@ -101,6 +101,52 @@ async function tryLoadJsSkill(dirPath: string, name: string, indexData?: { skill
 
   // { execute } pattern (common for video/image skills) — wrap with skill.json metadata
   const executeFn = mod.execute;
+  const handleSkillFn = mod.handleSkill;
+
+  // Claude Code skill pattern: { handleSkill } with skill.json modes
+  if (typeof handleSkillFn === 'function' && jsonMeta?.modes && Array.isArray(jsonMeta.modes) && jsonMeta.modes.length > 0) {
+    const metaName = jsonMeta?.name || name;
+    const metaVersion = jsonMeta?.version || '1.0.0';
+    const metaDescription = jsonMeta?.description || `Skill: ${name}`;
+
+    const tools = jsonMeta.modes.map((mode) => {
+      const m = mode as { name?: string; description?: string; input?: { type?: string; properties?: Record<string, { type?: string; description?: string }> }; mode?: string };
+      const inputProps = m.input?.properties || {};
+      const required = Object.keys(inputProps);
+
+      return {
+        name: `${metaName}_${m.mode || m.name?.toLowerCase().replace(/\s+/g, '_') || 'run'}`,
+        description: m.description || metaDescription,
+        inputSchema: {
+          type: 'object',
+          properties: inputProps,
+          required: required.length > 0 ? required : undefined,
+        } as Record<string, unknown>,
+      };
+    });
+
+    return {
+      name: metaName,
+      version: metaVersion,
+      description: metaDescription,
+      tools,
+      async callTool(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
+        try {
+          let modeId = toolName.replace(`${metaName}_`, '');
+          // If called with just the skill name (no _mode suffix), use first mode
+          if (modeId === toolName && jsonMeta?.modes && jsonMeta.modes.length > 0) {
+            const firstMode = jsonMeta.modes[0] as { mode?: string };
+            modeId = firstMode.mode || 'single';
+          }
+          const result = await handleSkillFn({ config: {} }, args, modeId);
+          return { content: typeof result === 'string' ? result : JSON.stringify(result, null, 2) };
+        } catch (err) {
+          return { content: `Skill error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        }
+      },
+    };
+  }
+
   if (typeof executeFn !== 'function') return undefined;
 
   const metaName = jsonMeta?.name || name;
