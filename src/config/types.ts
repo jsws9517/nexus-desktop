@@ -15,16 +15,23 @@ export const ServerConfigSchema = z.object({
   autoStart: z.boolean().optional(),
 });
 
+export const AcpAgentSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  endpoint: z.string(),
+  capabilities: z.array(z.string()),
+  skillsPath: z.string().optional(),
+  tools: z.array(z.object({
+    name: z.string(),
+    description: z.string(),
+    inputSchema: z.record(z.unknown()).optional(),
+  })).optional(),
+});
+
 export const AcpConfigSchema = z.object({
   enabled: z.boolean().optional(),
   port: z.number().optional(),
-  agents: z.array(z.object({
-    id: z.string(),
-    name: z.string(),
-    endpoint: z.string(),
-    capabilities: z.array(z.string()),
-    skillsPath: z.string().optional(),
-  })).optional(),
+  agents: z.array(AcpAgentSchema).optional(),
   skillsPath: z.string().optional(),
 });
 

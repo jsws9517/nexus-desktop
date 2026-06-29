@@ -7,7 +7,7 @@ import { SessionManager } from './session/manager.js';
 import { ClientManager } from './mcp/client-manager.js';
 import { SkillRegistry } from './skills/registry.js';
 import { AcpProtocol } from './acp/protocol.js';
-import { Message, ToolCall, ToolResult } from './types.js';
+import { Message, ToolCall, ToolResult, ToolDefinition } from './types.js';
 
 interface ReasoningEntry {
   assistantText: string;
@@ -185,7 +185,7 @@ export class Agent {
   }
 
   private async runLlmTurn(showDetail: boolean, signal: AbortSignal): Promise<void> {
-    const tools = [...this.mcp.getAllTools(), ...this.skills.getTools()];
+    const tools = [...this.mcp.getAllTools(), ...this.skills.getTools(), ...this.getAcpTools()];
     let assistantMessage = '';
     let pendingToolCalls: ToolCall[] = [];
 
@@ -321,6 +321,23 @@ export class Agent {
     }
   }
 
+  getAcpTools(): ToolDefinition[] {
+    const acpCfg = this.config.getAcpConfig();
+    const tools: ToolDefinition[] = [];
+    for (const agent of acpCfg?.agents || []) {
+      if (agent.tools) {
+        for (const t of agent.tools) {
+          tools.push({
+            name: t.name,
+            description: `[via ${agent.name}] ${t.description}`,
+            inputSchema: (t.inputSchema || { type: 'object', properties: {} }) as Record<string, unknown>,
+          });
+        }
+      }
+    }
+    return tools;
+  }
+
   async executeTool(call: ToolCall): Promise<ToolResult> {
     // Check skills first
     const skillResult = await this.skills.callTool(call.name, call.arguments);
@@ -330,11 +347,11 @@ export class Agent {
     try {
       return await this.mcp.callTool(call.name, call.arguments);
     } catch (err) {
-      // If configured ACP agents have matching capabilities, try forwarding
+      // If configured ACP agents expose this tool, forward the call
       const acpCfg = this.config.getAcpConfig();
       if (acpCfg?.agents) {
         for (const agent of acpCfg.agents) {
-          if (agent.capabilities.includes(call.name) || agent.capabilities.includes('*')) {
+          if (agent.tools?.some((t) => t.name === call.name)) {
             try {
               this.acp.registerAgent(agent);
               const msg = await this.acp.sendTask(agent.id, { tool: call.name, args: call.arguments }, 'nexus');
