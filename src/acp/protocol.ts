@@ -144,6 +144,12 @@ export class AcpProtocol {
     });
   }
 
+  async listTools(agentId: string): Promise<Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>> {
+    const msg = await this.sendTask(agentId, { method: 'tools/list' }, 'nexus');
+    const payload = msg.payload as { tools?: Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }> } | undefined;
+    return payload?.tools || [];
+  }
+
   async sendResponse(to: string, payload: unknown, correlationId: string, from: string): Promise<void> {
     const message: AcpMessage = {
       id: randomUUID(),
@@ -176,29 +182,48 @@ export class AcpProtocol {
     // HTTP transport with SSRF protection
     if (agent.endpoint.startsWith('http://') || agent.endpoint.startsWith('https://')) {
       if (!isValidAcpEndpoint(agent.endpoint)) {
-        throw new Error(`Agent endpoint rejected: ${agent.endpoint}`);
+        throw new Error(`Agent endpoint rejected by SSRF policy: ${agent.endpoint}`);
       }
+
       const url = agent.endpoint.endsWith('/') ? agent.endpoint : `${agent.endpoint}/`;
-      const response = await fetch(`${url}acp/message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(message),
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      // If this was a task, expect a response message in the body
-      if (message.type === 'task') {
-        try {
-          const responseBody = await response.json() as AcpMessage;
-          if (responseBody.type === 'response') {
-            this.receive(responseBody);
-          }
-        } catch {
-          // Non-JSON response, ignore
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+
+      try {
+        const response = await fetch(`${url}acp/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(message),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          throw new Error(`HTTP ${response.status} from ${agent.name}: ${response.statusText}${body ? ' - ' + body.slice(0, 200) : ''}`);
         }
+
+        // If this was a task, expect a response message in the body
+        if (message.type === 'task') {
+          try {
+            const responseBody = await response.json() as AcpMessage;
+            if (responseBody.type === 'response' && responseBody.correlationId === message.correlationId) {
+              this.receive(responseBody);
+            }
+          } catch {
+            // Non-JSON response or invalid format — task will timeout
+            throw new Error(`Invalid response from ${agent.name}: expected JSON ACP message`);
+          }
+        }
+        return;
+      } catch (err) {
+        clearTimeout(timeout);
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw new Error(`Request to ${agent.name} timed out after 30s`);
+        }
+        throw err;
       }
-      return;
     }
 
     // Placeholder: stdio / MCP sampling transport not implemented

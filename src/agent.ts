@@ -339,31 +339,53 @@ export class Agent {
   }
 
   async executeTool(call: ToolCall): Promise<ToolResult> {
-    // Check skills first
+    // 1. Check local skills first
     const skillResult = await this.skills.callTool(call.name, call.arguments);
     if (skillResult) return skillResult;
 
-    // Fall back to MCP/builtin tools
+    // 2. Fall back to MCP/builtin tools
     try {
       return await this.mcp.callTool(call.name, call.arguments);
-    } catch (err) {
-      // If configured ACP agents expose this tool, forward the call
-      const acpCfg = this.config.getAcpConfig();
-      if (acpCfg?.agents) {
-        for (const agent of acpCfg.agents) {
-          if (agent.tools?.some((t) => t.name === call.name)) {
-            try {
-              this.acp.registerAgent(agent);
-              const msg = await this.acp.sendTask(agent.id, { tool: call.name, args: call.arguments }, 'nexus');
-              return { content: typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload) };
-            } catch {
-              // Continue to next agent
-            }
-          }
-        }
-      }
-      throw err;
+    } catch {
+      // Local tool not found, try ACP forwarding
     }
+
+    // 3. Forward to configured ACP agents
+    const acpCfg = this.config.getAcpConfig();
+    if (!acpCfg?.agents || acpCfg.agents.length === 0) {
+      throw new Error(`Tool '${call.name}' not found locally and no ACP agents configured`);
+    }
+
+    const errors: string[] = [];
+    for (const agent of acpCfg.agents) {
+      // Check if this agent provides the requested tool
+      const hasTool = agent.tools?.some((t) => t.name === call.name);
+      const hasCapability = agent.capabilities.includes(call.name) || agent.capabilities.includes('*');
+
+      if (!hasTool && !hasCapability) continue;
+
+      try {
+        this.acp.registerAgent(agent);
+        const msg = await this.acp.sendTask(
+          agent.id,
+          { tool: call.name, args: call.arguments },
+          'nexus',
+        );
+        return {
+          content: typeof msg.payload === 'string'
+            ? msg.payload
+            : JSON.stringify(msg.payload, null, 2),
+        };
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        errors.push(`${agent.name}: ${errMsg}`);
+      }
+    }
+
+    const errorDetail = errors.length > 0
+      ? `ACP forwarding failed:\n${errors.map((e) => '  - ' + e).join('\n')}`
+      : 'No ACP agent provides this tool';
+    throw new Error(`Tool '${call.name}' not found. ${errorDetail}`);
   }
 
   getCurrentSessionId(): string | undefined {

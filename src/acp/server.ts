@@ -114,9 +114,41 @@ export class AcpServer {
         return this.handleToolCall(String(p.name ?? ''), p.arguments);
       }
 
+      case 'tools/list':
+        return this.handleToolsList();
+
       default:
         throw new Error(`Method not found: ${method}`);
     }
+  }
+
+  private handleToolsList(): unknown {
+    const mcpTools = this.agent.mcp.getAllTools();
+    const skillTools = this.agent.skills.getTools();
+    const acpTools = this.agent.getAcpTools();
+
+    const allTools = [
+      ...mcpTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        source: 'mcp',
+        inputSchema: t.inputSchema,
+      })),
+      ...skillTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        source: 'skill',
+        inputSchema: t.inputSchema,
+      })),
+      ...acpTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        source: 'acp',
+        inputSchema: t.inputSchema,
+      })),
+    ];
+
+    return { tools: allTools };
   }
 
   private handleInitialize(_params: Record<string, unknown>): unknown {
@@ -124,6 +156,7 @@ export class AcpServer {
       protocolVersion: 1,
       agentCapabilities: {
         loadSession: true,
+        tools: { list: true, call: true },
         sessionCapabilities: {
           list: false,
         },
@@ -245,6 +278,7 @@ export class AcpServer {
   }
 
   private async handleToolCall(name: string, args: unknown): Promise<unknown> {
+    // 1. Try local execution first
     try {
       const result = await this.agent.executeTool({
         id: `tool-${Date.now()}`,
@@ -252,24 +286,45 @@ export class AcpServer {
         arguments: args as Record<string, unknown>,
       });
       return { content: result.content };
-    } catch (err) {
-      // If local tool not found, try forwarding to configured ACP agents
-      const acpCfg = this.agent.config.getAcpConfig();
-      if (acpCfg?.agents) {
-        for (const agent of acpCfg.agents) {
-          if (agent.capabilities.includes(name) || agent.capabilities.includes('*')) {
-            try {
-              this.agent.acp.registerAgent(agent);
-              const msg = await this.agent.acp.sendTask(agent.id, { tool: name, args }, 'nexus');
-              return { content: typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload) };
-            } catch {
-              // Continue to next agent
-            }
-          }
-        }
-      }
-      throw err;
+    } catch {
+      // Local tool not found, try ACP forwarding
     }
+
+    // 2. Forward to configured ACP agents
+    const acpCfg = this.agent.config.getAcpConfig();
+    if (!acpCfg?.agents || acpCfg.agents.length === 0) {
+      throw new Error(`Tool '${name}' not found locally and no ACP agents configured`);
+    }
+
+    const errors: string[] = [];
+    for (const agent of acpCfg.agents) {
+      const hasTool = agent.tools?.some((t) => t.name === name);
+      const hasCapability = agent.capabilities.includes(name) || agent.capabilities.includes('*');
+
+      if (!hasTool && !hasCapability) continue;
+
+      try {
+        this.agent.acp.registerAgent(agent);
+        const msg = await this.agent.acp.sendTask(
+          agent.id,
+          { tool: name, args },
+          'nexus',
+        );
+        return {
+          content: typeof msg.payload === 'string'
+            ? msg.payload
+            : JSON.stringify(msg.payload, null, 2),
+        };
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        errors.push(`${agent.name}: ${errMsg}`);
+      }
+    }
+
+    const errorDetail = errors.length > 0
+      ? `ACP forwarding failed: ${errors.join('; ')}`
+      : 'No ACP agent provides this tool';
+    throw new Error(`Tool '${name}' not found. ${errorDetail}`);
   }
 
   private sendResponse(id: number | string | null | undefined, result: unknown): void {
