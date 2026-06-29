@@ -16,12 +16,16 @@ function isValidAcpEndpoint(endpoint: string): boolean {
 
     const hostname = url.hostname;
 
-    // Block private IP ranges to prevent SSRF
-    if (hostname === 'localhost' || hostname === '127.0.0.1') return false;
+    // Allow localhost for local ACP agents (user-configured, not user-input)
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      return true;
+    }
+
+    // Block other private IP ranges to prevent SSRF to unintended LAN services
     if (hostname.startsWith('10.')) return false;
     if (hostname.startsWith('192.168.')) return false;
     if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)) return false;
-    if (hostname.startsWith('0.') || hostname.startsWith('::1')) return false;
+    if (hostname.startsWith('0.')) return false;
 
     return true;
   } catch {
