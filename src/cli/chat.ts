@@ -133,11 +133,19 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
   const __dirname = dirname(fileURLToPath(import.meta.url));
   let version = '1.0.0';
-  try {
-    const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
-    version = pkg.version ?? version;
-  } catch {
-    // Fall back to hard-coded version
+  for (const candidate of [
+    join(__dirname, '..', '..', '..', 'package.json'),
+    join(__dirname, '..', '..', 'package.json'),
+  ]) {
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, 'utf-8'));
+      if (pkg?.name === 'nexus-coder' && pkg?.version) {
+        version = pkg.version;
+        break;
+      }
+    } catch {
+      // Try next candidate
+    }
   }
 
   const borderMode = (process.env.NEXUS_BORDER_MODE || 'fill') as BorderMode;
