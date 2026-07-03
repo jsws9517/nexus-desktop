@@ -159,7 +159,8 @@ function renderAuto(
 
   const lw = leftMax + 2;
   const rw = rightMax + 2;
-  const totalWidth = lw + GAP + rw;
+  const BORDER_OVERHEAD = 4; // two boxes each add ╭+╮ / │+│ = 2 extra cols
+  const totalWidth = lw + GAP + rw + BORDER_OVERHEAD;
   const indent = ' '.repeat(Math.max(0, Math.floor((termWidth - totalWidth) / 2)));
 
   const leftLines = buildLeftLines(info, lw);
@@ -178,9 +179,10 @@ function renderFill(
   const leftMax = calcLeftContentMax(info);
   const rightMax = calcRightContentMax(tipsItems, newsItems);
 
+  const BORDER_OVERHEAD = 4; // two boxes each add ╭+╮ / │+│ = 2 extra cols
   const MIN_LW = 38;
   const lw = Math.max(leftMax + 2, MIN_LW);
-  const rw = Math.max(rightMax + 2, termWidth - lw - GAP);
+  const rw = Math.max(rightMax + 2, termWidth - lw - GAP - BORDER_OVERHEAD);
 
   const leftLines = buildLeftLines(info, lw);
   const rightLines = buildRightLines(tipsItems, newsItems, rw);
