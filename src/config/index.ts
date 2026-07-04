@@ -6,6 +6,7 @@ import { hasClaudeConfig, hasBeenAutoImported, importFromClaude, markAutoImporte
 
 const CONFIG_DIR = join(homedir(), '.nexus');
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
+const MODEL_CONTEXT_PATH = join(CONFIG_DIR, 'model-context.json');
 
 const DEFAULT_CONFIG: Config = {
   activeProvider: 'anthropic',
@@ -134,5 +135,38 @@ export class ConfigManager {
   setPromptName(name: string): void {
     this.config.promptName = name;
     this.save();
+  }
+
+  getModelContextLimit(model?: string): number {
+    const modelName = model || this.getProvider().model;
+    // 1. Check model-context.json (auto-learned limits)
+    const learned = this.loadModelContextFile();
+    if (learned[modelName]) return learned[modelName]!;
+    // 2. Check modelContextLimits map (user-configured in config.json)
+    if (this.config.modelContextLimits?.[modelName]) {
+      return this.config.modelContextLimits[modelName]!;
+    }
+    // 3. Check provider-level maxContextTokens
+    if (this.getProvider().maxContextTokens) {
+      return this.getProvider().maxContextTokens!;
+    }
+    // 4. Default
+    return 8192;
+  }
+
+  learnModelContextLimit(model: string, limit: number): void {
+    const data = this.loadModelContextFile();
+    data[model] = limit;
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(MODEL_CONTEXT_PATH, JSON.stringify(data, null, 2));
+  }
+
+  private loadModelContextFile(): Record<string, number> {
+    if (!existsSync(MODEL_CONTEXT_PATH)) return {};
+    try {
+      return JSON.parse(readFileSync(MODEL_CONTEXT_PATH, 'utf-8'));
+    } catch {
+      return {};
+    }
   }
 }

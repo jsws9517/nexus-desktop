@@ -1,7 +1,11 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { createInterface } from 'node:readline/promises';
+import { stdin as stdin, stdout as stdout } from 'node:process';
 import { ConfigManager } from '../config/index.js';
 import { importFromClaude } from '../config/claude-import.js';
+
+const LOCAL_PROXY_URL = 'http://127.0.0.1:4010';
 
 export function registerConfigCommand(program: Command): void {
   const configCmd = program.command('config').description('Configuration management');
@@ -39,7 +43,8 @@ export function registerConfigCommand(program: Command): void {
       console.log(chalk.bold('  Providers:'));
       for (const [name, p] of Object.entries(cfg.providers)) {
         const marker = name === cfg.activeProvider ? chalk.green('*') : ' ';
-        console.log(`    ${marker} ${name}: ${p.type} / ${p.model}`);
+        const base = p.baseUrl ? chalk.gray(` [${p.baseUrl}]`) : '';
+        console.log(`    ${marker} ${name}: ${p.type} / ${p.model}${base}`);
       }
       if (cfg.mcpServers) {
         console.log(chalk.bold('  MCP Servers:'));
@@ -110,6 +115,82 @@ export function registerConfigCommand(program: Command): void {
       const config = new ConfigManager();
       config.setPromptName(name);
       console.log(chalk.green(`Chat prompt name set to: ${name}`));
+    });
+
+  configCmd
+    .command('detect-local')
+    .description('Detect opencode-llm-proxy at http://127.0.0.1:4010 and configure a local LLM provider')
+    .option('-m, --model <model>', 'Model ID to use (skips interactive selection)')
+    .option('-p, --provider <name>', 'Provider name (default: local)')
+    .action(async (options: { model?: string; provider?: string }) => {
+      try {
+        const res = await fetch(`${LOCAL_PROXY_URL}/v1/models`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as { data?: Array<{ id: string }> };
+        const models = (data?.data || []).map((m: { id: string }) => m.id);
+
+        if (models.length === 0) {
+          console.log(chalk.yellow('\nLocal proxy responded but returned no models.'));
+          return;
+        }
+
+        console.log(chalk.bold(`\nFound ${models.length} model(s) from local proxy (${LOCAL_PROXY_URL}):\n`));
+
+        // Group by source prefix
+        const groups: Record<string, string[]> = {};
+        for (const m of models) {
+          const prefix = m.includes('/') ? m.split('/')[0]! : 'other';
+          (groups[prefix] ||= []).push(m);
+        }
+        for (const [prefix, items] of Object.entries(groups)) {
+          console.log(chalk.cyan(`  ${prefix}:`));
+          for (const item of items) {
+            console.log(`    ${item}`);
+          }
+        }
+
+        // Resolve model
+        let selected = options.model;
+        if (!selected) {
+          const rl = createInterface({ input: stdin, output: stdout });
+          const answer = await rl.question(
+            chalk.bold(`\nEnter model ID to use (Enter for default: ${models[0]}): `)
+          );
+          rl.close();
+          selected = answer.trim() || models[0];
+        }
+
+        if (!selected || !models.includes(selected)) {
+          console.log(chalk.yellow(`\nModel not found in list: ${selected}`));
+          return;
+        }
+
+        const providerName = options.provider || 'local';
+        const cfgMgr = new ConfigManager();
+        cfgMgr.setProvider(providerName, {
+          type: 'custom',
+          apiKey: 'unused',
+          model: selected,
+          baseUrl: `${LOCAL_PROXY_URL}/v1`,
+        });
+        cfgMgr.setActiveProvider(providerName);
+
+        console.log(chalk.green(`\nConfigured provider "${providerName}":`));
+        console.log(chalk.gray(`  Type:    custom (OpenAI-compatible via opencode-llm-proxy)`));
+        console.log(chalk.gray(`  API:     ${LOCAL_PROXY_URL}/v1`));
+        console.log(chalk.gray(`  Model:   ${selected}`));
+        console.log(chalk.gray(`  Status:  ${chalk.green('active')}`));
+        console.log(chalk.gray(`\nRun ${chalk.cyan('agent chat')} to start chatting with the local model.`));
+      } catch (err: unknown) {
+        if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
+          console.log(chalk.yellow('\nLocal LLM proxy not detected at', LOCAL_PROXY_URL));
+          console.log(chalk.gray('Make sure opencode-llm-proxy is running:'));
+          console.log(chalk.gray('  npm install -g opencode-llm-proxy'));
+          console.log(chalk.gray('  Then start OpenCode which launches the proxy automatically.\n'));
+        } else {
+          console.log(chalk.red(`\nError: ${err instanceof Error ? err.message : String(err)}`));
+        }
+      }
     });
 
   const mcpCmd = configCmd.command('mcp').description('MCP server management');

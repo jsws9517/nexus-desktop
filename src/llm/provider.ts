@@ -11,13 +11,13 @@ export interface LLMProvider {
   countTokens(text: string): number;
 }
 
-export function createProvider(type: string, apiKey: string, model: string, baseUrl?: string, options?: Record<string, unknown>): LLMProvider {
+export function createProvider(type: string, apiKey: string, model: string, baseUrl?: string, options?: Record<string, unknown>, name?: string): LLMProvider {
   if (type === 'anthropic') {
-    return new AnthropicProvider(apiKey, model, baseUrl);
+    return new AnthropicProvider(apiKey, model, baseUrl, name);
   }
   // openai and custom both use OpenAI-compatible SDK (most custom APIs are OpenAI-compatible)
   if (type === 'openai' || type === 'custom') {
-    return new OpenAIProvider(apiKey, model, baseUrl);
+    return new OpenAIProvider(apiKey, model, baseUrl, name);
   }
   throw new Error(`Unsupported provider type: ${type}`);
 }

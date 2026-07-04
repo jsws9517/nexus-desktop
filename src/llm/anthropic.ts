@@ -4,11 +4,12 @@ import { LLMProvider } from './provider.js';
 
 export class AnthropicProvider implements LLMProvider {
   private client: Anthropic;
-  readonly name = 'anthropic';
+  readonly name: string;
   readonly model: string;
 
-  constructor(apiKey: string, model: string, baseUrl?: string) {
+  constructor(apiKey: string, model: string, baseUrl?: string, name?: string) {
     this.client = new Anthropic({ apiKey, baseURL: baseUrl });
+    this.name = name || 'anthropic';
     this.model = model;
   }
 

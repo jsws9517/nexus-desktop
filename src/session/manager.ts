@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Message } from '../types.js';
+import { LLMProvider } from '../llm/provider.js';
 import { SessionStore } from './store.js';
 import { Session, StoredMessage } from './types.js';
 
@@ -74,5 +75,12 @@ export class SessionManager {
     if (!session) return undefined;
     const messages = this.getMessages(id);
     return { session, messages };
+  }
+
+  getTokenEstimate(sessionId: string, provider?: LLMProvider): number {
+    const messages = this.getMessages(sessionId);
+    return messages.reduce((sum, m) => {
+      return sum + (provider?.countTokens(m.content) || Math.ceil(m.content.length / 4));
+    }, 0);
   }
 }

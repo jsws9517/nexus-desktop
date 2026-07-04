@@ -10,11 +10,12 @@ interface PendingToolCall {
 
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
-  readonly name = 'openai';
+  readonly name: string;
   readonly model: string;
 
-  constructor(apiKey: string, model: string, baseUrl?: string) {
+  constructor(apiKey: string, model: string, baseUrl?: string, name?: string) {
     this.client = new OpenAI({ apiKey, baseURL: baseUrl });
+    this.name = name || 'openai';
     this.model = model;
   }
 
@@ -61,6 +62,15 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async *chat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
+    try {
+      yield* this.chatStreaming(messages, tools, signal);
+    } catch (err) {
+      if ((err instanceof Error && err.name === "AbortError") || signal?.aborted) throw err;
+      yield* this.chatNonStreaming(messages, tools, signal);
+    }
+  }
+
+  private async *chatStreaming(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
     const stream = await this.client.chat.completions.create({
       model: this.model,
       messages: this.toOpenAIMessages(messages),
@@ -126,6 +136,43 @@ export class OpenAIProvider implements LLMProvider {
     pendingTools.clear();
 
     yield { type: 'done' };
+  }
+
+  private async *chatNonStreaming(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages: this.toOpenAIMessages(messages),
+      tools: this.toTools(tools),
+      stream: false,
+    }, { signal });
+
+    const choice = response.choices[0];
+    const content = choice?.message?.content;
+    const toolCalls = choice?.message?.tool_calls;
+
+    if (signal?.aborted) return;
+
+    if (content) {
+      for (let i = 0; i < content.length; i++) {
+        if (signal?.aborted) return;
+        yield { type: "text", text: content[i] };
+        if (i % 3 === 2) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      }
+    }
+
+    if (toolCalls) {
+      for (const tc of toolCalls) {
+        if (signal?.aborted) return;
+        if (!("function" in tc)) continue;
+        let args: Record<string, unknown> = {};
+        try { args = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch {}
+        yield { type: "tool_call", toolCall: { id: tc.id, name: tc.function.name, arguments: args } };
+      }
+    }
+
+    yield { type: "done" };
   }
 
   private tryParseArgs(buffer: string): Record<string, unknown> | undefined {

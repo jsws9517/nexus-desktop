@@ -45,12 +45,13 @@ function padRight(s: string, w: number): string {
   return s + ' '.repeat(w - len);
 }
 
-const LOGO_VISUAL_W = 15;
-const GAP = 2;
-
 const accent = chalk.hex('#06b6d4');
 const head = chalk.hex('#67e8f9');
 const dim = chalk.gray;
+
+function calcFillMax(columns: number): number {
+  return Math.floor(Math.max(columns * 0.96, 82));
+}
 
 export function showWelcomeScreen(info: WelcomeInfo, mode?: BorderMode): void {
   const borderMode = mode ?? (process.env.NEXUS_BORDER_MODE as BorderMode) ?? 'fill';
@@ -63,7 +64,8 @@ export function showWelcomeScreen(info: WelcomeInfo, mode?: BorderMode): void {
   if (borderMode === 'auto') {
     renderAuto(info, tipsItems, newsItems, termWidth);
   } else {
-    renderFill(info, tipsItems, newsItems, termWidth);
+    const fillMax = calcFillMax(termWidth);
+    renderFill(info, tipsItems, newsItems, fillMax);
   }
 
   console.log('');
@@ -99,7 +101,7 @@ function calcRightContentMax(tipsItems: string[], newsItems: string[]): number {
 }
 
 function buildLeftLines(info: WelcomeInfo, lw: number): string[] {
-  const indent = ' '.repeat(Math.max(0, Math.floor(((lw - 2) - LOGO_VISUAL_W) / 2)));
+  const indent = ' '.repeat(Math.max(0, Math.floor(((lw - 2) - 15) / 2)));
   return [
     '',
     `${indent}${head('Welcome back!')}`,
@@ -132,8 +134,10 @@ function renderBoxes(
   rw: number,
   indent: string,
 ): void {
-  const topBorder = `${indent}${accent('╭' + '─'.repeat(lw) + '╮')}${' '.repeat(GAP)}${accent('╭' + '─'.repeat(rw) + '╮')}`;
-  const botBorder = `${indent}${accent('╰' + '─'.repeat(lw) + '╯')}${' '.repeat(GAP)}${accent('╰' + '─'.repeat(rw) + '╯')}`;
+  const totalWidth = lw + rw + 1;
+
+  const topBorder = `${indent}${accent('╭' + '─'.repeat(totalWidth) + '╮')}`;
+  const botBorder = `${indent}${accent('╰' + '─'.repeat(totalWidth) + '╯')}`;
 
   console.log(topBorder);
   const max = Math.max(leftLines.length, rightLines.length);
@@ -141,13 +145,12 @@ function renderBoxes(
     const l = i < leftLines.length ? leftLines[i] : '';
     const r = i < rightLines.length ? rightLines[i] : '';
     console.log(
-      `${indent}${accent('│')} ${padRight(l, lw - 2)} ${accent('│')}${' '.repeat(GAP)}${accent('│')} ${padRight(r, rw - 2)} ${accent('│')}`
+      `${indent}${accent('│')} ${padRight(l, lw - 2)} ${accent('│')} ${padRight(r, rw - 2)} ${accent('│')}`
     );
   }
   console.log(botBorder);
 }
 
-/** Mode "auto": panel widths tightly wrap their content, centred on screen */
 function renderAuto(
   info: WelcomeInfo,
   tipsItems: string[],
@@ -158,18 +161,14 @@ function renderAuto(
   const rightMax = calcRightContentMax(tipsItems, newsItems);
 
   const lw = leftMax + 2;
-  const rw = rightMax + 2;
-  const BORDER_OVERHEAD = 4; // two boxes each add ╭+╮ / │+│ = 2 extra cols
-  const totalWidth = lw + GAP + rw + BORDER_OVERHEAD;
-  const indent = ' '.repeat(Math.max(0, Math.floor((termWidth - totalWidth) / 2)));
+  const rw = Math.min(rightMax + 2, Math.max(25, termWidth - lw - 3));
 
   const leftLines = buildLeftLines(info, lw);
   const rightLines = buildRightLines(tipsItems, newsItems, rw);
 
-  renderBoxes(leftLines, rightLines, lw, rw, indent);
+  renderBoxes(leftLines, rightLines, lw, rw, '');
 }
 
-/** Mode "fill": left panel content-adaptive (min 38), right panel fills to terminal edge */
 function renderFill(
   info: WelcomeInfo,
   tipsItems: string[],
@@ -179,10 +178,21 @@ function renderFill(
   const leftMax = calcLeftContentMax(info);
   const rightMax = calcRightContentMax(tipsItems, newsItems);
 
-  const BORDER_OVERHEAD = 4; // two boxes each add ╭+╮ / │+│ = 2 extra cols
-  const MIN_LW = 38;
-  const lw = Math.max(leftMax + 2, MIN_LW);
-  const rw = Math.max(rightMax + 2, termWidth - lw - GAP - BORDER_OVERHEAD);
+  const MIN_LW = 35;
+  const MIN_RW = rightMax + 2;
+  const autoLw = leftMax + 2;
+
+  let lw = Math.max(autoLw, MIN_LW);
+  let rw = Math.max(MIN_RW, termWidth - lw - 3);
+
+  if (lw + rw + 3 > termWidth) {
+    rw = termWidth - lw - 3;
+  }
+
+  if (rw < MIN_RW) {
+    renderAuto(info, tipsItems, newsItems, termWidth);
+    return;
+  }
 
   const leftLines = buildLeftLines(info, lw);
   const rightLines = buildRightLines(tipsItems, newsItems, rw);

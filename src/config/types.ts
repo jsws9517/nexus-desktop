@@ -5,6 +5,7 @@ export const ProviderConfigSchema = z.object({
   apiKey: z.string(),
   baseUrl: z.string().optional(),
   model: z.string(),
+  maxContextTokens: z.number().optional(),
   options: z.record(z.unknown()).optional(),
 });
 
@@ -41,6 +42,7 @@ export const ConfigSchema = z.object({
   mcpServers: z.record(ServerConfigSchema).optional(),
   acp: AcpConfigSchema.optional(),
   promptName: z.string().optional(),
+  modelContextLimits: z.record(z.number()).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;

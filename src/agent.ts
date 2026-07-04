@@ -44,10 +44,10 @@ export class Agent {
     this.enableAcp = enableAcp;
     this.isAcpServer = isAcpServer;
     const providerConfig = this.config.getProvider();
-    this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options);
+    this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options, this.config.getActiveProvider());
     this.mcp = new ClientManager();
     this.session = new SessionManager();
-    this.context = new ContextManager({ provider: this.provider });
+    this.context = new ContextManager({ provider: this.provider, maxContextTokens: this.config.getModelContextLimit() });
     this.skills = new SkillRegistry();
     this.acp = new AcpProtocol();
   }
@@ -84,32 +84,37 @@ export class Agent {
     await this.skills.load(undefined, extraPaths);
   }
 
-  async switchModel(modelId: string): Promise<string> {
-    const currentModel = this.provider.model;
-    const cfg = this.config.get();
-    const providerName = cfg.activeProvider;
-    const providerCfg = cfg.providers[providerName]!;
+   async switchModel(modelId: string): Promise<string> {
+     const currentModel = this.provider.model;
+     const cfg = this.config.get();
+     const providerName = cfg.activeProvider;
+     const providerCfg = cfg.providers[providerName]!;
 
-    // 持久化到 config
-    this.config.setProviderField(providerName, 'model', modelId);
+     // 持久化到 config
+     this.config.setProviderField(providerName, 'model', modelId);
 
-    // 重建 provider（同 type/apiKey/baseUrl，新 model）
-    this.provider = createProvider(
-      providerCfg.type,
-      providerCfg.apiKey,
-      modelId,
-      providerCfg.baseUrl,
-      providerCfg.options,
-    );
-    this.context.setProvider(this.provider);
+     // 重建 provider（同 type/apiKey/baseUrl，新 model）
+     this.provider = createProvider(
+       providerCfg.type,
+       providerCfg.apiKey,
+       modelId,
+       providerCfg.baseUrl,
+       providerCfg.options,
+       providerName,
+     );
+     this.context.setProvider(this.provider);
 
-    return `${currentModel} → ${modelId}`;
-  }
+     // 同步更新 context 阈值
+     const newLimit = this.config.getModelContextLimit(modelId);
+     this.context.setMaxContextTokens(newLimit);
+
+     return `${currentModel} → ${modelId}`;
+   }
 
   async switchProvider(name: string): Promise<void> {
     this.config.setActiveProvider(name);
     const providerConfig = this.config.getProvider(name);
-    this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options);
+    this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options, name);
     this.context.setProvider(this.provider);
   }
 
@@ -194,6 +199,16 @@ export class Agent {
       if (!showDetail) {
         this.renderCompactOutput();
       }
+    } catch (e) {
+      // Auto-learn model context limit from API error
+      const errStr = e instanceof Error ? e.message : String(e);
+      const contextMatch = errStr.match(/maximum context length is (\d+)/i);
+      if (contextMatch) {
+        const actualLimit = parseInt(contextMatch[1]!, 10);
+        this.config.learnModelContextLimit(this.provider.model, actualLimit);
+        this.context.setMaxContextTokens(actualLimit);
+      }
+      throw e;
     } finally {
       this.busy = false;
     }
@@ -414,11 +429,95 @@ export class Agent {
     throw new Error(`Tool '${call.name}' not found. ${errorDetail}`);
   }
 
-  getCurrentSessionId(): string | undefined {
-    return this.currentSessionId;
-  }
+   getCurrentSessionId(): string | undefined {
+     return this.currentSessionId;
+   }
 
-  async shutdown(): Promise<void> {
+   renameSession(name: string): void {
+     if (this.currentSessionId) {
+       this.session.rename(this.currentSessionId, name);
+     }
+   }
+
+   async resumeSession(sessionId: string): Promise<{ restored: boolean; compressed: boolean; sessionName: string }> {
+     const loaded = this.session.loadSession(sessionId);
+     if (!loaded) return { restored: false, compressed: false, sessionName: '' };
+
+     const tokenCount = this.session.getTokenEstimate(sessionId, this.provider);
+     const maxTokens = this.config.getProvider().maxContextTokens || 8192;
+
+     if (tokenCount > maxTokens && loaded.messages.length >= 4) {
+       const messages = loaded.messages;
+       const keepCount = Math.min(6, messages.length);
+
+       // Find safe split point: don't cut inside a tool_call chain
+       let splitIdx = messages.length - keepCount;
+       while (splitIdx > 0) {
+         const prev = messages[splitIdx - 1];
+         // If previous message is assistant with tool_calls, check if tool results follow
+         if (prev.role === 'assistant' && prev.toolCalls && prev.toolCalls.length > 0) {
+           const toolCallIds = new Set(prev.toolCalls.map(tc => tc.id));
+           const hasOrphanedTools = messages.slice(splitIdx).some(
+             m => m.role === 'tool' && m.toolCallId && toolCallIds.has(m.toolCallId),
+           );
+           if (hasOrphanedTools) {
+             splitIdx--; // move left to include the assistant message
+             continue;
+           }
+         }
+         // If current message is a tool message, move left to include its assistant
+         const curr = messages[splitIdx];
+         if (curr.role === 'tool' && curr.toolCallId) {
+           for (let j = splitIdx - 1; j >= 0; j--) {
+             const m = messages[j];
+             if (m.role === 'assistant' && m.toolCalls?.some(tc => tc.id === curr.toolCallId)) {
+               splitIdx = j; // include the assistant
+               break;
+             }
+             if (m.role === 'user') break;
+           }
+           continue;
+         }
+         break; // safe split point found
+       }
+
+       const toSummarize = messages.slice(0, splitIdx);
+       const toKeep = messages.slice(splitIdx);
+
+       const summary = await this.summarizeMessages(toSummarize);
+       this.context.setMessages([
+         { role: 'system', content: `[已恢复会话「${loaded.session.name}」— 原始 ${tokenCount} tokens，已压缩为摘要]\n\n${summary}` },
+         ...toKeep,
+       ]);
+       this.currentSessionId = sessionId;
+       return { restored: true, compressed: true, sessionName: loaded.session.name };
+     }
+
+     this.currentSessionId = sessionId;
+     this.context.setMessages(loaded.messages);
+     return { restored: true, compressed: false, sessionName: loaded.session.name };
+   }
+
+   private async summarizeMessages(messages: Message[]): Promise<string> {
+     // Limit total input to ~8000 chars to avoid exceeding model context
+     const MAX_TOTAL_CHARS = 8000;
+     let totalChars = 0;
+     const lines: string[] = [];
+     for (const m of messages) {
+       if (m.role !== 'user' && m.role !== 'assistant') continue;
+       const text = m.content.slice(0, 500);
+       if (totalChars + text.length > MAX_TOTAL_CHARS) break;
+       totalChars += text.length;
+       lines.push(`${m.role}: ${text}`);
+     }
+
+     return await this.provider.complete([{
+       role: 'user',
+       content: `请将以下对话历史压缩为简洁的上下文摘要，保留关键信息、决策和结论：\n\n${lines.join('\n')}`,
+     }]);
+   }
+
+   async shutdown(): Promise<void> {
     await this.mcp.disconnect();
   }
 }

@@ -6,16 +6,22 @@ export class ContextManager {
   private pinnedIndices: Set<number> = new Set();
   private maxMessages = 200;
   private tokenBudget = 8000;
+  private maxContextTokens = 8192;
   private provider?: LLMProvider;
 
-  constructor(options?: { maxMessages?: number; tokenBudget?: number; provider?: LLMProvider }) {
+  constructor(options?: { maxMessages?: number; tokenBudget?: number; maxContextTokens?: number; provider?: LLMProvider }) {
     if (options?.maxMessages) this.maxMessages = options.maxMessages;
     if (options?.tokenBudget) this.tokenBudget = options.tokenBudget;
+    if (options?.maxContextTokens) this.maxContextTokens = options.maxContextTokens;
     this.provider = options?.provider;
   }
 
   setProvider(provider: LLMProvider): void {
     this.provider = provider;
+  }
+
+  setMaxContextTokens(max: number): void {
+    this.maxContextTokens = max;
   }
 
   add(message: Message): void {
@@ -82,44 +88,111 @@ export class ContextManager {
     }
   }
 
-  async compress(): Promise<void> {
-    if (!this.provider || this.messages.length < 10) return;
+  /** Find the nearest safe split index: a chain boundary where no tool_call chain is broken. */
+  private findSafeSplitIndex(target: number): number {
+    if (target <= 0) return 0;
+    if (target >= this.messages.length) return this.messages.length;
 
-    const tokenCount = this.getTokenCount();
-    if (tokenCount < this.tokenBudget) return;
+    // A safe split point is where:
+    // - The message at split is a user or system message (start of a new chain)
+    // - OR the message before split is NOT an assistant with pending tool_calls
+    // Search outward from target to find nearest safe boundary
+    for (let offset = 0; offset < this.messages.length; offset++) {
+      // Check behind target first (prefer earlier split to keep more context)
+      const behind = target - offset;
+      if (behind >= 0 && this.isChainBoundary(behind)) return behind;
 
-    // Find oldest non-pinned messages to summarize
-    const summarizable: Message[] = [];
-    const kept: Message[] = [];
-    for (let i = 0; i < this.messages.length; i++) {
-      if (this.pinnedIndices.has(i) || this.messages[i].role === 'system') {
-        kept.push(this.messages[i]);
-      } else if (summarizable.length < this.messages.length / 2) {
-        summarizable.push(this.messages[i]);
-      } else {
-        kept.push(this.messages[i]);
+      // Check ahead of target
+      const ahead = target + offset;
+      if (ahead <= this.messages.length && this.isChainBoundary(ahead)) return ahead;
+    }
+    return target;
+  }
+
+  /** Check if splitting before index `i` is safe (no orphaned tool messages). */
+  private isChainBoundary(i: number): boolean {
+    // Splitting at index i means messages[0..i-1] go to left, messages[i..] go to right
+    if (i <= 0 || i >= this.messages.length) return true;
+
+    // The message at i-1 (last of left partition) must not be an assistant with
+    // tool_calls whose tool responses are in the right partition
+    const prev = this.messages[i - 1];
+    if (prev.role === 'assistant' && prev.toolCalls && prev.toolCalls.length > 0) {
+      // Check if any of its tool responses are in the right partition
+      const right = this.messages.slice(i);
+      const toolCallIds = new Set(prev.toolCalls.map((tc) => tc.id));
+      const hasOrphanedTools = right.some(m => m.role === 'tool' && m.toolCallId && toolCallIds.has(m.toolCallId));
+      if (hasOrphanedTools) return false;
+    }
+
+    // The message at i (first of right partition) must not be a tool message
+    // whose assistant with tool_calls is in the left partition
+    const next = this.messages[i];
+    if (next.role === 'tool' && next.toolCallId) {
+      // Search left partition for the assistant that owns this tool_call
+      for (let j = i - 1; j >= 0; j--) {
+        const m = this.messages[j];
+        if (m.role === 'assistant' && m.toolCalls) {
+          const owns = m.toolCalls.some(tc => tc.id === next.toolCallId);
+          if (owns) return false; // left has assistant, right has its tool — broken chain
+          break; // different assistant, stop searching
+        }
+        if (m.role === 'user') break; // reached a user boundary, tool is orphaned anyway
       }
     }
 
-    if (summarizable.length < 4) return;
+    return true;
+  }
 
-    const summaryPrompt: Message = {
-      role: 'user',
-      content: `Summarize the following conversation history concisely:\n\n${summarizable
-        .map((m) => `${m.role}: ${m.content.slice(0, 500)}`)
-        .join('\n')}`,
-    };
+  async compress(): Promise<void> {
+    if (!this.provider || this.messages.length < 10) return;
 
-    try {
-      const summary = await this.provider.complete([summaryPrompt]);
-      this.messages = [
-        ...kept.filter((m) => m.role === 'system'),
-        { role: 'system', content: `[Previous conversation summary]: ${summary}` },
-        ...kept.filter((m) => m.role !== 'system'),
-      ];
-      this.pinnedIndices.clear();
-    } catch {
-      // Compression failed, keep original messages
+    // Loop: keep compressing until we're under budget or can't compress further
+    const MAX_ROUNDS = 10;
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      const tokenCount = this.getTokenCount();
+      if (tokenCount < this.maxContextTokens) return;
+
+      const beforeCount = this.messages.length;
+
+      // Find safe split point that doesn't break tool_call chains
+      const targetSplit = Math.floor(this.messages.length / 2);
+      const safeSplit = this.findSafeSplitIndex(targetSplit);
+
+      // Partition: summarize [0..safeSplit-1], keep [safeSplit..end]
+      const summarizable: Message[] = [];
+      const kept: Message[] = [];
+      for (let i = 0; i < this.messages.length; i++) {
+        if (i < safeSplit && !this.pinnedIndices.has(i) && this.messages[i].role !== 'system') {
+          summarizable.push(this.messages[i]);
+        } else {
+          kept.push(this.messages[i]);
+        }
+      }
+
+      if (summarizable.length < 4) break;
+
+      const summaryPrompt: Message = {
+        role: 'user',
+        content: `Summarize the following conversation history concisely:\n\n${summarizable
+          .map((m) => `${m.role}: ${m.content.slice(0, 500)}`)
+          .join('\n')}`,
+      };
+
+      try {
+        const summary = await this.provider.complete([summaryPrompt]);
+        this.messages = [
+          ...kept.filter((m) => m.role === 'system'),
+          { role: 'system', content: `[Previous conversation summary]: ${summary}` },
+          ...kept.filter((m) => m.role !== 'system'),
+        ];
+        this.pinnedIndices.clear();
+      } catch {
+        break; // Compression failed, stop trying
+      }
+
+      // Safety: if no messages were removed, stop to avoid infinite loop
+      if (this.messages.length >= beforeCount) break;
     }
   }
 
