@@ -29,10 +29,13 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+.github/
 
 # Test coverage
 coverage/
 .nyc_output/
+tests/
+tasks/
 
 # Temporary files
 *.tmp
