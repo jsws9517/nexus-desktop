@@ -13,7 +13,7 @@ export interface LLMProvider {
 
 export function createProvider(type: string, apiKey: string, model: string, baseUrl?: string, options?: Record<string, unknown>, name?: string): LLMProvider {
   if (type === 'anthropic') {
-    return new AnthropicProvider(apiKey, model, baseUrl, name);
+    return new AnthropicProvider(apiKey, model, baseUrl, name, options);
   }
   // openai and custom both use OpenAI-compatible SDK (most custom APIs are OpenAI-compatible)
   if (type === 'openai' || type === 'custom') {

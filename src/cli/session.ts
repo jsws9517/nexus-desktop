@@ -1,6 +1,9 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
 import { SessionManager } from '../session/manager.js';
+import { ThemeManager } from '../theme/manager.js';
+
+const _theme = new ThemeManager();
+const t = _theme.token;
 
 export function registerSessionCommand(program: Command): void {
   const sessionCmd = program.command('session').description('Session management');
@@ -12,13 +15,13 @@ export function registerSessionCommand(program: Command): void {
       const manager = new SessionManager();
       const sessions = manager.list();
       if (sessions.length === 0) {
-        console.log(chalk.gray('No sessions found.'));
+        console.log(t.textDim('No sessions found.'));
         return;
       }
-      console.log(chalk.bold('Sessions:'));
+      console.log(t.heading('Sessions:'));
       for (const s of sessions) {
         const date = new Date(s.updatedAt).toLocaleString();
-        console.log(`  ${chalk.cyan(s.id)} ${chalk.white(s.name)} ${chalk.gray(date)}`);
+        console.log(`  ${t.entityName(s.id)} ${t.textPrimary(s.name)} ${t.textDim(date)}`);
       }
     });
 
@@ -36,7 +39,7 @@ export function registerSessionCommand(program: Command): void {
     .action(async (id: string, name: string) => {
       const manager = new SessionManager();
       manager.rename(id, name);
-      console.log(chalk.green(`Renamed session to "${name}"`));
+      console.log(t.success(`Renamed session to "${name}"`));
     });
 
   sessionCmd
@@ -45,6 +48,6 @@ export function registerSessionCommand(program: Command): void {
     .action(async (id: string) => {
       const manager = new SessionManager();
       manager.delete(id);
-      console.log(chalk.green('Session deleted.'));
+      console.log(t.success('Session deleted.'));
     });
 }

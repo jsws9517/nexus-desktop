@@ -6,11 +6,18 @@ export class AnthropicProvider implements LLMProvider {
   private client: Anthropic;
   readonly name: string;
   readonly model: string;
+  private options?: Record<string, unknown>;
 
-  constructor(apiKey: string, model: string, baseUrl?: string, name?: string) {
+  constructor(apiKey: string, model: string, baseUrl?: string, name?: string, options?: Record<string, unknown>) {
     this.client = new Anthropic({ apiKey, baseURL: baseUrl });
     this.name = name || 'anthropic';
     this.model = model;
+    this.options = options;
+  }
+
+  private get thinkingBudget(): number {
+    const raw = this.options?.thinkingBudget;
+    return typeof raw === 'number' && raw > 0 ? raw : 0;
   }
 
   private toAnthropicMessages(messages: Message[]): Anthropic.Messages.MessageParam[] {
@@ -58,17 +65,32 @@ export class AnthropicProvider implements LLMProvider {
     );
     const systemMessage = messages.find((m) => m.role === 'system');
 
-    const stream = this.client.messages.stream({
+    const streamOpts: Anthropic.Messages.MessageCreateParams & { stream?: true } = {
       model: this.model,
-      max_tokens: 4096,
+      max_tokens: this.options?.maxTokens as number || 4096,
       system: systemMessage?.content,
       messages: anthropicMessages,
       tools: this.toTools(tools),
-    }, { signal });
+    };
+
+    if (this.thinkingBudget) {
+      streamOpts.thinking = {
+        type: 'enabled',
+        budget_tokens: this.thinkingBudget,
+      } as Anthropic.Messages.MessageCreateParams['thinking'];
+    }
+
+    const stream = this.client.messages.stream(streamOpts, { signal });
 
     for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        yield { type: 'text', text: event.delta.text };
+      if (event.type === 'content_block_delta') {
+        if (event.delta.type === 'text_delta') {
+          yield { type: 'text', text: event.delta.text };
+        } else if (event.delta.type === 'thinking_delta') {
+          yield { type: 'thinking', thinking: event.delta.thinking };
+        } else if ((event.delta as { type: string }).type === 'redacted_thinking') {
+          yield { type: 'thinking', thinking: '[redacted]' };
+        }
       }
       if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
         yield {
@@ -92,7 +114,7 @@ export class AnthropicProvider implements LLMProvider {
 
     const response = await this.client.messages.create({
       model: this.model,
-      max_tokens: 4096,
+      max_tokens: this.options?.maxTokens as number || 4096,
       system: systemMessage?.content,
       messages: anthropicMessages,
     });

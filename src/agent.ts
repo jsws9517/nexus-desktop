@@ -8,6 +8,7 @@ import { ClientManager } from './mcp/client-manager.js';
 import { SkillRegistry } from './skills/registry.js';
 import { AcpProtocol } from './acp/protocol.js';
 import { Message, ToolCall, ToolResult, ToolDefinition, AgentEvent } from './types.js';
+import { Hooks, createSanityCheckHook } from './hooks/index.js';
 
 interface ReasoningEntry {
   assistantText: string;
@@ -33,7 +34,11 @@ export class Agent {
   /** Suppress tool call console output (used in ACP server mode) */
   suppressToolOutput = false;
 
+  /** User-defined hooks for lifecycle events */
+  hooks?: Hooks;
+
   private currentSessionId?: string;
+  private currentUserInput?: string;
   private reasoningLog: ReasoningEntry[] = [];
   private busy = false;
   private abortController = new AbortController();
@@ -178,11 +183,24 @@ export class Agent {
       }
     }
 
+    this.currentUserInput = userInput;
     const userMessage: Message = { role: 'user', content: userInput };
     this.context.add(userMessage);
     this.session.addMessage(this.currentSessionId!, userMessage);
 
     await this.context.compress();
+
+    // Auto-register sanity check hook for each chat
+    const sanityCheck = createSanityCheckHook(userInput);
+    const userHooks = this.hooks;
+    this.hooks = {
+      ...(userHooks || {}),
+      preToolUse: async (ctx) => {
+        const check = await sanityCheck(ctx);
+        if (check === 'deny') return 'deny';
+        return userHooks?.preToolUse ? userHooks.preToolUse(ctx) : 'allow';
+      },
+    };
 
     this.reasoningLog = [];
     this.currentTurn = 0;
@@ -265,6 +283,12 @@ export class Agent {
             entry.assistantText += chunk.text;
           }
         }
+        if (chunk.type === 'thinking' && chunk.thinking) {
+          this.onEvent?.({ type: 'thinking', thinking: chunk.thinking });
+          if (showDetail && !this.onOutput) {
+            process.stdout.write(chalk.dim(chalk.italic(chunk.thinking)));
+          }
+        }
         if (chunk.type === 'tool_call' && chunk.toolCall) {
           pendingToolCalls.push(chunk.toolCall);
           this.onEvent?.({ type: 'tool_call_start', index: pendingToolCalls.length - 1, name: chunk.toolCall.name, args: chunk.toolCall.arguments });
@@ -296,6 +320,24 @@ export class Agent {
     for (let tci = 0; tci < pendingToolCalls.length; tci++) {
       const toolCall = pendingToolCalls[tci]!;
       if (signal.aborted) return;
+
+      // preToolUse hook — allow deny
+      const hookCtx = { turn: this.currentTurn, toolCall, signal, userInput: this.currentUserInput };
+      if (this.hooks?.preToolUse) {
+        const verdict = await this.hooks.preToolUse(hookCtx);
+        if (verdict === 'deny') {
+          const deniedMsg = `Tool "${toolCall.name}" was blocked by security policy.`;
+          if (showDetail && !this.suppressToolOutput) {
+            console.log(`\n[Blocked: ${toolCall.name}]`);
+          }
+          const deniedResult: ToolResult = { content: deniedMsg, isError: true };
+          this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: deniedMsg, isError: true });
+          const toolMsg: Message = { role: 'tool', content: deniedMsg, toolCallId: toolCall.id };
+          this.context.add(toolMsg);
+          this.session.addMessage(this.currentSessionId!, toolMsg);
+          continue;
+        }
+      }
 
       if (showDetail && !this.suppressToolOutput) {
         console.log(`\n[Tool: ${toolCall.name}]`);

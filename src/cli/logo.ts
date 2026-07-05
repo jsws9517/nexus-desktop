@@ -1,4 +1,7 @@
-import chalk from 'chalk';
+import { ThemeManager } from '../theme/manager.js';
+
+const _theme = new ThemeManager();
+const t = _theme.token;
 
 const NEXUS_LOGO: string[] = [
   '    ╭─────╮    ',
@@ -45,10 +48,6 @@ function padRight(s: string, w: number): string {
   return s + ' '.repeat(w - len);
 }
 
-const accent = chalk.hex('#06b6d4');
-const head = chalk.hex('#67e8f9');
-const dim = chalk.gray;
-
 function calcFillMax(columns: number): number {
   return Math.floor(Math.max(columns * 0.96, 82));
 }
@@ -56,8 +55,8 @@ function calcFillMax(columns: number): number {
 export function showWelcomeScreen(info: WelcomeInfo, mode?: BorderMode): void {
   const borderMode = mode ?? (process.env.NEXUS_BORDER_MODE as BorderMode) ?? 'fill';
 
-  const tipsItems = TIPS.map((t) => `  ${dim('•')} ${t}`);
-  const newsItems = WHATS_NEW.map((t) => `  ${dim('•')} ${t}`);
+  const tipsItems = TIPS.map((x) => `  ${t.textDim('•')} ${x}`);
+  const newsItems = WHATS_NEW.map((x) => `  ${t.textDim('•')} ${x}`);
 
   const termWidth = process.stdout.columns ?? 120;
 
@@ -69,9 +68,9 @@ export function showWelcomeScreen(info: WelcomeInfo, mode?: BorderMode): void {
   }
 
   console.log('');
-  console.log(dim(`Session ${info.sessionId}`));
-  console.log(dim('Type /help for commands, /exit to quit'));
-  console.log(dim('PageUp/PageDown: history  ·  Ctrl+O: detail mode'));
+  console.log(t.textDim(`Session ${info.sessionId}`));
+  console.log(t.textDim('Type /help for commands, /exit to quit'));
+  console.log(t.textDim('PageUp/PageDown: history  ·  Ctrl+O: detail mode'));
   console.log('');
 }
 
@@ -104,24 +103,24 @@ function buildLeftLines(info: WelcomeInfo, lw: number): string[] {
   const indent = ' '.repeat(Math.max(0, Math.floor(((lw - 2) - 15) / 2)));
   return [
     '',
-    `${indent}${head('Welcome back!')}`,
+    `${indent}${t.heading('Welcome back!')}`,
     '',
-    ...NEXUS_LOGO.map((line) => `${indent}${accent(line)}`),
+    ...NEXUS_LOGO.map((line) => `${indent}${t.borderAccent(line)}`),
     '',
-    `  ${dim('nexus-agent')} ${dim('v')}${info.version}`,
-    `  ${dim(info.model)}`,
-    `  ${dim(info.cwd)}`,
+    `  ${t.textDim('nexus-agent')} ${t.textDim('v')}${info.version}`,
+    `  ${t.textDim(info.model)}`,
+    `  ${t.textDim(info.cwd)}`,
   ];
 }
 
 function buildRightLines(tipsItems: string[], newsItems: string[], rw: number): string[] {
-  const sepLine = dim('─'.repeat(Math.min(rw - 2, 50)));
+  const sepLine = t.textDim('─'.repeat(Math.min(rw - 2, 50)));
   return [
-    head('Tips for getting started'),
+    t.heading('Tips for getting started'),
     sepLine,
     ...tipsItems,
     '',
-    head("What's new"),
+    t.heading("What's new"),
     sepLine,
     ...newsItems,
   ];
@@ -136,8 +135,8 @@ function renderBoxes(
 ): void {
   const totalWidth = lw + rw + 1;
 
-  const topBorder = `${indent}${accent('╭' + '─'.repeat(totalWidth) + '╮')}`;
-  const botBorder = `${indent}${accent('╰' + '─'.repeat(totalWidth) + '╯')}`;
+  const topBorder = `${indent}${t.borderAccent('╭' + '─'.repeat(totalWidth) + '╮')}`;
+  const botBorder = `${indent}${t.borderAccent('╰' + '─'.repeat(totalWidth) + '╯')}`;
 
   console.log(topBorder);
   const max = Math.max(leftLines.length, rightLines.length);
@@ -145,7 +144,7 @@ function renderBoxes(
     const l = i < leftLines.length ? leftLines[i] : '';
     const r = i < rightLines.length ? rightLines[i] : '';
     console.log(
-      `${indent}${accent('│')} ${padRight(l, lw - 2)} ${accent('│')} ${padRight(r, rw - 2)} ${accent('│')}`
+      `${indent}${t.borderAccent('│')} ${padRight(l, lw - 2)} ${t.borderAccent('│')} ${padRight(r, rw - 2)} ${t.borderAccent('│')}`
     );
   }
   console.log(botBorder);
@@ -201,7 +200,7 @@ function renderFill(
 }
 
 export function showNexusLogo(): void {
-  console.log(chalk.cyan(`
+  console.log(t.borderAccent(`
     ╭═══●═
    ╲╭╭╭╭╲
     ╱═┤╲╔┐└
