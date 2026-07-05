@@ -357,19 +357,11 @@ export class Agent {
 
       this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: result.content, isError: result.isError });
 
-      // Track repeated tool failures to break infinite retry loops
+      // Track repeated tool failures to detect all-failed turns (break recursive loop)
       if (result.isError) {
         const errKey = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`;
         const failCount = (this.toolErrorCount.get(errKey) || 0) + 1;
         this.toolErrorCount.set(errKey, failCount);
-        if (failCount === 3) {
-          const stopMsg: Message = {
-            role: 'system',
-            content: `[SYSTEM: Tool "${toolCall.name}" has failed ${failCount} consecutive times with the same arguments. Do NOT call this tool again. Try a different approach or ask the user for guidance.]`,
-          };
-          this.context.add(stopMsg);
-          this.session.addMessage(this.currentSessionId!, stopMsg);
-        }
       }
 
       const toolMsg: Message = {
