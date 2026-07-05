@@ -50,6 +50,9 @@ export class Agent {
   maxTurns = 25;
   currentTurn = 0;
 
+  /** Track tool error count per (toolName + args hash) to break infinite retry loops */
+  private toolErrorCount: Map<string, number> = new Map();
+
   constructor(enableAcp?: boolean, isAcpServer?: boolean) {
     this.config = new ConfigManager();
     this.enableAcp = enableAcp;
@@ -183,6 +186,8 @@ export class Agent {
       }
     }
 
+    // Reset tool error tracking for each user input
+    this.toolErrorCount.clear();
     this.currentUserInput = userInput;
     const userMessage: Message = { role: 'user', content: userInput };
     this.context.add(userMessage);
@@ -351,6 +356,21 @@ export class Agent {
 
       this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: result.content, isError: result.isError });
 
+      // Track repeated tool failures to break infinite retry loops
+      if (result.isError) {
+        const errKey = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`;
+        const failCount = (this.toolErrorCount.get(errKey) || 0) + 1;
+        this.toolErrorCount.set(errKey, failCount);
+        if (failCount === 3) {
+          const stopMsg: Message = {
+            role: 'system',
+            content: `[SYSTEM: Tool "${toolCall.name}" has failed ${failCount} consecutive times with the same arguments. Do NOT call this tool again. Try a different approach or ask the user for guidance.]`,
+          };
+          this.context.add(stopMsg);
+          this.session.addMessage(this.currentSessionId!, stopMsg);
+        }
+      }
+
       const toolMsg: Message = {
         role: 'tool',
         content: result.content,
@@ -369,6 +389,17 @@ export class Agent {
 
     // If there were tool calls, re-run LLM with results
     if (pendingToolCalls.length > 0) {
+      // Check if ALL tool calls have failed 3+ times — break the infinite loop
+      const allFailed = pendingToolCalls.every((tc) => {
+        const key = `${tc.name}:${JSON.stringify(tc.arguments)}`;
+        return (this.toolErrorCount.get(key) || 0) >= 3;
+      });
+      if (allFailed && pendingToolCalls.length > 0) {
+        if (showDetail && !this.onOutput) {
+          console.log(chalk.yellow('\n⚠ All tool calls failed repeatedly. Stopping.'));
+        }
+        return;
+      }
       await this.runLlmTurn(showDetail, signal);
     }
   }
@@ -450,10 +481,12 @@ export class Agent {
     if (skillResult) return skillResult;
 
     // 2. Fall back to MCP/builtin tools
-    try {
-      return await this.mcp.callTool(call.name, call.arguments);
-    } catch {
-      // Local tool not found, try ACP forwarding
+    const mcpResult = await this.mcp.callTool(call.name, call.arguments);
+    // If tool was found and executed (even with error), return the result directly
+    // Only fall through to ACP if the tool wasn't found locally
+    const toolNotFound = mcpResult.content.startsWith(`Tool "${call.name}" not found`);
+    if (!toolNotFound) {
+      return mcpResult;
     }
 
     // 3. Forward to configured ACP agents
