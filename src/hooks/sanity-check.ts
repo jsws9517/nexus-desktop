@@ -1,5 +1,4 @@
 import { HookContext, HookResult } from './types.js';
-import { ToolDefinition } from '../types.js';
 
 const TIME_PATTERNS = [
   /历史/i, /历史上的今天/i, /today in history/i, /historical event/i,
@@ -12,22 +11,31 @@ const LOCAL_TOOLS = new Set([
   'knowledge_search', 'local_search',
 ]);
 
-const REMOTE_TOOLS = new Set([
-  'web_search', 'web_fetch', 'search_web', 'fetch_url', 'get_current_time',
-]);
+/**
+ * Known tool parameter patterns (fallback when MCP schema lacks `required`).
+ * key = tool name, value = { paramCandidates[], message }
+ * `paramCandidates` = alternative param names any of which counts as "provided"
+ */
+const KNOWN_TOOL_PARAMS: Record<string, { candidates: string[][]; message: string }> = {
+  'query-tickets': {
+    candidates: [
+      ['from', 'from_station'],
+      ['to', 'to_station'],
+      ['date', 'train_date'],
+    ],
+    message: '查询火车票缺少必要信息，请提供：出发站、到达站和日期（格式 YYYY-MM-DD）。不要自行猜测。',
+  },
+  'maps_weather': {
+    candidates: [
+      ['city', 'location', 'city_name'],
+    ],
+    message: '查询天气需要城市名称，请询问用户具体城市。',
+  },
+};
 
-/** Tools that require user-specific input params — guard against LLM guessing defaults */
-const PARAM_GUARD_TOOLS = new Map<string, string>([
-  // query-tickets from mcp-server-12306: must ask user for stations and date
-  ['query-tickets', '查询火车票需要用户提供：出发站、到达站、日期。请先询问用户。'],
-  ['query_tickets', '查询火车票需要用户提供：出发站、到达站、日期。请先询问用户。'],
-  ['maps_weather', '查询天气需要用户提供：城市名称。请先询问用户具体城市。'],
-  ['weather', '查询天气需要用户提供：城市名称。请先询问用户具体城市。'],
-]);
-
-function checkMissingRequiredParams(ctx: HookContext): string | null {
+/** Check args against schema-declared required fields */
+function checkSchemaRequired(ctx: HookContext): string | null {
   if (!ctx.toolCall || !ctx.toolDefinitions) return null;
-
   const toolDef = ctx.toolDefinitions.find(t => t.name === ctx.toolCall!.name);
   if (!toolDef) return null;
 
@@ -42,10 +50,40 @@ function checkMissingRequiredParams(ctx: HookContext): string | null {
     const val = args[r];
     return val === undefined || val === null || val === '';
   });
-
   if (missing.length === 0) return null;
 
-  return `参数不完整，缺少必需参数：${missing.join('、')}。请先向用户询问这些信息，不要自行猜测。`;
+  return `参数不完整，缺少必需参数：${missing.join('、')}。请先向用户询问，不要自行猜测。`;
+}
+
+/** Check args against known tool param patterns (when schema has no `required`) */
+function checkKnownToolParams(ctx: HookContext): string | null {
+  if (!ctx.toolCall) return null;
+  const toolName = ctx.toolCall.name;
+
+  // Skip if this tool already has schema-declared required fields that are all present
+  const schemaMissing = checkSchemaRequired(ctx);
+  if (schemaMissing === null) return null; // all schema-required params are present → allow
+
+  const known = KNOWN_TOOL_PARAMS[toolName];
+  if (!known) return null;
+
+  const args = ctx.toolCall.arguments || {};
+
+  // For each param group, ensure at least one candidate is present
+  const missingGroups: string[] = [];
+  for (const group of known.candidates) {
+    const anyPresent = group.some(p => {
+      const val = args[p];
+      return val !== undefined && val !== null && val !== '';
+    });
+    if (!anyPresent) {
+      missingGroups.push(group.join('/'));
+    }
+  }
+
+  if (missingGroups.length === 0) return null; // all groups have at least one value
+
+  return `缺少必要参数（${missingGroups.join('、')}）。${known.message}`;
 }
 
 export function createSanityCheckHook(userInput: string) {
@@ -56,21 +94,21 @@ export function createSanityCheckHook(userInput: string) {
 
     const toolName = ctx.toolCall.name;
 
-    // 1. Time-sensitive query guard (Phase 2 feature)
+    // 1. Time-sensitive query guard
     if (isTimeSensitive && LOCAL_TOOLS.has(toolName)) {
       return { verdict: 'deny', reason: `查询需要实时数据，但工具"${toolName}"只能搜索本地数据。` };
     }
 
-    // 2. Parameter validation: check required params from tool schema
-    const missingReason = checkMissingRequiredParams(ctx);
-    if (missingReason) {
-      return { verdict: 'deny', reason: missingReason };
+    // 2. Check schema-declared required params (if schema has `required` and any are missing)
+    const schemaReason = checkSchemaRequired(ctx);
+    if (schemaReason) {
+      return { verdict: 'deny', reason: schemaReason };
     }
 
-    // 3. Hardcoded param guards for common tools where LLM tends to guess
-    const guard = PARAM_GUARD_TOOLS.get(toolName);
-    if (guard) {
-      return { verdict: 'deny', reason: guard };
+    // 3. Fallback: known-tool param validation (when schema lacks `required`)
+    const knownReason = checkKnownToolParams(ctx);
+    if (knownReason) {
+      return { verdict: 'deny', reason: knownReason };
     }
 
     return 'allow';
