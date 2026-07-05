@@ -1,4 +1,4 @@
-﻿import { Command } from 'commander';
+import { Command } from 'commander';
 import chalk from 'chalk';
 import { createInterface, emitKeypressEvents } from 'readline';
 import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
@@ -160,32 +160,84 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     borderMode,
   );
 
-  // Show hint when active provider has no API key configured
-  const activeProvider = agent.config.getProvider();
-  if (!activeProvider.apiKey) {
-    console.log(chalk.dim('  Tip: Run') + ' agent config detect-local ' + chalk.dim('to connect to a local LLM proxy'));
-    console.log('');
-  }
-
-  // ---- Custom multi-line input handler ----
-  // Fully replaces readline's line-by-line processing with a keypress-driven
-  // system that supports:
-  //   Enter       — submit the input buffer (ignored if empty/whitespace)
-  //   Ctrl+Enter  — insert newline for multi-line input
-  //   PageUp/Down — navigate prompt history
-  //   Paste       — auto-detected; during paste Enter inserts \n instead of submitting
-
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: '',
+    prompt: chalk.cyan(`${promptName}> `),
   });
 
   emitKeypressEvents(process.stdin, rl);
 
-  // Completely suppress readline's internal line processing.
-  // We handle all input via raw keypress events below.
-  (rl as any)._ttyWrite = function () {};
+  // Enable bracketed paste mode for reliable paste detection
+  process.stdout.write('\x1b[?2004h');
+
+  // ---- Input handling ----
+  // Note: Node 25+ uses Symbol(_ttyWrite) internally, but its getter
+  // returns this._ttyWrite — setting the string property is sufficient.
+  const originalTtyWrite = (rl as any)._ttyWrite.bind(rl);
+  const setTtyWrite = (handler: Function) => {
+    (rl as any)._ttyWrite = handler;
+  };
+  let isMultiLine = false;
+
+  // Windows Enter sends \r\n; after \r triggers backslash continuation,
+  // consume the trailing \n so it doesn't immediately append/submit.
+  let skipNextNl = false;
+
+  // Shared main _ttyWrite: used both for initial setup and after multi-line exit
+  function makeMainTtyWrite() {
+    return function (s: string, key: { name?: string; ctrl?: boolean; alt?: boolean; shift?: boolean }) {
+      if (!key) return originalTtyWrite(s, key);
+
+      // Consume \n that follows backslash-continuation \r only if immediate
+      if (skipNextNl) {
+        skipNextNl = false;
+        if (s === '\n') return;
+      }
+
+      if (isQuestionMode) {
+        if (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && key.name === 'o')) return;
+        return originalTtyWrite(s, key);
+      }
+
+      if (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && key.name === 'o')) return;
+
+      // === Multi-line triggers: Ctrl+J, Shift+Enter, Ctrl+Enter ===
+      if (isNewLineKey(s, key)) {
+        enterMultiLine();
+        return;
+      }
+
+      // === ENTER/Return handling ===
+      if (key.name === 'enter' || key.name === 'return') {
+        // 1) Backslash continuation: \ + Enter → strip \, enter multi-line
+        const line = (rl as any).line || '';
+        if (line.endsWith('\\')) {
+          (rl as any).line = line.slice(0, -1);
+          skipNextNl = true;
+          enterMultiLine();
+          return;
+        }
+        // 2) Already in multi-line mode: submit
+        if (isMultiLine) {
+          isPasteMode = false;
+          multiLineSubmit();
+          return;
+        }
+        // 3) Paste Enter → newline (bracketed paste or timing fallback)
+        if (isBracketedPaste || (isPasteMode && isInPasteBurst())) {
+          enterMultiLine();
+          return;
+        }
+        // 4) Plain Enter → let readline submit
+        return originalTtyWrite(s, key);
+      }
+
+      return originalTtyWrite(s, key);
+    };
+  }
+
+  setTtyWrite(makeMainTtyWrite());
 
   let promptHistoryIndex = -1;
   let draftInput = '';
@@ -196,232 +248,268 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       .map((m) => m.content);
   }
 
-  // --- Multi-line input state ---
-  let inputBuffer = '';
-  let prevContentLines = 0;
-  const INDENT = promptName.length + 2; // "name> " width
-
-  // Paste detection: rapid keypresses within PASTE_MS window
-  const PASTE_MS = 150;
-  let lastKeypressTime = 0;
-  let isPasteMode = false;
-  let pasteTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const promptLabel = () => chalk.cyan(`${promptName}> `);
-
-  function countContentLines(text: string): number {
-    if (!text) return 0;
-    const cols = process.stdout.columns || 80;
-    const segments = text.split('\n');
-    let lines = 0;
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      if (i === 0) {
-        const avail = cols - INDENT;
-        if (avail <= 0) {
-          lines += Math.max(1, Math.ceil(seg.length / cols));
-        } else if (seg.length > avail) {
-          lines += Math.ceil((seg.length - avail) / cols);
-        }
-      } else {
-        lines += Math.max(1, Math.ceil(seg.length / cols));
-      }
-    }
-    return lines;
-  }
-
-  function renderInput(text: string): void {
-    if (prevContentLines > 0) {
-      process.stdout.write(`\x1B[${prevContentLines}A`);
-    }
-    process.stdout.write('\r\x1B[J');
-    if (text) {
-      const display = text.replace(/\n/g, '\n' + ' '.repeat(INDENT));
-      process.stdout.write(`${promptLabel()}${display}`);
-    } else {
-      process.stdout.write(promptLabel());
-    }
-    prevContentLines = countContentLines(text);
-  }
-
-  // --- Interactive question mode (for /resume, /history delete) ---
-  let isQuestionMode = false;
-
-  async function customQuestion(query: string): Promise<string> {
-    process.stdout.write(query);
-    return new Promise<string>((resolve) => {
-      let answer = '';
-      isQuestionMode = true;
-      const handler = (str: string | undefined, k: any) => {
-        if (!k) return;
-        if (k.name === 'enter' && !k.ctrl) {
-          process.stdin.removeListener('keypress', handler);
-          process.stdout.write('\n');
-          isQuestionMode = false;
-          resolve(answer);
-          return;
-        }
-        if (k.name === 'escape') {
-          process.stdin.removeListener('keypress', handler);
-          isQuestionMode = false;
-          resolve('');
-          return;
-        }
-        if (k.ctrl && k.name === 'c') {
-          process.stdin.removeListener('keypress', handler);
-          isQuestionMode = false;
-          rl.close();
-          resolve('');
-          return;
-        }
-        if (k.name === 'backspace') {
-          if (answer.length > 0) {
-            answer = answer.slice(0, -1);
-            process.stdout.write('\b \b');
-          }
-          return;
-        }
-        if (typeof str === 'string' && str.length === 1 && !k.ctrl && !k.meta) {
-          answer += str;
-          process.stdout.write(str);
-        }
-      };
-      process.stdin.on('keypress', handler);
+  function setLine(text: string): void {
+    process.nextTick(() => {
+      rl.write(null, { ctrl: true, name: 'e' });
+      rl.write(null, { ctrl: true, name: 'u' });
+      rl.write(text);
     });
   }
 
   let lastDetailMode = agent.detailMode;
 
-  process.stdin.on('keypress', (str, key) => {
+  // ---- Paste detection ----
+  const PASTE_MS = 80;
+  const PASTE_MIN_KEYS = 3;
+  let lastKeypressTime = 0;
+  let pasteKeyCount = 0;
+  let isPasteMode = false;
+
+  function isInPasteBurst(): boolean {
+    return (Date.now() - lastKeypressTime) < PASTE_MS;
+  }
+
+  // ---- Multi-line key detection (used across all _ttyWrite) ----
+  function isNewLineKey(s: string, key: { name?: string; shift?: boolean; ctrl?: boolean; alt?: boolean }): boolean {
+    if ((key.name === 'enter' || key.name === 'return') && (key.shift || key.ctrl || key.alt)) return true;
+    if (s === '\x0a' || s === '\n') return true; // Ctrl+J / linefeed (universally reliable)
+    return false;
+  }
+
+  // ---- Interactive question mode (for /resume, /history delete) ----
+  let isQuestionMode = false;
+  let isBracketedPaste = false;
+
+  async function customQuestion(query: string): Promise<string> {
+    return new Promise<string>((resolve) => {
+      isQuestionMode = true;
+      process.stdout.write(query);
+
+      const lineHandler = (line: string) => {
+        cleanup();
+        resolve(line);
+      };
+
+      const escHandler = (_s: string, k: any) => {
+        if (k && k.name === 'escape') {
+          cleanup();
+          (rl as any).line = '';
+          process.stdout.write('\n');
+          resolve('');
+        }
+      };
+
+      function cleanup() {
+        rl.removeListener('line', lineHandler);
+        process.stdin.removeListener('keypress', escHandler);
+        isQuestionMode = false;
+      }
+
+      rl.on('line', lineHandler);
+      process.stdin.on('keypress', escHandler);
+    });
+  }
+
+  // ---- Multi-line mode state & handlers ----
+  const INDENT = promptName.length + 2;
+  const promptLabel = () => chalk.cyan(`${promptName}> `);
+  let multiLineBuffer: string[] = [];
+
+  function enterMultiLine(): void {
+    const firstLine = rl.line;
+    multiLineBuffer = firstLine !== undefined && firstLine !== '' ? [firstLine] : [''];
+    isMultiLine = true;
+    // Show continuation indent on a new line (no redraw)
+    process.stdout.write('\n' + ' '.repeat(INDENT));
+
+    setTtyWrite(function (s: string, key: { name?: string; ctrl?: boolean; meta?: boolean; alt?: boolean; shift?: boolean }) {
+      if (!key) return;
+
+      // Consume \n that follows backslash-continuation \r only if immediate
+      if (skipNextNl) {
+        skipNextNl = false;
+        if (s === '\n') return;
+      }
+
+      if (isQuestionMode) {
+        return originalTtyWrite(s, key);
+      }
+
+      // Ctrl+C
+      if (key.ctrl && key.name === 'c') {
+        rl.close();
+        return;
+      }
+
+      // ESC: cancel multi-line
+      if (key.name === 'escape') {
+        exitMultiLine(false);
+        return;
+      }
+
+      // Ctrl+O: toggle detail
+      if (key.ctrl && key.name === 'o') {
+        const mode = agent.toggleDetailMode();
+        const label = mode ? chalk.green('FULL') : chalk.yellow('COMPACT');
+        if (agent.isBusy()) return;
+        process.stdout.write('\n');
+        console.log(`[Detail mode: ${label}]`);
+        for (let i = 0; i < multiLineBuffer.length; i++) {
+          if (i === 0) process.stdout.write(promptLabel() + multiLineBuffer[i] + '\n');
+          else process.stdout.write(' '.repeat(INDENT) + multiLineBuffer[i] + '\n');
+        }
+        process.stdout.write(' '.repeat(INDENT));
+        lastDetailMode = mode;
+        return;
+      }
+
+      // === Multi-line triggers: Ctrl+J, Shift+Enter, Ctrl+Enter → append line ===
+      if (isNewLineKey(s, key)) {
+        multiLineAppendLine();
+        return;
+      }
+
+      // === ENTER/Return handling ===
+      if (key.name === 'enter' || key.name === 'return') {
+        // Paste Enter → append line (bracketed paste or timing fallback)
+        if (isBracketedPaste || (isPasteMode && isInPasteBurst())) {
+          multiLineAppendLine();
+          return;
+        }
+        // Plain Enter → submit
+        multiLineSubmit();
+        return;
+      }
+
+      // Backspace
+      if (key.name === 'backspace') {
+        if (multiLineBuffer.length === 0) return;
+        const idx = multiLineBuffer.length - 1;
+        const last = multiLineBuffer[idx] || '';
+        if (last.length > 0) {
+          multiLineBuffer[idx] = last.slice(0, -1);
+          process.stdout.write('\b \b');
+        }
+        // When at start of a line, do nothing (ignore backspace-join for simplicity)
+        return;
+      }
+
+      // Tab: 2 spaces
+      if (key.name === 'tab') {
+        if (multiLineBuffer.length === 0) multiLineBuffer.push('');
+        const idx = multiLineBuffer.length - 1;
+        multiLineBuffer[idx] = (multiLineBuffer[idx] || '') + '  ';
+        process.stdout.write('  ');
+        return;
+      }
+
+      // Printable characters
+      if (s && s.length === 1 && !key.ctrl && !key.meta) {
+        if (multiLineBuffer.length === 0) multiLineBuffer.push('');
+        const idx = multiLineBuffer.length - 1;
+        multiLineBuffer[idx] = (multiLineBuffer[idx] || '') + s;
+        process.stdout.write(s);
+        return;
+      }
+    });
+  }
+
+  function multiLineAppendLine(): void {
+    multiLineBuffer.push('');
+    process.stdout.write('\n' + ' '.repeat(INDENT));
+  }
+
+  function multiLineSubmit(): void {
+    const fullInput = multiLineBuffer.join('\n');
+    exitMultiLine(true, fullInput);
+  }
+
+  function exitMultiLine(submit: boolean, fullInput?: string): void {
+    isMultiLine = false;
+    multiLineBuffer = [];
+
+    setTtyWrite(makeMainTtyWrite());
+    (rl as any).line = '';
+
+    if (submit && fullInput) {
+      process.stdout.write('\n');
+      rl.emit('line', fullInput);
+    } else {
+      process.stdout.write('\n');
+      rl.prompt();
+    }
+  }
+
+  process.stdin.on('keypress', async (s, key) => {
     if (!key) return;
     if (isQuestionMode) return;
 
-    // Paste burst detection
+    // Bracketed paste mode
+    if (s === '\x1b[200~') { isBracketedPaste = true; isPasteMode = true; return; }
+    if (s === '\x1b[201~') { isBracketedPaste = false; isPasteMode = false; return; }
+
+    // Paste detection: counts consecutive fast non-enter keypresses
     const now = Date.now();
     const inPasteBurst = (now - lastKeypressTime) < PASTE_MS;
     lastKeypressTime = now;
-
-    if (inPasteBurst && key.name !== 'enter') {
-      isPasteMode = true;
-      if (pasteTimer) clearTimeout(pasteTimer);
-      pasteTimer = setTimeout(() => {
-        isPasteMode = false;
-        pasteTimer = null;
-      }, PASTE_MS);
+    if (inPasteBurst && key.name !== 'enter' && key.name !== 'return' && s !== '\x0a') {
+      pasteKeyCount++;
+      if (pasteKeyCount >= PASTE_MIN_KEYS) isPasteMode = true;
+    } else if (!inPasteBurst) {
+      pasteKeyCount = 0;
+      if (!isBracketedPaste) isPasteMode = false;
     }
 
-    // Ctrl+O: toggle detail mode
+    if (isMultiLine) return; // multi-line mode handles its own keys
+
     if (key.ctrl && key.name === 'o') {
       const mode = agent.toggleDetailMode();
       const label = mode ? chalk.green('FULL') : chalk.yellow('COMPACT');
       if (agent.isBusy()) return;
-      process.stdout.write('\n');
-      console.log(`[Detail mode: ${label}]`);
-      renderInput(inputBuffer);
+      console.log(`\n[Detail mode: ${label}]`);
+      rl.prompt();
       lastDetailMode = mode;
       return;
     }
 
-    // ESC: interrupt current chat
     if (key.name === 'escape') {
       if (agent.isBusy()) {
         agent.abort();
-        process.stdout.write('\n');
-        console.log(chalk.yellow('[Interrupted]'));
-        renderInput(inputBuffer);
+        console.log(chalk.yellow('\n[Interrupted]'));
+        rl.prompt();
       }
       return;
     }
 
-    // Ctrl+C: exit
-    if (key.ctrl && key.name === 'c') {
-      rl.close();
-      return;
-    }
-
-    // PageUp: navigate to older prompt in history
     if (key.name === 'pageup') {
       const userMessages = getUserMessages();
       if (userMessages.length === 0) return;
-      if (promptHistoryIndex === -1) draftInput = inputBuffer;
+
+      if (promptHistoryIndex === -1) {
+        draftInput = rl.line;
+      }
+
       const nextIndex = promptHistoryIndex + 1;
       if (nextIndex < userMessages.length) {
         promptHistoryIndex = nextIndex;
-        inputBuffer = userMessages[userMessages.length - 1 - promptHistoryIndex]!;
-        renderInput(inputBuffer);
+        setLine(userMessages[userMessages.length - 1 - promptHistoryIndex]);
       }
-      return;
-    }
-
-    // PageDown: navigate to newer prompt (or back to draft)
-    if (key.name === 'pagedown') {
+    } else if (key.name === 'pagedown') {
       if (promptHistoryIndex === -1) return;
+
       const userMessages = getUserMessages();
       const nextIndex = promptHistoryIndex - 1;
       if (nextIndex >= 0) {
         promptHistoryIndex = nextIndex;
-        inputBuffer = userMessages[userMessages.length - 1 - promptHistoryIndex]!;
-        renderInput(inputBuffer);
+        setLine(userMessages[userMessages.length - 1 - promptHistoryIndex]);
       } else {
         promptHistoryIndex = -1;
-        inputBuffer = draftInput;
-        renderInput(inputBuffer);
+        setLine(draftInput);
       }
-      return;
-    }
-
-    // Enter (without Ctrl): submit
-    // During paste mode, Enter inserts \n instead of submitting
-    if (key.name === 'enter' && !key.ctrl) {
-      if (isPasteMode) {
-        inputBuffer += '\n';
-        renderInput(inputBuffer);
-      } else {
-        if (inputBuffer.trim().length === 0) {
-          renderInput(inputBuffer);
-        } else {
-          const line = inputBuffer;
-          inputBuffer = '';
-          prevContentLines = 0;
-          process.stdout.write('\n');
-          handleLine(line);
-        }
-      }
-      return;
-    }
-
-    // Ctrl+Enter: insert newline into the buffer
-    if (key.name === 'enter' && key.ctrl) {
-      inputBuffer += '\n';
-      renderInput(inputBuffer);
-      return;
-    }
-
-    // Backspace: remove last character
-    if (key.name === 'backspace') {
-      if (inputBuffer.length > 0) {
-        inputBuffer = inputBuffer.slice(0, -1);
-        renderInput(inputBuffer);
-      }
-      return;
-    }
-
-    // Tab: insert 2 spaces
-    if (key.name === 'tab') {
-      inputBuffer += '  ';
-      renderInput(inputBuffer);
-      return;
-    }
-
-    // Regular printable characters
-    if (str && str.length === 1 && !key.ctrl && !key.meta) {
-      inputBuffer += str;
-      renderInput(inputBuffer);
-      return;
     }
   });
 
-  renderInput('');
+  rl.prompt();
 
   const handleLine = async (line: string): Promise<void> => {
     if (agent.isBusy()) return;
@@ -429,29 +517,33 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     const input = line.trim();
     promptHistoryIndex = -1;
     draftInput = '';
-    if (!input) return;
+    if (!input) {
+      rl.prompt();
+      return;
+    }
 
     if (input.startsWith('/')) {
       const handled = await handleSlashCommand(input, agent, rl, customQuestion);
       if (!handled) {
-        renderInput(inputBuffer);
+        rl.prompt();
       }
       return;
     }
 
-    // !cmd: execute bash command directly
     if (input.startsWith('!')) {
       const cmd = input.slice(1).trim();
-      if (!cmd) return;
+      if (!cmd) {
+        rl.prompt();
+        return;
+      }
       console.log(chalk.gray(`$ ${cmd}`));
       const output = await executeBashCommand(cmd);
       console.log(output);
+      rl.prompt();
       return;
     }
 
-    // Expand @file/@directory references into inline context
     const expandedInput = expandAtMentions(input, process.cwd());
-
     process.stdout.write(chalk.yellow('agent> '));
     try {
       await agent.chat(expandedInput);
@@ -464,9 +556,17 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       console.log(chalk.gray(`[Detail mode: ${label}]`));
       lastDetailMode = agent.detailMode;
     }
+
+    rl.prompt();
   };
 
+  rl.on('line', async (line) => {
+    if (isQuestionMode) return;
+    await handleLine(line);
+  });
+
   rl.on('close', async () => {
+    process.stdout.write('\x1b[?2004l');
     console.log(chalk.gray('\nGoodbye!'));
     await agent.shutdown();
     process.exit(0);
@@ -488,7 +588,12 @@ async function runSingleMessage(message: string, sessionId?: string, enableAcp?:
   }
 }
 
-async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<typeof createInterface>, customQuestion?: (query: string) => Promise<string>): Promise<boolean> {
+async function handleSlashCommand(
+  input: string,
+  agent: Agent,
+  rl: ReturnType<typeof createInterface>,
+  customQuestion?: (query: string) => Promise<string>,
+): Promise<boolean> {
   const [cmd, ...args] = input.slice(1).split(' ');
 
   switch (cmd) {
@@ -501,7 +606,7 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
       console.log(chalk.bold('Commands:'));
       console.log('  /exit, /quit     - Exit the agent');
       console.log('  /session         - Show current session ID');
-      console.log('  /cls             - Clear the screen (history preserved in session file)');
+      console.log('  /cls             - Clear the screen');
       console.log('  /clear           - Clear the current context');
       console.log('  /compact         - Compress current session history');
       console.log('  /new             - Compress history and start a new session');
@@ -524,7 +629,8 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
       console.log(chalk.gray('  Ctrl+O          - Toggle detail mode (compact / full)'));
       console.log(chalk.gray('\nInput:'));
       console.log(chalk.gray('  Enter           - Submit prompt (ignored if empty)'));
-      console.log(chalk.gray('  Ctrl+Enter      - Newline (continue input)'));
+      console.log(chalk.gray('  \\ + Enter       - Newline (backslash continuation)'));
+      console.log(chalk.gray('  Ctrl+J          - Newline (alternative)'));
       console.log(chalk.gray('  Paste           - Auto-detected, Enter inserts newline'));
       return false;
 
@@ -554,7 +660,8 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
 
     case 'cls':
       process.stdout.write('\x1B[2J\x1B[3J\x1B[H');
-      return false;
+      rl.prompt();
+      return true;
 
     case 'rename':
       if (!args[0]) {
@@ -622,7 +729,6 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
     case 'history': {
       const subCmd = args[0];
 
-      // --- /history delete <ids> ---
       if (subCmd === 'delete') {
         const spec = args.slice(1).join(' ');
         const allSessions = agent.session.list();
@@ -666,7 +772,6 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
         return false;
       }
 
-      // --- /history (list + interactive delete) ---
       let allSessions = agent.session.list();
       if (allSessions.length === 0) {
         console.log(chalk.gray('No sessions found.'));
@@ -768,7 +873,7 @@ async function handleSlashCommand(input: string, agent: Agent, rl: ReturnType<ty
           const after = agent.context.getMessages();
           console.log(chalk.green(`Compressed ${msgs.length} -> ${after.length} messages.`));
         } catch (err) {
-          console.log(chalk.yellow(`Compression failed: ${err instanceof Error ? err.message : String(err)}, starting new session anyway.`));
+          console.log(chalk.yellow(`Compression failed, starting new session anyway.`));
         }
       }
       const id = await agent.startSession();
@@ -853,8 +958,8 @@ function parseIdSpec(spec: string, maxId: number): number[] | null {
   }
 
   const sorted = [...ids].sort((a, b) => a - b);
-  const skipped = sorted.filter(i => i > maxId);
   const valid = sorted.filter(i => i <= maxId);
+  const skipped = sorted.filter(i => i > maxId);
 
   if (skipped.length > 0) {
     console.log(chalk.yellow(`  Note: #${skipped.join(',#')} out of range (1-${maxId}), skipped`));
