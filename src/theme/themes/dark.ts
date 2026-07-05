@@ -1,0 +1,31 @@
+import { ThemeDefinition } from '../tokens.js';
+
+export const darkTheme: ThemeDefinition = {
+  name: 'dark',
+  base: 'dark',
+  colors: {
+    border: '#383838',
+    borderAccent: '#06b6d4',
+    background: '#1a1a2e',
+    foreground: '#e0e0e0',
+    success: '#22c55e',
+    error: '#ef4444',
+    warning: '#f59e0b',
+    info: '#06b6d4',
+    entityName: '#22d3ee',
+    entityLabel: '#818cf8',
+    entityId: '#a78bfa',
+    prompt: '#22d3ee',
+    thinking: '#9ca3af',
+    toolCallName: '#818cf8',
+    toolCallBadge: '#4c1d95',
+    spinner: '#06b6d4',
+    diffAdded: '#16a34a',
+    diffRemoved: '#dc2626',
+    diffContext: '#525252',
+    textPrimary: '#f5f5f5',
+    textSecondary: '#a3a3a3',
+    textDim: '#737373',
+    heading: '#f5f5f5',
+  },
+};

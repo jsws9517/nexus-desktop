@@ -255,12 +255,19 @@ export class AcpServer {
         },
       });
     };
+    this.agent.onEvent = (event) => {
+      this.sendNotification('session/event', {
+        sessionId,
+        event,
+      });
+    };
     this.agent.suppressToolOutput = true;
 
     try {
       await this.agent.chat(userInput);
     } finally {
       this.agent.onOutput = undefined;
+      this.agent.onEvent = undefined;
       this.agent.suppressToolOutput = false;
     }
 

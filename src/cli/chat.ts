@@ -126,6 +126,11 @@ export function registerChatCommand(program: Command): void {
 
 export async function startInteractiveChat(sessionId?: string, enableAcp?: boolean): Promise<void> {
   const agent = new Agent(enableAcp);
+  agent.onEvent = (event) => {
+    // Phase 1: event stream infrastructure established.
+    // Actual event-driven rendering migration is Phase 2.
+    // For now events are a no-op — stdout rendering remains.
+  };
   await agent.init();
 
   const id = await agent.startSession(undefined, sessionId);

@@ -1,0 +1,31 @@
+import { ThemeDefinition } from '../tokens.js';
+
+export const lightTheme: ThemeDefinition = {
+  name: 'light',
+  base: 'light',
+  colors: {
+    border: '#d4d4d4',
+    borderAccent: '#0891b2',
+    background: '#fafafa',
+    foreground: '#262626',
+    success: '#16a34a',
+    error: '#dc2626',
+    warning: '#d97706',
+    info: '#0891b2',
+    entityName: '#0e7490',
+    entityLabel: '#6366f1',
+    entityId: '#7c3aed',
+    prompt: '#0e7490',
+    thinking: '#737373',
+    toolCallName: '#6366f1',
+    toolCallBadge: '#e0e7ff',
+    spinner: '#0891b2',
+    diffAdded: '#15803d',
+    diffRemoved: '#b91c1c',
+    diffContext: '#e5e5e5',
+    textPrimary: '#171717',
+    textSecondary: '#525252',
+    textDim: '#a3a3a3',
+    heading: '#171717',
+  },
+};

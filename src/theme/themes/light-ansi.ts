@@ -1,0 +1,31 @@
+import { ThemeDefinition } from '../tokens.js';
+
+export const lightAnsiTheme: ThemeDefinition = {
+  name: 'light-ansi',
+  base: 'light-ansi',
+  colors: {
+    border: '7',
+    borderAccent: '6',
+    background: '15',
+    foreground: '0',
+    success: '2',
+    error: '1',
+    warning: '3',
+    info: '6',
+    entityName: '6',
+    entityLabel: '5',
+    entityId: '5',
+    prompt: '6',
+    thinking: '7',
+    toolCallName: '5',
+    toolCallBadge: '4',
+    spinner: '6',
+    diffAdded: '2',
+    diffRemoved: '1',
+    diffContext: '7',
+    textPrimary: '0',
+    textSecondary: '8',
+    textDim: '7',
+    heading: '0',
+  },
+};

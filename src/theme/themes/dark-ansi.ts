@@ -1,0 +1,31 @@
+import { ThemeDefinition } from '../tokens.js';
+
+export const darkAnsiTheme: ThemeDefinition = {
+  name: 'dark-ansi',
+  base: 'dark-ansi',
+  colors: {
+    border: '8',
+    borderAccent: '6',
+    background: '0',
+    foreground: '7',
+    success: '2',
+    error: '1',
+    warning: '3',
+    info: '6',
+    entityName: '6',
+    entityLabel: '5',
+    entityId: '5',
+    prompt: '6',
+    thinking: '8',
+    toolCallName: '5',
+    toolCallBadge: '4',
+    spinner: '6',
+    diffAdded: '2',
+    diffRemoved: '1',
+    diffContext: '8',
+    textPrimary: '7',
+    textSecondary: '8',
+    textDim: '8',
+    heading: '7',
+  },
+};

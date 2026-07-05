@@ -7,7 +7,7 @@ import { SessionManager } from './session/manager.js';
 import { ClientManager } from './mcp/client-manager.js';
 import { SkillRegistry } from './skills/registry.js';
 import { AcpProtocol } from './acp/protocol.js';
-import { Message, ToolCall, ToolResult, ToolDefinition } from './types.js';
+import { Message, ToolCall, ToolResult, ToolDefinition, AgentEvent } from './types.js';
 
 interface ReasoningEntry {
   assistantText: string;
@@ -28,6 +28,8 @@ export class Agent {
 
   /** ACP server callback: receive LLM output text instead of stdout */
   onOutput?: (text: string) => void;
+  /** Agent event stream callback: receive structured events */
+  onEvent?: (event: AgentEvent) => void;
   /** Suppress tool call console output (used in ACP server mode) */
   suppressToolOutput = false;
 
@@ -38,6 +40,10 @@ export class Agent {
   private compactStartTime?: number;
   private enableAcp?: boolean;
   private isAcpServer?: boolean;
+
+  // Turn budget
+  maxTurns = 25;
+  currentTurn = 0;
 
   constructor(enableAcp?: boolean, isAcpServer?: boolean) {
     this.config = new ConfigManager();
@@ -179,12 +185,15 @@ export class Agent {
     await this.context.compress();
 
     this.reasoningLog = [];
+    this.currentTurn = 0;
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
     this.busy = true;
 
     // Snapshot the display mode for this entire reasoning chain
     const showDetail = this.detailMode;
+
+    this.onEvent?.({ type: 'session_start', sessionId: this.currentSessionId! });
 
     try {
       if (!showDetail && !this.onOutput) {
@@ -211,10 +220,16 @@ export class Agent {
       throw e;
     } finally {
       this.busy = false;
+      this.onEvent?.({ type: 'session_end' });
     }
   }
 
   private async runLlmTurn(showDetail: boolean, signal: AbortSignal): Promise<void> {
+    this.currentTurn++;
+    if (this.currentTurn > this.maxTurns) return;
+
+    this.onEvent?.({ type: 'turn_start', turn: this.currentTurn });
+
     const tools = [...this.mcp.getAllTools(), ...this.skills.getTools(), ...this.getAcpTools()];
 
     // Debug: log tool count in ACP server mode
@@ -241,6 +256,7 @@ export class Agent {
       for await (const chunk of stream) {
         if (chunk.type === 'text' && chunk.text) {
           assistantMessage += chunk.text;
+          this.onEvent?.({ type: 'text', text: chunk.text });
           if (this.onOutput) {
             this.onOutput(chunk.text);
           } else if (showDetail) {
@@ -251,6 +267,7 @@ export class Agent {
         }
         if (chunk.type === 'tool_call' && chunk.toolCall) {
           pendingToolCalls.push(chunk.toolCall);
+          this.onEvent?.({ type: 'tool_call_start', index: pendingToolCalls.length - 1, name: chunk.toolCall.name, args: chunk.toolCall.arguments });
         }
       }
     } catch (e) {
@@ -276,7 +293,8 @@ export class Agent {
     }
 
     // Execute ALL tool calls before re-running LLM
-    for (const toolCall of pendingToolCalls) {
+    for (let tci = 0; tci < pendingToolCalls.length; tci++) {
+      const toolCall = pendingToolCalls[tci]!;
       if (signal.aborted) return;
 
       if (showDetail && !this.suppressToolOutput) {
@@ -288,6 +306,8 @@ export class Agent {
       } else {
         entry.toolCalls.push({ name: toolCall.name, resultSummary: result.content.slice(0, 200) });
       }
+
+      this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: result.content, isError: result.isError });
 
       const toolMsg: Message = {
         role: 'tool',
@@ -301,6 +321,9 @@ export class Agent {
     if (!showDetail && pendingToolCalls.length > 0 && !this.onOutput) {
       process.stdout.write('.');
     }
+
+    const stopReason = signal.aborted ? 'aborted' : (pendingToolCalls.length > 0 ? 'tool_use' : 'end_turn');
+    this.onEvent?.({ type: 'turn_end', stopReason });
 
     // If there were tool calls, re-run LLM with results
     if (pendingToolCalls.length > 0) {
