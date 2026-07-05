@@ -202,7 +202,7 @@ export class Agent {
       ...(userHooks || {}),
       preToolUse: async (ctx) => {
         const check = await sanityCheck(ctx);
-        if (check === 'deny') return 'deny';
+        if (check !== 'allow') return check;
         return userHooks?.preToolUse ? userHooks.preToolUse(ctx) : 'allow';
       },
     };
@@ -326,18 +326,19 @@ export class Agent {
       const toolCall = pendingToolCalls[tci]!;
       if (signal.aborted) return;
 
-      // preToolUse hook — allow deny
-      const hookCtx = { turn: this.currentTurn, toolCall, signal, userInput: this.currentUserInput };
+      // preToolUse hook — allow deny with reason
+      const hookCtx = { turn: this.currentTurn, toolCall, signal, userInput: this.currentUserInput, toolDefinitions: tools };
       if (this.hooks?.preToolUse) {
-        const verdict = await this.hooks.preToolUse(hookCtx);
-        if (verdict === 'deny') {
-          const deniedMsg = `Tool "${toolCall.name}" was blocked by security policy.`;
+        const hookResult = await this.hooks.preToolUse(hookCtx);
+        const isDenied = hookResult !== 'allow';
+        if (isDenied) {
+          const reason = hookResult.verdict === 'deny' ? hookResult.reason : 'Tool was blocked by security policy.';
           if (showDetail && !this.suppressToolOutput) {
-            console.log(`\n[Blocked: ${toolCall.name}]`);
+            console.log(`\n[Blocked: ${toolCall.name}] — ${reason}`);
           }
-          const deniedResult: ToolResult = { content: deniedMsg, isError: true };
-          this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: deniedMsg, isError: true });
-          const toolMsg: Message = { role: 'tool', content: deniedMsg, toolCallId: toolCall.id };
+          const toolContent = reason;
+          this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: toolContent, isError: true });
+          const toolMsg: Message = { role: 'tool', content: toolContent, toolCallId: toolCall.id };
           this.context.add(toolMsg);
           this.session.addMessage(this.currentSessionId!, toolMsg);
           continue;
