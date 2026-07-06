@@ -117,6 +117,18 @@ export class AcpServer {
       case 'tools/list':
         return this.handleToolsList();
 
+      case 'model/get':
+        return this.handleModelGet();
+
+      case 'model/set':
+        return this.handleModelSet(params as { model: string });
+
+      case 'provider/get':
+        return this.handleProviderGet();
+
+      case 'provider/list':
+        return this.handleProviderList();
+
       default:
         throw new Error(`Method not found: ${method}`);
     }
@@ -151,12 +163,38 @@ export class AcpServer {
     return { tools: allTools };
   }
 
+  private handleModelGet(): unknown {
+    return { model: this.agent.provider.model };
+  }
+
+  private async handleModelSet(params: { model: string }): Promise<unknown> {
+    if (!params?.model) throw new Error('model is required');
+    const previous = this.agent.provider.model;
+    await this.agent.switchModel(params.model);
+    return { model: this.agent.provider.model, previous };
+  }
+
+  private handleProviderGet(): unknown {
+    const providerCfg = this.agent.config.getProvider();
+    return {
+      name: this.agent.config.getActiveProvider(),
+      model: this.agent.provider.model,
+      type: providerCfg.type,
+    };
+  }
+
+  private handleProviderList(): unknown {
+    return { providers: this.agent.config.listProviders() };
+  }
+
   private handleInitialize(_params: Record<string, unknown>): unknown {
     return {
       protocolVersion: 1,
       agentCapabilities: {
         loadSession: true,
         tools: { list: true, call: true },
+        model: { get: true, set: true },
+        provider: { get: true, list: true },
         sessionCapabilities: {
           list: false,
         },
