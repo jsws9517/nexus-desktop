@@ -171,20 +171,29 @@ export class Agent {
       await this.startSession();
     }
 
-    // Add system prompt for ACP server mode to encourage tool use
-    const acpTools = this.getAcpTools();
-    if (this.isAcpServer && acpTools.length > 0) {
-      const hasSystem = this.context.getMessages().some((m) => m.role === 'system');
-      if (!hasSystem) {
-        this.context.add({
-          role: 'system',
-          content: `你是一个智能助手，可以根据用户请求调用工具完成任务。
+    // Add system prompt to encourage tool use
+    const hasSystem = this.context.getMessages().some((m) => m.role === 'system');
+    if (!hasSystem) {
+      let systemPrompt = `你是一个智能助手，可以根据用户请求调用工具完成任务。
 当前可用的工具包括本地工具和由 ACP 智能体提供的远程工具。
 当用户明确要求调用某个工具时（如 text2image-free-CogView、text2image-trial-aliyun 等），请严格按照要求调用相应的工具，不要自行决定使用其他工具代替。
-如果某个工具调用失败，请报告具体的错误信息。`,
-        });
+如果某个工具调用失败，请报告具体的错误信息。`;
+
+      if (this.isAcpServer) {
+        const acpTools = this.getAcpTools();
+        if (acpTools.length > 0) {
+          systemPrompt += `\n\n可用的远程 ACP 工具: ${acpTools.map(t => t.name).join(', ')}`;
+        }
       }
+
+      this.context.add({ role: 'system', content: systemPrompt });
     }
+
+    // Inject memory context before LLM call
+    await this.injectMemoryContext();
+
+    // Auto-save user info to knowledge graph
+    await this.saveUserInfoIfNeeded(userInput);
 
     // Reset tool error tracking for each user input
     this.toolErrorCount.clear();
@@ -474,10 +483,14 @@ export class Agent {
     if (skillResult) return skillResult;
 
     // 2. Fall back to MCP/builtin tools
-    const mcpResult = await this.mcp.callTool(call.name, call.arguments);
-    // If tool was found and executed (even with error), return the result directly
-    // Only fall through to ACP if the tool wasn't found locally
-    const toolNotFound = mcpResult.content.startsWith(`Tool "${call.name}" not found`);
+    let mcpResult: ToolResult;
+    try {
+      mcpResult = await this.mcp.callTool(call.name, call.arguments);
+    } catch (err) {
+      // Connection/transport error — fall through to ACP forwarding
+      mcpResult = { content: `Tool "${call.name}" connection error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+    }
+    const toolNotFound = mcpResult.content === `Tool "${call.name}" not found`;
     if (!toolNotFound) {
       return mcpResult;
     }
@@ -608,7 +621,62 @@ export class Agent {
      }]);
    }
 
-   async shutdown(): Promise<void> {
+  private async injectMemoryContext(): Promise<void> {
+    try {
+      const allTools = this.mcp.getAllTools();
+      const hasMemoryTools = allTools.some(t => ['search_nodes', 'open_nodes'].includes(t.name));
+      if (!hasMemoryTools) return;
+
+      const result = await this.mcp.callTool('search_nodes', { query: '' });
+      if (result.isError || !result.content) return;
+
+      const content = result.content.trim();
+      // check if result is effectively empty
+      try {
+        const parsed = JSON.parse(content);
+        const entities = parsed.entities ?? parsed.results ?? [];
+        if (entities.length === 0) return;
+      } catch {
+        // fallback: skip if empty-looking
+        if (!content || content === '[]' || content === '{}') return;
+      }
+
+      this.context.add({
+        role: 'system',
+        content: `[知识图谱中已有的用户信息]:\n${content}`,
+      });
+    } catch {
+      // Memory tools unavailable, skip injection
+    }
+  }
+
+  private async saveUserInfoIfNeeded(userInput: string): Promise<void> {
+    const nameMatch = userInput.match(/(?:my name is|my name's|i'?m called|call me)\s+(\w+)/i);
+    const nicknameMatch = userInput.match(/(?:my nickname is|my nick name is)\s+(\w+)/i);
+    if (!nameMatch && !nicknameMatch) return;
+
+    try {
+      const allTools = this.mcp.getAllTools();
+      if (!allTools.some(t => t.name === 'create_entities')) return;
+
+      const name = nameMatch?.[1] || nicknameMatch?.[1] || 'user';
+      const observations: string[] = [];
+      if (nameMatch?.[1]) observations.push(`User's name is ${nameMatch[1]}`);
+      if (nicknameMatch?.[1]) observations.push(`User's nickname is ${nicknameMatch[1]}`);
+
+      await this.mcp.callTool('create_entities', {
+        entities: [{
+          name,
+          entityType: 'person',
+          observations,
+        }],
+      });
+    } catch {
+      // Silent fail
+    }
+  }
+
+  async shutdown(): Promise<void> {
     await this.mcp.disconnect();
   }
 }
