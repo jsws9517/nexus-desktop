@@ -254,6 +254,48 @@ export class AcpServer {
     return {};
   }
 
+  private async handleModelCommandInSession(sessionId: string, input: string): Promise<unknown> {
+    const args = input.split(/\s+/).slice(1);
+    let text: string;
+    if (args.length === 0 || args[0] === 'switch' && !args[1]) {
+      text = `Current model: ${this.agent.provider.model}`;
+    } else if (args[0] === 'switch' && args[1]) {
+      const change = await this.agent.switchModel(args[1]);
+      text = `Model switched: ${change}`;
+    } else {
+      text = `Usage: /model [switch <model>]`;
+    }
+    this.sendNotification('session/update', {
+      sessionId,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, done: true },
+    });
+    return {};
+  }
+
+  private async handleProviderCommandInSession(sessionId: string, input: string): Promise<unknown> {
+    const args = input.split(/\s+/).slice(1);
+    let text: string;
+    if (args.length === 0 || args[0] === 'current') {
+      const p = this.agent.config.getProvider();
+      text = `Provider: ${this.agent.config.getActiveProvider()} (${p.type})\nModel: ${this.agent.provider.model}`;
+    } else if (args[0] === 'list') {
+      const names = this.agent.config.listProviders();
+      const active = this.agent.config.getActiveProvider();
+      text = `Providers:\n${names.map(n => `  ${n === active ? '* ' : '  '}${n}`).join('\n')}`;
+    } else if (args[0] === 'switch' && args[1]) {
+      await this.agent.switchProvider(args[1]);
+      const p = this.agent.config.getProvider();
+      text = `Provider switched to: ${args[1]} (${p.type})\nModel: ${this.agent.provider.model}`;
+    } else {
+      text = `Usage: /provider [current|list|switch <name>]`;
+    }
+    this.sendNotification('session/update', {
+      sessionId,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, done: true },
+    });
+    return {};
+  }
+
   private async handleSessionPrompt(sessionId: string, prompt: unknown): Promise<unknown> {
     if (!sessionId || !this.sessions.has(sessionId)) {
       throw new Error('Invalid session');
@@ -274,8 +316,17 @@ export class AcpServer {
       userInput = prompt;
     }
 
-    if (!userInput.trim()) {
+    const trimmed = userInput.trim();
+    if (!trimmed) {
       return {};
+    }
+
+    // Intercept /model, /models, /provider, /providers commands
+    if (/^\/(model|models)\b/.test(trimmed)) {
+      return this.handleModelCommandInSession(sessionId, trimmed);
+    }
+    if (/^\/(provider|providers)\b/.test(trimmed)) {
+      return this.handleProviderCommandInSession(sessionId, trimmed);
     }
 
     // Ensure session is started
