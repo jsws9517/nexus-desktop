@@ -60,15 +60,18 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async *chat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
+    const systemMessages = messages.filter((m) => m.role === 'system');
+    const systemContent = systemMessages.length > 0
+      ? systemMessages.map(m => m.content).join('\n\n')
+      : undefined;
     const anthropicMessages = this.toAnthropicMessages(
       messages.filter((m) => m.role !== 'system')
     );
-    const systemMessage = messages.find((m) => m.role === 'system');
 
     const streamOpts: Anthropic.Messages.MessageCreateParams & { stream?: true } = {
       model: this.model,
       max_tokens: this.options?.maxTokens as number || 4096,
-      system: systemMessage?.content,
+      system: systemContent,
       messages: anthropicMessages,
       tools: this.toTools(tools),
     };
@@ -107,15 +110,18 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async complete(messages: Message[]): Promise<string> {
+    const systemMessages = messages.filter((m) => m.role === 'system');
+    const systemContent = systemMessages.length > 0
+      ? systemMessages.map(m => m.content).join('\n\n')
+      : undefined;
     const anthropicMessages = this.toAnthropicMessages(
       messages.filter((m) => m.role !== 'system')
     );
-    const systemMessage = messages.find((m) => m.role === 'system');
 
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: this.options?.maxTokens as number || 4096,
-      system: systemMessage?.content,
+      system: systemContent,
       messages: anthropicMessages,
     });
 

@@ -10,6 +10,26 @@ import { AcpProtocol } from './acp/protocol.js';
 import { Message, ToolCall, ToolResult, ToolDefinition, AgentEvent } from './types.js';
 import { Hooks, createSanityCheckHook } from './hooks/index.js';
 
+const REMEMBER_TOOL_DEF: ToolDefinition = {
+  name: 'remember',
+  description: 'Save user information to the knowledge graph for future reference across sessions. Call this (with no arguments needed) whenever the user shares personal preferences, facts, or anything they want remembered. The content is captured automatically from the user\'s message.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+};
+
+/** Tools reserved for internal system calls — never exposed to the LLM. */
+const INTERNAL_TOOLS = new Set([
+  'search_nodes', 'search_semantic', 'open_nodes',
+  'create_entities', 'create_relations', 'add_observations',
+  'delete_entities', 'delete_observations', 'delete_relations',
+  'migrate', 'analyze_entity_split', 'propose_entity_split_tool',
+  'execute_entity_split_tool', 'find_split_candidates',
+  'find_duplicate_observations', 'consolidation_report',
+  'add_reflection', 'search_reflections', 'end_relation',
+]);
+
 interface ReasoningEntry {
   assistantText: string;
   toolCalls: Array<{ name: string; resultSummary: string }>;
@@ -262,7 +282,13 @@ export class Agent {
 
     this.onEvent?.({ type: 'turn_start', turn: this.currentTurn });
 
-    const tools = [...this.mcp.getAllTools(), ...this.skills.getTools(), ...this.getAcpTools()];
+    const allTools = this.mcp.getAllTools();
+    const tools = [
+      ...allTools.filter(t => !INTERNAL_TOOLS.has(t.name)),
+      ...this.skills.getTools(),
+      ...this.getAcpTools(),
+      REMEMBER_TOOL_DEF,
+    ];
 
     // Debug: log tool count in ACP server mode
     if (this.isAcpServer) {
@@ -357,7 +383,12 @@ export class Agent {
       if (showDetail && !this.suppressToolOutput) {
         console.log(`\n[Tool: ${toolCall.name}]`);
       }
-      const result = await this.executeTool(toolCall);
+      let result: ToolResult;
+      try {
+        result = await this.executeTool(toolCall);
+      } catch (err) {
+        result = { content: `Error executing ${toolCall.name}: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
       if (showDetail && !this.suppressToolOutput) {
         console.log(`[Result]: ${result.content.slice(0, 200)}${result.content.length > 200 ? '...' : ''}\n`);
       } else {
@@ -478,6 +509,11 @@ export class Agent {
   }
 
   async executeTool(call: ToolCall): Promise<ToolResult> {
+    // Handle remember tool (agent-level, saves to KG)
+    if (call.name === 'remember') {
+      return this.handleRemember(call.arguments);
+    }
+
     // 1. Check local skills first
     const skillResult = await this.skills.callTool(call.name, call.arguments);
     if (skillResult) return skillResult;
@@ -641,12 +677,41 @@ export class Agent {
         if (!content || content === '[]' || content === '{}') return;
       }
 
-      this.context.add({
-        role: 'system',
-        content: `[知识图谱中已有的用户信息]:\n${content}`,
-      });
+      const msgs = this.context.getMessages();
+      const sysMsg = msgs.find(m => m.role === 'system');
+      if (sysMsg) {
+        const section = `[知识图谱中已有的用户信息]:`;
+        const existingIdx = sysMsg.content.indexOf(section);
+        if (existingIdx >= 0) {
+          sysMsg.content = sysMsg.content.substring(0, existingIdx);
+        }
+        sysMsg.content += `\n\n${section}\n${content}`;
+      }
     } catch {
       // Memory tools unavailable, skip injection
+    }
+  }
+
+  private async handleRemember(_args: Record<string, unknown> | undefined): Promise<ToolResult> {
+    const content = this.currentUserInput || '';
+    if (!content.trim()) {
+      return { content: 'Nothing to remember.', isError: true };
+    }
+    try {
+      const allTools = this.mcp.getAllTools();
+      if (!allTools.some(t => t.name === 'create_entities')) {
+        return { content: 'Knowledge graph tools not available.', isError: true };
+      }
+      await this.mcp.callTool('create_entities', {
+        entities: [{
+          name: 'user',
+          entityType: 'person',
+          observations: [content],
+        }],
+      });
+      return { content: `Remembered: ${content}` };
+    } catch (err) {
+      return { content: `Failed to save: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
   }
 
