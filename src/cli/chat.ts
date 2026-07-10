@@ -161,6 +161,11 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     process.exit(1);
   }
 
+  // Set console to UTF-8 before any output to avoid garbled Chinese on Windows
+  if (process.platform === 'win32') {
+    try { execSync('@chcp 65001>nul', { stdio: 'pipe' }); } catch {}
+  }
+
   const id = await agent.startSession(undefined, sessionId);
   const promptName = agent.config.getPromptName();
 
@@ -199,10 +204,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     prompt: chalk.cyan(`${promptName}> `),
   });
 
-  // Set console to UTF-8 on Windows to avoid garbled Chinese output
-  if (process.platform === 'win32') {
-    try { execSync('@chcp 65001>nul', { stdio: 'pipe' }); } catch {}
-  }
+
 
   emitKeypressEvents(process.stdin, rl);
 
