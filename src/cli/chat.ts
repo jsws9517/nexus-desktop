@@ -147,13 +147,19 @@ export function registerChatCommand(program: Command): void {
 }
 
 export async function startInteractiveChat(sessionId?: string, enableAcp?: boolean): Promise<void> {
-  const agent = new Agent(enableAcp);
-  agent.onEvent = (event) => {
-    // Phase 1: event stream infrastructure established.
-    // Actual event-driven rendering migration is Phase 2.
-    // For now events are a no-op — stdout rendering remains.
-  };
-  await agent.init();
+  let agent: Agent;
+  try {
+    agent = new Agent(enableAcp);
+    agent.onEvent = (event) => {
+      // Phase 1: event stream infrastructure established.
+      // Actual event-driven rendering migration is Phase 2.
+      // For now events are a no-op — stdout rendering remains.
+    };
+    await agent.init();
+  } catch (err) {
+    console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}\n`));
+    process.exit(1);
+  }
 
   const id = await agent.startSession(undefined, sessionId);
   const promptName = agent.config.getPromptName();
@@ -614,8 +620,14 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 }
 
 async function runSingleMessage(message: string, sessionId?: string, enableAcp?: boolean): Promise<void> {
-  const agent = new Agent(enableAcp);
-  await agent.init();
+  let agent: Agent;
+  try {
+    agent = new Agent(enableAcp);
+    await agent.init();
+  } catch (err) {
+    console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}\n`));
+    process.exit(1);
+  }
   await agent.startSession(undefined, sessionId);
 
   try {

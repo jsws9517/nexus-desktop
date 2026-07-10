@@ -133,6 +133,23 @@ export function resolveApiKey(configKey: string | undefined, providerType: strin
     // 2c) API_key_<PROVIDER_TYPE> (e.g. API_KEY_ANTHROPIC, API_KEY_OPENAI) — catch-all
     const byType = tryEnvVar(`API_KEY_${providerType.toUpperCase()}`);
     if (byType) return { apiKey: ephemeralEncrypt(byType), encrypted: true };
+
+    // --- Nothing worked — throw actionable error ---
+    const suggestions: string[] = [];
+    if (providerName) suggestions.push(`API_KEY_${providerName.toUpperCase()}`);
+    suggestions.push(...generics);
+    suggestions.push(`API_KEY_${providerType.toUpperCase()}`);
+
+    const hint = configKey
+      ? `Config apiKey references "${configKey}" but that environment variable is not set.`
+      : 'Config apiKey is empty.';
+
+    throw new Error(
+      `No usable API key for provider "${providerName || providerType}".\n` +
+      `${hint}\n` +
+      `Please set one of these environment variables:\n` +
+      `  ${suggestions.join(', ')}`
+    );
   }
 
   // 3) Fall back to raw config value (encrypted in transit)
