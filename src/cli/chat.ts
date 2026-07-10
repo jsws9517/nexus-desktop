@@ -8,11 +8,78 @@ import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { Agent } from '../agent.js';
 import { showWelcomeScreen, BorderMode } from './logo.js';
+import { ThemeManager } from '../theme/manager.js';
 import { authorizePath } from '../security/path-authorizer.js';
 import { isDangerousBash } from '../security/audit.js';
 import { translateCommand } from '../mcp/cmd-alias.js';
 
 const execAsync = promisify(exec);
+
+// ---- Gradient separator line ----
+
+function hexLerp(c1: string, c2: string, t: number): string {
+  const parse = (h: string) => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+  const [r1,g1,b1] = parse(c1);
+  const [r2,g2,b2] = parse(c2);
+  const r = Math.round(r1 + (r2-r1)*t);
+  const g = Math.round(g1 + (g2-g1)*t);
+  const b = Math.round(b1 + (b2-b1)*t);
+  return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+}
+
+function renderSepLine(): string {
+  const termWidth = process.stdout.columns || 120;
+  const w = Math.floor(Math.max(termWidth * 0.96, 82));
+  const theme = new ThemeManager();
+  const accent = theme.getColor('borderAccent') || '#06b6d4';
+  const bg = theme.getColor('background') || (theme.currentThemeName === 'light' ? '#fafafa' : '#1a1a2e');
+  const parts: string[] = [];
+  for (let i = 0; i < w; i++) {
+    const t = i / w;
+    const opacity = 0.2 + 0.8 * (1 - t);
+    const color = hexLerp(bg, accent, opacity);
+    parts.push(chalk.hex(color)('━'));
+  }
+  return parts.join('');
+}
+
+function sepWidth(): number {
+  return Math.floor(Math.max((process.stdout.columns || 120) * 0.96, 82));
+}
+
+// ---- Streaming word-wrap (wraps text to fixed width across chunk boundaries) ----
+
+class StreamWrap {
+  private width: number;
+  private pending = '';
+  constructor(width: number) { this.width = width; }
+  private stripAnsi(s: string): string { return s.replace(/\x1B\[[0-9;]*[a-z]/gi, ''); }
+  push(chunk: string): string {
+    const combined = this.pending + chunk;
+    this.pending = '';
+    const out: string[] = [];
+    const paragraphs = combined.split('\n');
+    for (let i = 0; i < paragraphs.length; i++) {
+      if (i > 0) out.push('\n');
+      const para = paragraphs[i]!;
+      const plainLen = this.stripAnsi(para).length;
+      if (plainLen <= this.width) { out.push(para); continue; }
+      let line = '';
+      for (const ch of para) {
+        const test = line + ch;
+        if (this.stripAnsi(test).length > this.width && line.length > 0) { out.push(line, '\n'); line = ch; }
+        else line = test;
+      }
+      out.push(line);
+    }
+    const raw = out.join('');
+    const lastNl = raw.lastIndexOf('\n');
+    if (lastNl >= 0) { this.pending = raw.slice(lastNl + 1); return raw.slice(0, lastNl + 1); }
+    this.pending = raw;
+    return '';
+  }
+  flush(): string { const r = this.pending; this.pending = ''; return r; }
+}
 
 // ---- @file/@directory expansion ----
 
@@ -350,6 +417,9 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     });
   }
 
+  // Wire audit confirmations to reuse main readline (avoids double-echo / readline conflict)
+  agent.audit.setAskUser(customQuestion);
+
   // ---- Multi-line mode state & handlers ----
   const INDENT = promptName.length + 2;
   const promptLabel = () => chalk.cyan(`${promptName}> `);
@@ -592,12 +662,32 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     }
 
     const expandedInput = await expandAtMentions(input, process.cwd());
+
+    // Separator line between user and agent messages
+    process.stdout.write(renderSepLine() + '\n');
+
+    // Wrap agent output to separator width
+    const sw = new StreamWrap(sepWidth());
+    const origWrite: typeof process.stdout.write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown, ...args: any[]) => {
+      const flushed = sw.push(String(chunk));
+      if (flushed) origWrite(flushed, ...args);
+      return true;
+    }) as typeof process.stdout.write;
+
     process.stdout.write(chalk.yellow('agent> '));
     try {
       await agent.chat(expandedInput);
     } catch (err) {
       console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+    } finally {
+      process.stdout.write = origWrite;
+      const rest = sw.flush();
+      if (rest) origWrite(rest);
     }
+
+    // Separator line for next turn
+    process.stdout.write(renderSepLine() + '\n');
 
     if (lastDetailMode !== agent.detailMode) {
       const label = agent.detailMode ? chalk.green('FULL') : chalk.yellow('COMPACT');

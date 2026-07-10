@@ -4,6 +4,7 @@ import { join, extname, basename } from 'path';
 import { ThemeDefinition } from './tokens.js';
 import { ThemeAccessor } from './accessor.js';
 import { darkTheme, lightTheme, darkAnsiTheme, lightAnsiTheme } from './themes/index.js';
+import { ColorToken } from './tokens.js';
 
 function getThemeDir(): string { return join(homedir(), '.nexus', 'themes'); }
 function getConfigPath(): string { return join(homedir(), '.nexus', 'theme.json'); }
@@ -42,6 +43,12 @@ export class ThemeManager {
 
   get currentThemeName(): string {
     return this.currentName;
+  }
+
+  /** Get raw hex color for a given token from the active theme */
+  getColor(token: ColorToken): string | undefined {
+    const theme = this.themes.get(this.currentName);
+    return theme?.colors[token];
   }
 
   listThemes(): string[] {

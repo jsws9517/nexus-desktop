@@ -12,6 +12,11 @@ export type AuditDecision = 'allow' | 'deny';
 
 export class AuditManager {
   private pendingApprovals = new Set<string>();
+  private askUser?: (question: string) => Promise<string>;
+
+  setAskUser(cb: (question: string) => Promise<string>): void {
+    this.askUser = cb;
+  }
 
   async requestApproval(action: AuditAction): Promise<AuditDecision> {
     if (action.type === 'user_info') {
@@ -43,6 +48,10 @@ export class AuditManager {
   }
 
   private async promptYesNo(question: string): Promise<boolean> {
+    if (this.askUser) {
+      const answer = await this.askUser(question);
+      return answer.trim().toLowerCase() === 'y';
+    }
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     return new Promise<boolean>(resolve => {
       rl.question(question, answer => {
