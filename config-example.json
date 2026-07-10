@@ -1,0 +1,46 @@
+{
+  "activeProvider": "free-proxy",
+  "providers": {
+    "anthropic": {
+      "type": "anthropic",
+      "apiKey": "",
+      "model": "claude-sonnet-4-6-20251001"
+    },
+    "openai": {
+      "type": "openai",
+      "apiKey": "",
+      "model": "gpt-4o"
+    },
+    "deepseek": {
+      "type": "openai",
+      "apiKey": "$API_KEY_DEEPSEEK",
+      "baseUrl": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash"
+    },
+    "zhipu": {
+      "type": "openai",
+      "apiKey": "$API_KEY_ZHIPU",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "model": "glm-4.7-flash"
+    },
+    "silicon": {
+      "type": "openai",
+      "apiKey": "$API_KEY_SILICON",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "model": "Qwen/Qwen3-8B"
+    },
+    "aliyun": {
+      "type": "anthropic",
+      "apiKey": "$API_KEY_ALIYUN",
+      "baseUrl": "https://dashscope.aliyuncs.com/apps/anthropic",
+      "model": "kimi-k2.6"
+    },
+    "free-proxy": {
+      "type": "anthropic",
+      "apiKey": "",
+      "baseUrl": "http://localhost:6446",
+      "model": "deepseek-v4-flash-free"
+    }
+  },
+  "$schema": "Example config — copy to ~/.nexus/config.json and set API keys via env vars or replace apiKey fields"
+}

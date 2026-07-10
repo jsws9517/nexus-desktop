@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { Config, ConfigSchema } from './types.js';
 import { hasClaudeConfig, hasBeenAutoImported, importFromClaude, markAutoImported } from './claude-import.js';
+import { resolveApiKey, decryptApiKey, atRestEncrypt, atRestDecrypt } from '../security/env-key-encrypt.js';
 
 const CONFIG_DIR = join(homedir(), '.nexus');
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
@@ -47,7 +48,13 @@ export class ConfigManager {
       return DEFAULT_CONFIG;
     }
     try {
-      const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
+      const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) as Config;
+      if (raw.providers) {
+        for (const key of Object.keys(raw.providers)) {
+          const p = raw.providers[key]!;
+          p.apiKey = atRestDecrypt(p.apiKey);
+        }
+      }
       return ConfigSchema.parse(raw);
     } catch {
       return DEFAULT_CONFIG;
@@ -56,7 +63,14 @@ export class ConfigManager {
 
   private save(): void {
     mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(CONFIG_PATH, JSON.stringify(this.config, null, 2));
+    const config = structuredClone(this.config);
+    if (config.providers) {
+      for (const key of Object.keys(config.providers)) {
+        const p = config.providers[key]!;
+        p.apiKey = atRestEncrypt(p.apiKey);
+      }
+    }
+    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
   }
 
   get(): Config {
@@ -81,11 +95,18 @@ export class ConfigManager {
     if (!provider) {
       throw new Error(`Provider "${key}" not configured`);
     }
-    return provider;
+    const resolved = resolveApiKey(provider.apiKey, provider.type, key);
+    return { ...provider, apiKey: resolved.apiKey };
+  }
+
+  getDecryptedApiKey(name?: string): string {
+    const provider = this.getProvider(name);
+    return decryptApiKey(provider.apiKey);
   }
 
   setProvider(name: string, config: Config['providers'][string]): void {
-    this.config.providers[name] = config;
+    const storedConfig = { ...config, apiKey: atRestEncrypt(config.apiKey) };
+    this.config.providers[name] = storedConfig;
     this.save();
   }
 

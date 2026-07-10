@@ -9,6 +9,8 @@ import { SkillRegistry } from './skills/registry.js';
 import { AcpProtocol } from './acp/protocol.js';
 import { Message, ToolCall, ToolResult, ToolDefinition, AgentEvent } from './types.js';
 import { Hooks, createSanityCheckHook } from './hooks/index.js';
+import { AuditManager } from './security/audit.js';
+import { resolveApiKey } from './security/env-key-encrypt.js';
 
 const REMEMBER_TOOL_DEF: ToolDefinition = {
   name: 'remember',
@@ -57,6 +59,9 @@ export class Agent {
   /** User-defined hooks for lifecycle events */
   hooks?: Hooks;
 
+  /** Security audit manager */
+  audit = new AuditManager();
+
   private currentSessionId?: string;
   private currentUserInput?: string;
   private reasoningLog: ReasoningEntry[] = [];
@@ -65,6 +70,9 @@ export class Agent {
   private compactStartTime?: number;
   private enableAcp?: boolean;
   private isAcpServer?: boolean;
+
+  /** Pending askUser question — resolved when user provides their next input */
+  private pendingAsk: { question: string; resolve: (answer: string | null) => void } | null = null;
 
   // Turn budget
   maxTurns = 25;
@@ -115,7 +123,14 @@ export class Agent {
     if (cfg.mcpServers) {
       await this.mcp.connectAll(cfg.mcpServers);
     }
-    await this.skills.load(undefined, extraPaths);
+    // Create AgentContext so skills can call MCP/builtin tools
+    const agentCtx = {
+      callTool: (name: string, args: Record<string, unknown>) =>
+        this.executeTool({ id: `skill-${Date.now()}`, name, arguments: args }),
+      sendMessage: async (msg: string) => { this.onOutput?.(msg); },
+      askUser: (question: string, options?: string[]) => this.askUser(question, options),
+    };
+    await this.skills.load(agentCtx, extraPaths);
   }
 
    async switchModel(modelId: string): Promise<string> {
@@ -127,15 +142,16 @@ export class Agent {
      // 持久化到 config
      this.config.setProviderField(providerName, 'model', modelId);
 
-     // 重建 provider（同 type/apiKey/baseUrl，新 model）
-     this.provider = createProvider(
-       providerCfg.type,
-       providerCfg.apiKey,
-       modelId,
-       providerCfg.baseUrl,
-       providerCfg.options,
-       providerName,
-     );
+      // 重建 provider（同 type/apiKey/baseUrl，新 model）
+      const { apiKey: resolvedKey } = resolveApiKey(providerCfg.apiKey, providerCfg.type, providerName);
+      this.provider = createProvider(
+        providerCfg.type,
+        resolvedKey,
+        modelId,
+        providerCfg.baseUrl,
+        providerCfg.options,
+        providerName,
+      );
      this.context.setProvider(this.provider);
 
      // 同步更新 context 阈值
@@ -180,6 +196,30 @@ export class Agent {
     return this.busy;
   }
 
+  /** Ask the user a question, pausing execution until they respond. */
+  askUser(question: string, options?: string[]): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.pendingAsk = { question, resolve };
+
+      // Send the question to the user
+      let text = question;
+      if (options && options.length > 0) {
+        text += '\n\n' + options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+      }
+      this.onOutput?.(`\n${text}\n`);
+      this.onEvent?.({ type: 'text', text: `\n${text}\n` });
+    });
+  }
+
+  /** Resolve a pending askUser call with the user's input. Returns true if resolved. */
+  resolvePendingAsk(input: string): boolean {
+    if (!this.pendingAsk) return false;
+    const { resolve } = this.pendingAsk;
+    this.pendingAsk = null;
+    resolve(input);
+    return true;
+  }
+
   /** Abort the current chat operation (called on ESC). Safe to call even when idle. */
   abort(): void {
     this.abortController.abort();
@@ -187,6 +227,11 @@ export class Agent {
   }
 
   async chat(userInput: string): Promise<void> {
+    // If a skill is waiting for user input, resolve it and return
+    if (this.resolvePendingAsk(userInput)) {
+      return;
+    }
+
     if (!this.currentSessionId) {
       await this.startSession();
     }
@@ -313,14 +358,15 @@ export class Agent {
 
       for await (const chunk of stream) {
         if (chunk.type === 'text' && chunk.text) {
-          assistantMessage += chunk.text;
-          this.onEvent?.({ type: 'text', text: chunk.text });
+          const clean = chunk.text.replace(/\uFFFD/g, '');
+          assistantMessage += clean;
+          this.onEvent?.({ type: 'text', text: clean });
           if (this.onOutput) {
-            this.onOutput(chunk.text);
+            this.onOutput(clean);
           } else if (showDetail) {
-            process.stdout.write(chunk.text);
+            process.stdout.write(clean);
           } else {
-            entry.assistantText += chunk.text;
+            entry.assistantText += clean;
           }
         }
         if (chunk.type === 'thinking' && chunk.thinking) {
@@ -395,7 +441,10 @@ export class Agent {
         entry.toolCalls.push({ name: toolCall.name, resultSummary: result.content.slice(0, 200) });
       }
 
-      this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: result.content, isError: result.isError });
+      // Emit tool_result event, but suppress intermediate errors in ACP/server mode
+      if (!this.suppressToolOutput || !result.isError) {
+        this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: result.content, isError: result.isError });
+      }
 
       // Track repeated tool failures to detect all-failed turns (break recursive loop)
       if (result.isError) {
@@ -509,22 +558,26 @@ export class Agent {
   }
 
   async executeTool(call: ToolCall): Promise<ToolResult> {
+    // Normalize arguments — LLM often emits tool calls with undefined/missing args
+    const safeArgs: Record<string, unknown> = call.arguments ?? {};
+
     // Handle remember tool (agent-level, saves to KG)
     if (call.name === 'remember') {
-      return this.handleRemember(call.arguments);
+      return this.handleRemember(safeArgs);
     }
 
     // 1. Check local skills first
-    const skillResult = await this.skills.callTool(call.name, call.arguments);
+    const skillResult = await this.skills.callTool(call.name, safeArgs);
     if (skillResult) return skillResult;
 
     // 2. Fall back to MCP/builtin tools
     let mcpResult: ToolResult;
     try {
-      mcpResult = await this.mcp.callTool(call.name, call.arguments);
+      mcpResult = await this.mcp.callTool(call.name, safeArgs);
     } catch (err) {
-      // Connection/transport error — fall through to ACP forwarding
-      mcpResult = { content: `Tool "${call.name}" connection error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const argsPreview = JSON.stringify(safeArgs).slice(0, 200);
+      mcpResult = { content: `Tool "${call.name}" error: ${errMsg}\nArgs: ${argsPreview}`, isError: true };
     }
     const toolNotFound = mcpResult.content === `Tool "${call.name}" not found`;
     if (!toolNotFound) {
@@ -549,7 +602,7 @@ export class Agent {
         this.acp.registerAgent(agent);
         const msg = await this.acp.sendTask(
           agent.id,
-          { tool: call.name, args: call.arguments },
+            { tool: call.name, args: safeArgs },
           'nexus',
         );
         return {
@@ -697,6 +750,10 @@ export class Agent {
     if (!content.trim()) {
       return { content: 'Nothing to remember.', isError: true };
     }
+    const approval = await this.audit.requestApproval({ type: 'tool_call', name: 'remember', args: {} });
+    if (approval === 'deny') {
+      return { content: 'Save cancelled by user.', isError: true };
+    }
     try {
       const allTools = this.mcp.getAllTools();
       if (!allTools.some(t => t.name === 'create_entities')) {
@@ -719,6 +776,10 @@ export class Agent {
     const nameMatch = userInput.match(/(?:my name is|my name's|i'?m called|call me)\s+(\w+)/i);
     const nicknameMatch = userInput.match(/(?:my nickname is|my nick name is)\s+(\w+)/i);
     if (!nameMatch && !nicknameMatch) return;
+
+    const detail = nameMatch?.[0] || nicknameMatch?.[0] || '';
+    const approval = await this.audit.requestApproval({ type: 'user_info', detail });
+    if (approval === 'deny') return;
 
     try {
       const allTools = this.mcp.getAllTools();

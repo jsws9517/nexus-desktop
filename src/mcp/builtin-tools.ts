@@ -5,6 +5,8 @@ import { lookup } from 'dns/promises';
 import { isIP } from 'net';
 import { BuiltinTool } from './types.js';
 import { ToolResult } from '../types.js';
+import { authorizePath } from '../security/path-authorizer.js';
+import { translateCommand } from './cmd-alias.js';
 
 const execAsync = promisify(exec);
 
@@ -214,6 +216,10 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const path = String(args.path || '');
+      const authorized = await authorizePath(path);
+      if (!authorized) {
+        return { content: `Access denied: "${path}" is not in the allowed path list and access was rejected by user.`, isError: true };
+      }
       try {
         if (!existsSync(path)) {
           return { content: `File not found: ${path}`, isError: true };
@@ -239,6 +245,10 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     async execute(args): Promise<ToolResult> {
       const path = String(args.path || '');
       const content = String(args.content || '');
+      const authorized = await authorizePath(path);
+      if (!authorized) {
+        return { content: `Access denied: "${path}" is not in the allowed path list and access was rejected by user.`, isError: true };
+      }
       try {
         writeFileSync(path, content, 'utf-8');
         return { content: `Successfully wrote to ${path}` };
@@ -262,14 +272,15 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       const command = String(args.command || '');
       const timeout = Number(args.timeout || 30000);
       if (!command) {
-        return { content: 'Empty command', isError: true };
+        return { content: 'Empty command: you must provide a non-empty "command" string to exec_command. For reading files use file_read instead.', isError: true };
       }
       const danger = isDangerousCommand(command);
       if (danger.blocked) {
         return { content: `Command blocked for security: ${danger.reason}`, isError: true };
       }
       try {
-        const { stdout, stderr } = await execAsync(command, {
+        const actualCmd = process.platform === 'win32' ? `chcp 65001 >NUL && ${translateCommand(command)}` : command;
+        const { stdout, stderr } = await execAsync(actualCmd, {
           encoding: 'utf-8',
           timeout,
           maxBuffer: 10 * 1024 * 1024,

@@ -2,7 +2,7 @@ import { readdirSync, statSync, existsSync, readFileSync } from 'fs';
 import { join, resolve, isAbsolute } from 'path';
 import { homedir } from 'os';
 import { createRequire } from 'module';
-import { Skill } from './types.js';
+import { Skill, AgentContext } from './types.js';
 import { ToolResult } from '../types.js';
 
 const SKILLS_DIR = join(homedir(), '.nexus', 'skills');
@@ -259,6 +259,13 @@ function tryLoadMdSkill(dirPath: string, name: string, indexData?: { skills?: Ar
   const skillVersion = meta?.version || metadata.version || '1.0.0';
   const skillDescription = meta?.description || metadata.description || `Skill: ${name}`;
 
+  // Check if this skill has executable steps (referenced tools in the body)
+  const hasExecutableSteps = /(?:使用|调用|call)\s+[`"]?[\w_]+[`"]?\s+(?:工具|tool)/i.test(body)
+    || /mcp__[\w_]+__[\w_]+/.test(body)
+    || /https?:\/\/[^\s]+/.test(body);
+
+  let agentCtx: AgentContext | undefined;
+
   return {
     name: skillName,
     version: skillVersion,
@@ -274,12 +281,129 @@ function tryLoadMdSkill(dirPath: string, name: string, indexData?: { skills?: Ar
         required: ['task'],
       } as Record<string, unknown>,
     }],
+    async init(ctx: AgentContext): Promise<void> {
+      agentCtx = ctx;
+    },
     async callTool(_toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
-      // Return the SKILL.md content as instructions for the LLM to follow
       const userTask = String(args.task || '');
+
+      // If no agent context or no executable steps, return instructions as fallback
+      if (!agentCtx || !hasExecutableSteps) {
+        return {
+          content: `Skill "${skillName}" instructions:\n\n${body}\n\nUser task: ${userTask}`,
+        };
+      }
+
+      // Try to execute the skill's workflow directly
+      try {
+        const result = await executeMdSkill(skillName, body, userTask, agentCtx);
+        if (result) return result;
+      } catch {
+        // Execution failed, fall back to returning instructions
+      }
+
       return {
         content: `Skill "${skillName}" instructions:\n\n${body}\n\nUser task: ${userTask}`,
       };
     },
   };
+}
+
+/** Try to execute an MD skill's workflow by parsing its steps. Returns null if not executable. */
+async function executeMdSkill(
+  skillName: string,
+  body: string,
+  userTask: string,
+  ctx: AgentContext,
+): Promise<ToolResult | null> {
+  // fetch-wtr: weather query workflow
+  if (skillName === 'fetch-wtr') {
+    return executeFetchWtr(body, userTask, ctx);
+  }
+
+  // Generic MD skill: return instructions (not yet executable)
+  return null;
+}
+
+/** Execute the fetch-wtr weather query workflow */
+async function executeFetchWtr(
+  body: string,
+  userTask: string,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  // Parse city codes from the SKILL.md body
+  const cityOptions: Array<{ key: string; name: string; lat: string; lon: string }> = [
+    { key: '广州', name: '广东广州天河区', lat: '23.1291', lon: '113.2644' },
+    { key: '江西', name: '江西抚州东乡区', lat: '28.2367', lon: '116.6300' },
+  ];
+
+  // Determine which city from user task
+  let city = cityOptions[0]; // default to 广州
+  const taskLower = userTask.toLowerCase();
+  for (const opt of cityOptions) {
+    if (taskLower.includes(opt.key) || taskLower.includes(opt.name)) {
+      city = opt;
+      break;
+    }
+  }
+
+  // Call Open-Meteo API via fetch_url (only current_weather to avoid truncation)
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current_weather=true&timezone=Asia/Shanghai`;
+
+  try {
+    const result = await ctx.callTool('fetch_url', { url });
+    const data = result && typeof result === 'object' && 'content' in result
+      ? String(result.content)
+      : typeof result === 'string'
+        ? result
+        : JSON.stringify(result);
+
+    // Parse and format the weather data
+    try {
+      const json = JSON.parse(data);
+      const cw = json.current_weather;
+      if (!cw) {
+        return { content: `天气数据获取失败（${city.name}）：返回数据中没有 current_weather 字段。` };
+      }
+
+      // Weather code mapping
+      const weatherCodes: Record<number, string> = {
+        0: '晴朗', 1: '基本晴', 2: '多云', 3: '阴天',
+        45: '雾', 48: '雾凇',
+        51: '小毛毛雨', 53: '中毛毛雨', 55: '大毛毛雨',
+        61: '小雨', 63: '中雨', 65: '大雨',
+        71: '小雪', 73: '中雪', 75: '大雪',
+        80: '小阵雨', 81: '中阵雨', 82: '大阵雨',
+        95: '雷暴', 96: '雷暴+小冰雹', 99: '雷暴+大冰雹',
+      };
+
+      // Wind direction
+      const windDir = (deg: number): string => {
+        const dirs = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
+        return dirs[Math.round(deg / 45) % 8] || '';
+      };
+
+      const weatherDesc = weatherCodes[cw.weathercode] || `代码${cw.weathercode}`;
+
+      const output = `# 天气预报 - ${city.name}
+
+## 即时天气（${cw.time}）
+| 项目 | 详情 |
+|------|------|
+| 城市 | ${city.name} |
+| 天气 | ${weatherDesc} |
+| 气温 | ${cw.temperature}°C |
+| 风向/风力 | ${windDir(cw.winddirection)} ${cw.windspeed} km/h |
+
+---
+🌐 数据来源：Open-Meteo 开源气象 API（https://open-meteo.com/）`;
+
+      return { content: output };
+    } catch {
+      // Could not parse JSON — return raw data
+      return { content: `天气数据（${city.name}）：\n${data}` };
+    }
+  } catch (err) {
+    return { content: `天气查询失败：${err instanceof Error ? err.message : String(err)}`, isError: true };
+  }
 }

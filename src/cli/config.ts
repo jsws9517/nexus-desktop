@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { createInterface } from 'readline';
 import { ConfigManager } from '../config/index.js';
 import { importFromClaude } from '../config/claude-import.js';
 import { ThemeManager } from '../theme/manager.js';
@@ -57,14 +58,24 @@ export function registerConfigCommand(program: Command): void {
     .command('add-provider <name>')
     .description('Add a new LLM provider')
     .requiredOption('-t, --type <type>', 'Provider type: anthropic, openai, custom')
-    .requiredOption('-k, --apiKey <key>', 'API key')
+    .option('-k, --apiKey <key>', 'API key (or set via API_KEY_<NAME> env var, e.g. API_KEY_ANTHROPIC, API_KEY_DEEPSEEK)')
     .requiredOption('-m, --model <model>', 'Model name')
     .option('-u, --baseUrl <url>', 'Custom base URL (for compatible APIs)')
-    .action((name: string, options: { type: string; apiKey: string; model: string; baseUrl?: string }) => {
+    .action(async (name: string, options: { type: string; apiKey?: string; model: string; baseUrl?: string }) => {
+      let apiKey = options.apiKey || '';
+      if (!apiKey) {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        apiKey = await new Promise<string>(resolve => {
+          rl.question(t.warning('Enter API key (will be encrypted at rest): '), answer => {
+            rl.close();
+            resolve(answer.trim());
+          });
+        });
+      }
       const config = new ConfigManager();
       config.setProvider(name, {
         type: options.type as 'anthropic' | 'openai' | 'custom',
-        apiKey: options.apiKey,
+        apiKey,
         model: options.model,
         baseUrl: options.baseUrl,
       });

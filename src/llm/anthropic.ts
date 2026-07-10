@@ -96,12 +96,16 @@ export class AnthropicProvider implements LLMProvider {
         }
       }
       if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
+        let input = event.content_block.input;
+        if (typeof input === 'string') {
+          try { input = JSON.parse(input); } catch { input = {}; }
+        }
         yield {
           type: 'tool_call',
           toolCall: {
             id: event.content_block.id,
             name: event.content_block.name,
-            arguments: event.content_block.input as Record<string, unknown>,
+            arguments: input as Record<string, unknown>,
           },
         };
       }

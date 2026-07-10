@@ -40,3 +40,4 @@ tasks/
 # Temporary files
 *.tmp
 *.temp
+test.txt

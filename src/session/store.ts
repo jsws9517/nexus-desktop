@@ -52,6 +52,8 @@ export class SessionStore {
     const dir = dirname(dbPath);
     mkdirSync(dir, { recursive: true });
     this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = NORMAL');
     this.db.exec(INIT_SQL);
 
     // Register temp database for cleanup

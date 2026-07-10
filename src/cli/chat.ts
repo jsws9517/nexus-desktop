@@ -4,10 +4,13 @@ import { createInterface, emitKeypressEvents } from 'readline';
 import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve, extname } from 'path';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { Agent } from '../agent.js';
 import { showWelcomeScreen, BorderMode } from './logo.js';
+import { authorizePath } from '../security/path-authorizer.js';
+import { isDangerousBash } from '../security/audit.js';
+import { translateCommand } from '../mcp/cmd-alias.js';
 
 const execAsync = promisify(exec);
 
@@ -33,7 +36,7 @@ function isBinaryFile(path: string): boolean {
   return IMAGE_EXTS.has(extname(path).toLowerCase());
 }
 
-function expandAtMentions(input: string, cwd: string): string {
+async function expandAtMentions(input: string, cwd: string): Promise<string> {
   const paths = extractAtPaths(input);
   if (paths.length === 0) return input;
 
@@ -42,6 +45,12 @@ function expandAtMentions(input: string, cwd: string): string {
     const absPath = resolve(cwd, rawPath);
     if (!existsSync(absPath)) {
       context += `\n\n[File/Directory not found: ${rawPath}]`;
+      continue;
+    }
+
+    const authorized = await authorizePath(absPath);
+    if (!authorized) {
+      context += `\n\n[Access denied: ${rawPath} — outside allowed paths and access was rejected]`;
       continue;
     }
 
@@ -75,11 +84,24 @@ function expandAtMentions(input: string, cwd: string): string {
   return input;
 }
 
+// ---- Security confirmation ----
+
+async function confirmDangerousCommand(cmd: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<boolean>(resolve => {
+    rl.question(chalk.red(`\n⚠ Dangerous command detected:\n  $ ${cmd}\n  Allow? (y/N): `), answer => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === 'y');
+    });
+  });
+}
+
 // ---- !bash command ----
 
 async function executeBashCommand(cmd: string): Promise<string> {
   try {
-    const { stdout, stderr } = await execAsync(cmd, {
+    const actualCmd = process.platform === 'win32' ? `chcp 65001 >NUL && ${translateCommand(cmd)}` : cmd;
+    const { stdout, stderr } = await execAsync(actualCmd, {
       encoding: 'utf-8',
       timeout: 30000,
       maxBuffer: 10 * 1024 * 1024,
@@ -170,6 +192,11 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     output: process.stdout,
     prompt: chalk.cyan(`${promptName}> `),
   });
+
+  // Set console to UTF-8 on Windows to avoid garbled Chinese output
+  if (process.platform === 'win32') {
+    try { execSync('@chcp 65001>nul', { stdio: 'pipe' }); } catch {}
+  }
 
   emitKeypressEvents(process.stdin, rl);
 
@@ -541,6 +568,14 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         rl.prompt();
         return;
       }
+      if (isDangerousBash(cmd)) {
+        const approved = await confirmDangerousCommand(cmd);
+        if (!approved) {
+          console.log(chalk.red('Command denied.'));
+          rl.prompt();
+          return;
+        }
+      }
       console.log(chalk.gray(`$ ${cmd}`));
       const output = await executeBashCommand(cmd);
       console.log(output);
@@ -548,7 +583,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       return;
     }
 
-    const expandedInput = expandAtMentions(input, process.cwd());
+    const expandedInput = await expandAtMentions(input, process.cwd());
     process.stdout.write(chalk.yellow('agent> '));
     try {
       await agent.chat(expandedInput);
@@ -634,8 +669,7 @@ async function handleSlashCommand(
       console.log(chalk.gray('  Ctrl+O          - Toggle detail mode (compact / full)'));
       console.log(chalk.gray('\nInput:'));
       console.log(chalk.gray('  Enter           - Submit prompt (ignored if empty)'));
-      console.log(chalk.gray('  \\ + Enter       - Newline (backslash continuation)'));
-      console.log(chalk.gray('  Ctrl+J          - Newline (alternative)'));
+      console.log(chalk.gray('  Ctrl+Enter      - Newline(Major), Alternative: Ctrl+J | \\ + Enter'));
       console.log(chalk.gray('  Paste           - Auto-detected, Enter inserts newline'));
       return false;
 

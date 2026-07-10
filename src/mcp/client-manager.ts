@@ -9,6 +9,67 @@ interface ServerConnection {
   client: Client;
   transport: StdioClientTransport;
   tools: ToolDefinition[];
+  schemas: Map<string, object>;
+}
+
+function normalizeArgs(raw: Record<string, unknown>, schema: object): Record<string, unknown> {
+  // Handle case where raw is a JSON string (proxy serialization issue)
+  let args = raw;
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { args = {}; }
+  }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    args = {};
+  }
+
+  const s = schema as { 
+    properties?: Record<string, { type?: string; default?: unknown }>;
+    required?: string[];
+  };
+  if (!s.properties) return args as Record<string, unknown>;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(args as Record<string, unknown>)) {
+    const prop = s.properties[key];
+    if (!prop) {
+      out[key] = val;
+    } else if (typeof val === 'string') {
+      out[key] = val;
+    } else if (prop.type === 'string') {
+      out[key] = val == null ? '' : String(val);
+    } else if (prop.type === 'number') {
+      const n = Number(val);
+      out[key] = isNaN(n) ? val : n;
+    } else if (prop.type === 'boolean') {
+      out[key] = val === 'true' || val === true || val === 1;
+    } else if (prop.type === 'array') {
+      out[key] = val != null && !Array.isArray(val) ? [val] : (val ?? []);
+    } else {
+      out[key] = val;
+    }
+  }
+  
+  // Fill required params with defaults if missing
+  if (s.required) {
+    for (const key of s.required) {
+      if (out[key] === undefined || out[key] === null) {
+        const prop = s.properties[key];
+        if (prop?.default !== undefined) {
+          out[key] = prop.default;
+        } else if (prop?.type === 'string') {
+          out[key] = '';
+        } else if (prop?.type === 'number') {
+          out[key] = 0;
+        } else if (prop?.type === 'boolean') {
+          out[key] = false;
+        } else if (prop?.type === 'array') {
+          out[key] = [];
+        }
+      }
+    }
+  }
+  
+  return out;
 }
 
 export class ClientManager {
@@ -31,13 +92,15 @@ export class ClientManager {
 
     // Fetch tools from the server
     const toolsResult = await client.listTools();
-    const tools: ToolDefinition[] = toolsResult.tools.map((t) => ({
-      name: t.name,
-      description: t.description || '',
-      inputSchema: t.inputSchema as object,
-    }));
+    const tools: ToolDefinition[] = [];
+    const schemas = new Map<string, object>();
+    for (const t of toolsResult.tools) {
+      const schema = t.inputSchema as object;
+      tools.push({ name: t.name, description: t.description || '', inputSchema: schema });
+      schemas.set(t.name, schema);
+    }
 
-    this.connections.set(name, { name, client, transport, tools });
+    this.connections.set(name, { name, client, transport, tools, schemas });
   }
 
   async connectAll(servers: Record<string, ServerConfig>): Promise<void> {
@@ -76,7 +139,17 @@ export class ClientManager {
     for (const conn of this.connections.values()) {
       const hasTool = conn.tools.some((t) => t.name === name);
       if (hasTool) {
-        const result = await conn.client.callTool({ name, arguments: args });
+        const schema = conn.schemas.get(name) ?? conn.tools.find(t => t.name === name)?.inputSchema;
+        const safeArgs = schema ? normalizeArgs(args, schema) : args;
+        let result;
+        try {
+          result = await conn.client.callTool({ name, arguments: safeArgs });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const argsDump = JSON.stringify(safeArgs).slice(0, 500);
+          const schemaDump = JSON.stringify(schema).slice(0, 500);
+          return { content: `MCP tool "${name}" failed: ${errMsg}\nArgs: ${argsDump}\nSchema: ${schemaDump}`, isError: true };
+        }
         const content = (result.content as Array<{ type: string; text?: string }>)
           .map((c) => (c.type === 'text' ? (c.text || '') : JSON.stringify(c)))
           .join('\n');

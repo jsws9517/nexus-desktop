@@ -335,7 +335,9 @@ export class AcpServer {
     }
 
     // Set up output callback for streaming
+    let responseText = '';
     this.agent.onOutput = (text: string) => {
+      responseText += text;
       this.sendNotification('session/update', {
         sessionId,
         update: {
@@ -354,6 +356,16 @@ export class AcpServer {
 
     try {
       await this.agent.chat(userInput);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      responseText = `Error: ${errMsg}`;
+      this.sendNotification('session/update', {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: responseText },
+        },
+      });
     } finally {
       this.agent.onOutput = undefined;
       this.agent.onEvent = undefined;
@@ -370,7 +382,7 @@ export class AcpServer {
       },
     });
 
-    return {};
+    return { content: responseText };
   }
 
   private async handleToolCall(name: string, args: unknown): Promise<unknown> {
