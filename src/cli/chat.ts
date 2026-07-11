@@ -769,6 +769,7 @@ async function handleSlashCommand(
       console.log('  /clear           - Clear the current context');
       console.log('  /compact         - Compress current session history');
       console.log('  /new             - Compress history and start a new session');
+      console.log('  /clean [-size <N>] [-days <N>] - Clean small or old sessions');
       console.log('  /provider        - Show the current provider');
       console.log('  /model           - Show or switch the current model');
       console.log('  /rename <name>   - Rename the current session');
@@ -1074,6 +1075,92 @@ ${aggregated}`,
       } catch (err) {
         console.log(chalk.red(`Analysis failed: ${err instanceof Error ? err.message : String(err)}`));
       }
+      return false;
+    }
+
+    case 'clean': {
+      const currentId = agent.getCurrentSessionId();
+      const allSessions = agent.session.list();
+
+      // parse -size and -days from args
+      let sizeThreshold: number | null = null;
+      let daysValue: number | null = null;
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === '-size') {
+          const next = args[i + 1];
+          if (next && !next.startsWith('-')) {
+            sizeThreshold = parseInt(next, 10);
+            i++;
+          } else {
+            sizeThreshold = 0; // 0 means "zero-token only"
+          }
+        } else if (args[i] === '-days') {
+          const next = args[i + 1];
+          if (next && !next.startsWith('-')) {
+            daysValue = parseInt(next, 10);
+            i++;
+          } else {
+            daysValue = 7;
+          }
+        } else {
+          console.log(chalk.yellow(`Unknown flag: ${args[i]}`));
+          console.log(chalk.yellow('Usage: /clean [-size <N>] [-days <N>]'));
+          return false;
+        }
+      }
+
+      // Default: zero-token
+      if (sizeThreshold === null && daysValue === null) {
+        sizeThreshold = 0; // default: zero-token only
+      }
+
+      let toDelete: typeof allSessions = [];
+      const now = Date.now();
+
+      for (const s of allSessions) {
+        if (s.id === currentId) continue;
+
+        if (sizeThreshold !== null) {
+          const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
+          // sizeThreshold=0 means "zero-token only"; >0 means "tokens < threshold"
+          if (sizeThreshold === 0) {
+            if (tokens !== 0) continue;
+          } else {
+            if (tokens >= sizeThreshold) continue;
+          }
+        }
+
+        if (daysValue !== null) {
+          const cutoff = now - daysValue * 86400000;
+          if (s.updatedAt >= cutoff) continue;
+        }
+
+        toDelete.push(s);
+      }
+
+      if (toDelete.length === 0) {
+        console.log(chalk.gray('No sessions to clean.'));
+        return false;
+      }
+
+      console.log(chalk.bold('Sessions to delete:'));
+      for (const s of toDelete) {
+        const date = new Date(s.updatedAt).toLocaleString();
+        const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
+        console.log(`  ${chalk.cyan(s.name)} (${chalk.dim(date)}, ${tokens} tokens)`);
+      }
+
+      const confirm = await (customQuestion!)(chalk.yellow('  Confirm? (y/N): '));
+      if (confirm.trim().toLowerCase() !== 'y') {
+        console.log(chalk.gray('Cancelled.'));
+        return false;
+      }
+
+      for (const s of toDelete) {
+        agent.session.delete(s.id);
+        agent.sessionMemory.remove(s.id);
+      }
+      console.log(chalk.green(`Cleaned ${toDelete.length} session(s).`));
       return false;
     }
 
