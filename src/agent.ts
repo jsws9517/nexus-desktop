@@ -1,9 +1,11 @@
 import chalk from 'chalk';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { ConfigManager } from './config/index.js';
 import { LLMProvider, createProvider } from './llm/provider.js';
 import { ContextManager } from './llm/context-manager.js';
 import { SessionManager } from './session/manager.js';
+import { SessionMemory } from './session/memory.js';
 import { ClientManager } from './mcp/client-manager.js';
 import { SkillRegistry } from './skills/registry.js';
 import { AcpProtocol } from './acp/protocol.js';
@@ -42,6 +44,7 @@ export class Agent {
   provider: LLMProvider;
   mcp: ClientManager;
   session: SessionManager;
+  sessionMemory: SessionMemory;
   context: ContextManager;
   skills: SkillRegistry;
   acp: AcpProtocol;
@@ -89,6 +92,7 @@ export class Agent {
     this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options, this.config.getActiveProvider());
     this.mcp = new ClientManager();
     this.session = new SessionManager();
+    this.sessionMemory = new SessionMemory();
     this.context = new ContextManager({ provider: this.provider, maxContextTokens: this.config.getModelContextLimit() });
     this.skills = new SkillRegistry();
     this.acp = new AcpProtocol();
@@ -174,6 +178,7 @@ export class Agent {
       if (loaded) {
         this.currentSessionId = sessionId;
         this.context.setMessages(loaded.messages);
+        this.injectSessionMemory();
         return sessionId;
       }
     }
@@ -267,7 +272,10 @@ export class Agent {
     this.context.add(userMessage);
     this.session.addMessage(this.currentSessionId!, userMessage);
 
+    // Set compression progress callback to emit thinking events
+    this.context.onProgress = (msg) => this.onEvent?.({ type: 'thinking', thinking: msg });
     await this.context.compress();
+    this.context.onProgress = undefined;
 
     // Auto-register sanity check hook for each chat
     const sanityCheck = createSanityCheckHook(userInput);
@@ -318,6 +326,52 @@ export class Agent {
     } finally {
       this.busy = false;
       this.onEvent?.({ type: 'session_end' });
+      if (this.currentSessionId && this.currentUserInput) {
+        this.updateSessionMemory();
+      }
+    }
+  }
+
+  private updateSessionMemory(): void {
+    const sessionId = this.currentSessionId;
+    if (!sessionId) return;
+    const session = this.session.get(sessionId);
+    const sessionName = session?.name || sessionId;
+    const msgs = this.context.getMessages();
+    const userMsgs = msgs.filter((m) => m.role === 'user');
+    const lastUser = userMsgs[userMsgs.length - 1];
+
+    // build a condensed memory entry
+    const toolCalls = msgs.filter((m) => m.role === 'assistant' && m.toolCalls);
+    const toolNames = [...new Set(toolCalls.flatMap((m) => m.toolCalls?.map((tc) => tc.name) || []))];
+    const entryParts: string[] = [];
+    if (lastUser && this.currentUserInput) {
+      entryParts.push(lastUser.content.slice(0, 120));
+    }
+    if (toolNames.length > 0) {
+      entryParts.push(`[tools: ${toolNames.join(', ')}]`);
+    }
+    if (entryParts.length === 0) return;
+
+    const line = `- ${entryParts.join(' ')}\n`;
+    const existing = this.sessionMemory.load(sessionId) || '';
+    this.sessionMemory.save(sessionId, sessionName, existing + line);
+  }
+
+  private injectSessionMemory(): void {
+    const sessionId = this.currentSessionId;
+    if (!sessionId) return;
+    const memory = this.sessionMemory.load(sessionId);
+    if (!memory) return;
+    const msgs = this.context.getMessages();
+    const sysIdx = msgs.findIndex((m) => m.role === 'system');
+    if (sysIdx >= 0) {
+      const sys = msgs[sysIdx]!;
+      if (!sys.content.includes('[会话记忆]')) {
+        sys.content += `\n\n[会话记忆]:\n${memory}`;
+      }
+    } else {
+      this.context.add({ role: 'system', content: `[会话记忆]:\n${memory}` });
     }
   }
 
@@ -400,6 +454,8 @@ export class Agent {
       };
       this.context.add(msg);
       this.session.addMessage(this.currentSessionId!, msg);
+      // Auto-save long generated content to file
+      this.autoSaveLongContent(assistantMessage);
     }
 
     // Execute ALL tool calls before re-running LLM
@@ -632,83 +688,122 @@ export class Agent {
      }
    }
 
-   async resumeSession(sessionId: string): Promise<{ restored: boolean; compressed: boolean; sessionName: string }> {
-     const loaded = this.session.loadSession(sessionId);
-     if (!loaded) return { restored: false, compressed: false, sessionName: '' };
+  async resumeSession(sessionId: string): Promise<{ restored: boolean; compressed: boolean; sessionName: string }> {
+    const loaded = this.session.loadSession(sessionId);
+    if (!loaded) return { restored: false, compressed: false, sessionName: '' };
 
-     const tokenCount = this.session.getTokenEstimate(sessionId, this.provider);
-     const maxTokens = this.config.getProvider().maxContextTokens || 8192;
+    const tokenCount = this.session.getTokenEstimate(sessionId, this.provider);
+    const modelLimit = this.config.getModelContextLimit();
+    const maxTokens = this.config.getProvider().maxContextTokens || modelLimit || 8192;
 
-     if (tokenCount > maxTokens && loaded.messages.length >= 4) {
-       const messages = loaded.messages;
-       const keepCount = Math.min(6, messages.length);
+    if (tokenCount > maxTokens && loaded.messages.length >= 4) {
+      const messages = loaded.messages;
 
-       // Find safe split point: don't cut inside a tool_call chain
-       let splitIdx = messages.length - keepCount;
-       while (splitIdx > 0) {
-         const prev = messages[splitIdx - 1];
-         // If previous message is assistant with tool_calls, check if tool results follow
-         if (prev.role === 'assistant' && prev.toolCalls && prev.toolCalls.length > 0) {
-           const toolCallIds = new Set(prev.toolCalls.map(tc => tc.id));
-           const hasOrphanedTools = messages.slice(splitIdx).some(
-             m => m.role === 'tool' && m.toolCallId && toolCallIds.has(m.toolCallId),
-           );
-           if (hasOrphanedTools) {
-             splitIdx--; // move left to include the assistant message
-             continue;
-           }
-         }
-         // If current message is a tool message, move left to include its assistant
-         const curr = messages[splitIdx];
-         if (curr.role === 'tool' && curr.toolCallId) {
-           for (let j = splitIdx - 1; j >= 0; j--) {
-             const m = messages[j];
-             if (m.role === 'assistant' && m.toolCalls?.some(tc => tc.id === curr.toolCallId)) {
-               splitIdx = j; // include the assistant
-               break;
-             }
-             if (m.role === 'user') break;
-           }
-           continue;
-         }
-         break; // safe split point found
-       }
+      // Dynamic keep count: use up to 50% of context budget for recent messages
+      const keepBudget = Math.floor(maxTokens * 0.5);
+      let keepTokens = 0;
+      let keepCount = 0;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const t = this.provider?.countTokens(messages[i].content) || Math.ceil(messages[i].content.length / 4);
+        if (keepTokens + t > keepBudget && keepCount >= 6) break;
+        keepTokens += t;
+        keepCount++;
+      }
+      keepCount = Math.max(6, Math.min(messages.length, keepCount));
 
-       const toSummarize = messages.slice(0, splitIdx);
-       const toKeep = messages.slice(splitIdx);
+      // Find safe split point: don't cut inside a tool_call chain
+      let splitIdx = messages.length - keepCount;
+      while (splitIdx > 0) {
+        const prev = messages[splitIdx - 1];
+        if (prev.role === 'assistant' && prev.toolCalls && prev.toolCalls.length > 0) {
+          const toolCallIds = new Set(prev.toolCalls.map(tc => tc.id));
+          const hasOrphanedTools = messages.slice(splitIdx).some(
+            m => m.role === 'tool' && m.toolCallId && toolCallIds.has(m.toolCallId),
+          );
+          if (hasOrphanedTools) {
+            splitIdx--;
+            continue;
+          }
+        }
+        const curr = messages[splitIdx];
+        if (curr.role === 'tool' && curr.toolCallId) {
+          for (let j = splitIdx - 1; j >= 0; j--) {
+            const m = messages[j];
+            if (m.role === 'assistant' && m.toolCalls?.some(tc => tc.id === curr.toolCallId)) {
+              splitIdx = j;
+              break;
+            }
+            if (m.role === 'user') break;
+          }
+          continue;
+        }
+        break;
+      }
 
-       const summary = await this.summarizeMessages(toSummarize);
-       this.context.setMessages([
-         { role: 'system', content: `[已恢复会话「${loaded.session.name}」— 原始 ${tokenCount} tokens，已压缩为摘要]\n\n${summary}` },
-         ...toKeep,
-       ]);
-       this.currentSessionId = sessionId;
-       return { restored: true, compressed: true, sessionName: loaded.session.name };
-     }
+      const toSummarize = messages.slice(0, splitIdx);
+      const toKeep = messages.slice(splitIdx);
 
-     this.currentSessionId = sessionId;
-     this.context.setMessages(loaded.messages);
-     return { restored: true, compressed: false, sessionName: loaded.session.name };
-   }
+      const summary = await this.summarizeMessages(toSummarize);
+      const memoryContent = this.sessionMemory.load(sessionId);
+      const memoryNote = memoryContent
+        ? `\n\n[会话记忆]:\n${memoryContent}`
+        : '';
+      this.context.setMessages([
+        { role: 'system', content: `[已恢复会话「${loaded.session.name}」— 原始 ${tokenCount} tokens，已压缩为摘要，保留了最近 ${keepCount} 条消息]\n\n${summary}${memoryNote}` },
+        ...toKeep,
+      ]);
+      this.currentSessionId = sessionId;
+      return { restored: true, compressed: true, sessionName: loaded.session.name };
+    }
 
-   private async summarizeMessages(messages: Message[]): Promise<string> {
-     // Limit total input to ~8000 chars to avoid exceeding model context
-     const MAX_TOTAL_CHARS = 8000;
-     let totalChars = 0;
-     const lines: string[] = [];
-     for (const m of messages) {
-       if (m.role !== 'user' && m.role !== 'assistant') continue;
-       const text = m.content.slice(0, 500);
-       if (totalChars + text.length > MAX_TOTAL_CHARS) break;
-       totalChars += text.length;
-       lines.push(`${m.role}: ${text}`);
-     }
+    this.currentSessionId = sessionId;
+    this.context.setMessages(loaded.messages);
+    this.injectSessionMemory();
+    return { restored: true, compressed: false, sessionName: loaded.session.name };
+  }
 
-     return await this.provider.complete([{
-       role: 'user',
-       content: `请将以下对话历史压缩为简洁的上下文摘要，保留关键信息、决策和结论：\n\n${lines.join('\n')}`,
-     }]);
-   }
+  private async summarizeMessages(messages: Message[]): Promise<string> {
+    // Limit total input to ~20000 chars to balance detail vs context
+    const MAX_TOTAL_CHARS = 20000;
+    let totalChars = 0;
+    const lines: string[] = [];
+    for (const m of messages) {
+      if (m.role !== 'user' && m.role !== 'assistant') continue;
+      // Prioritize assistant messages (they contain generated content like novels)
+      const limit = m.role === 'assistant' ? 3000 : 1500;
+      const text = m.content.slice(0, limit);
+      if (totalChars + text.length > MAX_TOTAL_CHARS) {
+        if (m.role === 'assistant') {
+          // Always include assistant content, truncate to remaining budget
+          const remaining = MAX_TOTAL_CHARS - totalChars;
+          if (remaining > 100) lines.push(`${m.role}: ${text.slice(0, remaining)}`);
+        }
+        break;
+      }
+      totalChars += text.length;
+      lines.push(`${m.role}: ${text}`);
+    }
+
+    return await this.provider.complete([{
+      role: 'user',
+      content: `请将以下对话历史压缩为详细的上下文摘要，保留关键信息、所有已生成的内容（如小说章节正文、代码等）、用户的要求、以及已做出的决策和结论。\n\n${lines.join('\n')}`,
+    }]);
+  }
+
+  /** Auto-save long assistant responses to files in saved-content/ so they survive compression */
+  private autoSaveLongContent(content: string): void {
+    if (!content || content.length < 500) return;
+    const dir = resolve(process.cwd(), 'saved-content');
+    mkdirSync(dir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const title = content.split('\n')[0]?.trim().slice(0, 50).replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '') || 'content';
+    const filename = `${timestamp}_${title}.md`;
+    writeFileSync(join(dir, filename), content, 'utf-8');
+    // Notify user via console if interactive
+    if (!this.onOutput) {
+      process.stdout.write(`\n\x1b[2m[Auto-saved: saved-content/${filename}]\x1b[0m\n`);
+    }
+  }
 
   private async injectMemoryContext(): Promise<void> {
     try {

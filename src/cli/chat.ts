@@ -775,6 +775,8 @@ async function handleSlashCommand(
       console.log('  /resume          - Browse and resume a previous session');
       console.log('  /history [delete <ids>] - View/delete session history');
       console.log('  /history-view [id] - Browse raw SQLite message history for a session');
+      console.log('  /memory          - Show this session\'s persistent memory');
+      console.log('  /insight         - Cross-session needs & topics analysis');
       console.log('  /tools           - List available tools');
       console.log('  /mcp             - List MCP server connections');
       console.log('  /skills          - List loaded skills/plugins');
@@ -1027,6 +1029,51 @@ async function handleSlashCommand(
         console.log(`  ${String(i + 1).padStart(3)}. ${roleTag}: ${chalk.dim(preview)}${tokens}`);
       }
       console.log(chalk.gray(`\nTip: Use /resume to switch to a session, then the context will have the full history.\n`));
+      return false;
+    }
+
+    case 'memory': {
+      const memSessionId = agent.getCurrentSessionId();
+      if (!memSessionId) {
+        console.log(chalk.yellow('No active session.'));
+        return false;
+      }
+      const mem = agent.sessionMemory.load(memSessionId);
+      if (!mem) {
+        console.log(chalk.gray('No memory for this session yet. Memories are built automatically as you chat.'));
+      } else {
+        console.log(chalk.bold(`\nSession Memory:\n`));
+        console.log(mem);
+      }
+      return false;
+    }
+
+    case 'insight': {
+      const aggregated = agent.sessionMemory.aggregateAll();
+      if (aggregated === '(no session memories yet)') {
+        console.log(chalk.gray('No session memories found. Memories build automatically as you chat.'));
+        return false;
+      }
+      console.log(chalk.gray('Analyzing across all sessions...'));
+      try {
+        const result = await agent.provider.complete([{
+          role: 'user',
+          content: `以下是用户所有会话的记忆摘要，每个会话的格式为：
+- 用户提问 → 助手回答/操作
+
+请分析：
+1. 用户提过哪些主要需求/请求？
+2. 哪些主题是高频关注的？
+3. 用户的深层目标是什么？
+
+记忆摘要：
+${aggregated}`,
+        }]);
+        console.log(chalk.bold(`\nCross-Session Analysis:\n`));
+        console.log(result);
+      } catch (err) {
+        console.log(chalk.red(`Analysis failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
       return false;
     }
 
