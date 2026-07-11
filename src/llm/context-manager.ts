@@ -8,6 +8,8 @@ export class ContextManager {
   private tokenBudget = 8000;
   private maxContextTokens = 8192;
   private provider?: LLMProvider;
+  onProgress?: (message: string) => void;
+  private compressionTimeoutMs = 120_000;
 
   constructor(options?: { maxMessages?: number; tokenBudget?: number; maxContextTokens?: number; provider?: LLMProvider }) {
     if (options?.maxMessages) this.maxMessages = options.maxMessages;
@@ -172,6 +174,8 @@ export class ContextManager {
 
       if (summarizable.length < 4) break;
 
+      this.onProgress?.(`Compressing context (round ${round + 1}/${MAX_ROUNDS})...`);
+
       const summaryPrompt: Message = {
         role: 'user',
         content: `Summarize the following conversation history concisely:\n\n${summarizable
@@ -180,7 +184,7 @@ export class ContextManager {
       };
 
       try {
-        const summary = await this.provider.complete([summaryPrompt]);
+        const summary = await this.provider.complete([summaryPrompt], this.compressionTimeoutMs);
         this.messages = [
           ...kept.filter((m) => m.role === 'system'),
           { role: 'system', content: `[Previous conversation summary]: ${summary}` },

@@ -184,12 +184,18 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async complete(messages: Message[]): Promise<string> {
-    const response = await this.client.chat.completions.create({
-      model: this.model,
-      messages: this.toOpenAIMessages(messages),
-    });
-    return response.choices[0]?.message?.content || '';
+  async complete(messages: Message[], timeoutMs = 120_000): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: this.toOpenAIMessages(messages),
+      }, { signal: controller.signal });
+      return response.choices[0]?.message?.content || '';
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   countTokens(text: string): number {

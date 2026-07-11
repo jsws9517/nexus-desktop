@@ -648,6 +648,11 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     }
 
     if (input.startsWith('/')) {
+      // Persist slash command to session history so PageUp can browse it
+      const sid = agent.getCurrentSessionId();
+      if (sid) {
+        agent.session.addMessage(sid, { role: 'user', content: input });
+      }
       const handled = await handleSlashCommand(input, agent, rl, customQuestion);
       if (!handled) {
         rl.prompt();

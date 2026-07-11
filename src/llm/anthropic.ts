@@ -113,7 +113,7 @@ export class AnthropicProvider implements LLMProvider {
     yield { type: 'done' };
   }
 
-  async complete(messages: Message[]): Promise<string> {
+  async complete(messages: Message[], timeoutMs = 120_000): Promise<string> {
     const systemMessages = messages.filter((m) => m.role === 'system');
     const systemContent = systemMessages.length > 0
       ? systemMessages.map(m => m.content).join('\n\n')
@@ -122,15 +122,21 @@ export class AnthropicProvider implements LLMProvider {
       messages.filter((m) => m.role !== 'system')
     );
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.options?.maxTokens as number || 4096,
-      system: systemContent,
-      messages: anthropicMessages,
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: this.options?.maxTokens as number || 4096,
+        system: systemContent,
+        messages: anthropicMessages,
+      }, { signal: controller.signal });
 
-    const content = response.content[0];
-    return content.type === 'text' ? content.text : '';
+      const content = response.content[0];
+      return content.type === 'text' ? content.text : '';
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   countTokens(text: string): number {
