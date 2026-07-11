@@ -15,6 +15,17 @@ const AUTH_DURATION_MS = 24 * 60 * 60 * 1000;
 
 const alreadyConfirmed = new Set<string>();
 
+/**
+ * Injected question function for prompting the user.
+ * When set, used instead of creating a second readline on process.stdin
+ * (which conflicts with the main chat readline).
+ */
+let _permissionPrompter: ((question: string) => Promise<string>) | null = null;
+
+export function setPermissionPrompter(fn: (question: string) => Promise<string>): void {
+  _permissionPrompter = fn;
+}
+
 function loadAuthorizations(): AuthorizationEntry[] {
   if (!existsSync(AUTH_PATH)) return [];
   try {
@@ -49,25 +60,32 @@ async function promptUser(path: string): Promise<boolean> {
     return true;
   }
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await new Promise<string>(resolve => {
-    rl.question(`\n\x1b[33m⚠ Security: Agent is requesting access to read/write:\n  ${path}\nAllow? (y=once, a=always, n=deny): \x1b[0m`, resolve);
-  });
-  rl.close();
+  const question = `\n\x1b[33m⚠ Security: Agent is requesting access to read/write:\n  ${path}\nAllow? (y=once, a=always, n=deny): \x1b[0m`;
+  const answer = _permissionPrompter
+    ? await _permissionPrompter(question)
+    : await new Promise<string>(resolve => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        rl.question(question, resolve);
+        rl.on('close', () => resolve(''));
+      });
 
   const choice = answer.trim().toLowerCase();
   if (choice === 'y' || choice === 'a') {
     alreadyConfirmed.add(path);
-    const newEntry: AuthorizationEntry = {
-      path: normalize(path),
-      grantedAt: Date.now(),
-      expiresAt: choice === 'a' ? null : Date.now() + AUTH_DURATION_MS,
-    };
-    const updated = loadAuthorizations();
-    const idx = updated.findIndex(e => normalize(e.path).toLowerCase() === normalized);
-    if (idx >= 0) updated[idx] = newEntry;
-    else updated.push(newEntry);
-    saveAuthorizations(updated);
+    if (choice === 'a') {
+      // "always" persists across sessions
+      const newEntry: AuthorizationEntry = {
+        path: normalize(path),
+        grantedAt: Date.now(),
+        expiresAt: null,
+      };
+      const updated = loadAuthorizations();
+      const idx = updated.findIndex(e => normalize(e.path).toLowerCase() === normalized);
+      if (idx >= 0) updated[idx] = newEntry;
+      else updated.push(newEntry);
+      saveAuthorizations(updated);
+    }
+    // "once" (y) is in-memory only — cleared on process exit
     return true;
   }
   return false;
@@ -84,16 +102,24 @@ export function clearAuthorizations(): void {
   alreadyConfirmed.clear();
 }
 
-export async function authorizePath(absPath: string): Promise<boolean> {
+/**
+ * Check if path is in an already-allowed directory WITHOUT prompting.
+ * If the path is not yet authorized, returns false — caller should use tool-level
+ * permission system (with visible tool call) instead of a silent prompt.
+ */
+export function checkPathAllowed(absPath: string): boolean {
   const allowed = [
     process.cwd().toLowerCase(),
     ...getAuthorizedRoots().map(r => normalize(r).toLowerCase()),
   ];
-
   const normalized = normalize(absPath).toLowerCase();
   for (const root of allowed) {
     if (normalized.startsWith(root)) return true;
   }
+  return false;
+}
 
+export async function authorizePath(absPath: string): Promise<boolean> {
+  if (checkPathAllowed(absPath)) return true;
   return promptUser(absPath);
 }

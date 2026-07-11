@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync, cpSync, unlinkSync, rmdirSync } from 'fs';
+import { join } from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { lookup } from 'dns/promises';
@@ -205,6 +206,33 @@ async function isPrivateUrl(urlStr: string): Promise<boolean> {
 
 export const BUILTIN_TOOLS: BuiltinTool[] = [
   {
+    name: 'read_text_file',
+    description: 'Read the contents of a text file at the given path',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute file path' },
+      },
+      required: ['path'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const path = String(args.path || '');
+      const authorized = await authorizePath(path);
+      if (!authorized) {
+        return { content: `Access denied: "${path}" is not in the allowed path list and access was rejected by user.`, isError: true };
+      }
+      try {
+        if (!existsSync(path)) {
+          return { content: `File not found: ${path}`, isError: true };
+        }
+        const content = readFileSync(path, 'utf-8');
+        return { content };
+      } catch (err) {
+        return { content: `Error reading file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
     name: 'file_read',
     description: 'Read the contents of a file at the given path',
     inputSchema: {
@@ -228,6 +256,290 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         return { content };
       } catch (err) {
         return { content: `Error reading file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'read_multiple_files',
+    description: 'Read the contents of multiple files at once',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', items: { type: 'string' }, description: 'Array of absolute file paths' },
+      },
+      required: ['paths'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const paths = (args.paths as string[]) || [];
+      const results: string[] = [];
+      for (const p of paths) {
+        const authorized = await authorizePath(p);
+        if (!authorized) { results.push(`\n--- ${p}: ACCESS DENIED ---`); continue; }
+        if (!existsSync(p)) { results.push(`\n--- ${p}: NOT FOUND ---`); continue; }
+        try {
+          const content = readFileSync(p, 'utf-8');
+          results.push(`\n--- ${p} ---\n${content}`);
+        } catch (err) {
+          results.push(`\n--- ${p}: ${err instanceof Error ? err.message : String(err)} ---`);
+        }
+      }
+      return { content: results.join('') };
+    },
+  },
+  {
+    name: 'edit_file',
+    description: 'Make targeted edits to a file (search-and-replace on exact text)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute file path' },
+        edits: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              oldText: { type: 'string', description: 'Exact text to search for (must match exactly once)' },
+              newText: { type: 'string', description: 'Replacement text' },
+            },
+            required: ['oldText', 'newText'],
+          },
+        },
+        dryRun: { type: 'boolean', description: 'If true, show diff without applying' },
+      },
+      required: ['path', 'edits'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const path = String(args.path || '');
+      const edits = (args.edits as Array<{ oldText: string; newText: string }>) || [];
+      const dryRun = !!args.dryRun;
+      const authorized = await authorizePath(path);
+      if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
+      if (!existsSync(path)) return { content: `File not found: ${path}`, isError: true };
+      try {
+        const content = readFileSync(path, 'utf-8');
+        const results: string[] = [];
+        let modified = content;
+        for (const edit of edits) {
+          const idx = modified.indexOf(edit.oldText);
+          if (idx === -1) {
+            results.push(`✗ "${edit.oldText.slice(0, 60)}" not found — SKIPPED`);
+            continue;
+          }
+          const nextIdx = modified.indexOf(edit.oldText, idx + 1);
+          if (nextIdx !== -1) {
+            results.push(`✗ "${edit.oldText.slice(0, 60)}" appears ${nextIdx > idx ? 'multiple times' : 'once'} — SKIPPED (must match exactly once)`);
+            continue;
+          }
+          modified = modified.slice(0, idx) + edit.newText + modified.slice(idx + edit.oldText.length);
+          results.push(`✓ Replaced "${edit.oldText.slice(0, 60)}" → "${edit.newText.slice(0, 60)}"`);
+        }
+        if (dryRun) {
+          return { content: `[DRY RUN — not applied]\n${results.join('\n')}` };
+        }
+        writeFileSync(path, modified, 'utf-8');
+        return { content: results.join('\n') };
+      } catch (err) {
+        return { content: `Error editing file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'create_directory',
+    description: 'Create a new directory at the given path (including parent dirs)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute directory path to create' },
+      },
+      required: ['path'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const path = String(args.path || '');
+      const parent = path.split(/[/\\]/).slice(0, -1).join('/') || '.';
+      const authorized = await authorizePath(parent);
+      if (!authorized) return { content: `Access denied: parent of "${path}"`, isError: true };
+      try {
+        mkdirSync(path, { recursive: true });
+        return { content: `Created directory: ${path}` };
+      } catch (err) {
+        return { content: `Error creating directory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'list_directory',
+    description: 'List files and directories in a given directory',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute directory path' },
+      },
+      required: ['path'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const path = String(args.path || '');
+      const authorized = await authorizePath(path);
+      if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
+      try {
+        const entries = readdirSync(path, { withFileTypes: true });
+        const list = entries.map(e => `${e.isDirectory() ? '/' : ''}${e.name}`).join('\n');
+        return { content: list || '(empty directory)' };
+      } catch (err) {
+        return { content: `Error listing directory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'directory_tree',
+    description: 'Get a recursive directory tree listing',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute directory path' },
+        maxDepth: { type: 'number', description: 'Maximum recursion depth (default 10)' },
+      },
+      required: ['path'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const dirPath = String(args.path || '');
+      const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 10, 1), 20);
+      const authorized = await authorizePath(dirPath);
+      if (!authorized) return { content: `Access denied: "${dirPath}"`, isError: true };
+      try {
+        function walk(d: string, depth: number): string[] {
+          if (depth > maxDepth) return ['  ...(max depth)'];
+          const lines: string[] = [];
+          try {
+            const entries = readdirSync(d, { withFileTypes: true });
+            for (const e of entries) {
+              const prefix = e.isDirectory() ? '/' : '  ';
+              lines.push(prefix + e.name);
+              if (e.isDirectory()) {
+                const sub = walk(join(d, e.name), depth + 1);
+                lines.push(...sub.map(l => '  ' + l));
+              }
+            }
+          } catch {}
+          return lines;
+        }
+        const tree = walk(dirPath, 0);
+        return { content: tree.join('\n') };
+      } catch (err) {
+        return { content: `Error listing tree: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'move_file',
+    description: 'Move or rename a file or directory',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Absolute source path' },
+        destination: { type: 'string', description: 'Absolute destination path' },
+      },
+      required: ['source', 'destination'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const src = String(args.source || '');
+      const dst = String(args.destination || '');
+      const srcAuth = await authorizePath(src);
+      if (!srcAuth) return { content: `Access denied: source "${src}"`, isError: true };
+      const dstAuth = await authorizePath(dst);
+      if (!dstAuth) return { content: `Access denied: destination "${dst}"`, isError: true };
+      try {
+        renameSync(src, dst);
+        return { content: `Moved: ${src} → ${dst}` };
+      } catch (err) {
+        return { content: `Error moving file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'copy_file',
+    description: 'Copy a file or directory to a new location',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Absolute source path' },
+        destination: { type: 'string', description: 'Absolute destination path' },
+      },
+      required: ['source', 'destination'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const src = String(args.source || '');
+      const dst = String(args.destination || '');
+      const srcAuth = await authorizePath(src);
+      if (!srcAuth) return { content: `Access denied: source "${src}"`, isError: true };
+      const dstAuth = await authorizePath(dst);
+      if (!dstAuth) return { content: `Access denied: destination "${dst}"`, isError: true };
+      try {
+        const st = statSync(src);
+        if (st.isDirectory()) {
+          cpSync(src, dst, { recursive: true });
+        } else {
+          cpSync(src, dst);
+        }
+        return { content: `Copied: ${src} → ${dst}` };
+      } catch (err) {
+        return { content: `Error copying: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'get_file_info',
+    description: 'Get metadata about a file or directory',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute file path' },
+      },
+      required: ['path'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const path = String(args.path || '');
+      const authorized = await authorizePath(path);
+      if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
+      try {
+        const st = statSync(path);
+        return {
+          content: [
+            `Size: ${st.size} bytes`,
+            `Type: ${st.isDirectory() ? 'directory' : 'file'}`,
+            `Created: ${new Date(st.birthtime).toISOString()}`,
+            `Modified: ${new Date(st.mtime).toISOString()}`,
+            `Permissions: ${(st.mode & 0o777).toString(8)}`,
+          ].join('\n'),
+        };
+      } catch (err) {
+        return { content: `Error getting file info: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'delete_file',
+    description: 'Delete a file or empty directory',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute file path to delete' },
+      },
+      required: ['path'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const path = String(args.path || '');
+      const authorized = await authorizePath(path);
+      if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
+      try {
+        const st = statSync(path);
+        if (st.isDirectory()) {
+          rmdirSync(path);
+        } else {
+          unlinkSync(path);
+        }
+        return { content: `Deleted: ${path}` };
+      } catch (err) {
+        return { content: `Error deleting: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
     },
   },

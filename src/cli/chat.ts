@@ -3,17 +3,20 @@ import chalk from 'chalk';
 import { createInterface, emitKeypressEvents } from 'readline';
 import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { dirname, join, resolve, extname } from 'path';
+import { dirname, join, resolve } from 'path';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { Agent } from '../agent.js';
 import { showWelcomeScreen, BorderMode } from './logo.js';
 import { ThemeManager } from '../theme/manager.js';
-import { authorizePath } from '../security/path-authorizer.js';
+import { authorizePath, setPermissionPrompter } from '../security/path-authorizer.js';
 import { isDangerousBash } from '../security/audit.js';
 import { translateCommand } from '../mcp/cmd-alias.js';
 
 const execAsync = promisify(exec);
+
+const _themeMgr = new ThemeManager();
+function t() { return _themeMgr.token; }
 
 // ---- Gradient separator line ----
 
@@ -30,13 +33,11 @@ function hexLerp(c1: string, c2: string, t: number): string {
 function renderSepLine(): string {
   const termWidth = process.stdout.columns || 120;
   const w = Math.floor(Math.max(termWidth * 0.96, 82));
-  const theme = new ThemeManager();
-  const accent = theme.getColor('borderAccent') || '#06b6d4';
-  const bg = theme.getColor('background') || (theme.currentThemeName === 'light' ? '#fafafa' : '#1a1a2e');
+  const accent = _themeMgr.getColor('borderAccent') || '#06b6d4';
+  const bg = _themeMgr.getColor('background') || (_themeMgr.currentThemeName === 'light' ? '#fafafa' : '#1a1a2e');
   const parts: string[] = [];
   for (let i = 0; i < w; i++) {
-    const t = i / w;
-    const opacity = 0.2 + 0.8 * (1 - t);
+    const opacity = 0.2 + 0.8 * (1 - i / w);
     const color = hexLerp(bg, accent, opacity);
     parts.push(chalk.hex(color)('━'));
   }
@@ -83,7 +84,6 @@ class StreamWrap {
 
 // ---- @file/@directory expansion ----
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff']);
 const MAX_FILE_SIZE = 200 * 1024; // 200KB
 
 function extractAtPaths(input: string): string[] {
@@ -99,10 +99,6 @@ function extractAtPaths(input: string): string[] {
   return [...new Set(paths)];
 }
 
-function isBinaryFile(path: string): boolean {
-  return IMAGE_EXTS.has(extname(path).toLowerCase());
-}
-
 async function expandAtMentions(input: string, cwd: string): Promise<string> {
   const paths = extractAtPaths(input);
   if (paths.length === 0) return input;
@@ -115,6 +111,8 @@ async function expandAtMentions(input: string, cwd: string): Promise<string> {
       continue;
     }
 
+    // Prompt user for permission via the shared prompter (customQuestion with isQuestionMode)
+    // so the interaction is visible and doesn't conflict with the main readline.
     const authorized = await authorizePath(absPath);
     if (!authorized) {
       context += `\n\n[Access denied: ${rawPath} — outside allowed paths and access was rejected]`;
@@ -131,17 +129,12 @@ async function expandAtMentions(input: string, cwd: string): Promise<string> {
       } catch (err) {
         context += `\n\n[Cannot read directory ${rawPath}: ${err instanceof Error ? err.message : String(err)}]`;
       }
-    } else if (stat.size > MAX_FILE_SIZE) {
-      context += `\n\n[File too large: ${rawPath} (${Math.round(stat.size / 1024)}KB, limit ${MAX_FILE_SIZE / 1024}KB)]`;
-    } else if (isBinaryFile(absPath)) {
-      context += `\n\n[Binary file: ${rawPath}]`;
     } else {
-      try {
-        const content = readFileSync(absPath, 'utf-8');
-        context += `\n\n\`\`\`${extname(rawPath).slice(1) || 'text'}\n${content}\n\`\`\``;
-      } catch (err) {
-        context += `\n\n[Cannot read file ${rawPath}: ${err instanceof Error ? err.message : String(err)}]`;
-      }
+      // Do NOT inject file content into the prompt — that is invisible to the user
+      // and gives the LLM a false "the user pasted this" impression.
+      // The LLM should use read_text_file / file_read tool (visible tool call) if needed.
+      const sizeInfo = stat.size > MAX_FILE_SIZE ? ` (${Math.round(stat.size / 1024)}KB, limit ${MAX_FILE_SIZE / 1024}KB)` : '';
+      context += `\n\n[Referenced file: ${rawPath}${sizeInfo}]`;
     }
   }
 
@@ -153,14 +146,22 @@ async function expandAtMentions(input: string, cwd: string): Promise<string> {
 
 // ---- Security confirmation ----
 
+let _dangerousCmdPrompter: ((question: string) => Promise<string>) | null = null;
+
+function setDangerousCmdPrompter(fn: (question: string) => Promise<string>): void {
+  _dangerousCmdPrompter = fn;
+}
+
 async function confirmDangerousCommand(cmd: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise<boolean>(resolve => {
-    rl.question(chalk.red(`\n⚠ Dangerous command detected:\n  $ ${cmd}\n  Allow? (y/N): `), answer => {
-      rl.close();
-      resolve(answer.trim().toLowerCase() === 'y');
-    });
-  });
+  const question = t().error(`\n⚠ Dangerous command detected:\n  $ ${cmd}\n  Allow? (y/N): `);
+  const answer = _dangerousCmdPrompter
+    ? await _dangerousCmdPrompter(question)
+    : await new Promise<string>(resolve => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        rl.question(question, resolve);
+        rl.on('close', () => resolve(''));
+      });
+  return answer.trim().toLowerCase() === 'y';
 }
 
 // ---- !bash command ----
@@ -224,7 +225,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     };
     await agent.init();
   } catch (err) {
-    console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}\n`));
+    console.error(t().error(`\n${err instanceof Error ? err.message : String(err)}\n`));
     process.exit(1);
   }
 
@@ -268,7 +269,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: chalk.cyan(`${promptName}> `),
+    prompt: t().prompt(`${promptName}> `),
   });
 
 
@@ -435,9 +436,18 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
   // Wire audit confirmations to reuse main readline (avoids double-echo / readline conflict)
   agent.audit.setAskUser(customQuestion);
 
+  // Wire path-authorizer permission prompts to reuse main readline too
+  setPermissionPrompter(customQuestion);
+
+  // Wire dangerous command confirmation to reuse main readline too
+  setDangerousCmdPrompter(customQuestion);
+
+  // Wire askUser (from tools/skills) to display question text in terminal
+  agent.onOutput = (text) => { process.stdout.write(text); };
+
   // ---- Multi-line mode state & handlers ----
   const INDENT = promptName.length + 2;
-  const promptLabel = () => chalk.cyan(`${promptName}> `);
+  const promptLabel = () => t().prompt(`${promptName}> `);
   let multiLineBuffer: string[] = [];
 
   function enterMultiLine(): void {
@@ -475,7 +485,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       // Ctrl+O: toggle detail
       if (key.ctrl && key.name === 'o') {
         const mode = agent.toggleDetailMode();
-        const label = mode ? chalk.green('FULL') : chalk.yellow('COMPACT');
+        const label = mode ? t().success('FULL') : t().warning('COMPACT');
         if (agent.isBusy()) return;
         process.stdout.write('\n');
         console.log(`[Detail mode: ${label}]`);
@@ -589,7 +599,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
     if (key.ctrl && key.name === 'o') {
       const mode = agent.toggleDetailMode();
-      const label = mode ? chalk.green('FULL') : chalk.yellow('COMPACT');
+      const label = mode ? t().success('FULL') : t().warning('COMPACT');
       if (agent.isBusy()) return;
       console.log(`\n[Detail mode: ${label}]`);
       rl.prompt();
@@ -597,10 +607,40 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       return;
     }
 
+    if (key.ctrl && key.name === 't') {
+      if (agent.isBusy()) return;
+      const metrics = agent.getSessionMetrics();
+      const currentThinkingVisible = process.env.LLMA_SHOW_THINKING !== '0';
+      const newVal = currentThinkingVisible ? '0' : '1';
+      process.env.LLMA_SHOW_THINKING = newVal;
+      console.log(`\n${t().textDim(`Thinking: ${newVal === '1' ? 'visible' : 'hidden'}`)}`);
+      rl.prompt();
+      return;
+    }
+
+    if (key.ctrl && key.name === 'e') {
+      if (agent.isBusy()) return;
+      const metrics = agent.getSessionMetrics();
+      if (metrics.length === 0) {
+        console.log(`\n${t().textDim('No turns yet.')}`);
+      } else {
+        const last = metrics[metrics.length - 1];
+        console.log(`\n${t().heading(`Turn ${last.turnNumber} Metrics`)}`);
+        console.log(`  ${t().textDim('LLM:')}    ${(last.llmCallTime / 1000).toFixed(1)}s`);
+        console.log(`  ${t().textDim('Tools:')}  ${last.toolCount} (${(last.toolExecTime / 1000).toFixed(1)}s)`);
+        console.log(`  ${t().textDim('Ctx:')}    ${last.contextTokensAfter.toLocaleString()} tokens`);
+        if (last.compactStrategy) {
+          console.log(`  ${t().textDim('Cmpt:')}  ${last.compactStrategy}`);
+        }
+      }
+      rl.prompt();
+      return;
+    }
+
     if (key.name === 'escape') {
       if (agent.isBusy()) {
         agent.abort();
-        console.log(chalk.yellow('\n[Interrupted]'));
+        console.log(t().warning('\n[Interrupted]'));
         rl.prompt();
       }
       return;
@@ -637,6 +677,10 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
   rl.prompt();
 
   const handleLine = async (line: string): Promise<void> => {
+    // First: resolve any pending askUser (called from tools/skills during agent.chat).
+    // Must check BEFORE isBusy() or the answer is swallowed and the task hangs forever.
+    if (agent.resolvePendingAsk(line)) return;
+
     if (agent.isBusy()) return;
 
     const input = line.trim();
@@ -669,12 +713,12 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       if (isDangerousBash(cmd)) {
         const approved = await confirmDangerousCommand(cmd);
         if (!approved) {
-          console.log(chalk.red('Command denied.'));
+          console.log(t().error('Command denied.'));
           rl.prompt();
           return;
         }
       }
-      console.log(chalk.gray(`$ ${cmd}`));
+      console.log(t().textDim(`$ ${cmd}`));
       const output = await executeBashCommand(cmd);
       console.log(output);
       rl.prompt();
@@ -695,23 +739,26 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       return true;
     }) as typeof process.stdout.write;
 
-    process.stdout.write(chalk.yellow('agent> '));
+    process.stdout.write(t().entityName('agent> '));
     try {
       await agent.chat(expandedInput);
     } catch (err) {
-      console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+      console.error(t().error(`Error: ${err instanceof Error ? err.message : String(err)}`));
     } finally {
       process.stdout.write = origWrite;
       const rest = sw.flush();
-      if (rest) origWrite(rest);
+      if (rest) {
+        // Ensure rest ends with newline so separator goes on its own line
+        origWrite(rest.endsWith('\n') ? rest : rest + '\n');
+      }
     }
 
     // Separator line for next turn
     process.stdout.write(renderSepLine() + '\n');
 
     if (lastDetailMode !== agent.detailMode) {
-      const label = agent.detailMode ? chalk.green('FULL') : chalk.yellow('COMPACT');
-      console.log(chalk.gray(`[Detail mode: ${label}]`));
+      const label = agent.detailMode ? t().success('FULL') : t().warning('COMPACT');
+      console.log(t().textDim(`[Detail mode: ${label}]`));
       lastDetailMode = agent.detailMode;
     }
 
@@ -725,7 +772,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
   rl.on('close', async () => {
     process.stdout.write('\x1b[?2004l');
-    console.log(chalk.gray('\nGoodbye!'));
+    console.log(t().textDim('\nGoodbye!'));
     await agent.shutdown();
     process.exit(0);
   });
@@ -737,7 +784,7 @@ async function runSingleMessage(message: string, sessionId?: string, enableAcp?:
     agent = new Agent(enableAcp);
     await agent.init();
   } catch (err) {
-    console.error(chalk.red(`\n${err instanceof Error ? err.message : String(err)}\n`));
+    console.error(t().error(`\n${err instanceof Error ? err.message : String(err)}\n`));
     process.exit(1);
   }
   await agent.startSession(undefined, sessionId);
@@ -745,7 +792,7 @@ async function runSingleMessage(message: string, sessionId?: string, enableAcp?:
   try {
     await agent.chat(message);
   } catch (err) {
-    console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+    console.error(t().error(`Error: ${err instanceof Error ? err.message : String(err)}`));
     process.exit(1);
   } finally {
     await agent.shutdown();
@@ -767,7 +814,7 @@ async function handleSlashCommand(
       return true;
 
     case 'help':
-      console.log(chalk.bold('Commands:'));
+      console.log(t().heading('Commands:'));
       console.log('  /exit, /quit     - Exit the agent');
       console.log('  /session         - Show current session ID');
       console.log('  /cls             - Clear the screen');
@@ -787,18 +834,21 @@ async function handleSlashCommand(
       console.log('  /mcp             - List MCP server connections');
       console.log('  /skills          - List loaded skills/plugins');
       console.log('  /plugins         - Alias for /skills');
-      console.log(chalk.gray('\nInput prefixes:'));
-      console.log(chalk.gray('  !<cmd>          - Execute a bash command'));
-      console.log(chalk.gray('  @<path>         - Inline file/directory content into prompt'));
-      console.log(chalk.gray('                   (also: @"path with spaces", @file.ts#L10-20)'));
-      console.log(chalk.gray('\nShortcuts:'));
-      console.log(chalk.gray(' ↑/PageUp         - Browse older messages in session history'));
-      console.log(chalk.gray(' ↓/PageDown       - Browse newer messages (or back to draft)'));
-      console.log(chalk.gray('  Ctrl+O          - Toggle detail mode (compact / full)'));
-      console.log(chalk.gray('\nInput:'));
-      console.log(chalk.gray('  Enter           - Submit prompt (ignored if empty)'));
-      console.log(chalk.gray('  Ctrl+Enter      - Newline(Major), Alternative: Ctrl+J | \\ + Enter'));
-      console.log(chalk.gray('  Paste           - Auto-detected, Enter inserts newline'));
+      console.log('  /theme           - Show or switch color theme');
+      console.log(t().textDim('\nInput prefixes:'));
+      console.log(t().textDim('  !<cmd>          - Execute a bash command'));
+      console.log(t().textDim('  @<path>         - Inline file/directory content into prompt'));
+      console.log(t().textDim('                   (also: @"path with spaces", @file.ts#L10-20)'));
+      console.log(t().textDim('\nShortcuts:'));
+      console.log(t().textDim(' ↑/PageUp         - Browse older messages in session history'));
+      console.log(t().textDim(' ↓/PageDown       - Browse newer messages (or back to draft)'));
+      console.log(t().textDim('  Ctrl+O          - Toggle detail mode (compact / full)'));
+      console.log(t().textDim('  Ctrl+T          - Toggle thinking visibility'));
+      console.log(t().textDim('  Ctrl+E          - View turn/metrics status'));
+      console.log(t().textDim('\nInput:'));
+      console.log(t().textDim('  Enter           - Submit prompt (ignored if empty)'));
+      console.log(t().textDim('  Ctrl+Enter      - Newline(Major), Alternative: Ctrl+J | \\ + Enter'));
+      console.log(t().textDim('  Paste           - Auto-detected, Enter inserts newline'));
       return false;
 
     case 'session': {
@@ -832,27 +882,27 @@ async function handleSlashCommand(
 
     case 'rename':
       if (!args[0]) {
-        console.log(chalk.yellow('Usage: /rename <new-session-name>'));
+        console.log(t().warning('Usage: /rename <new-session-name>'));
       } else {
         const newName = args.join(' ');
         agent.renameSession(newName);
-        console.log(chalk.green(`Session renamed to: ${newName}`));
+        console.log(t().success(`Session renamed to: ${newName}`));
       }
       return false;
 
     case 'resume': {
       const sessions = agent.session.list();
       if (sessions.length === 0) {
-        console.log(chalk.gray('No sessions found.'));
+        console.log(t().textDim('No sessions found.'));
         return false;
       }
 
       const currentId = agent.getCurrentSessionId();
       const maxTokens = agent.config.getProvider().maxContextTokens || 8192;
 
-      console.log(chalk.bold('Sessions:'));
-      console.log(chalk.dim('  #   Name                       Model                Updated              Tokens'));
-      console.log(chalk.dim('  --- ---------------------------- -------------------- -------------------- ------'));
+      console.log(t().heading('Sessions:'));
+      console.log(t().textDim('  #   Name                       Model                Updated              Tokens'));
+      console.log(t().textDim('  --- ---------------------------- -------------------- -------------------- ------'));
       const rows: { id: string; name: string; model: string; updatedAt: string; tokens: number }[] = [];
       for (const s of sessions) {
         const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
@@ -860,35 +910,35 @@ async function handleSlashCommand(
         const name = s.name.slice(0, 28).padEnd(28);
         const model = s.model.slice(0, 18).padEnd(18);
         const dateStr = date.slice(0, 18).padEnd(18);
-        const current = s.id === currentId ? chalk.green(' <- current') : '';
-        const warn = tokens > maxTokens ? chalk.yellow(' !') : '';
-        console.log(`  ${String(rows.length + 1).padStart(3)} ${chalk.cyan(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${warn}${current}`);
+        const current = s.id === currentId ? t().success(' <- current') : '';
+        const warn = tokens > maxTokens ? t().warning(' !') : '';
+        console.log(`  ${String(rows.length + 1).padStart(3)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${warn}${current}`);
         rows.push({ id: s.id, name: s.name, model: s.model, updatedAt: date, tokens });
       }
 
       console.log();
-      const answer = await (customQuestion!)(chalk.cyan('Enter number (or Esc to cancel): '));
+      const answer = await (customQuestion!)(t().prompt('Enter number (or Esc to cancel): '));
 
       const num = parseInt(answer.trim(), 10);
       if (isNaN(num) || num < 1 || num > rows.length) {
-        console.log(chalk.gray('Cancelled.'));
+        console.log(t().textDim('Cancelled.'));
         return false;
       }
 
       const selected = rows[num - 1]!;
-      console.log(chalk.gray(`Resuming "${selected.name}" (${selected.tokens} tokens)...`));
+      console.log(t().textDim(`Resuming "${selected.name}" (${selected.tokens} tokens)...`));
 
       try {
         const result = await agent.resumeSession(selected.id);
         if (!result.restored) {
-          console.log(chalk.red('Session not found.'));
+          console.log(t().error('Session not found.'));
         } else if (result.compressed) {
-          console.log(chalk.yellow(`Session "${result.sessionName}" resumed (history compressed -- ${selected.tokens} tokens exceeded ${maxTokens} limit)`));
+          console.log(t().warning(`Session "${result.sessionName}" resumed (history compressed -- ${selected.tokens} tokens exceeded ${maxTokens} limit)`));
         } else {
-          console.log(chalk.green(`Session "${result.sessionName}" resumed successfully.`));
+          console.log(t().success(`Session "${result.sessionName}" resumed successfully.`));
         }
       } catch (err) {
-        console.log(chalk.red(`Resume failed: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(t().error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`));
       }
       return false;
     }
@@ -900,7 +950,7 @@ async function handleSlashCommand(
         const spec = args.slice(1).join(' ');
         const allSessions = agent.session.list();
         if (allSessions.length === 0) {
-          console.log(chalk.gray('No sessions found.'));
+          console.log(t().textDim('No sessions found.'));
           return false;
         }
         const currentId = agent.getCurrentSessionId();
@@ -918,30 +968,30 @@ async function handleSlashCommand(
         }
 
         if (toDelete.length === 0) {
-          console.log(chalk.gray('No sessions to delete.'));
+          console.log(t().textDim('No sessions to delete.'));
           return false;
         }
 
         const names = toDelete.map(s => s.name);
-        console.log(chalk.yellow(`Delete ${toDelete.length} session(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` ... +${names.length - 10} more` : ''}?`));
+        console.log(t().warning(`Delete ${toDelete.length} session(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` ... +${names.length - 10} more` : ''}?`));
 
-        const confirm = await (customQuestion!)(chalk.yellow('  Confirm? (y/N): '));
+        const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
 
         if (confirm.trim().toLowerCase() !== 'y') {
-          console.log(chalk.gray('Cancelled.'));
+          console.log(t().textDim('Cancelled.'));
           return false;
         }
 
         for (const s of toDelete) {
           agent.session.delete(s.id);
         }
-        console.log(chalk.green(`Deleted ${toDelete.length} session(s).`));
+        console.log(t().success(`Deleted ${toDelete.length} session(s).`));
         return false;
       }
 
       let allSessions = agent.session.list();
       if (allSessions.length === 0) {
-        console.log(chalk.gray('No sessions found.'));
+        console.log(t().textDim('No sessions found.'));
         return false;
       }
 
@@ -950,9 +1000,9 @@ async function handleSlashCommand(
       let displaySessions = allSessions.slice(0, MAX_SHOW);
 
       const renderTable = () => {
-        console.log(chalk.bold(`\nSession History (showing ${displaySessions.length}/${allSessions.length}):`));
-        console.log(chalk.dim('  #    Name                       Model                Updated              Tokens'));
-        console.log(chalk.dim('  ---- ---------------------------- -------------------- -------------------- ------'));
+        console.log(t().heading(`\nSession History (showing ${displaySessions.length}/${allSessions.length}):`));
+        console.log(t().textDim('  #    Name                       Model                Updated              Tokens'));
+        console.log(t().textDim('  ---- ---------------------------- -------------------- -------------------- ------'));
         for (let i = 0; i < displaySessions.length; i++) {
           const s = displaySessions[i]!;
           const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
@@ -960,23 +1010,23 @@ async function handleSlashCommand(
           const name = s.name.slice(0, 28).padEnd(28);
           const model = s.model.slice(0, 18).padEnd(18);
           const dateStr = date.slice(0, 18).padEnd(18);
-          const current = s.id === currentId ? chalk.green(' <- current') : '';
-          console.log(`  ${String(i + 1).padStart(4)} ${chalk.cyan(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${current}`);
+          const current = s.id === currentId ? t().success(' <- current') : '';
+          console.log(`  ${String(i + 1).padStart(4)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${current}`);
         }
         if (allSessions.length > MAX_SHOW) {
-          console.log(chalk.dim(`  ... and ${allSessions.length - MAX_SHOW} more older sessions`));
+          console.log(t().textDim(`  ... and ${allSessions.length - MAX_SHOW} more older sessions`));
         }
-        console.log(chalk.dim('\n  Enter session # to delete (comma-separated or range like 1-3), or Enter to exit:'));
+        console.log(t().textDim('\n  Enter session # to delete (comma-separated or range like 1-3), or Enter to exit:'));
       };
 
       renderTable();
 
       while (true) {
-        const input = await (customQuestion!)(chalk.red('  delete> '));
+        const input = await (customQuestion!)(t().warning('  delete> '));
 
         const trimmed = input.trim();
         if (!trimmed) {
-          console.log(chalk.gray('Exited history.'));
+          console.log(t().textDim('Exited history.'));
           break;
         }
 
@@ -985,21 +1035,21 @@ async function handleSlashCommand(
 
         const toDelete = ids.map(i => ({ id: allSessions[i - 1]!.id, name: allSessions[i - 1]!.name }));
         const names = toDelete.map(s => s.name);
-        console.log(chalk.yellow(`  About to delete ${toDelete.length} session(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` ... +${names.length - 10} more` : ''}`));
+        console.log(t().warning(`  About to delete ${toDelete.length} session(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` ... +${names.length - 10} more` : ''}`));
 
-        const confirm = await (customQuestion!)(chalk.yellow('  Confirm? (y/N): '));
+        const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
 
         if (confirm.trim().toLowerCase() !== 'y') {
-          console.log(chalk.gray('  Cancelled.'));
+          console.log(t().textDim('  Cancelled.'));
         } else {
           for (const s of toDelete) {
             agent.session.delete(s.id);
           }
-          console.log(chalk.green(`  Deleted ${toDelete.length} session(s).`));
+          console.log(t().success(`  Deleted ${toDelete.length} session(s).`));
 
           allSessions = agent.session.list();
           if (allSessions.length === 0) {
-            console.log(chalk.gray('  No sessions remaining.'));
+            console.log(t().textDim('  No sessions remaining.'));
             break;
           }
           displaySessions = allSessions.slice(0, MAX_SHOW);
@@ -1012,44 +1062,46 @@ async function handleSlashCommand(
     case 'history-view': {
       const sessionId = args[0] || agent.getCurrentSessionId();
       if (!sessionId) {
-        console.log(chalk.yellow('No active session. Specify a session ID: /history-view <session-id>'));
+        console.log(t().warning('No active session. Specify a session ID: /history-view <session-id>'));
         return false;
       }
       let messages;
       try {
         messages = agent.session.getMessages(sessionId);
       } catch {
-        console.log(chalk.red(`Session not found: ${sessionId}`));
+        console.log(t().error(`Session not found: ${sessionId}`));
         return false;
       }
       if (!messages || messages.length === 0) {
-        console.log(chalk.gray('No messages in this session.'));
+        console.log(t().textDim('No messages in this session.'));
         return false;
       }
-      console.log(chalk.bold(`\nSession: ${sessionId} (${messages.length} messages total)\n`));
+      console.log(t().heading(`\nSession: ${sessionId} (${messages.length} messages total)\n`));
       for (let i = 0; i < messages.length; i++) {
         const m = messages[i]!;
         const preview = m.content.slice(0, 120).replace(/\n/g, '\\n');
-        const roleTag = m.role === 'assistant' ? chalk.cyan(m.role) : chalk.green(m.role);
+        const roleTag = m.role === 'assistant' ? t().entityName(m.role) : t().entityName(m.role);
         const tokens = m.toolCalls ? ` [${m.toolCalls.length} tool calls]` : '';
-        console.log(`  ${String(i + 1).padStart(3)}. ${roleTag}: ${chalk.dim(preview)}${tokens}`);
+        console.log(`  ${String(i + 1).padStart(3)}. ${roleTag}: ${t().textDim(preview)}${tokens}`);
       }
-      console.log(chalk.gray(`\nTip: Use /resume to switch to a session, then the context will have the full history.\n`));
+      console.log(t().textDim(`\nTip: Use /resume to switch to a session, then the context will have the full history.\n`));
       return false;
     }
 
     case 'memory': {
       const memSessionId = agent.getCurrentSessionId();
       if (!memSessionId) {
-        console.log(chalk.yellow('No active session.'));
+        console.log(t().warning('No active session.'));
         return false;
       }
       const mem = agent.sessionMemory.load(memSessionId);
       if (!mem) {
-        console.log(chalk.gray('No memory for this session yet. Memories are built automatically as you chat.'));
+        console.log(t().textDim('No memory for this session yet. Memories are built automatically as you chat.'));
       } else {
-        console.log(chalk.bold(`\nSession Memory:\n`));
-        console.log(mem);
+        console.log(t().heading(`\nSession Memory:\n`));
+        // Strip internal sessionId comment from display
+        const display = mem.replace(/<!-- sessionId: [a-f0-9-]+ -->\n?/g, '').trim();
+        console.log(display);
       }
       return false;
     }
@@ -1057,10 +1109,10 @@ async function handleSlashCommand(
     case 'insight': {
       const aggregated = agent.sessionMemory.aggregateAll();
       if (aggregated === '(no session memories yet)') {
-        console.log(chalk.gray('No session memories found. Memories build automatically as you chat.'));
+        console.log(t().textDim('No session memories found. Memories build automatically as you chat.'));
         return false;
       }
-      console.log(chalk.gray('Analyzing across all sessions...'));
+      console.log(t().textDim('Analyzing across all sessions...'));
       try {
         const result = await agent.provider.complete([{
           role: 'user',
@@ -1075,10 +1127,10 @@ async function handleSlashCommand(
 记忆摘要：
 ${aggregated}`,
         }]);
-        console.log(chalk.bold(`\nCross-Session Analysis:\n`));
+        console.log(t().heading(`\nCross-Session Analysis:\n`));
         console.log(result);
       } catch (err) {
-        console.log(chalk.red(`Analysis failed: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(t().error(`Analysis failed: ${err instanceof Error ? err.message : String(err)}`));
       }
       return false;
     }
@@ -1108,8 +1160,8 @@ ${aggregated}`,
             daysValue = 7;
           }
         } else {
-          console.log(chalk.yellow(`Unknown flag: ${args[i]}`));
-          console.log(chalk.yellow('Usage: /clean [-size <N>] [-days <N>]'));
+          console.log(t().warning(`Unknown flag: ${args[i]}`));
+          console.log(t().warning('Usage: /clean [-size <N>] [-days <N>]'));
           return false;
         }
       }
@@ -1144,20 +1196,20 @@ ${aggregated}`,
       }
 
       if (toDelete.length === 0) {
-        console.log(chalk.gray('No sessions to clean.'));
+        console.log(t().textDim('No sessions to clean.'));
         return false;
       }
 
-      console.log(chalk.bold('Sessions to delete:'));
+      console.log(t().heading('Sessions to delete:'));
       for (const s of toDelete) {
         const date = new Date(s.updatedAt).toLocaleString();
         const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
-        console.log(`  ${chalk.cyan(s.name)} (${chalk.dim(date)}, ${tokens} tokens)`);
+        console.log(`  ${t().entityName(s.name)} (${t().textDim(date)}, ${tokens} tokens)`);
       }
 
-      const confirm = await (customQuestion!)(chalk.yellow('  Confirm? (y/N): '));
+      const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
       if (confirm.trim().toLowerCase() !== 'y') {
-        console.log(chalk.gray('Cancelled.'));
+        console.log(t().textDim('Cancelled.'));
         return false;
       }
 
@@ -1165,28 +1217,28 @@ ${aggregated}`,
         agent.session.delete(s.id);
         agent.sessionMemory.remove(s.id);
       }
-      console.log(chalk.green(`Cleaned ${toDelete.length} session(s).`));
+      console.log(t().success(`Cleaned ${toDelete.length} session(s).`));
       return false;
     }
 
     case 'clear':
       agent.context.clear();
-      console.log(chalk.gray('Context cleared.'));
+      console.log(t().textDim('Context cleared.'));
       return false;
 
     case 'compact': {
       const msgs = agent.context.getMessages();
       if (msgs.length < 4) {
-        console.log(chalk.gray('Not enough history to compress.'));
+        console.log(t().textDim('Not enough history to compress.'));
         return false;
       }
-      console.log(chalk.gray('Compressing history...'));
+      console.log(t().textDim('Compressing history...'));
       try {
         await agent.context.compress();
         const after = agent.context.getMessages();
-        console.log(chalk.green(`Compressed ${msgs.length} -> ${after.length} messages.`));
+        console.log(t().success(`Compressed ${msgs.length} -> ${after.length} messages.`));
       } catch (err) {
-        console.log(chalk.red(`Compression failed: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(t().error(`Compression failed: ${err instanceof Error ? err.message : String(err)}`));
       }
       return false;
     }
@@ -1194,17 +1246,17 @@ ${aggregated}`,
     case 'new': {
       const msgs = agent.context.getMessages();
       if (msgs.length >= 4) {
-        console.log(chalk.gray('Compressing history before new session...'));
+        console.log(t().textDim('Compressing history before new session...'));
         try {
           await agent.context.compress();
           const after = agent.context.getMessages();
-          console.log(chalk.green(`Compressed ${msgs.length} -> ${after.length} messages.`));
+          console.log(t().success(`Compressed ${msgs.length} -> ${after.length} messages.`));
         } catch (err) {
-          console.log(chalk.yellow(`Compression failed, starting new session anyway.`));
+          console.log(t().warning(`Compression failed, starting new session anyway.`));
         }
       }
       const id = await agent.startSession();
-      console.log(chalk.green(`New session started: ${id}`));
+      console.log(t().success(`New session started: ${id}`));
       return false;
     }
 
@@ -1217,26 +1269,26 @@ ${aggregated}`,
         console.log(`Current model: ${agent.provider.model}`);
       } else {
         const change = await agent.switchModel(args[0]);
-        console.log(chalk.green(`Model switched: ${change}`));
+        console.log(t().success(`Model switched: ${change}`));
       }
       return false;
 
     case 'tools':
       const tools = [...agent.mcp.getAllTools(), ...agent.skills.getTools()];
-      console.log(chalk.bold(`Available tools (${tools.length}):`));
-      for (const t of tools) {
-        console.log(`  ${chalk.cyan(t.name)} - ${t.description}`);
+      console.log(t().heading(`Available tools (${tools.length}):`));
+      for (const tool of tools) {
+        console.log(`  ${t().toolCallName(tool.name)} - ${tool.description}`);
       }
       return false;
 
     case 'mcp':
       const conns = agent.mcp.listConnections();
       if (conns.length === 0) {
-        console.log(chalk.gray('No external MCP servers connected.'));
+        console.log(t().textDim('No external MCP servers connected.'));
       } else {
-        console.log(chalk.bold(`MCP Servers (${conns.length}):`));
+        console.log(t().heading(`MCP Servers (${conns.length}):`));
         for (const c of conns) {
-          console.log(`  ${chalk.cyan(c.name)} - ${c.toolCount} tools [${c.status}]`);
+          console.log(`  ${t().entityName(c.name)} - ${c.toolCount} tools [${c.status}]`);
         }
       }
       return false;
@@ -1245,17 +1297,38 @@ ${aggregated}`,
     case 'plugins':
       const skills = agent.skills.list();
       if (skills.length === 0) {
-        console.log(chalk.gray('No skills loaded. Place modules in ~/.nexus/skills/'));
+        console.log(t().textDim('No skills loaded. Place modules in ~/.nexus/skills/'));
       } else {
-        console.log(chalk.bold(`Skills(${skills.length}):`));
+        console.log(t().heading(`Skills(${skills.length}):`));
         for (const s of skills) {
-          console.log(`  ${chalk.cyan(s.name)} v${s.version}${s.description ? ' - ' + s.description : ''}`);
+          console.log(`  ${t().entityName(s.name)} v${s.version}${s.description ? ' - ' + s.description : ''}`);
+        }
+      }
+      return false;
+
+    case 'theme':
+      if (!args[0]) {
+        const current = _themeMgr.currentThemeName;
+        const allThemes = _themeMgr.listThemes();
+        console.log(t().heading(`Current theme: ${current}`));
+        console.log(t().textDim('\nAvailable themes:'));
+        for (const name of allThemes) {
+          const marker = name === current ? t().success(' *') : '';
+          console.log(`  ${t().entityName(name)}${marker}`);
+        }
+        console.log(t().textDim('\nUsage: /theme <name>'));
+      } else {
+        const ok = _themeMgr.switch(args[0]);
+        if (ok) {
+          console.log(t().success(`Theme switched to: ${args[0]}`));
+        } else {
+          console.log(t().error(`Theme not found: ${args[0]}`));
         }
       }
       return false;
 
     default:
-      console.log(chalk.yellow(`Unknown command: /${cmd}`));
+      console.log(t().warning(`Unknown command: /${cmd}`));
       return false;
   }
 }
@@ -1270,14 +1343,14 @@ function parseIdSpec(spec: string, maxId: number): number[] | null {
       const from = parseInt(rangeMatch[1]!, 10);
       const to = parseInt(rangeMatch[2]!, 10);
       if (from > to || from < 1) {
-        console.log(chalk.red(`  Invalid range: ${part.trim()}`));
+        console.log(t().error(`  Invalid range: ${part.trim()}`));
         return null;
       }
       for (let i = from; i <= to; i++) ids.add(i);
     } else {
       const num = parseInt(part.trim(), 10);
       if (isNaN(num) || num < 1) {
-        console.log(chalk.red(`  Invalid number: ${part.trim()}`));
+        console.log(t().error(`  Invalid number: ${part.trim()}`));
         return null;
       }
       ids.add(num);
@@ -1289,11 +1362,11 @@ function parseIdSpec(spec: string, maxId: number): number[] | null {
   const skipped = sorted.filter(i => i > maxId);
 
   if (skipped.length > 0) {
-    console.log(chalk.yellow(`  Note: #${skipped.join(',#')} out of range (1-${maxId}), skipped`));
+    console.log(t().warning(`  Note: #${skipped.join(',#')} out of range (1-${maxId}), skipped`));
   }
 
   if (valid.length === 0) {
-    console.log(chalk.gray('  No valid sessions to delete.'));
+    console.log(t().textDim('  No valid sessions to delete.'));
     return null;
   }
 

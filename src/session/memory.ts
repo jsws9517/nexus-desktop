@@ -32,7 +32,9 @@ export class SessionMemory {
 
   save(sessionId: string, sessionName: string, content: string): void {
     const header = `# ${sessionName}\n<!-- sessionId: ${sessionId} -->\n\n`;
-    writeFileSync(this.filePath(sessionId), header + content.trimEnd() + '\n', 'utf-8');
+    // Strip any pre-existing header from content to avoid duplication
+    const body = content.replace(/^# .+\n<!-- sessionId: [a-f0-9-]+ -->\n*\n*/gm, '').trimStart();
+    writeFileSync(this.filePath(sessionId), header + body.trimEnd() + '\n', 'utf-8');
   }
 
   append(sessionId: string, sessionName: string, userMessage: string, assistantSummary: string): void {

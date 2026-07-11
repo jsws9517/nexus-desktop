@@ -49,21 +49,16 @@ function normalizeArgs(raw: Record<string, unknown>, schema: object): Record<str
     }
   }
   
-  // Fill required params with defaults if missing
+  // Fill required params with defaults if missing ONLY when a schema default exists.
+  // Do NOT auto-fill strings with "" — that produces invalid values that servers reject
+  // (e.g. maps_weather's required "city" becomes "" → INVALID_PARAMS).
+  // Instead, let callTool validate and return a clear error before calling the server.
   if (s.required) {
     for (const key of s.required) {
       if (out[key] === undefined || out[key] === null) {
         const prop = s.properties[key];
         if (prop?.default !== undefined) {
           out[key] = prop.default;
-        } else if (prop?.type === 'string') {
-          out[key] = '';
-        } else if (prop?.type === 'number') {
-          out[key] = 0;
-        } else if (prop?.type === 'boolean') {
-          out[key] = false;
-        } else if (prop?.type === 'array') {
-          out[key] = [];
         }
       }
     }
@@ -141,6 +136,23 @@ export class ClientManager {
       if (hasTool) {
         const schema = conn.schemas.get(name) ?? conn.tools.find(t => t.name === name)?.inputSchema;
         const safeArgs = schema ? normalizeArgs(args, schema) : args;
+
+        // Validate required params: if still missing after normalization, return a clear error
+        // rather than sending an invalid call that the server might crash on.
+        if (schema) {
+          const s = schema as { required?: string[]; properties?: Record<string, { type?: string }> };
+          if (s.required) {
+            const missing = s.required.filter(k => safeArgs[k] === undefined || safeArgs[k] === null || safeArgs[k] === '');
+            if (missing.length > 0) {
+              const typeHints = missing.map(k => {
+                const prop = s.properties?.[k];
+                return prop ? `${k} (${prop.type})` : k;
+              });
+              return { content: `Missing required parameters for "${name}": ${typeHints.join(', ')}. Please retry with all required parameters.`, isError: true };
+            }
+          }
+        }
+
         let result;
         try {
           result = await conn.client.callTool({ name, arguments: safeArgs });

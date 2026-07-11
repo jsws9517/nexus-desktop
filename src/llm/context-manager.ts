@@ -1,6 +1,21 @@
 import { Message } from '../types.js';
 import { LLMProvider } from './provider.js';
 
+export enum CompactStrategy {
+  Truncate = 'truncate',
+  Summarize = 'summarize',
+  Snapshot = 'snapshot',
+}
+
+export interface CompactMetadata {
+  strategy: CompactStrategy;
+  originalTokens: number;
+  compactedTokens: number;
+  preservedMessages: number;
+  summary: string;
+  round: number;
+}
+
 export class ContextManager {
   private messages: Message[] = [];
   private pinnedIndices: Set<number> = new Set();
@@ -10,6 +25,8 @@ export class ContextManager {
   private provider?: LLMProvider;
   onProgress?: (message: string) => void;
   private compressionTimeoutMs = 120_000;
+  private compressionRound = 0;
+  lastCompactMetadata?: CompactMetadata;
 
   constructor(options?: { maxMessages?: number; tokenBudget?: number; maxContextTokens?: number; provider?: LLMProvider }) {
     if (options?.maxMessages) this.maxMessages = options.maxMessages;
@@ -149,55 +166,158 @@ export class ContextManager {
   async compress(): Promise<void> {
     if (!this.provider || this.messages.length < 10) return;
 
-    // Loop: keep compressing until we're under budget or can't compress further
-    const MAX_ROUNDS = 10;
-    for (let round = 0; round < MAX_ROUNDS; round++) {
-      const tokenCount = this.getTokenCount();
-      if (tokenCount < this.maxContextTokens) return;
+    this.compressionRound++;
+    const round = this.compressionRound;
 
-      const beforeCount = this.messages.length;
-
-      // Find safe split point that doesn't break tool_call chains
-      const targetSplit = Math.floor(this.messages.length / 2);
-      const safeSplit = this.findSafeSplitIndex(targetSplit);
-
-      // Partition: summarize [0..safeSplit-1], keep [safeSplit..end]
-      const summarizable: Message[] = [];
-      const kept: Message[] = [];
-      for (let i = 0; i < this.messages.length; i++) {
-        if (i < safeSplit && !this.pinnedIndices.has(i) && this.messages[i].role !== 'system') {
-          summarizable.push(this.messages[i]);
-        } else {
-          kept.push(this.messages[i]);
-        }
-      }
-
-      if (summarizable.length < 4) break;
-
-      this.onProgress?.(`Compressing context (round ${round + 1}/${MAX_ROUNDS})...`);
-
-      const summaryPrompt: Message = {
-        role: 'user',
-        content: `Summarize the following conversation history concisely:\n\n${summarizable
-          .map((m) => `${m.role}: ${m.content.slice(0, 500)}`)
-          .join('\n')}`,
-      };
-
-      try {
-        const summary = await this.provider.complete([summaryPrompt], this.compressionTimeoutMs);
-        this.messages = [
-          ...kept.filter((m) => m.role === 'system'),
-          { role: 'system', content: `[Previous conversation summary]: ${summary}` },
-          ...kept.filter((m) => m.role !== 'system'),
-        ];
-        this.pinnedIndices.clear();
-      } catch {
-        break; // Compression failed, stop trying
-      }
-
-      // Safety: if no messages were removed, stop to avoid infinite loop
-      if (this.messages.length >= beforeCount) break;
+    // Strategy escalation based on compression round
+    let strategy: CompactStrategy;
+    if (round <= 2) {
+      strategy = CompactStrategy.Summarize;
+    } else if (round <= 4) {
+      strategy = CompactStrategy.Truncate;
+    } else {
+      strategy = CompactStrategy.Snapshot;
     }
+
+    const originalTokens = this.getTokenCount();
+    if (originalTokens < this.maxContextTokens) {
+      this.compressionRound = 0;
+      return;
+    }
+
+    const beforeCount = this.messages.length;
+
+    switch (strategy) {
+      case CompactStrategy.Summarize:
+        await this.compressViaSummarize();
+        break;
+      case CompactStrategy.Truncate:
+        await this.compressViaTruncate();
+        break;
+      case CompactStrategy.Snapshot:
+        await this.compressViaSnapshot();
+        break;
+    }
+
+    const compactedTokens = this.getTokenCount();
+    this.lastCompactMetadata = {
+      strategy,
+      originalTokens,
+      compactedTokens,
+      preservedMessages: this.messages.length,
+      summary: `Compressed ${beforeCount} → ${this.messages.length} messages (${strategy})`,
+      round,
+    };
+
+    if (this.messages.length >= beforeCount && beforeCount > 0) {
+      this.compressionRound = Math.max(0, this.compressionRound - 1);
+    }
+
+    // Recurse if still over budget
+    if (this.getTokenCount() > this.maxContextTokens) {
+      await this.compress();
+    }
+  }
+
+  private async compressViaSummarize(): Promise<void> {
+    const targetSplit = Math.floor(this.messages.length / 2);
+    const safeSplit = this.findSafeSplitIndex(targetSplit);
+
+    const summarizable: Message[] = [];
+    const kept: Message[] = [];
+    for (let i = 0; i < this.messages.length; i++) {
+      if (i < safeSplit && !this.pinnedIndices.has(i) && this.messages[i].role !== 'system') {
+        summarizable.push(this.messages[i]);
+      } else {
+        kept.push(this.messages[i]);
+      }
+    }
+
+    if (summarizable.length < 4) return;
+
+    this.onProgress?.(`Summarizing context (round ${this.compressionRound})...`);
+
+    const summaryPrompt: Message = {
+      role: 'user',
+      content: `Summarize the following conversation history concisely:\n\n${summarizable
+        .map((m) => `${m.role}: ${m.content.slice(0, 500)}`)
+        .join('\n')}`,
+    };
+
+    try {
+      if (!this.provider) return;
+      const summary = await this.provider.complete([summaryPrompt], this.compressionTimeoutMs);
+      this.messages = [
+        ...kept.filter((m) => m.role === 'system'),
+        { role: 'system', content: `[Previous conversation summary]: ${summary}` },
+        ...kept.filter((m) => m.role !== 'system'),
+      ];
+      this.pinnedIndices.clear();
+    } catch {
+      // Compression failed, fall back to truncation
+      await this.compressViaTruncate();
+    }
+  }
+
+  private async compressViaTruncate(): Promise<void> {
+    this.onProgress?.(`Truncating context (round ${this.compressionRound})...`);
+
+    const MAX_KEEP = Math.max(6, Math.ceil(this.messages.length * 0.4));
+    const safeSplit = this.findSafeSplitIndex(this.messages.length - MAX_KEEP);
+
+    const kept: Message[] = [];
+    for (let i = 0; i < this.messages.length; i++) {
+      if (i >= safeSplit || this.pinnedIndices.has(i) || this.messages[i].role === 'system') {
+        kept.push(this.messages[i]);
+      }
+    }
+
+    if (kept.length < 4) {
+      // Keep at least last 4 messages
+      const tail = this.messages.slice(-4);
+      const systems = this.messages.filter(m => m.role === 'system');
+      this.messages = [...systems, ...tail];
+    } else {
+      this.messages = kept;
+    }
+    this.pinnedIndices.clear();
+  }
+
+  private async compressViaSnapshot(): Promise<void> {
+    this.onProgress?.(`Snapshotting context (round ${this.compressionRound})...`);
+
+    // Priority: keep system messages, pinned items, and recent turns
+    const systems = this.messages.filter(m => m.role === 'system');
+    const pinned = this.messages.filter((_, i) => this.pinnedIndices.has(i));
+    const recent = this.messages.slice(-4);
+
+    // Generate a summary of the full context for the snapshot
+    const summarizable = this.messages
+      .filter(m => m.role !== 'system')
+      .slice(0, -4);
+
+    if (summarizable.length > 4 && this.provider) {
+      try {
+        const snapshotPrompt: Message = {
+          role: 'user',
+          content: `Capture key decisions, code patterns, and conclusions from this conversation:\n\n${summarizable
+            .map((m) => `${m.role}: ${m.content.slice(0, 200)}`)
+            .join('\n')}`,
+        };
+        const snapshot = await this.provider.complete([snapshotPrompt], this.compressionTimeoutMs);
+        this.messages = [
+          ...systems,
+          ...pinned,
+          ...recent,
+          { role: 'system', content: `[Knowledge snapshot]: ${snapshot}` },
+        ];
+      } catch {
+        this.messages = [...systems, ...pinned, ...recent];
+      }
+    } else {
+      this.messages = [...systems, ...pinned, ...recent];
+    }
+    this.pinnedIndices.clear();
   }
 
   clear(): void {

@@ -2,6 +2,7 @@ import { readdirSync } from 'fs';
 import { resolve, sep, relative } from 'path';
 import chalk from 'chalk';
 import type { Interface as RLInterface } from 'readline';
+import { ThemeManager } from '../theme/manager.js';
 
 interface PickerEntry {
   name: string;
@@ -25,6 +26,9 @@ export class FilePicker {
   private selected = 0;
   private scrollOffset = 0;
   private renderedLines = 0;
+
+  private themeMgr = new ThemeManager();
+  private get t() { return this.themeMgr.token; }
 
   /** Activate picker. `atPos` is the cursor position where `@` was typed. */
   activate(rl: RLInterface, atPos: number, cwd: string): void {
@@ -190,7 +194,7 @@ export class FilePicker {
     const lines: string[] = [];
 
     if (visible.length === 0) {
-      lines.push(chalk.gray('  (no matching files)'));
+      lines.push(this.t.textDim('  (no matching files)'));
     } else {
       for (let i = 0; i < visible.length; i++) {
         const entry = visible[i];
@@ -199,15 +203,15 @@ export class FilePicker {
         const icon = entry.isDir ? '📁' : '📄';
         const suffix = entry.isDir ? '/' : '';
         const text = `  ${icon} ${entry.name}${suffix}`;
-        lines.push(isSelected ? chalk.inverse(text) : '  ' + chalk.gray(entry.name + suffix));
+        lines.push(isSelected ? chalk.inverse(this.t.entityName(entry.name + suffix)) : '  ' + this.t.textDim(entry.name + suffix));
       }
       if (this.entries.length > MAX_VISIBLE) {
-        lines.push(chalk.dim(`  … ${this.entries.length - MAX_VISIBLE} more`));
+        lines.push(this.t.textDim(`  … ${this.entries.length - MAX_VISIBLE} more`));
       }
     }
 
-    lines.push(chalk.dim('─'.repeat(40)));
-    lines.push(chalk.dim('↑↓ navigate  Tab enter dir  Enter select  Esc cancel'));
+    lines.push(this.t.textDim('─'.repeat(40)));
+    lines.push(this.t.textDim('↑↓ navigate  Tab enter dir  Enter select  Esc cancel'));
 
     process.stdout.write('\n');
     for (const line of lines) process.stdout.write(line + '\n');

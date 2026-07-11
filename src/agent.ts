@@ -3,7 +3,7 @@ import { resolve, join } from 'path';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { ConfigManager } from './config/index.js';
 import { LLMProvider, createProvider } from './llm/provider.js';
-import { ContextManager } from './llm/context-manager.js';
+import { ContextManager, CompactMetadata } from './llm/context-manager.js';
 import { SessionManager } from './session/manager.js';
 import { SessionMemory } from './session/memory.js';
 import { ClientManager } from './mcp/client-manager.js';
@@ -13,6 +13,7 @@ import { Message, ToolCall, ToolResult, ToolDefinition, AgentEvent } from './typ
 import { Hooks, createSanityCheckHook } from './hooks/index.js';
 import { AuditManager } from './security/audit.js';
 import { resolveApiKey } from './security/env-key-encrypt.js';
+import { ThemeManager } from './theme/manager.js';
 
 const REMEMBER_TOOL_DEF: ToolDefinition = {
   name: 'remember',
@@ -37,6 +38,17 @@ const INTERNAL_TOOLS = new Set([
 interface ReasoningEntry {
   assistantText: string;
   toolCalls: Array<{ name: string; resultSummary: string }>;
+}
+
+export interface TurnMetrics {
+  turnNumber: number;
+  llmCallTime: number;
+  toolExecTime: number;
+  toolCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  contextTokensAfter: number;
+  compactStrategy?: string;
 }
 
 export class Agent {
@@ -83,6 +95,20 @@ export class Agent {
 
   /** Track tool error count per (toolName + args hash) to break infinite retry loops */
   private toolErrorCount: Map<string, number> = new Map();
+
+  /** Metrics for observability */
+  private metrics: TurnMetrics[] = [];
+  private turnStartTime = 0;
+  private turnLlmTime = 0;
+
+  /** Theme accessor */
+  private themeMgr = new ThemeManager();
+  private get t() { return this.themeMgr.token; }
+
+  /** Get session metrics */
+  getSessionMetrics(): TurnMetrics[] {
+    return [...this.metrics];
+  }
 
   constructor(enableAcp?: boolean, isAcpServer?: boolean) {
     this.config = new ConfigManager();
@@ -291,6 +317,7 @@ export class Agent {
 
     this.reasoningLog = [];
     this.currentTurn = 0;
+    this.metrics = [];
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
     this.busy = true;
@@ -303,7 +330,7 @@ export class Agent {
     try {
       if (!showDetail && !this.onOutput) {
         this.compactStartTime = Date.now();
-        process.stdout.write(chalk.dim('Thought'));
+        process.stdout.write(this.t.textDim('Thought'));
       }
 
       await this.runLlmTurn(showDetail, signal);
@@ -329,7 +356,27 @@ export class Agent {
       if (this.currentSessionId && this.currentUserInput) {
         this.updateSessionMemory();
       }
+      if (this.metrics.length > 1 && !this.onOutput) {
+        this.printSessionReport();
+      }
     }
+  }
+
+  private printSessionReport(): void {
+    const totalLlmTime = this.metrics.reduce((s, m) => s + m.llmCallTime, 0);
+    const totalToolTime = this.metrics.reduce((s, m) => s + m.toolExecTime, 0);
+    const totalTokens = this.context.getTokenCount();
+    const compactCount = this.metrics.filter(m => m.compactStrategy).length;
+
+    process.stderr.write(this.t.textDim(`\n╌ Session Report ╌\n`));
+    process.stderr.write(this.t.textDim(`Turns: ${this.metrics.length}  `));
+    process.stderr.write(this.t.textDim(`LLM: ${(totalLlmTime / 1000).toFixed(1)}s  `));
+    process.stderr.write(this.t.textDim(`Tools: ${(totalToolTime / 1000).toFixed(1)}s  `));
+    process.stderr.write(this.t.textDim(`Tokens: ${totalTokens.toLocaleString()}`));
+    if (compactCount > 0) {
+      process.stderr.write(this.t.textDim(`  Compact: ${compactCount}x`));
+    }
+    process.stderr.write(this.t.textDim('\n'));
   }
 
   private updateSessionMemory(): void {
@@ -380,6 +427,8 @@ export class Agent {
     if (this.currentTurn > this.maxTurns) return;
 
     this.onEvent?.({ type: 'turn_start', turn: this.currentTurn });
+    this.turnStartTime = Date.now();
+    this.turnLlmTime = 0;
 
     const allTools = this.mcp.getAllTools();
     const tools = [
@@ -408,6 +457,7 @@ export class Agent {
     }
 
     try {
+      const llmStart = Date.now();
       const stream = this.provider.chat(this.context.getMessages(), tools, signal);
 
       for await (const chunk of stream) {
@@ -426,7 +476,7 @@ export class Agent {
         if (chunk.type === 'thinking' && chunk.thinking) {
           this.onEvent?.({ type: 'thinking', thinking: chunk.thinking });
           if (showDetail && !this.onOutput) {
-            process.stdout.write(chalk.dim(chalk.italic(chunk.thinking)));
+            process.stdout.write(chalk.italic(this.t.thinking(chunk.thinking)));
           }
         }
         if (chunk.type === 'tool_call' && chunk.toolCall) {
@@ -434,6 +484,7 @@ export class Agent {
           this.onEvent?.({ type: 'tool_call_start', index: pendingToolCalls.length - 1, name: chunk.toolCall.name, args: chunk.toolCall.arguments });
         }
       }
+      this.turnLlmTime = Date.now() - llmStart;
     } catch (e) {
       if (signal.aborted) return;
       throw e;
@@ -482,17 +533,25 @@ export class Agent {
         }
       }
 
+      const argsPreview = JSON.stringify(toolCall.arguments ?? {}).slice(0, 80);
       if (showDetail && !this.suppressToolOutput) {
-        console.log(`\n[Tool: ${toolCall.name}]`);
+        process.stdout.write(`  ${this.t.spinner('●')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)})`);
       }
       let result: ToolResult;
+      const toolStart = Date.now();
       try {
         result = await this.executeTool(toolCall);
       } catch (err) {
         result = { content: `Error executing ${toolCall.name}: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
+      const toolElapsed = Date.now() - toolStart;
       if (showDetail && !this.suppressToolOutput) {
-        console.log(`[Result]: ${result.content.slice(0, 200)}${result.content.length > 200 ? '...' : ''}\n`);
+        if (result.isError) {
+          process.stdout.write(`\r  ${this.t.error('✗')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)}) ${this.t.textDim(`[${toolElapsed}ms]`)}\n`);
+          process.stdout.write(`    ${this.t.error(result.content.slice(0, 200))}\n`);
+        } else {
+          process.stdout.write(`\r  ${this.t.success('✓')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)}) ${this.t.textDim(`[${toolElapsed}ms]`)}\n`);
+        }
       } else {
         entry.toolCalls.push({ name: toolCall.name, resultSummary: result.content.slice(0, 200) });
       }
@@ -522,6 +581,19 @@ export class Agent {
       process.stdout.write('.');
     }
 
+    const turnElapsed = Date.now() - this.turnStartTime;
+    const contextTokens = this.context.getTokenCount();
+    this.metrics.push({
+      turnNumber: this.currentTurn,
+      llmCallTime: this.turnLlmTime,
+      toolExecTime: turnElapsed - this.turnLlmTime,
+      toolCount: pendingToolCalls.length,
+      inputTokens: 0,
+      outputTokens: 0,
+      contextTokensAfter: contextTokens,
+      compactStrategy: this.context.lastCompactMetadata?.strategy,
+    });
+
     const stopReason = signal.aborted ? 'aborted' : (pendingToolCalls.length > 0 ? 'tool_use' : 'end_turn');
     this.onEvent?.({ type: 'turn_end', stopReason });
 
@@ -534,7 +606,7 @@ export class Agent {
       });
       if (allFailed && pendingToolCalls.length > 0) {
         if (showDetail && !this.onOutput) {
-          console.log(chalk.yellow('\n⚠ All tool calls failed repeatedly. Stopping.'));
+          console.log(this.t.warning('\n⚠ All tool calls failed repeatedly. Stopping.'));
         }
         return;
       }
@@ -549,7 +621,7 @@ export class Agent {
 
     // "Thought for Xs (ctrl+o to expand)"
     process.stdout.write(
-      chalk.dim(` for ${elapsed}s (ctrl+o to expand)\n`),
+      this.t.textDim(` for ${elapsed}s (ctrl+o to expand)\n`),
     );
 
     const startIdx = Math.max(0, this.reasoningLog.length - this.compactLimit);
@@ -559,7 +631,7 @@ export class Agent {
 
       // Main text with bullet point
       if (entry.assistantText) {
-        console.log(chalk.white(`• ${entry.assistantText}`));
+        console.log(this.t.textPrimary(`• ${entry.assistantText}`));
       }
 
       // Tool calls with tree structure
@@ -572,17 +644,17 @@ export class Agent {
         for (let j = 0; j < shown.length; j++) {
           const tc = shown[j]!;
           const isLastTool = j === shown.length - 1 && hidden === 0;
-          const branch = isLastTool ? chalk.dim('└ ') : chalk.dim('├ ');
+          const branch = isLastTool ? this.t.textDim('└ ') : this.t.textDim('├ ');
           const summary = tc.resultSummary
             .slice(0, 60)
             .replace(/[/\\]/g, '/')
             .replace(/\n/g, ' ');
-          console.log(`${branch}${chalk.cyan(tc.name)}(${chalk.dim(summary)})`);
+          console.log(`${branch}${this.t.toolCallName(tc.name)}(${this.t.textDim(summary)})`);
         }
 
         if (hidden > 0) {
           console.log(
-            chalk.dim(`└ ... +${hidden} tool uses (ctrl+o to expand)`),
+            this.t.textDim(`└ ... +${hidden} tool uses (ctrl+o to expand)`),
           );
         }
       }
@@ -591,7 +663,7 @@ export class Agent {
     if (this.reasoningLog.length > this.compactLimit) {
       const hidden = this.reasoningLog.length - this.compactLimit;
       console.log(
-        chalk.dim(`\n(${hidden} earlier reasoning steps hidden — press Ctrl+O for full details)`),
+        this.t.textDim(`\n(${hidden} earlier reasoning steps hidden — press Ctrl+O for full details)`),
       );
     }
   }
