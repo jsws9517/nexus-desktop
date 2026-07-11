@@ -302,12 +302,12 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         if (s === '\n') return;
       }
 
-      if (isQuestionMode) {
-        if (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && key.name === 'o')) return;
-        return originalTtyWrite(s, key);
-      }
+        if (isQuestionMode) {
+          if (key.name === 'pageup' || key.name === 'pagedown' || key.name === 'up' || key.name === 'down' || (key.ctrl && key.name === 'o')) return;
+          return originalTtyWrite(s, key);
+        }
 
-      if (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && key.name === 'o')) return;
+        if (key.name === 'pageup' || key.name === 'pagedown' || key.name === 'up' || key.name === 'down' || (key.ctrl && key.name === 'o')) return;
 
       // === Multi-line triggers: Ctrl+J, Shift+Enter, Ctrl+Enter ===
       if (isNewLineKey(s, key)) {
@@ -349,10 +349,25 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
   let promptHistoryIndex = -1;
   let draftInput = '';
 
+  function debugLog(...args: unknown[]): void {
+    if (process.env.DEBUG?.includes('pageup') || process.env.LLMA_DEBUG) {
+      process.stderr.write(`[pageup] ${args.map(a => String(a)).join(' ')}\n`);
+    }
+  }
+
   function getUserMessages(): string[] {
-    return agent.context.getMessages()
-      .filter((m) => m.role === 'user')
-      .map((m) => m.content);
+    const sessionId = agent.getCurrentSessionId();
+    if (!sessionId) return [];
+
+    try {
+      const stored = agent.session.getMessages(sessionId);
+      return stored
+        .filter((m) => m.role === 'user')
+        .map((m) => m.content);
+    } catch (e) {
+      debugLog(`store error: ${e instanceof Error ? e.message : String(e)}`);
+      return [];
+    }
   }
 
   function setLine(text: string): void {
@@ -591,7 +606,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       return;
     }
 
-    if (key.name === 'pageup') {
+    if (key.name === 'pageup' || key.name === 'up') {
       const userMessages = getUserMessages();
       if (userMessages.length === 0) return;
 
@@ -604,7 +619,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         promptHistoryIndex = nextIndex;
         setLine(userMessages[userMessages.length - 1 - promptHistoryIndex]);
       }
-    } else if (key.name === 'pagedown') {
+    } else if (key.name === 'pagedown' || key.name === 'down') {
       if (promptHistoryIndex === -1) return;
 
       const userMessages = getUserMessages();
@@ -759,6 +774,7 @@ async function handleSlashCommand(
       console.log('  /rename <name>   - Rename the current session');
       console.log('  /resume          - Browse and resume a previous session');
       console.log('  /history [delete <ids>] - View/delete session history');
+      console.log('  /history-view [id] - Browse raw SQLite message history for a session');
       console.log('  /tools           - List available tools');
       console.log('  /mcp             - List MCP server connections');
       console.log('  /skills          - List loaded skills/plugins');
@@ -768,8 +784,8 @@ async function handleSlashCommand(
       console.log(chalk.gray('  @<path>         - Inline file/directory content into prompt'));
       console.log(chalk.gray('                   (also: @"path with spaces", @file.ts#L10-20)'));
       console.log(chalk.gray('\nShortcuts:'));
-      console.log(chalk.gray(' PageUp           - Browse to older prompt in this session'));
-      console.log(chalk.gray('PageDown         - Browse to newer prompt (or back to draft)'));
+      console.log(chalk.gray(' ↑/PageUp         - Browse older messages in session history'));
+      console.log(chalk.gray(' ↓/PageDown       - Browse newer messages (or back to draft)'));
       console.log(chalk.gray('  Ctrl+O          - Toggle detail mode (compact / full)'));
       console.log(chalk.gray('\nInput:'));
       console.log(chalk.gray('  Enter           - Submit prompt (ignored if empty)'));
@@ -982,6 +998,35 @@ async function handleSlashCommand(
           renderTable();
         }
       }
+      return false;
+    }
+
+    case 'history-view': {
+      const sessionId = args[0] || agent.getCurrentSessionId();
+      if (!sessionId) {
+        console.log(chalk.yellow('No active session. Specify a session ID: /history-view <session-id>'));
+        return false;
+      }
+      let messages;
+      try {
+        messages = agent.session.getMessages(sessionId);
+      } catch {
+        console.log(chalk.red(`Session not found: ${sessionId}`));
+        return false;
+      }
+      if (!messages || messages.length === 0) {
+        console.log(chalk.gray('No messages in this session.'));
+        return false;
+      }
+      console.log(chalk.bold(`\nSession: ${sessionId} (${messages.length} messages total)\n`));
+      for (let i = 0; i < messages.length; i++) {
+        const m = messages[i]!;
+        const preview = m.content.slice(0, 120).replace(/\n/g, '\\n');
+        const roleTag = m.role === 'assistant' ? chalk.cyan(m.role) : chalk.green(m.role);
+        const tokens = m.toolCalls ? ` [${m.toolCalls.length} tool calls]` : '';
+        console.log(`  ${String(i + 1).padStart(3)}. ${roleTag}: ${chalk.dim(preview)}${tokens}`);
+      }
+      console.log(chalk.gray(`\nTip: Use /resume to switch to a session, then the context will have the full history.\n`));
       return false;
     }
 
