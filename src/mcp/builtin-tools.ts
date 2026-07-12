@@ -7,6 +7,7 @@ import { isIP } from 'net';
 import { BuiltinTool } from './types.js';
 import { ToolResult } from '../types.js';
 import { authorizePath } from '../security/path-authorizer.js';
+import { sanitizeContent } from '../utils/sanitize.js';
 import { translateCommand } from './cmd-alias.js';
 
 const execAsync = promisify(exec);
@@ -320,23 +321,25 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         const results: string[] = [];
         let modified = content;
         for (const edit of edits) {
-          const idx = modified.indexOf(edit.oldText);
+          const oldText = edit.oldText;
+          const newText = sanitizeContent(edit.newText);
+          const idx = modified.indexOf(oldText);
           if (idx === -1) {
-            results.push(`✗ "${edit.oldText.slice(0, 60)}" not found — SKIPPED`);
+            results.push(`✗ "${oldText.slice(0, 60)}" not found — SKIPPED`);
             continue;
           }
-          const nextIdx = modified.indexOf(edit.oldText, idx + 1);
+          const nextIdx = modified.indexOf(oldText, idx + 1);
           if (nextIdx !== -1) {
-            results.push(`✗ "${edit.oldText.slice(0, 60)}" appears ${nextIdx > idx ? 'multiple times' : 'once'} — SKIPPED (must match exactly once)`);
+            results.push(`✗ "${oldText.slice(0, 60)}" appears ${nextIdx > idx ? 'multiple times' : 'once'} — SKIPPED (must match exactly once)`);
             continue;
           }
-          modified = modified.slice(0, idx) + edit.newText + modified.slice(idx + edit.oldText.length);
-          results.push(`✓ Replaced "${edit.oldText.slice(0, 60)}" → "${edit.newText.slice(0, 60)}"`);
+          modified = modified.slice(0, idx) + newText + modified.slice(idx + oldText.length);
+          results.push(`✓ Replaced "${oldText.slice(0, 60)}" → "${newText.slice(0, 60)}"`);
         }
         if (dryRun) {
           return { content: `[DRY RUN — not applied]\n${results.join('\n')}` };
         }
-        writeFileSync(path, modified, 'utf-8');
+        writeFileSync(path, sanitizeContent(modified), 'utf-8');
         return { content: results.join('\n') };
       } catch (err) {
         return { content: `Error editing file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -556,7 +559,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const path = String(args.path || '');
-      const content = String(args.content || '');
+      const content = sanitizeContent(String(args.content || ''));
       const authorized = await authorizePath(path);
       if (!authorized) {
         return { content: `Access denied: "${path}" is not in the allowed path list and access was rejected by user.`, isError: true };

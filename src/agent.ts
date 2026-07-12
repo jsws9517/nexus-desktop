@@ -11,9 +11,13 @@ import { SkillRegistry } from './skills/registry.js';
 import { AcpProtocol } from './acp/protocol.js';
 import { Message, ToolCall, ToolResult, ToolDefinition, AgentEvent } from './types.js';
 import { Hooks, createSanityCheckHook } from './hooks/index.js';
+import { createAutoValidateHook } from './hooks/auto-validate.js';
 import { AuditManager } from './security/audit.js';
 import { resolveApiKey } from './security/env-key-encrypt.js';
 import { ThemeManager } from './theme/manager.js';
+import { ProgressTracker, TaskGraph, DAGScheduler, SubAgentWorker } from './task/index.js';
+import { getTaskToolDefinitions, executeTaskTool } from './task/task-tools.js';
+import { ProjectContext } from './context/index.js';
 
 const REMEMBER_TOOL_DEF: ToolDefinition = {
   name: 'remember',
@@ -76,6 +80,14 @@ export class Agent {
 
   /** Security audit manager */
   audit = new AuditManager();
+
+  /** Task decomposition and progress tracking */
+  tracker = new ProgressTracker();
+  currentPlan?: TaskGraph;
+  planMode = false;
+
+  /** Project context (reads .nexus/ directory) */
+  projectContext = new ProjectContext();
 
   private currentSessionId?: string;
   private currentUserInput?: string;
@@ -288,6 +300,10 @@ export class Agent {
     // Inject memory context before LLM call
     await this.injectMemoryContext();
 
+    // Inject project context (.nexus/PROJECT.md, rules, knowledge)
+    await this.projectContext.load(process.cwd());
+    await this.projectContext.inject(this.context);
+
     // Auto-save user info to knowledge graph
     await this.saveUserInfoIfNeeded(userInput);
 
@@ -303,8 +319,9 @@ export class Agent {
     await this.context.compress();
     this.context.onProgress = undefined;
 
-    // Auto-register sanity check hook for each chat
+    // Auto-register sanity check + auto-validate hooks for each chat
     const sanityCheck = createSanityCheckHook(userInput);
+    const autoValidate = createAutoValidateHook();
     const userHooks = this.hooks;
     this.hooks = {
       ...(userHooks || {}),
@@ -312,6 +329,10 @@ export class Agent {
         const check = await sanityCheck(ctx);
         if (check !== 'allow') return check;
         return userHooks?.preToolUse ? userHooks.preToolUse(ctx) : 'allow';
+      },
+      postToolUse: async (ctx) => {
+        await autoValidate(ctx);
+        await userHooks?.postToolUse?.(ctx);
       },
     };
 
@@ -431,12 +452,24 @@ export class Agent {
     this.turnLlmTime = 0;
 
     const allTools = this.mcp.getAllTools();
-    const tools = [
+    let tools: ToolDefinition[] = [
       ...allTools.filter(t => !INTERNAL_TOOLS.has(t.name)),
       ...this.skills.getTools(),
       ...this.getAcpTools(),
       REMEMBER_TOOL_DEF,
+      ...getTaskToolDefinitions(),
     ];
+
+    // In plan mode, restrict to read-only + task tools
+    if (this.planMode) {
+      const allowedNames = new Set([
+        'file_read', 'read_text_file', 'read_multiple_files', 'list_directory', 'get_file_info', 'directory_tree',
+        'fetch_url', 'web_search', 'web_fetch',
+        'decompose_task', 'query_tasks', 'search_nodes', 'search_files', 'open_nodes',
+        'remember',
+      ]);
+      tools = tools.filter((t) => allowedNames.has(t.name));
+    }
 
     // Debug: log tool count in ACP server mode
     if (this.isAcpServer) {
@@ -697,6 +730,14 @@ export class Agent {
     // 1. Check local skills first
     const skillResult = await this.skills.callTool(call.name, safeArgs);
     if (skillResult) return skillResult;
+
+    // 1.5 Check task tools (decompose_task, spawn_subagent, query_tasks)
+    const taskResult = await executeTaskTool(call.name, safeArgs, {
+      agent: this,
+      tracker: this.tracker,
+      sessionId: this.currentSessionId,
+    });
+    if (taskResult) return taskResult;
 
     // 2. Fall back to MCP/builtin tools
     let mcpResult: ToolResult;
@@ -966,6 +1007,38 @@ export class Agent {
       });
     } catch {
       // Silent fail
+    }
+  }
+
+  async plan(request: string): Promise<string> {
+    this.planMode = true;
+    const response = await this.provider.complete([{
+      role: 'user',
+      content: `你是一个架构师。请对以下需求进行分析，输出详细的实现计划。
+
+要求：
+1. 分析需求的关键点
+2. 列出实现步骤（按依赖关系排序）
+3. 每个步骤标注需要使用的技术/工具
+4. 不可执行任何代码修改操作，只输出计划
+
+需求: ${request}`,
+    }]);
+    return response;
+  }
+
+  async executePlan(): Promise<string> {
+    this.planMode = false;
+    if (!this.currentPlan) {
+      return 'No plan to execute. Use /plan first.';
+    }
+    const worker = new SubAgentWorker(this);
+    const scheduler = new DAGScheduler(worker, this.tracker);
+    try {
+      await scheduler.execute(this.currentPlan);
+      return 'Plan execution completed.';
+    } catch (err) {
+      return `Plan execution failed: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
