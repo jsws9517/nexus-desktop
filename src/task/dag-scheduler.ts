@@ -1,8 +1,13 @@
 import { join } from 'path';
+import { homedir } from 'os';
+import { mkdirSync } from 'fs';
 import { TaskGraph, TaskNode, TaskStatus } from './types.js';
 import { SubAgentWorker } from './sub-agent-worker.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { preAuthorizeRoot } from '../security/path-authorizer.js';
+
+/** Project code is isolated from the agent's own directory under ~/.nexus/tasks/outputs */
+const TASK_OUTPUTS_DIR = join(homedir(), '.nexus', 'tasks', 'outputs');
 
 export class DAGScheduler {
   constructor(
@@ -12,10 +17,12 @@ export class DAGScheduler {
 
   async execute(graph: TaskGraph): Promise<void> {
     const projectDir = graph.projectName
-      ? join(process.cwd(), graph.projectName)
-      : process.cwd();
-    preAuthorizeRoot(process.cwd());
-    if (projectDir !== process.cwd()) preAuthorizeRoot(projectDir);
+      ? join(TASK_OUTPUTS_DIR, graph.projectName)
+      : TASK_OUTPUTS_DIR;
+    mkdirSync(projectDir, { recursive: true });
+    // Pre-authorize the entire outputs tree so sub-agents can list/write inside it
+    // without triggering the security prompt for the parent directory.
+    preAuthorizeRoot(TASK_OUTPUTS_DIR);
     const levels = this.topologicalSort(graph);
 
     for (const level of levels) {

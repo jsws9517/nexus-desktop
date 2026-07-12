@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { createInterface } from 'readline';
 import { ConfigManager } from '../config/index.js';
+import { NativeManager, SearchResult } from '../config/native.js';
 import { importFromClaude } from '../config/claude-import.js';
 import { ThemeManager } from '../theme/manager.js';
 
@@ -265,5 +266,213 @@ export function registerConfigCommand(program: Command): void {
 
       config.setAcpConfig(acpConfig);
       console.log(t.success(`Removed ACP agent: ${name}`));
+    });
+
+  // Native packages management (MCP servers + plugins)
+  const nativeCmd = configCmd.command('native').description('Native package management (MCP servers and plugins)');
+
+  nativeCmd
+    .command('pkg')
+    .description('List all available MCP tools and plugins that can be installed')
+    .action(() => {
+      const native = new NativeManager();
+      const available = native.listAvailable();
+      const mcpPkgs = available.filter(p => p.type === 'mcp');
+      const pluginPkgs = available.filter(p => p.type === 'plugin');
+
+      console.log(t.heading(`Available Packages (${available.length}):\n`));
+
+      console.log(t.heading('  MCP Servers:'));
+      for (const pkg of mcpPkgs) {
+        const installed = native.isInstalled(pkg.name) ? t.success(' [installed]') : '';
+        console.log(`    ${t.entityName(pkg.name)}${installed}`);
+        console.log(`      ${pkg.description}`);
+        if (pkg.options && pkg.options.length > 0) {
+          console.log(`      ${t.textDim('Options: ' + pkg.options.map(o => o.flag + ' <' + o.label + '>').join(', '))}`);
+        }
+        console.log();
+      }
+
+      console.log(t.heading('  Plugins (Skills):'));
+      for (const pkg of pluginPkgs) {
+        const installed = native.isInstalled(pkg.name) ? t.success(' [installed]') : '';
+        console.log(`    ${t.entityName(pkg.name)}${installed}`);
+        console.log(`      ${pkg.description}`);
+        console.log();
+      }
+
+      console.log(t.textDim('  Install: nexus config native install <name>'));
+      console.log(t.textDim('  Install all: nexus config native install --all'));
+    });
+
+  nativeCmd
+    .command('install [name]')
+    .description('Install a native MCP tool or plugin')
+    .option('--all', 'Install all available packages')
+    .option('--dir <path>', 'Allowed directory (for filesystem)')
+    .option('--token <token>', 'GitHub token (for github)')
+    .option('--db <path>', 'Database path (for sqlite)')
+    .action(async (name: string | undefined, options: { all?: boolean; dir?: string; token?: string; db?: string }) => {
+      const native = new NativeManager();
+
+      if (options.all) {
+        console.log(t.heading('Installing all packages...\n'));
+        const results = await native.installAll();
+        for (const r of results) {
+          const icon = r.startsWith('✓') ? t.success(r[0]) : r.startsWith('✗') ? t.error(r[0]) : t.textDim(r[0]);
+          console.log(`  ${icon}${r.slice(1)}`);
+        }
+        console.log(t.textDim('\nRestart the agent to activate newly installed packages.'));
+        return;
+      }
+
+      if (!name) {
+        console.log(t.warning('Usage: nexus config native install <name> [options]'));
+        console.log(t.textDim('  Run `nexus config native pkg` to see available packages.'));
+        return;
+      }
+
+      const pkg = native.getPackage(name);
+      if (!pkg) {
+        console.log(t.error(`Package "${name}" not found.`));
+        console.log(t.textDim(`  Available: ${native.getAvailableNames().join(', ')}`));
+        return;
+      }
+
+      const params: Record<string, string> = {};
+      if (options.dir) params.dir = options.dir;
+      if (options.token) params.token = options.token;
+      if (options.db) params.db = options.db;
+
+      try {
+        const result = await native.install(name, params);
+        console.log(t.success(result));
+      } catch (err) {
+        console.log(t.error(err instanceof Error ? err.message : String(err)));
+      }
+    });
+
+  nativeCmd
+    .command('list')
+    .description('List installed native MCP tools and plugins')
+    .action(() => {
+      const native = new NativeManager();
+      const installed = native.listInstalled();
+
+      if (installed.length === 0) {
+        console.log(t.textDim('No packages installed.'));
+        console.log(t.textDim('  Run `nexus config native pkg` to see available packages.'));
+        return;
+      }
+
+      console.log(t.heading(`Installed Packages (${installed.length}):\n`));
+      for (const pkg of installed) {
+        const label = pkg.type === 'mcp' ? t.textDim('[MCP]') : t.textDim('[Plugin]');
+        console.log(`  ${t.entityName(pkg.name)} ${label}`);
+        console.log(`    ${pkg.description}`);
+        console.log();
+      }
+    });
+
+  nativeCmd
+    .command('search <query>')
+    .description('Search for MCP tools and plugins from npm registry and GitHub')
+    .action(async (query: string) => {
+      const native = new NativeManager();
+
+      console.log(t.heading(`Searching for "${query}"...\n`));
+
+      try {
+        const results = await native.search(query);
+
+        if (results.length === 0) {
+          console.log(t.textDim('No results found.'));
+          return;
+        }
+
+        const npmResults = results.filter(r => r.source === 'npm');
+        const ghResults = results.filter(r => r.source === 'github');
+        const curatedResults = results.filter(r => r.source === 'curated');
+
+        if (npmResults.length > 0) {
+          console.log(t.heading(`  npm Registry (${npmResults.length}):`));
+          for (const r of npmResults) {
+            console.log(`    ${t.entityName(r.name)} ${t.textDim('v' + r.version)}`);
+            console.log(`      ${r.description}`);
+            console.log(`      ${t.textDim('Install:')} ${r.installHint}`);
+            console.log();
+          }
+        }
+
+        if (ghResults.length > 0) {
+          const isPluginRepo = (r: SearchResult) =>
+            r.installHint && (r.installHint.includes('~/.nexus') || r.installHint.includes('git clone'));
+          const pluginRepoResults = ghResults.filter(isPluginRepo);
+          const otherGhResults = ghResults.filter(r => !isPluginRepo(r));
+
+          if (otherGhResults.length > 0) {
+            console.log(t.heading(`  GitHub (${otherGhResults.length}):`));
+            for (const r of otherGhResults) {
+              console.log(`    ${t.entityName(r.name)} ${t.textDim(r.version)}`);
+              console.log(`      ${r.description}`);
+              console.log(`      ${t.textDim(r.url)}`);
+              console.log();
+            }
+          }
+
+          if (pluginRepoResults.length > 0) {
+            console.log(t.heading(`  Plugin Repos (${pluginRepoResults.length}):`));
+            for (const r of pluginRepoResults) {
+              console.log(`    ${t.entityName(r.name)} ${t.textDim(r.version)}`);
+              console.log(`      ${r.description}`);
+              console.log(`      ${t.textDim(r.installHint)}`);
+              console.log();
+            }
+          }
+        }
+
+        if (curatedResults.length > 0) {
+          console.log(t.heading(`  Curated (${curatedResults.length}):`));
+          for (const r of curatedResults) {
+            const installed = native.isInstalled(r.name) ? t.success(' [installed]') : '';
+            console.log(`    ${t.entityName(r.name)}${installed}`);
+            console.log(`      ${r.description}`);
+            console.log(`      ${t.textDim('Install:')} ${r.installHint}`);
+            console.log();
+          }
+        }
+      } catch (err) {
+        console.log(t.error(`Search failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  nativeCmd
+    .command('install-npm <package>')
+    .description('Install an MCP server from npm marketplace (e.g., lsp-mcp-server)')
+    .option('--token <token>', 'API token / environment variable')
+    .action(async (pkg: string, options: { token?: string }) => {
+      const native = new NativeManager();
+      console.log(t.textDim(`Fetching ${pkg} from npm registry...`));
+      try {
+        const result = await native.installFromNpm(pkg, options.token ? { token: options.token } : undefined);
+        console.log(t.success(result));
+      } catch (err) {
+        console.log(t.error(err instanceof Error ? err.message : String(err)));
+      }
+    });
+
+  nativeCmd
+    .command('install-gh <repo>')
+    .description('Install an MCP server from GitHub (e.g., ktnyt/cclsp)')
+    .option('--token <token>', 'GitHub token / environment variable')
+    .action(async (repo: string, options: { token?: string }) => {
+      const native = new NativeManager();
+      console.log(t.textDim(`Cloning ${repo} from GitHub...`));
+      try {
+        const result = await native.installFromGitHub(repo, options.token ? { token: options.token } : undefined);
+        console.log(t.success(result));
+      } catch (err) {
+        console.log(t.error(err instanceof Error ? err.message : String(err)));
+      }
     });
 }

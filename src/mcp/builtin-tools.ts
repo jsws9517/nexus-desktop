@@ -574,18 +574,20 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
   },
   {
     name: 'exec_command',
-    description: 'Execute a shell command and return stdout/stderr',
+    description: 'Execute a shell command and return stdout/stderr. Use the "cwd" parameter to run the command in a specific project directory instead of the agent\'s default working directory.',
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'Shell command to execute' },
+        cwd: { type: 'string', description: 'Working directory to run the command in (absolute or relative path). Defaults to the agent\'s current working directory. Set this to the target project directory when operating on a specific project.' },
         timeout: { type: 'number', description: 'Timeout in milliseconds (default 30000)' },
       },
       required: ['command'],
     },
-    async execute(args): Promise<ToolResult> {
+    async execute(args, ctx): Promise<ToolResult> {
       const command = String(args.command || '');
       const timeout = Number(args.timeout || 30000);
+      const requestedCwd = args.cwd ? String(args.cwd) : undefined;
       if (!command) {
         return { content: 'Empty command: you must provide a non-empty "command" string to exec_command. For reading files use file_read instead.', isError: true };
       }
@@ -599,6 +601,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
           encoding: 'utf-8',
           timeout,
           maxBuffer: 10 * 1024 * 1024,
+          cwd: requestedCwd || ctx?.workDir || process.cwd(),
         });
         const output = stdout + (stderr ? '\n' + stderr : '');
         return { content: output };

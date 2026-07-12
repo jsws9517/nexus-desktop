@@ -129,6 +129,9 @@ export class ConfigManager {
 
   addMcpServer(name: string, server: NonNullable<Config['mcpServers']>[string]): void {
     this.config.mcpServers = this.config.mcpServers || {};
+    if ((this.config.mcpServers as Record<string, unknown>)[name]) {
+      return; // already registered
+    }
     (this.config.mcpServers as Record<string, unknown>)[name] = server;
     this.save();
   }
@@ -155,6 +158,11 @@ export class ConfigManager {
 
   setPromptName(name: string): void {
     this.config.promptName = name;
+    this.save();
+  }
+
+  setNativeInstalled(list: string[]): void {
+    this.config.nativeInstalled = [...new Set(list)];
     this.save();
   }
 

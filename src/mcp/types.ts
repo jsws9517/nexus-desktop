@@ -7,9 +7,14 @@ export interface McpServerConnection {
   tools: ToolDefinition[];
 }
 
+export interface BuiltinToolContext {
+  /** Default working directory for shell commands (e.g. the active project dir). */
+  workDir?: string;
+}
+
 export interface BuiltinTool {
   name: string;
   description: string;
   inputSchema: object;
-  execute(args: Record<string, unknown>): Promise<ToolResult>;
+  execute(args: Record<string, unknown>, ctx?: BuiltinToolContext): Promise<ToolResult>;
 }

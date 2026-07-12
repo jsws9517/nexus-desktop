@@ -43,6 +43,7 @@ export const ConfigSchema = z.object({
   acp: AcpConfigSchema.optional(),
   promptName: z.string().optional(),
   modelContextLimits: z.record(z.number()).optional(),
+  nativeInstalled: z.array(z.string()).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;

@@ -7,6 +7,7 @@ import { ToolResult } from '../types.js';
 
 const SKILLS_DIR = join(homedir(), '.nexus', 'skills');
 const CLAUDE_SKILLS_DIR = join(homedir(), '.claude', 'skills');
+const NATIVE_PLUGINS_DIR = join(homedir(), '.nexus', 'native', 'plugins');
 
 function isSafePath(p: string): boolean {
   if (!isAbsolute(p)) return false;
@@ -21,7 +22,7 @@ export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
 
   // Filter extraPaths for safety
   const safeExtras = (extraPaths || []).filter(isSafePath);
-  const paths = [SKILLS_DIR, CLAUDE_SKILLS_DIR, ...safeExtras];
+  const paths = [SKILLS_DIR, NATIVE_PLUGINS_DIR, CLAUDE_SKILLS_DIR, ...safeExtras];
 
   for (const basePath of paths) {
     if (!existsSync(basePath)) continue;

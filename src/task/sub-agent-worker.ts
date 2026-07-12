@@ -39,9 +39,16 @@ export class SubAgentWorker {
 
     await child.init();
 
-    const dirHint = projectDir
-      ? `[Project Directory]\n${projectDir}\n\nAll generated code files MUST be created under the Project Directory above.\n\n---\n\n`
-      : '';
+    let dirHint = '';
+    if (projectDir) {
+      // Make the child agent's exec_command default to the project directory
+      child.mcp.workDir = projectDir;
+      dirHint =
+        `[Project Directory]\n${projectDir}\n\n` +
+        `All generated code files MUST be created under the Project Directory above.\n` +
+        `Shell commands (exec_command) already run inside this directory by default — ` +
+        `do NOT prepend "cd <path>" or run git against the agent's own working directory.\n\n---\n\n`;
+    }
     await child.chat(`${dirHint}${task.description}`);
 
     await child.shutdown();

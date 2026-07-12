@@ -70,6 +70,8 @@ function normalizeArgs(raw: Record<string, unknown>, schema: object): Record<str
 export class ClientManager {
   private connections: Map<string, ServerConnection> = new Map();
   private builtinTools = BUILTIN_TOOLS;
+  /** Default working directory for builtin exec_command (e.g. active project dir). */
+  workDir?: string;
 
   async connectServer(name: string, config: ServerConfig): Promise<void> {
     const client = new Client(
@@ -127,7 +129,7 @@ export class ClientManager {
     // Check builtin tools first
     const builtin = this.builtinTools.find((t) => t.name === name);
     if (builtin) {
-      return builtin.execute(args);
+      return builtin.execute(args, { workDir: this.workDir });
     }
 
     // Find in MCP servers

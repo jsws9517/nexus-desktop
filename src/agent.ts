@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { resolve, join } from 'path';
+import { homedir } from 'os';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { ConfigManager } from './config/index.js';
 import { LLMProvider, createProvider } from './llm/provider.js';
@@ -903,18 +904,17 @@ export class Agent {
     }]);
   }
 
-  /** Auto-save long assistant responses to files in saved-content/ so they survive compression */
+  /** Auto-save long assistant responses to files in ~/.nexus/_cache/ so they survive compression */
   private autoSaveLongContent(content: string): void {
     if (!content || content.length < 500) return;
-    const dir = resolve(process.cwd(), 'saved-content');
+    const dir = resolve(homedir(), '.nexus', '_cache');
     mkdirSync(dir, { recursive: true });
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const title = content.split('\n')[0]?.trim().slice(0, 50).replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '') || 'content';
     const filename = `${timestamp}_${title}.md`;
     writeFileSync(join(dir, filename), content, 'utf-8');
-    // Notify user via console if interactive
     if (!this.onOutput) {
-      process.stdout.write(`\n\x1b[2m[Auto-saved: saved-content/${filename}]\x1b[0m\n`);
+      process.stdout.write(`\n\x1b[2m[Auto-saved: ~/.nexus/_cache/${filename}]\x1b[0m\n`);
     }
   }
 
