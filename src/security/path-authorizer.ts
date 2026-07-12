@@ -60,7 +60,8 @@ async function promptUser(path: string): Promise<boolean> {
     return true;
   }
 
-  const question = `\n\x1b[33m⚠ Security: Agent is requesting access to read/write:\n  ${path}\nAllow? (y=once, a=always, n=deny): \x1b[0m`;
+  const filename = path.split(/[\\/]/).pop() || path;
+  const question = `\x1b[33m⚠ Security: read/write "${filename}"? [y] once  [a] always  [n] deny \x1b[0m`;
   const answer = _permissionPrompter
     ? await _permissionPrompter(question)
     : await new Promise<string>(resolve => {
@@ -108,15 +109,23 @@ export function clearAuthorizations(): void {
  * permission system (with visible tool call) instead of a silent prompt.
  */
 export function checkPathAllowed(absPath: string): boolean {
-  const allowed = [
+  const normalized = normalize(absPath).toLowerCase();
+  const roots = [
     process.cwd().toLowerCase(),
     ...getAuthorizedRoots().map(r => normalize(r).toLowerCase()),
+    ...[...alreadyConfirmed].map(r => normalize(r).toLowerCase()),
   ];
-  const normalized = normalize(absPath).toLowerCase();
-  for (const root of allowed) {
+  for (const root of roots) {
     if (normalized.startsWith(root)) return true;
   }
   return false;
+}
+
+/** Batch pre-authorize a root path for the current process without prompting.
+ *  All sub-paths under `root` will be auto-allowed. */
+export function preAuthorizeRoot(root: string): void {
+  const normalized = normalize(resolve(root));
+  alreadyConfirmed.add(normalized);
 }
 
 export async function authorizePath(absPath: string): Promise<boolean> {

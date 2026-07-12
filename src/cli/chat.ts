@@ -6,12 +6,14 @@ import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
+import { homedir } from 'os';
 import { Agent } from '../agent.js';
 import { showWelcomeScreen, BorderMode } from './logo.js';
 import { ThemeManager } from '../theme/manager.js';
 import { authorizePath, setPermissionPrompter } from '../security/path-authorizer.js';
 import { isDangerousBash } from '../security/audit.js';
 import { translateCommand } from '../mcp/cmd-alias.js';
+import { executeTaskTool } from '../task/task-tools.js';
 
 const execAsync = promisify(exec);
 
@@ -401,11 +403,13 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
   // ---- Interactive question mode (for /resume, /history delete) ----
   let isQuestionMode = false;
+  let isSingleKeyMode = false;
   let isBracketedPaste = false;
 
-  async function customQuestion(query: string): Promise<string> {
+  async function customQuestion(query: string, singleKey?: boolean): Promise<string> {
     return new Promise<string>((resolve) => {
       isQuestionMode = true;
+      isSingleKeyMode = !!singleKey;
       process.stdout.write(query);
 
       const lineHandler = (line: string) => {
@@ -422,22 +426,38 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         }
       };
 
+      const keyHandler = (_s: string, k: any) => {
+        if (!singleKey || !k) return;
+        if ((_s === 'y' || _s === 'a' || _s === 'n' || _s === 'Y' || _s === 'A' || _s === 'N') && !k.ctrl && !k.meta && !k.shift) {
+          const answer = _s.toLowerCase();
+          cleanup();
+          (rl as any).line = '';
+          process.stdout.write(answer + '\n');
+          resolve(answer);
+        }
+      };
+
       function cleanup() {
         rl.removeListener('line', lineHandler);
         process.stdin.removeListener('keypress', escHandler);
+        process.stdin.removeListener('keypress', keyHandler);
         isQuestionMode = false;
+        isSingleKeyMode = false;
       }
 
       rl.on('line', lineHandler);
       process.stdin.on('keypress', escHandler);
+      if (singleKey) {
+        process.stdin.on('keypress', keyHandler);
+      }
     });
   }
 
   // Wire audit confirmations to reuse main readline (avoids double-echo / readline conflict)
   agent.audit.setAskUser(customQuestion);
 
-  // Wire path-authorizer permission prompts to reuse main readline too
-  setPermissionPrompter(customQuestion);
+  // Wire path-authorizer permission prompts to reuse main readline too (with single-key auto-submit)
+  setPermissionPrompter((q) => customQuestion(q, true));
 
   // Wire dangerous command confirmation to reuse main readline too
   setDangerousCmdPrompter(customQuestion);
@@ -467,6 +487,8 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       }
 
       if (isQuestionMode) {
+        // In singleKey mode, suppress echo for y/a/n — keyHandler writes its own output
+        if (isSingleKeyMode && (s === 'y' || s === 'a' || s === 'n' || s === 'Y' || s === 'A' || s === 'N')) return;
         return originalTtyWrite(s, key);
       }
 
@@ -834,6 +856,10 @@ async function handleSlashCommand(
       console.log('  /mcp             - List MCP server connections');
       console.log('  /skills          - List loaded skills/plugins');
       console.log('  /plugins         - Alias for /skills');
+      console.log('  /plan <request>  - Decompose request into tasks; run /plan to export requirements doc');
+      console.log('  /go              - Execute the current plan');
+      console.log('  /tasks           - Show task decomposition progress tree');
+      console.log('  /task <id>       - Show details for a specific task');
       console.log('  /theme           - Show or switch color theme');
       console.log(t().textDim('\nInput prefixes:'));
       console.log(t().textDim('  !<cmd>          - Execute a bash command'));
@@ -901,8 +927,8 @@ async function handleSlashCommand(
       const maxTokens = agent.config.getProvider().maxContextTokens || 8192;
 
       console.log(t().heading('Sessions:'));
-      console.log(t().textDim('  #   Name                       Model                Updated              Tokens'));
-      console.log(t().textDim('  --- ---------------------------- -------------------- -------------------- ------'));
+      console.log(t().textDim('  #   Name                       Model                Updated              Tokens  Session ID'));
+      console.log(t().textDim('  --- ---------------------------- -------------------- -------------------- ------ ------------------------------------'));
       const rows: { id: string; name: string; model: string; updatedAt: string; tokens: number }[] = [];
       for (const s of sessions) {
         const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
@@ -912,7 +938,7 @@ async function handleSlashCommand(
         const dateStr = date.slice(0, 18).padEnd(18);
         const current = s.id === currentId ? t().success(' <- current') : '';
         const warn = tokens > maxTokens ? t().warning(' !') : '';
-        console.log(`  ${String(rows.length + 1).padStart(3)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${warn}${current}`);
+        console.log(`  ${String(rows.length + 1).padStart(3)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${warn}${current}  ${t().textDim(s.id)}`);
         rows.push({ id: s.id, name: s.name, model: s.model, updatedAt: date, tokens });
       }
 
@@ -1001,8 +1027,8 @@ async function handleSlashCommand(
 
       const renderTable = () => {
         console.log(t().heading(`\nSession History (showing ${displaySessions.length}/${allSessions.length}):`));
-        console.log(t().textDim('  #    Name                       Model                Updated              Tokens'));
-        console.log(t().textDim('  ---- ---------------------------- -------------------- -------------------- ------'));
+        console.log(t().textDim('  #    Name                       Model                Updated              Tokens  Session ID'));
+        console.log(t().textDim('  ---- ---------------------------- -------------------- -------------------- ------ ------------------------------------'));
         for (let i = 0; i < displaySessions.length; i++) {
           const s = displaySessions[i]!;
           const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
@@ -1011,7 +1037,7 @@ async function handleSlashCommand(
           const model = s.model.slice(0, 18).padEnd(18);
           const dateStr = date.slice(0, 18).padEnd(18);
           const current = s.id === currentId ? t().success(' <- current') : '';
-          console.log(`  ${String(i + 1).padStart(4)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${current}`);
+          console.log(`  ${String(i + 1).padStart(4)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${current}  ${t().textDim(s.id)}`);
         }
         if (allSessions.length > MAX_SHOW) {
           console.log(t().textDim(`  ... and ${allSessions.length - MAX_SHOW} more older sessions`));
@@ -1205,6 +1231,7 @@ ${aggregated}`,
         const date = new Date(s.updatedAt).toLocaleString();
         const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
         console.log(`  ${t().entityName(s.name)} (${t().textDim(date)}, ${tokens} tokens)`);
+        console.log(`    Session ID: ${t().textDim(s.id)}`);
       }
 
       const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
@@ -1326,6 +1353,236 @@ ${aggregated}`,
         }
       }
       return false;
+
+    case 'plan': {
+      const request = args.join(' ');
+      if (!request) {
+        // No args → export development requirements document
+        const plan = (agent as any).currentPlan;
+        if (!plan) {
+          console.log(t().warning('No plan to export. Use /plan <request> first.'));
+          return false;
+        }
+        const { mkdirSync, writeFileSync } = await import('fs');
+        const projectName = plan.projectName || `plan-${Date.now()}`;
+        const dir = join(homedir(), '.nexus', 'tasks', 'project', projectName);
+        mkdirSync(dir, { recursive: true });
+
+        // Save graph.json
+        writeFileSync(
+          join(dir, 'graph.json'),
+          JSON.stringify(plan, null, 2),
+          'utf-8',
+        );
+
+        // Generate and save REQUIREMENTS.md
+        const tasksMd = plan.nodes.map((n: any) =>
+          `### ${n.id}: ${n.description}\n` +
+          `- **Status**: ${n.status}\n` +
+          (n.dependencies?.length ? `- **Depends on**: ${n.dependencies.join(', ')}\n` : '') +
+          (n.result ? `- **Result**: ${n.result}\n` : '') +
+          (n.error ? `- **Error**: ${n.error}\n` : '')
+        ).join('\n');
+
+        const reqMd =
+          `# ${plan.rootRequest}\n\n` +
+          `**Project**: ${projectName}\n` +
+          `**Generated**: ${new Date().toISOString()}\n` +
+          `**Tasks**: ${plan.nodes?.length || 0}\n\n` +
+          `---\n\n${tasksMd}`;
+
+        writeFileSync(join(dir, 'REQUIREMENTS.md'), reqMd, 'utf-8');
+
+        console.log(t().success(`Requirements exported to ~/.nexus/tasks/project/${projectName}/`));
+        console.log(t().textDim(`  ├── graph.json`));
+        console.log(t().textDim(`  └── REQUIREMENTS.md`));
+        return false;
+      }
+
+      // Has request → decompose
+      console.log(t().textDim('Analyzing and generating plan...'));
+      try {
+        const decomposeResult = await executeTaskTool('decompose_task', { request }, {
+          agent: agent as any,
+          tracker: (agent as any).tracker,
+          sessionId: agent.getCurrentSessionId(),
+        });
+
+        let graph: any = null;
+        if (decomposeResult && !decomposeResult.isError) {
+          try {
+            graph = JSON.parse(decomposeResult.content);
+            const graphId = graph.graphId;
+            const storedGraph = (agent as any).tracker.getGraph(graphId);
+            if (storedGraph) {
+              (agent as any).currentPlan = storedGraph;
+            } else if (graphId && graph.nodes) {
+              // Fallback: reconstruct from decompose data
+              (agent as any).currentPlan = {
+                id: graphId,
+                sessionId: agent.getCurrentSessionId() || 'unknown',
+                rootRequest: request,
+                projectName: graph.projectName,
+                nodes: graph.nodes.map((n: any, i: number) => {
+                  const now = Date.now();
+                  return {
+                    id: n.id || `t${i + 1}`,
+                    description: n.description || '',
+                    dependencies: n.dependencies || [],
+                    status: 'pending',
+                    retryCount: 0,
+                    maxRetries: 2,
+                    createdAt: now,
+                    updatedAt: now,
+                  };
+                }),
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              };
+            }
+          } catch {
+            // Parse failed, continue with LLM plan only
+          }
+        }
+
+        // Get detailed plan from LLM
+        const planText = await agent.plan(request);
+        console.log(t().heading('\n=== Implementation Plan ===\n'));
+        console.log(planText);
+
+        const storedGraph = (agent as any).currentPlan;
+        const proj = storedGraph?.projectName ? ` [project: ${storedGraph.projectName}]` : '';
+        if (graph?.nodes) {
+          console.log(t().textDim(`\nDetected ${graph.nodes.length} subtasks.${proj} Use /go to execute, /plan to export.`));
+        } else {
+          console.log(t().textDim('\nUse /go to start execution.'));
+        }
+      } catch (err) {
+        console.log(t().error(`Plan failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+      return false;
+    }
+
+    case 'go': {
+      const redo = args.includes('redo');
+      let plan = (agent as any).currentPlan;
+      if (!plan) {
+        const sid = agent.getCurrentSessionId();
+        if (sid) {
+          plan = (agent as any).tracker.getGraphBySession(sid);
+          if (plan) (agent as any).currentPlan = plan;
+        }
+      } else if (!redo) {
+        // If currentPlan has no remaining work, try newest graph from session
+        const hasWork = plan.nodes.some((n: any) =>
+          n.status !== 'completed' && n.status !== 'cancelled');
+        if (!hasWork) {
+          const sid = agent.getCurrentSessionId();
+          if (sid) {
+            const sessionGraph = (agent as any).tracker.getGraphBySession(sid);
+            if (sessionGraph && sessionGraph.id !== plan.id) {
+              plan = sessionGraph;
+              (agent as any).currentPlan = sessionGraph;
+            }
+          }
+        }
+      }
+      if (!plan) {
+        console.log(t().warning('No plan found. Use /plan <request> first.'));
+        return false;
+      }
+      if (redo) {
+        const total = plan.nodes.length;
+        for (const n of plan.nodes) {
+          n.status = 'pending';
+          n.result = undefined;
+          n.error = undefined;
+          n.retryCount = 0;
+          n.updatedAt = Date.now();
+        }
+        (agent as any).tracker.updateGraph(plan);
+        console.log(t().warning(`Reset ${total} tasks to pending for redo.`));
+      }
+      const completed = plan.nodes.filter((n: any) => n.status === 'completed').length;
+      const failed = plan.nodes.filter((n: any) => n.status === 'failed').length;
+      const pending = plan.nodes.filter((n: any) => n.status === 'pending' || n.status === 'in_progress').length;
+      if (completed > 0) {
+        console.log(t().textDim(`Resuming — ${completed} done, ${failed} failed, ${pending} remaining. Skipping completed tasks.`));
+      }
+      console.log(t().textDim('Executing plan...'));
+      try {
+        const result = await agent.executePlan();
+        console.log(t().success(result));
+      } catch (err) {
+        console.log(t().error(`Execution failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+      return false;
+    }
+
+    case 'tasks': {
+      const graphId = args[0] || '';
+      let graph: any;
+      if (graphId) {
+        graph = (agent as any).tracker.getGraph(graphId);
+      } else {
+        // Prefer currentPlan if it has nodes, otherwise load newest from session
+        graph = (agent as any).currentPlan;
+        if (!graph || graph.nodes.length === 0) {
+          const sid = agent.getCurrentSessionId();
+          if (sid) graph = (agent as any).tracker.getGraphBySession(sid);
+        }
+      }
+      if (!graph) {
+        console.log(t().textDim('No task graph found. Use /plan first.'));
+        return false;
+      }
+
+      console.log(t().heading(`Task Graph: ${graph.rootRequest}\n`));
+      for (const node of graph.nodes) {
+        const icon = node.status === 'completed' ? t().success('✓')
+          : node.status === 'in_progress' ? t().warning('▶')
+          : node.status === 'failed' ? t().error('✗')
+          : node.status === 'cancelled' ? t().textDim('−')
+          : t().textDim('○');
+        const depInfo = node.dependencies.length > 0 ? t().textDim(` [depends: ${node.dependencies.join(', ')}]`) : '';
+        const resultInfo = node.result ? t().textDim(`\n       result: ${node.result.slice(0, 80)}${node.result.length > 80 ? '...' : ''}`) : '';
+        const errInfo = node.error ? t().error(`\n       error: ${node.error}`) : '';
+        console.log(`  ${icon} ${t().entityName(node.id)}: ${node.description}${depInfo}${resultInfo}${errInfo}`);
+      }
+      console.log(t().textDim(`\nGraph ID: ${graph.id}`));
+      return false;
+    }
+
+    case 'task': {
+      const taskId = args[0];
+      if (!taskId) {
+        console.log(t().warning('Usage: /task <id>'));
+        return false;
+      }
+      const sid = agent.getCurrentSessionId();
+      if (!sid) {
+        console.log(t().textDim('No active session.'));
+        return false;
+      }
+      const graph = (agent as any).tracker.getGraphBySession(sid);
+      if (!graph) {
+        console.log(t().textDim('No task graph found.'));
+        return false;
+      }
+      const node = graph.nodes.find((n: any) => n.id === taskId);
+      if (!node) {
+        console.log(t().error(`Task not found: ${taskId}`));
+        return false;
+      }
+      console.log(t().heading(`Task: ${node.id}\n`));
+      console.log(`  Description: ${node.description}`);
+      console.log(`  Status: ${node.status}`);
+      console.log(`  Dependencies: ${node.dependencies.join(', ') || '(none)'}`);
+      console.log(`  Retries: ${node.retryCount}/${node.maxRetries}`);
+      if (node.result) console.log(`  Result: ${node.result.slice(0, 500)}${node.result.length > 500 ? '...' : ''}`);
+      if (node.error) console.log(t().error(`  Error: ${node.error}`));
+      return false;
+    }
 
     default:
       console.log(t().warning(`Unknown command: /${cmd}`));
