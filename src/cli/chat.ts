@@ -843,13 +843,13 @@ async function handleSlashCommand(
       console.log('  /clear           - Clear the current context');
       console.log('  /compact         - Compress current session history');
       console.log('  /new             - Compress history and start a new session');
-      console.log('  /clean [-size <N>] [-days <N>] - Clean small or old sessions');
+
       console.log('  /provider        - Show the current provider');
       console.log('  /model           - Show or switch the current model');
       console.log('  /rename <name>   - Rename the current session');
       console.log('  /resume          - Resume session by number (default; or -id <n>, -name <str>, -ssid <uuid>)');
-      console.log('  /history [delete <ids>] - View/delete session history');
-      console.log('  /history-view [id|#] - Browse raw SQLite message history for a session (by ID or #)');
+      console.log('  /history [flags]  - Browse/delete sessions (-size, -days, -filter <str>)');
+      console.log('  /view [id|#]      - Browse raw SQLite messages for a session (by ID or #)');
       console.log('  /memory          - Show this session\'s persistent memory');
       console.log('  /insight         - Cross-session needs & topics analysis');
       console.log('  /tools           - List available tools');
@@ -959,19 +959,18 @@ async function handleSlashCommand(
     }
 
     case 'history': {
-      const subCmd = args[0];
+      let allSessions = agent.session.list();
+      if (allSessions.length === 0) {
+        console.log(t().textDim('No sessions found.'));
+        return false;
+      }
+      const currentId = agent.getCurrentSessionId();
 
-      if (subCmd === 'delete') {
+      // subcommand: delete <spec>
+      const delSession = (s: { id: string }) => { agent.session.delete(s.id); agent.sessionMemory.remove(s.id); };
+      if (args[0] === 'delete') {
         const spec = args.slice(1).join(' ');
-        const allSessions = agent.session.list();
-        if (allSessions.length === 0) {
-          console.log(t().textDim('No sessions found.'));
-          return false;
-        }
-        const currentId = agent.getCurrentSessionId();
-
         let toDelete: { id: string; name: string; index: number }[] = [];
-
         if (spec === '.') {
           toDelete = allSessions
             .map((s, i) => ({ id: s.id, name: s.name, index: i + 1 }))
@@ -981,36 +980,101 @@ async function handleSlashCommand(
           if (ids === null) return false;
           toDelete = ids.map(i => ({ id: allSessions[i - 1]!.id, name: allSessions[i - 1]!.name, index: i }));
         }
-
         if (toDelete.length === 0) {
           console.log(t().textDim('No sessions to delete.'));
           return false;
         }
-
         const names = toDelete.map(s => s.name);
         console.log(t().warning(`Delete ${toDelete.length} session(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` ... +${names.length - 10} more` : ''}?`));
-
         const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
-
         if (confirm.trim().toLowerCase() !== 'y') {
           console.log(t().textDim('Cancelled.'));
           return false;
         }
-
-        for (const s of toDelete) {
-          agent.session.delete(s.id);
-        }
+        for (const s of toDelete) delSession(s);
         console.log(t().success(`Deleted ${toDelete.length} session(s).`));
         return false;
       }
 
-      let allSessions = agent.session.list();
-      if (allSessions.length === 0) {
-        console.log(t().textDim('No sessions found.'));
+      // flag-based filtering: -filter, -size, -days
+      let filterStr: string | null = null;
+      let sizeThreshold: number | null = null;
+      let daysValue: number | null = null;
+
+      if (args[0]?.startsWith('-')) {
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === '-filter') {
+            filterStr = args[++i] || '';
+          } else if (args[i] === '-size') {
+            const next = args[i + 1];
+            if (next && !next.startsWith('-')) {
+              sizeThreshold = parseInt(next, 10);
+              i++;
+            } else {
+              sizeThreshold = 0;
+            }
+          } else if (args[i] === '-days') {
+            const next = args[i + 1];
+            if (next && !next.startsWith('-')) {
+              daysValue = parseInt(next, 10);
+              i++;
+            } else {
+              daysValue = 7;
+            }
+          } else {
+            console.log(t().warning(`Unknown flag: ${args[i]}`));
+            console.log(t().warning('Usage: /history [-filter <str>] [-size <N>] [-days <N>]'));
+            return false;
+          }
+        }
+
+        // Apply filters
+        let filtered = [...allSessions];
+        if (filterStr !== null) {
+          filtered = filtered.filter(s => s.name.toLowerCase().includes(filterStr!.toLowerCase()));
+        }
+        if (sizeThreshold !== null) {
+          const thresh = sizeThreshold;
+          filtered = filtered.filter(s => s.id !== currentId);
+          filtered = filtered.filter(s => {
+            const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
+            return thresh === 0 ? tokens === 0 : tokens < thresh;
+          });
+        }
+        if (daysValue !== null) {
+          const cutoff = Date.now() - daysValue * 86400000;
+          filtered = filtered.filter(s => s.id !== currentId);
+          filtered = filtered.filter(s => s.updatedAt < cutoff);
+        }
+
+        if (filtered.length === 0) {
+          console.log(t().textDim('No sessions match the filter.'));
+          return false;
+        }
+
+        // Show table
+        console.log(t().heading(`Sessions to delete (${filtered.length}):`));
+        console.log(t().textDim('  #    Name                       Updated              Tokens'));
+        console.log(t().textDim('  ---- ---------------------------- -------------------- ------'));
+        for (let i = 0; i < filtered.length; i++) {
+          const s = filtered[i]!;
+          const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
+          const date = new Date(s.updatedAt).toLocaleString().slice(0, 18).padEnd(18);
+          const name = s.name.slice(0, 28).padEnd(28);
+          console.log(`  ${String(i + 1).padStart(4)} ${t().entityName(name)} ${date} ${String(tokens).padStart(6)}`);
+        }
+
+        const confirm = await (customQuestion!)(t().warning(`\nDelete these ${filtered.length} session(s)? (y/N): `));
+        if (confirm.trim().toLowerCase() !== 'y') {
+          console.log(t().textDim('Cancelled.'));
+          return false;
+        }
+        for (const s of filtered) delSession(s);
+        console.log(t().success(`Deleted ${filtered.length} session(s).`));
         return false;
       }
 
-      const currentId = agent.getCurrentSessionId();
+      // Default: show all sessions with interactive delete prompt
       const MAX_SHOW = 20;
       let displaySessions = allSessions.slice(0, MAX_SHOW);
 
@@ -1038,30 +1102,22 @@ async function handleSlashCommand(
 
       while (true) {
         const input = await (customQuestion!)(t().warning('  delete> '));
-
         const trimmed = input.trim();
         if (!trimmed) {
           console.log(t().textDim('Exited history.'));
           break;
         }
-
         const ids = parseIdSpec(trimmed, allSessions.length);
         if (ids === null) continue;
-
         const toDelete = ids.map(i => ({ id: allSessions[i - 1]!.id, name: allSessions[i - 1]!.name }));
         const names = toDelete.map(s => s.name);
         console.log(t().warning(`  About to delete ${toDelete.length} session(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` ... +${names.length - 10} more` : ''}`));
-
         const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
-
         if (confirm.trim().toLowerCase() !== 'y') {
           console.log(t().textDim('  Cancelled.'));
         } else {
-          for (const s of toDelete) {
-            agent.session.delete(s.id);
-          }
+          for (const s of toDelete) delSession(s);
           console.log(t().success(`  Deleted ${toDelete.length} session(s).`));
-
           allSessions = agent.session.list();
           if (allSessions.length === 0) {
             console.log(t().textDim('  No sessions remaining.'));
@@ -1074,7 +1130,7 @@ async function handleSlashCommand(
       return false;
     }
 
-    case 'history-view': {
+    case 'view': {
       const arg = args[0];
       let sessionId: string | undefined;
       if (arg && /^\d+$/.test(arg)) {
@@ -1089,7 +1145,7 @@ async function handleSlashCommand(
         sessionId = arg || agent.getCurrentSessionId();
       }
       if (!sessionId) {
-        console.log(t().warning('No active session. Specify a session ID or number: /history-view <id|#>'));
+        console.log(t().warning('No active session. Specify a session ID or number: /view <id|#>'));
         return false;
       }
       let messages;
@@ -1162,92 +1218,7 @@ ${aggregated}`,
       return false;
     }
 
-    case 'clean': {
-      const currentId = agent.getCurrentSessionId();
-      const allSessions = agent.session.list();
 
-      // parse -size and -days from args
-      let sizeThreshold: number | null = null;
-      let daysValue: number | null = null;
-      for (let i = 0; i < args.length; i++) {
-        if (args[i] === '-size') {
-          const next = args[i + 1];
-          if (next && !next.startsWith('-')) {
-            sizeThreshold = parseInt(next, 10);
-            i++;
-          } else {
-            sizeThreshold = 0; // 0 means "zero-token only"
-          }
-        } else if (args[i] === '-days') {
-          const next = args[i + 1];
-          if (next && !next.startsWith('-')) {
-            daysValue = parseInt(next, 10);
-            i++;
-          } else {
-            daysValue = 7;
-          }
-        } else {
-          console.log(t().warning(`Unknown flag: ${args[i]}`));
-          console.log(t().warning('Usage: /clean [-size <N>] [-days <N>]'));
-          return false;
-        }
-      }
-
-      // Default: zero-token
-      if (sizeThreshold === null && daysValue === null) {
-        sizeThreshold = 0; // default: zero-token only
-      }
-
-      let toDelete: typeof allSessions = [];
-      const now = Date.now();
-
-      for (const s of allSessions) {
-        if (s.id === currentId) continue;
-
-        if (sizeThreshold !== null) {
-          const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
-          // sizeThreshold=0 means "zero-token only"; >0 means "tokens < threshold"
-          if (sizeThreshold === 0) {
-            if (tokens !== 0) continue;
-          } else {
-            if (tokens >= sizeThreshold) continue;
-          }
-        }
-
-        if (daysValue !== null) {
-          const cutoff = now - daysValue * 86400000;
-          if (s.updatedAt >= cutoff) continue;
-        }
-
-        toDelete.push(s);
-      }
-
-      if (toDelete.length === 0) {
-        console.log(t().textDim('No sessions to clean.'));
-        return false;
-      }
-
-      console.log(t().heading('Sessions to delete:'));
-      for (const s of toDelete) {
-        const date = new Date(s.updatedAt).toLocaleString();
-        const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
-        console.log(`  ${t().entityName(s.name)} (${t().textDim(date)}, ${tokens} tokens)`);
-        console.log(`    Session ID: ${t().textDim(s.id)}`);
-      }
-
-      const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
-      if (confirm.trim().toLowerCase() !== 'y') {
-        console.log(t().textDim('Cancelled.'));
-        return false;
-      }
-
-      for (const s of toDelete) {
-        agent.session.delete(s.id);
-        agent.sessionMemory.remove(s.id);
-      }
-      console.log(t().success(`Cleaned ${toDelete.length} session(s).`));
-      return false;
-    }
 
     case 'clear':
       agent.context.clear();
