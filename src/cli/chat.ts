@@ -847,7 +847,7 @@ async function handleSlashCommand(
       console.log('  /provider        - Show the current provider');
       console.log('  /model           - Show or switch the current model');
       console.log('  /rename <name>   - Rename the current session');
-      console.log('  /resume          - Browse and resume a previous session');
+      console.log('  /resume          - Resume session by number (default; or -id <n>, -name <str>, -ssid <uuid>)');
       console.log('  /history [delete <ids>] - View/delete session history');
       console.log('  /history-view [id] - Browse raw SQLite message history for a session');
       console.log('  /memory          - Show this session\'s persistent memory');
@@ -925,48 +925,41 @@ async function handleSlashCommand(
 
       const currentId = agent.getCurrentSessionId();
       const maxTokens = agent.config.getProvider().maxContextTokens || 8192;
+      const mode = args[0];
+      const param = args.slice(1).join(' ');
 
-      console.log(t().heading('Sessions:'));
-      console.log(t().textDim('  #   Name                       Model                Updated              Tokens  Session ID'));
-      console.log(t().textDim('  --- ---------------------------- -------------------- -------------------- ------ ------------------------------------'));
-      const rows: { id: string; name: string; model: string; updatedAt: string; tokens: number }[] = [];
-      for (const s of sessions) {
-        const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
-        const date = new Date(s.updatedAt).toLocaleString();
-        const name = s.name.slice(0, 28).padEnd(28);
-        const model = s.model.slice(0, 18).padEnd(18);
-        const dateStr = date.slice(0, 18).padEnd(18);
-        const current = s.id === currentId ? t().success(' <- current') : '';
-        const warn = tokens > maxTokens ? t().warning(' !') : '';
-        console.log(`  ${String(rows.length + 1).padStart(3)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${warn}${current}  ${t().textDim(s.id)}`);
-        rows.push({ id: s.id, name: s.name, model: s.model, updatedAt: date, tokens });
-      }
-
-      console.log();
-      const answer = await (customQuestion!)(t().prompt('Enter number (or Esc to cancel): '));
-
-      const num = parseInt(answer.trim(), 10);
-      if (isNaN(num) || num < 1 || num > rows.length) {
-        console.log(t().textDim('Cancelled.'));
-        return false;
-      }
-
-      const selected = rows[num - 1]!;
-      console.log(t().textDim(`Resuming "${selected.name}" (${selected.tokens} tokens)...`));
-
-      try {
-        const result = await agent.resumeSession(selected.id);
-        if (!result.restored) {
-          console.log(t().error('Session not found.'));
-        } else if (result.compressed) {
-          console.log(t().warning(`Session "${result.sessionName}" resumed (history compressed -- ${selected.tokens} tokens exceeded ${maxTokens} limit)`));
-        } else {
-          console.log(t().success(`Session "${result.sessionName}" resumed successfully.`));
+      // -ssid <session-uuid>
+      if (mode === '-ssid' && param) {
+        const session = sessions.find(s => s.id === param);
+        if (!session) {
+          console.log(t().error(`Session not found: ${param}`));
+          return false;
         }
-      } catch (err) {
-        console.log(t().error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`));
+        return doResume(agent, session, currentId, maxTokens, customQuestion);
       }
-      return false;
+
+      // -name <session name>
+      if (mode === '-name' && param) {
+        const matched = sessions.filter(s => s.name.toLowerCase().includes(param.toLowerCase()));
+        if (matched.length === 0) {
+          console.log(t().error(`No session found matching name "${param}".`));
+          return false;
+        }
+        if (matched.length === 1) {
+          return doResume(agent, matched[0]!, currentId, maxTokens, customQuestion);
+        }
+        // Multiple matches: show filtered list and prompt
+        return doResumeList(agent, sessions, matched, currentId, maxTokens, customQuestion);
+      }
+
+      // -id <number> or default (interactive list)
+      const numArg = mode === '-id' ? parseInt(param, 10) : NaN;
+      if (mode === '-id' && !isNaN(numArg) && numArg >= 1 && numArg <= sessions.length) {
+        return doResume(agent, sessions[numArg - 1]!, currentId, maxTokens, customQuestion);
+      }
+
+      // Default: show all sessions and prompt for number
+      return doResumeList(agent, sessions, sessions, currentId, maxTokens, customQuestion);
     }
 
     case 'history': {
@@ -1588,6 +1581,78 @@ ${aggregated}`,
       console.log(t().warning(`Unknown command: /${cmd}`));
       return false;
   }
+}
+
+async function doResume(
+  agent: Agent,
+  session: { id: string; name: string },
+  currentId: string | undefined,
+  maxTokens: number,
+  customQuestion?: (q: string, singleKey?: boolean) => Promise<string>
+): Promise<boolean> {
+  const tokens = agent.session.getTokenEstimate(session.id, agent.provider);
+  console.log(t().textDim(`Resuming "${session.name}" (${tokens} tokens)...`));
+  try {
+    const result = await agent.resumeSession(session.id);
+    if (!result.restored) {
+      console.log(t().error('Session not found.'));
+    } else if (result.compressed) {
+      console.log(t().warning(`Session "${result.sessionName}" resumed (history compressed — ${tokens} tokens exceeded ${maxTokens} limit)`));
+    } else {
+      console.log(t().success(`Session "${result.sessionName}" resumed successfully.`));
+    }
+  } catch (err) {
+    console.log(t().error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
+  return false;
+}
+
+async function doResumeList(
+  agent: Agent,
+  allSessions: { id: string; name: string; model: string; updatedAt: number }[],
+  displaySessions: { id: string; name: string; model: string; updatedAt: number }[],
+  currentId: string | undefined,
+  maxTokens: number,
+  customQuestion?: (q: string, singleKey?: boolean) => Promise<string>
+): Promise<boolean> {
+  const rows: { id: string; name: string; model: string; updatedAt: string; tokens: number }[] = [];
+  console.log(t().heading('Sessions:'));
+  console.log(t().textDim('  #   Name                       Model                Updated              Tokens  Session ID'));
+  console.log(t().textDim('  --- ---------------------------- -------------------- -------------------- ------ ------------------------------------'));
+  for (const s of displaySessions) {
+    const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
+    const date = new Date(s.updatedAt).toLocaleString();
+    const name = s.name.slice(0, 28).padEnd(28);
+    const model = s.model.slice(0, 18).padEnd(18);
+    const dateStr = date.slice(0, 18).padEnd(18);
+    const current = s.id === currentId ? t().success(' <- current') : '';
+    const warn = tokens > maxTokens ? t().warning(' !') : '';
+    console.log(`  ${String(rows.length + 1).padStart(3)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${warn}${current}  ${t().textDim(s.id)}`);
+    rows.push({ id: s.id, name: s.name, model: s.model, updatedAt: date, tokens });
+  }
+
+  console.log();
+  const answer = await customQuestion!(t().prompt('Enter number (or Esc to cancel): '));
+  const num = parseInt(answer.trim(), 10);
+  if (isNaN(num) || num < 1 || num > rows.length) {
+    console.log(t().textDim('Cancelled.'));
+    return false;
+  }
+  const selected = rows[num - 1]!;
+  console.log(t().textDim(`Resuming "${selected.name}" (${selected.tokens} tokens)...`));
+  try {
+    const result = await agent.resumeSession(selected.id);
+    if (!result.restored) {
+      console.log(t().error('Session not found.'));
+    } else if (result.compressed) {
+      console.log(t().warning(`Session "${result.sessionName}" resumed (history compressed — ${selected.tokens} tokens exceeded ${maxTokens} limit)`));
+    } else {
+      console.log(t().success(`Session "${result.sessionName}" resumed successfully.`));
+    }
+  } catch (err) {
+    console.log(t().error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
+  return false;
 }
 
 function parseIdSpec(spec: string, maxId: number): number[] | null {
