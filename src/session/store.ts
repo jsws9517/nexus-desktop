@@ -116,8 +116,16 @@ export class SessionStore {
   }
 
   deleteSession(id: string): void {
-    this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
-    this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    // Temporarily disable FK enforcement, then clean up all related tables
+    this.db.pragma('foreign_keys = OFF');
+    try {
+      this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
+      this.db.prepare('DELETE FROM task_events WHERE graph_id IN (SELECT id FROM task_graphs WHERE session_id = ?)').run(id);
+      this.db.prepare('DELETE FROM task_graphs WHERE session_id = ?').run(id);
+      this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    } finally {
+      this.db.pragma('foreign_keys = ON');
+    }
   }
 
   addMessage(message: StoredMessage): void {
