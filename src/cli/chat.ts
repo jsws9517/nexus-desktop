@@ -828,6 +828,7 @@ async function handleSlashCommand(
   customQuestion?: (query: string) => Promise<string>,
 ): Promise<boolean> {
   const [cmd, ...args] = input.slice(1).split(' ');
+  const delSession = (s: { id: string }) => { agent.session.delete(s.id); agent.sessionMemory.remove(s.id); };
 
   switch (cmd) {
     case 'exit':
@@ -848,7 +849,8 @@ async function handleSlashCommand(
       console.log('  /model           - Show or switch the current model');
       console.log('  /rename <name>   - Rename the current session');
       console.log('  /resume          - Resume session by number (default; or -id <n>, -name <str>, -ssid <uuid>)');
-      console.log('  /history [flags]  - Browse/delete sessions (-size, -days, -filter <str>)');
+      console.log('  /history         - Browse all sessions');
+      console.log('  /delete          - Delete sessions (-ids <n,n> | -filter <str> | -size <N> | -days <N>)');
       console.log('  /view [id|#]      - Browse raw SQLite messages for a session (by ID or #)');
       console.log('  /memory          - Show this session\'s persistent memory');
       console.log('  /insight         - Cross-session needs & topics analysis');
@@ -959,174 +961,117 @@ async function handleSlashCommand(
     }
 
     case 'history': {
-      let allSessions = agent.session.list();
+      const allSessions = agent.session.list();
+      if (allSessions.length === 0) {
+        console.log(t().textDim('No sessions found.'));
+        return false;
+      }
+      const currentId = agent.getCurrentSessionId();
+      const MAX_SHOW = 20;
+      const showCount = Math.min(allSessions.length, MAX_SHOW);
+      console.log(t().heading(`\nSession History (${allSessions.length} total):`));
+      console.log(t().textDim('  #    Name                       Model                Updated              Tokens  Session ID'));
+      console.log(t().textDim('  ---- ---------------------------- -------------------- -------------------- ------ ------------------------------------'));
+      for (let i = 0; i < showCount; i++) {
+        const s = allSessions[i]!;
+        const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
+        const date = new Date(s.updatedAt).toLocaleString();
+        const name = s.name.slice(0, 28).padEnd(28);
+        const model = s.model.slice(0, 18).padEnd(18);
+        const dateStr = date.slice(0, 18).padEnd(18);
+        const current = s.id === currentId ? t().success(' <- current') : '';
+        console.log(`  ${String(i + 1).padStart(4)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${current}  ${t().textDim(s.id)}`);
+      }
+      if (allSessions.length > MAX_SHOW) {
+        console.log(t().textDim(`  ... and ${allSessions.length - MAX_SHOW} more`));
+      }
+      console.log(t().textDim('\nUse /delete -ids <n> to delete sessions by number.\n'));
+      return false;
+    }
+
+    case 'delete': {
+      const allSessions = agent.session.list();
       if (allSessions.length === 0) {
         console.log(t().textDim('No sessions found.'));
         return false;
       }
       const currentId = agent.getCurrentSessionId();
 
-      // subcommand: delete <spec>
-      const delSession = (s: { id: string }) => { agent.session.delete(s.id); agent.sessionMemory.remove(s.id); };
-      if (args[0] === 'delete') {
-        const spec = args.slice(1).join(' ');
-        let toDelete: { id: string; name: string; index: number }[] = [];
-        if (spec === '.') {
-          toDelete = allSessions
-            .map((s, i) => ({ id: s.id, name: s.name, index: i + 1 }))
-            .filter(s => s.id !== currentId);
-        } else {
-          const ids = parseIdSpec(spec, allSessions.length);
-          if (ids === null) return false;
-          toDelete = ids.map(i => ({ id: allSessions[i - 1]!.id, name: allSessions[i - 1]!.name, index: i }));
-        }
-        if (toDelete.length === 0) {
-          console.log(t().textDim('No sessions to delete.'));
-          return false;
-        }
-        const names = toDelete.map(s => s.name);
-        console.log(t().warning(`Delete ${toDelete.length} session(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` ... +${names.length - 10} more` : ''}?`));
-        const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
-        if (confirm.trim().toLowerCase() !== 'y') {
-          console.log(t().textDim('Cancelled.'));
-          return false;
-        }
-        for (const s of toDelete) delSession(s);
-        console.log(t().success(`Deleted ${toDelete.length} session(s).`));
-        return false;
-      }
-
-      // flag-based filtering: -filter, -size, -days
       let filterStr: string | null = null;
       let sizeThreshold: number | null = null;
       let daysValue: number | null = null;
+      let idsSpec: string | null = null;
 
-      if (args[0]?.startsWith('-')) {
-        for (let i = 0; i < args.length; i++) {
-          if (args[i] === '-filter') {
-            filterStr = args[++i] || '';
-          } else if (args[i] === '-size') {
-            const next = args[i + 1];
-            if (next && !next.startsWith('-')) {
-              sizeThreshold = parseInt(next, 10);
-              i++;
-            } else {
-              sizeThreshold = 0;
-            }
-          } else if (args[i] === '-days') {
-            const next = args[i + 1];
-            if (next && !next.startsWith('-')) {
-              daysValue = parseInt(next, 10);
-              i++;
-            } else {
-              daysValue = 7;
-            }
-          } else {
-            console.log(t().warning(`Unknown flag: ${args[i]}`));
-            console.log(t().warning('Usage: /history [-filter <str>] [-size <N>] [-days <N>]'));
-            return false;
-          }
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === '-ids') {
+          idsSpec = args[++i] || '';
+        } else if (args[i] === '-filter') {
+          filterStr = args[++i] || '';
+        } else if (args[i] === '-size') {
+          const next = args[i + 1];
+          if (next && !next.startsWith('-')) { sizeThreshold = parseInt(next, 10); i++; }
+          else { sizeThreshold = 0; }
+        } else if (args[i] === '-days') {
+          const next = args[i + 1];
+          if (next && !next.startsWith('-')) { daysValue = parseInt(next, 10); i++; }
+          else { daysValue = 7; }
+        } else {
+          console.log(t().warning(`Unknown flag: ${args[i]}`));
+          console.log(t().warning('Usage: /delete -ids <n,n,n> | -filter <str> | -size <N> | -days <N>'));
+          return false;
         }
+      }
 
-        // Apply filters
-        let filtered = [...allSessions];
-        if (filterStr !== null) {
-          filtered = filtered.filter(s => s.name.toLowerCase().includes(filterStr!.toLowerCase()));
-        }
-        if (sizeThreshold !== null) {
-          const thresh = sizeThreshold;
-          filtered = filtered.filter(s => s.id !== currentId);
-          filtered = filtered.filter(s => {
+      let toDelete: typeof allSessions = [];
+
+      // -ids: delete by session index
+      if (idsSpec !== null) {
+        const ids = parseIdSpec(idsSpec, allSessions.length);
+        if (ids === null) return false;
+        toDelete = ids.filter(i => allSessions[i - 1]!.id !== currentId).map(i => allSessions[i - 1]!);
+      }
+
+      // -filter: filter by name
+      if (filterStr !== null) {
+        toDelete = allSessions.filter(s => s.id !== currentId && s.name.toLowerCase().includes(filterStr!.toLowerCase()));
+      }
+
+      // -size / -days: filter by token count or age
+      if (sizeThreshold !== null || daysValue !== null) {
+        const now = Date.now();
+        toDelete = allSessions.filter(s => {
+          if (s.id === currentId) return false;
+          if (sizeThreshold !== null) {
             const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
-            return thresh === 0 ? tokens === 0 : tokens < thresh;
-          });
-        }
-        if (daysValue !== null) {
-          const cutoff = Date.now() - daysValue * 86400000;
-          filtered = filtered.filter(s => s.id !== currentId);
-          filtered = filtered.filter(s => s.updatedAt < cutoff);
-        }
+            if (sizeThreshold === 0 ? tokens !== 0 : tokens >= sizeThreshold) return false;
+          }
+          if (daysValue !== null) {
+            if (s.updatedAt >= now - daysValue * 86400000) return false;
+          }
+          return true;
+        });
+      }
 
-        if (filtered.length === 0) {
-          console.log(t().textDim('No sessions match the filter.'));
-          return false;
-        }
-
-        // Show table
-        console.log(t().heading(`Sessions to delete (${filtered.length}):`));
-        console.log(t().textDim('  #    Name                       Updated              Tokens'));
-        console.log(t().textDim('  ---- ---------------------------- -------------------- ------'));
-        for (let i = 0; i < filtered.length; i++) {
-          const s = filtered[i]!;
-          const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
-          const date = new Date(s.updatedAt).toLocaleString().slice(0, 18).padEnd(18);
-          const name = s.name.slice(0, 28).padEnd(28);
-          console.log(`  ${String(i + 1).padStart(4)} ${t().entityName(name)} ${date} ${String(tokens).padStart(6)}`);
-        }
-
-        const confirm = await (customQuestion!)(t().warning(`\nDelete these ${filtered.length} session(s)? (y/N): `));
-        if (confirm.trim().toLowerCase() !== 'y') {
-          console.log(t().textDim('Cancelled.'));
-          return false;
-        }
-        for (const s of filtered) delSession(s);
-        console.log(t().success(`Deleted ${filtered.length} session(s).`));
+      if (toDelete.length === 0) {
+        console.log(t().textDim('No sessions to delete.'));
         return false;
       }
 
-      // Default: show all sessions with interactive delete prompt
-      const MAX_SHOW = 20;
-      let displaySessions = allSessions.slice(0, MAX_SHOW);
-
-      const renderTable = () => {
-        console.log(t().heading(`\nSession History (showing ${displaySessions.length}/${allSessions.length}):`));
-        console.log(t().textDim('  #    Name                       Model                Updated              Tokens  Session ID'));
-        console.log(t().textDim('  ---- ---------------------------- -------------------- -------------------- ------ ------------------------------------'));
-        for (let i = 0; i < displaySessions.length; i++) {
-          const s = displaySessions[i]!;
-          const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
-          const date = new Date(s.updatedAt).toLocaleString();
-          const name = s.name.slice(0, 28).padEnd(28);
-          const model = s.model.slice(0, 18).padEnd(18);
-          const dateStr = date.slice(0, 18).padEnd(18);
-          const current = s.id === currentId ? t().success(' <- current') : '';
-          console.log(`  ${String(i + 1).padStart(4)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${current}  ${t().textDim(s.id)}`);
-        }
-        if (allSessions.length > MAX_SHOW) {
-          console.log(t().textDim(`  ... and ${allSessions.length - MAX_SHOW} more older sessions`));
-        }
-        console.log(t().textDim('\n  Enter session # to delete (comma-separated or range like 1-3), or Enter to exit:'));
-      };
-
-      renderTable();
-
-      while (true) {
-        const input = await (customQuestion!)(t().warning('  delete> '));
-        const trimmed = input.trim();
-        if (!trimmed) {
-          console.log(t().textDim('Exited history.'));
-          break;
-        }
-        const ids = parseIdSpec(trimmed, allSessions.length);
-        if (ids === null) continue;
-        const toDelete = ids.map(i => ({ id: allSessions[i - 1]!.id, name: allSessions[i - 1]!.name }));
-        const names = toDelete.map(s => s.name);
-        console.log(t().warning(`  About to delete ${toDelete.length} session(s): ${names.slice(0, 10).join(', ')}${names.length > 10 ? ` ... +${names.length - 10} more` : ''}`));
-        const confirm = await (customQuestion!)(t().warning('  Confirm? (y/N): '));
-        if (confirm.trim().toLowerCase() !== 'y') {
-          console.log(t().textDim('  Cancelled.'));
-        } else {
-          for (const s of toDelete) delSession(s);
-          console.log(t().success(`  Deleted ${toDelete.length} session(s).`));
-          allSessions = agent.session.list();
-          if (allSessions.length === 0) {
-            console.log(t().textDim('  No sessions remaining.'));
-            break;
-          }
-          displaySessions = allSessions.slice(0, MAX_SHOW);
-          renderTable();
-        }
+      // Show summary
+      console.log(t().heading(`Sessions to delete (${toDelete.length}):`));
+      for (const s of toDelete) {
+        const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
+        const date = new Date(s.updatedAt).toLocaleString();
+        console.log(`  ${t().entityName(s.name)} (${t().textDim(date)}, ${tokens} tokens)`);
       }
+
+      const confirm = await (customQuestion!)(t().warning('\nConfirm? (y/N): '));
+      if (confirm.trim().toLowerCase() !== 'y') {
+        console.log(t().textDim('Cancelled.'));
+        return false;
+      }
+      for (const s of toDelete) delSession(s);
+      console.log(t().success(`Deleted ${toDelete.length} session(s).`));
       return false;
     }
 
