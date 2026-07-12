@@ -849,7 +849,7 @@ async function handleSlashCommand(
       console.log('  /rename <name>   - Rename the current session');
       console.log('  /resume          - Resume session by number (default; or -id <n>, -name <str>, -ssid <uuid>)');
       console.log('  /history [delete <ids>] - View/delete session history');
-      console.log('  /history-view [id] - Browse raw SQLite message history for a session');
+      console.log('  /history-view [id|#] - Browse raw SQLite message history for a session (by ID or #)');
       console.log('  /memory          - Show this session\'s persistent memory');
       console.log('  /insight         - Cross-session needs & topics analysis');
       console.log('  /tools           - List available tools');
@@ -938,18 +938,14 @@ async function handleSlashCommand(
         return doResume(agent, session, currentId, maxTokens, customQuestion);
       }
 
-      // -name <session name>
+      // -name <session name> (auto-resume first match, i.e. most recently updated)
       if (mode === '-name' && param) {
         const matched = sessions.filter(s => s.name.toLowerCase().includes(param.toLowerCase()));
         if (matched.length === 0) {
           console.log(t().error(`No session found matching name "${param}".`));
           return false;
         }
-        if (matched.length === 1) {
-          return doResume(agent, matched[0]!, currentId, maxTokens, customQuestion);
-        }
-        // Multiple matches: show filtered list and prompt
-        return doResumeList(agent, sessions, matched, currentId, maxTokens, customQuestion);
+        return doResume(agent, matched[0]!, currentId, maxTokens, customQuestion);
       }
 
       // -id <number> or default (interactive list)
@@ -1079,9 +1075,21 @@ async function handleSlashCommand(
     }
 
     case 'history-view': {
-      const sessionId = args[0] || agent.getCurrentSessionId();
+      const arg = args[0];
+      let sessionId: string | undefined;
+      if (arg && /^\d+$/.test(arg)) {
+        const sessions = agent.session.list();
+        const idx = parseInt(arg, 10) - 1;
+        sessionId = sessions[idx]?.id;
+        if (!sessionId) {
+          console.log(t().error(`Session #${arg} not found.`));
+          return false;
+        }
+      } else {
+        sessionId = arg || agent.getCurrentSessionId();
+      }
       if (!sessionId) {
-        console.log(t().warning('No active session. Specify a session ID: /history-view <session-id>'));
+        console.log(t().warning('No active session. Specify a session ID or number: /history-view <id|#>'));
         return false;
       }
       let messages;
