@@ -837,32 +837,39 @@ async function handleSlashCommand(
       return true;
 
     case 'help':
-      console.log(t().heading('Commands:'));
-      console.log('  /exit, /quit     - Exit the agent');
-      console.log('  /session         - Show current session ID');
-      console.log('  /cls             - Clear the screen');
-      console.log('  /clear           - Clear the current context');
-      console.log('  /compact         - Compress current session history');
-      console.log('  /new             - Compress history and start a new session');
-
-      console.log('  /provider        - Show the current provider');
-      console.log('  /model           - Show or switch the current model');
-      console.log('  /rename <name>   - Rename the current session');
-      console.log('  /resume          - Resume session by number (default; or -id <n>, -name <str>, -ssid <uuid>)');
+      console.log(t().heading('Session:'));
+      console.log('  /session         - Show current session info');
       console.log('  /history         - Browse all sessions');
+      console.log('  /resume          - Resume a session (-id <n> | -name <str> | -ssid <uuid>)');
       console.log('  /delete          - Delete sessions (-ids <n,n> | -filter <str> | -size <N> | -days <N>)');
-      console.log('  /view [id|#]      - Browse raw SQLite messages for a session (by ID or #)');
-      console.log('  /memory          - Show this session\'s persistent memory');
-      console.log('  /insight         - Cross-session needs & topics analysis');
+      console.log('  /view [id|#]     - Browse raw messages for a session');
+      console.log('  /memory          - Show persistent memory for this session');
+      console.log('  /insight         - Cross-session memory analysis');
+      console.log('  /rename <name>   - Rename the current session');
+
+      console.log(t().heading('Model & Provider:'));
+      console.log('  /model           - Show or switch the LLM model');
+      console.log('  /provider        - Show or switch the LLM provider');
+      console.log('  /compact         - Compress current session context');
+      console.log('  /new             - Compress history and start a fresh session');
+      console.log('  /clear           - Clear current context (starts fresh)');
+
+      console.log(t().heading('Task Planning:'));
+      console.log('  /plan <request>  - Decompose request into tasks');
+      console.log('  /go              - Execute the current plan');
+      console.log('  /tasks           - Show task decomposition tree');
+      console.log('  /task <id>       - Show details for a specific task');
+
+      console.log(t().heading('Tools & Skills:'));
       console.log('  /tools           - List available tools');
       console.log('  /mcp             - List MCP server connections');
       console.log('  /skills          - List loaded skills/plugins');
       console.log('  /plugins         - Alias for /skills');
-      console.log('  /plan <request>  - Decompose request into tasks; run /plan to export requirements doc');
-      console.log('  /go              - Execute the current plan');
-      console.log('  /tasks           - Show task decomposition progress tree');
-      console.log('  /task <id>       - Show details for a specific task');
       console.log('  /theme           - Show or switch color theme');
+
+      console.log(t().heading('Terminal:'));
+      console.log('  /flush           - Clear the screen');
+      console.log('  /exit, /quit     - Exit the agent');
       console.log(t().textDim('\nInput prefixes:'));
       console.log(t().textDim('  !<cmd>          - Execute a bash command'));
       console.log(t().textDim('  @<path>         - Inline file/directory content into prompt'));
@@ -903,7 +910,7 @@ async function handleSlashCommand(
       return false;
     }
 
-    case 'cls':
+    case 'flush':
       process.stdout.write('\x1B[2J\x1B[3J\x1B[H');
       rl.prompt();
       return true;
