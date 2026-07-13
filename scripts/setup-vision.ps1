@@ -96,7 +96,7 @@ if ($Mirror) {
 
 Write-Host "[...] Testing connection to $env:HF_ENDPOINT ..." -ForegroundColor Yellow
 try {
-  $status = (Invoke-WebRequest -Uri "$env:HF_ENDPOINT/api/models" -Method Head -TimeoutSec 10 -UseBasicParsing).StatusCode
+  $status = (Invoke-WebRequest -Uri "$env:HF_ENDPOINT" -Method Head -TimeoutSec 10 -UseBasicParsing).StatusCode
   Write-Host "[OK] Mirror reachable (HTTP $status)" -ForegroundColor Green
 } catch {
   Write-Host "[..] Cannot reach $env:HF_ENDPOINT, falling back to direct HuggingFace" -ForegroundColor Yellow
@@ -106,7 +106,7 @@ try {
 }
 
 Write-Host "[...] Downloading microsoft/Florence-2-base ..." -ForegroundColor Yellow
-& $venvPath\Scripts\hf download microsoft/Florence-2-base --local-dir-use-symlinks False --resume-download
+& $venvPath\Scripts\hf download microsoft/Florence-2-base
 if (-not $?) { throw "Model download failed" }
 
 if ($Mirror) {
