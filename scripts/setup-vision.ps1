@@ -77,7 +77,7 @@ Write-Host "[...] Upgrading pip ..." -ForegroundColor Yellow
 if (-not $?) { Write-Host "[..] pip upgrade skipped" -ForegroundColor Yellow }
 
 # ── 4. Install Python packages ──
-$pipArgs = @("install", "torch", "transformers<5", "Pillow")
+$pipArgs = @("install", "torch", "transformers<5", "Pillow", "einops", "timm")
 if ($PypiMirror) {
   $pipArgs += "-i"; $pipArgs += $PypiMirror
   Write-Host "[..] Using PyPI mirror: $PypiMirror" -ForegroundColor Cyan
