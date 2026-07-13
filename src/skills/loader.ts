@@ -22,9 +22,14 @@ export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
 
   // Filter extraPaths for safety
   const safeExtras = (extraPaths || []).filter(isSafePath);
-  const paths = [SKILLS_DIR, NATIVE_PLUGINS_DIR, CLAUDE_SKILLS_DIR, ...safeExtras];
+  const paths: Array<{ dir: string; source: Skill['source'] }> = [
+    { dir: SKILLS_DIR, source: 'skills' },
+    { dir: NATIVE_PLUGINS_DIR, source: 'plugins' },
+    { dir: CLAUDE_SKILLS_DIR, source: 'claude' },
+    ...safeExtras.map(d => ({ dir: d, source: 'skills' as const })),
+  ];
 
-  for (const basePath of paths) {
+  for (const { dir: basePath, source } of paths) {
     if (!existsSync(basePath)) continue;
 
     // Load index.json if exists (Claude Code format)
@@ -44,6 +49,7 @@ export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
       const jsSkill = await tryLoadJsSkill(fullPath, entry, indexData);
       if (jsSkill) {
         if (!loadedNames.has(jsSkill.name)) {
+          jsSkill.source = source;
           skills.push(jsSkill);
           loadedNames.add(jsSkill.name);
         }
@@ -54,6 +60,7 @@ export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
       const mdSkill = tryLoadMdSkill(fullPath, entry, indexData);
       if (mdSkill) {
         if (!loadedNames.has(mdSkill.name)) {
+          mdSkill.source = source;
           skills.push(mdSkill);
           loadedNames.add(mdSkill.name);
         }

@@ -52,6 +52,16 @@ export class ContextManager {
     return [...this.messages];
   }
 
+  /** Prepend text to the first system message (or prepend a new one if none exists) */
+  prependToSystem(text: string): void {
+    const idx = this.messages.findIndex(m => m.role === 'system');
+    if (idx >= 0) {
+      this.messages[idx] = { ...this.messages[idx], content: this.messages[idx].content + '\n' + text };
+    } else {
+      this.messages.unshift({ role: 'system', content: text });
+    }
+  }
+
   setMessages(messages: Message[]): void {
     this.messages = [...messages];
     this.pinnedIndices.clear();

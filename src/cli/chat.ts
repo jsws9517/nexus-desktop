@@ -401,16 +401,26 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     return false;
   }
 
-  // ---- Interactive question mode (for /resume, /history delete) ----
+  // ---- Interactive question mode (for /resume, /delete) ----
   let isQuestionMode = false;
   let isSingleKeyMode = false;
   let isBracketedPaste = false;
+
+  // Keep a direct reference to the real stdout.write so permission prompts
+  // are never swallowed by StreamWrap (which buffers non-newline-terminated text).
+  const _rawStdoutWrite = process.stdout.write.bind(process.stdout);
 
   async function customQuestion(query: string, singleKey?: boolean): Promise<string> {
     return new Promise<string>((resolve) => {
       isQuestionMode = true;
       isSingleKeyMode = !!singleKey;
-      process.stdout.write(query);
+      // Flush any pending StreamWrap buffer (e.g. "agent> " prefix) so the
+      // question prompt appears in correct display order rather than interleaved.
+      // Only needed when streamWrap is active (process.stdout.write is overridden).
+      if (process.stdout.write !== _rawStdoutWrite) {
+        process.stdout.write('\n');
+      }
+      _rawStdoutWrite(query);
 
       const lineHandler = (line: string) => {
         cleanup();
@@ -421,7 +431,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         if (k && k.name === 'escape') {
           cleanup();
           (rl as any).line = '';
-          process.stdout.write('\n');
+          _rawStdoutWrite('\n');
           resolve('');
         }
       };
@@ -430,9 +440,9 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         if (!singleKey || !k) return;
         if ((_s === 'y' || _s === 'a' || _s === 'n' || _s === 'Y' || _s === 'A' || _s === 'N') && !k.ctrl && !k.meta && !k.shift) {
           const answer = _s.toLowerCase();
-          cleanup();
           (rl as any).line = '';
-          process.stdout.write(answer + '\n');
+          _rawStdoutWrite(answer + '\n');
+          cleanup();
           resolve(answer);
         }
       };
@@ -454,13 +464,13 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
   }
 
   // Wire audit confirmations to reuse main readline (avoids double-echo / readline conflict)
-  agent.audit.setAskUser(customQuestion);
+  agent.audit.setAskUser((q) => customQuestion(q, true));
 
   // Wire path-authorizer permission prompts to reuse main readline too (with single-key auto-submit)
   setPermissionPrompter((q) => customQuestion(q, true));
 
   // Wire dangerous command confirmation to reuse main readline too
-  setDangerousCmdPrompter(customQuestion);
+  setDangerousCmdPrompter((q) => customQuestion(q, true));
 
   // Wire askUser (from tools/skills) to display question text in terminal
   agent.onOutput = (text) => { process.stdout.write(text); };
@@ -698,12 +708,12 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
   rl.prompt();
 
+  let bashOutputBuffer: { cmd: string; output: string }[] = [];
+
   const handleLine = async (line: string): Promise<void> => {
     // First: resolve any pending askUser (called from tools/skills during agent.chat).
     // Must check BEFORE isBusy() or the answer is swallowed and the task hangs forever.
     if (agent.resolvePendingAsk(line)) return;
-
-    if (agent.isBusy()) return;
 
     const input = line.trim();
     promptHistoryIndex = -1;
@@ -713,8 +723,8 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       return;
     }
 
+    // Slash commands are safe during busy state (e.g. /btw sets a flag, /help is read-only)
     if (input.startsWith('/')) {
-      // Persist slash command to session history so PageUp can browse it
       const sid = agent.getCurrentSessionId();
       if (sid) {
         agent.session.addMessage(sid, { role: 'user', content: input });
@@ -725,6 +735,8 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       }
       return;
     }
+
+    if (agent.isBusy()) return;
 
     if (input.startsWith('!')) {
       const cmd = input.slice(1).trim();
@@ -743,6 +755,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       console.log(t().textDim(`$ ${cmd}`));
       const output = await executeBashCommand(cmd);
       console.log(output);
+      bashOutputBuffer.push({ cmd, output });
       rl.prompt();
       return;
     }
@@ -760,6 +773,18 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       if (flushed) origWrite(flushed, ...args);
       return true;
     }) as typeof process.stdout.write;
+
+    // Inject buffered bash command outputs into session context
+    if (bashOutputBuffer.length > 0) {
+      const bufContent = bashOutputBuffer.map(
+        b => `用户执行了命令 \`${b.cmd}\`，输出结果：\n\`\`\`\n${b.output}\n\`\`\``
+      ).join('\n\n');
+      const sid = agent.getCurrentSessionId();
+      if (sid) {
+        agent.session.addMessage(sid, { role: 'system', content: `[bash 命令执行结果]\n${bufContent}` });
+      }
+      bashOutputBuffer = [];
+    }
 
     process.stdout.write(t().entityName('agent> '));
     try {
@@ -839,7 +864,6 @@ async function handleSlashCommand(
     case 'help':
       console.log(t().heading('Session:'));
       console.log('  /session         - Show current session info');
-      console.log('  /history         - Browse all sessions');
       console.log('  /resume          - Resume a session (-id <n> | -name <str> | -ssid <uuid>)');
       console.log('  /delete          - Delete sessions (-ids <n,n> | -filter <str> | -size <N> | -days <N>)');
       console.log('  /view [id|#]     - Browse raw messages for a session');
@@ -857,14 +881,14 @@ async function handleSlashCommand(
       console.log(t().heading('Task Planning:'));
       console.log('  /plan <request>  - Decompose request into tasks');
       console.log('  /go              - Execute the current plan');
-      console.log('  /tasks           - Show task decomposition tree');
-      console.log('  /task <id>       - Show details for a specific task');
+      console.log('  /tasks [-step <id>] - Show task graph (or details for a specific step)');
 
       console.log(t().heading('Tools & Skills:'));
-      console.log('  /tools           - List available tools');
+      console.log('  /tools           - List all callable tools (builtin + MCP + skills/plugins)');
       console.log('  /mcp             - List MCP server connections');
-      console.log('  /skills          - List loaded skills/plugins');
-      console.log('  /plugins         - Alias for /skills');
+      console.log('  /skills          - List loaded skills');
+      console.log('  /plugins         - List loaded plugins');
+      console.log('  /btw <info>      - Inject context (added before next LLM turn)');
       console.log('  /theme           - Show or switch color theme');
 
       console.log(t().heading('Terminal:'));
@@ -965,35 +989,6 @@ async function handleSlashCommand(
 
       // Default: show all sessions and prompt for number
       return doResumeList(agent, sessions, sessions, currentId, maxTokens, customQuestion);
-    }
-
-    case 'history': {
-      const allSessions = agent.session.list();
-      if (allSessions.length === 0) {
-        console.log(t().textDim('No sessions found.'));
-        return false;
-      }
-      const currentId = agent.getCurrentSessionId();
-      const MAX_SHOW = 20;
-      const showCount = Math.min(allSessions.length, MAX_SHOW);
-      console.log(t().heading(`\nSession History (${allSessions.length} total):`));
-      console.log(t().textDim('  #    Name                       Model                Updated              Tokens  Session ID'));
-      console.log(t().textDim('  ---- ---------------------------- -------------------- -------------------- ------ ------------------------------------'));
-      for (let i = 0; i < showCount; i++) {
-        const s = allSessions[i]!;
-        const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
-        const date = new Date(s.updatedAt).toLocaleString();
-        const name = s.name.slice(0, 28).padEnd(28);
-        const model = s.model.slice(0, 18).padEnd(18);
-        const dateStr = date.slice(0, 18).padEnd(18);
-        const current = s.id === currentId ? t().success(' <- current') : '';
-        console.log(`  ${String(i + 1).padStart(4)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${current}  ${t().textDim(s.id)}`);
-      }
-      if (allSessions.length > MAX_SHOW) {
-        console.log(t().textDim(`  ... and ${allSessions.length - MAX_SHOW} more`));
-      }
-      console.log(t().textDim('\nUse /delete -ids <n> to delete sessions by number.\n'));
-      return false;
     }
 
     case 'delete': {
@@ -1244,18 +1239,46 @@ ${aggregated}`,
       }
       return false;
 
-    case 'skills':
-    case 'plugins':
-      const skills = agent.skills.list();
+    case 'skills': {
+      const allSkills = agent.skills.list();
+      const skills = allSkills.filter(s => s.source !== 'plugins');
       if (skills.length === 0) {
         console.log(t().textDim('No skills loaded. Place modules in ~/.nexus/skills/'));
       } else {
-        console.log(t().heading(`Skills(${skills.length}):`));
+        console.log(t().heading(`Skills (${skills.length}):`));
         for (const s of skills) {
+          const src = s.source === 'claude' ? ' [claude]' : '';
+          console.log(`  ${t().entityName(s.name)} v${s.version}${src}${s.description ? ' - ' + s.description : ''}`);
+        }
+      }
+      return false;
+    }
+
+    case 'plugins': {
+      const allPlugins = agent.skills.list();
+      const plugins = allPlugins.filter(s => s.source === 'plugins');
+      if (plugins.length === 0) {
+        console.log(t().textDim('No plugins loaded. Install via: nexus config native install <name>'));
+      } else {
+        console.log(t().heading(`Plugins (${plugins.length}):`));
+        for (const s of plugins) {
           console.log(`  ${t().entityName(s.name)} v${s.version}${s.description ? ' - ' + s.description : ''}`);
         }
       }
       return false;
+    }
+
+    case 'btw': {
+      const btwInfo = args.join(' ');
+      if (!btwInfo) {
+        console.log(t().textDim('Usage: /btw <info>  —  Inject context for the LLM to keep in mind'));
+        return false;
+      }
+      agent.pendingBtw = btwInfo;
+      console.log(t().textDim(`✓ Context noted: "${btwInfo.slice(0, 80)}${btwInfo.length > 80 ? '...' : ''}"`));
+      console.log(t().textDim('  Will be injected before the next LLM turn.'));
+      return false;
+    }
 
     case 'theme':
       if (!args[0]) {
@@ -1444,6 +1467,35 @@ ${aggregated}`,
     }
 
     case 'tasks': {
+      // /tasks -step <id> — show detail for a specific task
+      if (args[0] === '-step' && args[1]) {
+        const taskId = args[1];
+        const sid = agent.getCurrentSessionId();
+        if (!sid) {
+          console.log(t().textDim('No active session.'));
+          return false;
+        }
+        const graph = (agent as any).tracker.getGraphBySession(sid);
+        if (!graph) {
+          console.log(t().textDim('No task graph found.'));
+          return false;
+        }
+        const node = graph.nodes.find((n: any) => n.id === taskId);
+        if (!node) {
+          console.log(t().error(`Task not found: ${taskId}`));
+          return false;
+        }
+        console.log(t().heading(`Task: ${node.id}\n`));
+        console.log(`  Description: ${node.description}`);
+        console.log(`  Status: ${node.status}`);
+        console.log(`  Dependencies: ${node.dependencies.join(', ') || '(none)'}`);
+        console.log(`  Retries: ${node.retryCount}/${node.maxRetries}`);
+        if (node.result) console.log(`  Result: ${node.result.slice(0, 500)}${node.result.length > 500 ? '...' : ''}`);
+        if (node.error) console.log(t().error(`  Error: ${node.error}`));
+        return false;
+      }
+
+      // /tasks [graphId] — show task graph
       const graphId = args[0] || '';
       let graph: any;
       if (graphId) {
@@ -1474,37 +1526,6 @@ ${aggregated}`,
         console.log(`  ${icon} ${t().entityName(node.id)}: ${node.description}${depInfo}${resultInfo}${errInfo}`);
       }
       console.log(t().textDim(`\nGraph ID: ${graph.id}`));
-      return false;
-    }
-
-    case 'task': {
-      const taskId = args[0];
-      if (!taskId) {
-        console.log(t().warning('Usage: /task <id>'));
-        return false;
-      }
-      const sid = agent.getCurrentSessionId();
-      if (!sid) {
-        console.log(t().textDim('No active session.'));
-        return false;
-      }
-      const graph = (agent as any).tracker.getGraphBySession(sid);
-      if (!graph) {
-        console.log(t().textDim('No task graph found.'));
-        return false;
-      }
-      const node = graph.nodes.find((n: any) => n.id === taskId);
-      if (!node) {
-        console.log(t().error(`Task not found: ${taskId}`));
-        return false;
-      }
-      console.log(t().heading(`Task: ${node.id}\n`));
-      console.log(`  Description: ${node.description}`);
-      console.log(`  Status: ${node.status}`);
-      console.log(`  Dependencies: ${node.dependencies.join(', ') || '(none)'}`);
-      console.log(`  Retries: ${node.retryCount}/${node.maxRetries}`);
-      if (node.result) console.log(`  Result: ${node.result.slice(0, 500)}${node.result.length > 500 ? '...' : ''}`);
-      if (node.error) console.log(t().error(`  Error: ${node.error}`));
       return false;
     }
 

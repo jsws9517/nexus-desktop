@@ -272,15 +272,15 @@ export function registerConfigCommand(program: Command): void {
   const nativeCmd = configCmd.command('native').description('Native package management (MCP servers and plugins)');
 
   nativeCmd
-    .command('pkg')
-    .description('List all available MCP tools and plugins that can be installed')
+    .command('list')
+    .description('List all available and installed native MCP tools and plugins')
     .action(() => {
       const native = new NativeManager();
       const available = native.listAvailable();
       const mcpPkgs = available.filter(p => p.type === 'mcp');
       const pluginPkgs = available.filter(p => p.type === 'plugin');
 
-      console.log(t.heading(`Available Packages (${available.length}):\n`));
+      console.log(t.heading(`Packages (${available.length}):\n`));
 
       console.log(t.heading('  MCP Servers:'));
       for (const pkg of mcpPkgs) {
@@ -293,7 +293,7 @@ export function registerConfigCommand(program: Command): void {
         console.log();
       }
 
-      console.log(t.heading('  Plugins (Skills):'));
+      console.log(t.heading('  Plugins:'));
       for (const pkg of pluginPkgs) {
         const installed = native.isInstalled(pkg.name) ? t.success(' [installed]') : '';
         console.log(`    ${t.entityName(pkg.name)}${installed}`);
@@ -328,7 +328,7 @@ export function registerConfigCommand(program: Command): void {
 
       if (!name) {
         console.log(t.warning('Usage: nexus config native install <name> [options]'));
-        console.log(t.textDim('  Run `nexus config native pkg` to see available packages.'));
+        console.log(t.textDim('  Run `nexus config native list` to see available packages.'));
         return;
       }
 
@@ -349,28 +349,6 @@ export function registerConfigCommand(program: Command): void {
         console.log(t.success(result));
       } catch (err) {
         console.log(t.error(err instanceof Error ? err.message : String(err)));
-      }
-    });
-
-  nativeCmd
-    .command('list')
-    .description('List installed native MCP tools and plugins')
-    .action(() => {
-      const native = new NativeManager();
-      const installed = native.listInstalled();
-
-      if (installed.length === 0) {
-        console.log(t.textDim('No packages installed.'));
-        console.log(t.textDim('  Run `nexus config native pkg` to see available packages.'));
-        return;
-      }
-
-      console.log(t.heading(`Installed Packages (${installed.length}):\n`));
-      for (const pkg of installed) {
-        const label = pkg.type === 'mcp' ? t.textDim('[MCP]') : t.textDim('[Plugin]');
-        console.log(`  ${t.entityName(pkg.name)} ${label}`);
-        console.log(`    ${pkg.description}`);
-        console.log();
       }
     });
 

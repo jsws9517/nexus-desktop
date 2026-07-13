@@ -11,6 +11,8 @@ export interface Skill {
   name: string;
   version: string;
   description?: string;
+  /** Source directory type: 'skills' | 'plugins' | 'claude' */
+  source?: 'skills' | 'plugins' | 'claude';
   init?(ctx: AgentContext): Promise<void>;
   tools?: ToolDefinition[];
   callTool?(name: string, args: Record<string, unknown>): Promise<ToolResult>;

@@ -152,7 +152,7 @@ const CATALOG: Record<string, PackageInfo> = {
       const config = new ConfigManager();
       config.addMcpServer('memory', {
         command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-memory'],
+        args: ['-y', '@modelcontextprotocol/server-memory', '--file', join(DATA_DIR, 'memory.json')],
         autoStart: true,
       });
     },

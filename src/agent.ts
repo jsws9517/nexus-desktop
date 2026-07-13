@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { resolve, join } from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
 import { ConfigManager } from './config/index.js';
 import { LLMProvider, createProvider } from './llm/provider.js';
 import { ContextManager, CompactMetadata } from './llm/context-manager.js';
@@ -22,7 +22,28 @@ import { ProjectContext } from './context/index.js';
 
 const REMEMBER_TOOL_DEF: ToolDefinition = {
   name: 'remember',
-  description: 'Save user information to the knowledge graph for future reference across sessions. Call this (with no arguments needed) whenever the user shares personal preferences, facts, or anything they want remembered. The content is captured automatically from the user\'s message.',
+  description: 'Save user information to the knowledge graph for future reference across sessions. Call this whenever the user shares personal preferences, facts, or anything they want remembered. Pass the content to save — summarize the key info from the conversation (e.g. "CPU: Intel i5-1240P, RAM: 40GB").',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      content: { type: 'string', description: 'The content to save to the knowledge graph' },
+    },
+    required: ['content'],
+  },
+};
+
+const RECALL_TOOL_DEF: ToolDefinition = {
+  name: 'recall',
+  description: 'MUST CALL FIRST when the user asks about their personal information, identity, name, preferences, computer config, or anything that may have been saved in the knowledge graph from previous sessions. Retrieves all previously remembered user data. No arguments needed.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+};
+
+const REMEMBER_PROJECT_TOOL_DEF: ToolDefinition = {
+  name: 'remember_project',
+  description: 'Save project-specific information (architecture decisions, conventions, key facts) to the project knowledge base. The content is captured automatically from the current message. Use this for project-level context, NOT personal info.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -89,6 +110,9 @@ export class Agent {
 
   /** Project context (reads .nexus/ directory) */
   projectContext = new ProjectContext();
+
+  /** Pending /btw info to inject on next LLM turn */
+  pendingBtw?: string;
 
   private currentSessionId?: string;
   private currentUserInput?: string;
@@ -286,7 +310,11 @@ export class Agent {
       let systemPrompt = `你是一个智能助手，可以根据用户请求调用工具完成任务。
 当前可用的工具包括本地工具和由 ACP 智能体提供的远程工具。
 当用户明确要求调用某个工具时（如 text2image-free-CogView、text2image-trial-aliyun 等），请严格按照要求调用相应的工具，不要自行决定使用其他工具代替。
-如果某个工具调用失败，请报告具体的错误信息。`;
+如果某个工具调用失败，请报告具体的错误信息。
+ 用户信息会在获得许可后通过 remember 工具保存到知识图谱（存储于 ~/.nexus 目录）。
+ 会话中用户通过 ! 命令执行的 bash 输出结果（如系统配置、硬件信息等）也包含在对话上下文中，若其中有可用于个性化服务的用户信息（如电脑配置、工作环境等），请主动调用 remember 将其持久化到知识图谱。
+ 使用 recall 工具可以获取之前记住的用户信息（如姓名、昵称、爱好、电脑配置等），当用户询问个人信息时请先调用 recall。
+ 使用 remember_project 工具可以保存项目相关的信息（如架构决策、编码约定等），这些信息会保存在当前项目的 .nexus/knowledge/ 目录中。`;
 
       if (this.isAcpServer) {
         const acpTools = this.getAcpTools();
@@ -320,12 +348,20 @@ export class Agent {
     await this.context.compress();
     this.context.onProgress = undefined;
 
-    // Auto-register sanity check + auto-validate hooks for each chat
+    // Auto-register sanity check + auto-validate + /btw injection hooks for each chat
     const sanityCheck = createSanityCheckHook(userInput);
     const autoValidate = createAutoValidateHook();
     const userHooks = this.hooks;
     this.hooks = {
       ...(userHooks || {}),
+      preLlmCall: async (ctx) => {
+        // Inject /btw info into system prompt preamble before LLM sees messages
+        if (this.pendingBtw) {
+          this.context.prependToSystem(`[Context: ${this.pendingBtw}]`);
+          this.pendingBtw = undefined;
+        }
+        await userHooks?.preLlmCall?.(ctx);
+      },
       preToolUse: async (ctx) => {
         const check = await sanityCheck(ctx);
         if (check !== 'allow') return check;
@@ -363,8 +399,12 @@ export class Agent {
         this.renderCompactOutput();
       }
     } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (this.hooks?.onError) {
+        await this.hooks.onError({ turn: this.currentTurn, signal, userInput: this.currentUserInput }, err);
+      }
       // Auto-learn model context limit from API error
-      const errStr = e instanceof Error ? e.message : String(e);
+      const errStr = err.message;
       const contextMatch = errStr.match(/maximum context length is (\d+)/i);
       if (contextMatch) {
         const actualLimit = parseInt(contextMatch[1]!, 10);
@@ -458,6 +498,8 @@ export class Agent {
       ...this.skills.getTools(),
       ...this.getAcpTools(),
       REMEMBER_TOOL_DEF,
+      RECALL_TOOL_DEF,
+      REMEMBER_PROJECT_TOOL_DEF,
       ...getTaskToolDefinitions(),
     ];
 
@@ -467,7 +509,7 @@ export class Agent {
         'file_read', 'read_text_file', 'read_multiple_files', 'list_directory', 'get_file_info', 'directory_tree',
         'fetch_url', 'web_search', 'web_fetch',
         'decompose_task', 'query_tasks', 'search_nodes', 'search_files', 'open_nodes',
-        'remember',
+        'remember', 'recall', 'remember_project',
       ]);
       tools = tools.filter((t) => allowedNames.has(t.name));
     }
@@ -490,6 +532,10 @@ export class Agent {
       this.reasoningLog.push(entry);
     }
 
+    if (this.hooks?.preLlmCall) {
+      await this.hooks.preLlmCall({ turn: this.currentTurn, signal, userInput: this.currentUserInput, toolDefinitions: tools });
+    }
+
     try {
       const llmStart = Date.now();
       const stream = this.provider.chat(this.context.getMessages(), tools, signal);
@@ -508,12 +554,21 @@ export class Agent {
           }
         }
         if (chunk.type === 'thinking' && chunk.thinking) {
-          this.onEvent?.({ type: 'thinking', thinking: chunk.thinking });
+          const clean = chunk.thinking.replace(/\uFFFD/g, '');
+          this.onEvent?.({ type: 'thinking', thinking: clean });
           if (showDetail && !this.onOutput) {
-            process.stdout.write(chalk.italic(this.t.thinking(chunk.thinking)));
+            process.stdout.write(chalk.italic(this.t.thinking(clean)));
           }
         }
         if (chunk.type === 'tool_call' && chunk.toolCall) {
+          // Clean U+FFFD from tool call arguments for display
+          if (chunk.toolCall.arguments) {
+            const cleanArgs: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(chunk.toolCall.arguments)) {
+              cleanArgs[k] = typeof v === 'string' ? v.replace(/\uFFFD/g, '') : v;
+            }
+            chunk.toolCall.arguments = cleanArgs;
+          }
           pendingToolCalls.push(chunk.toolCall);
           this.onEvent?.({ type: 'tool_call_start', index: pendingToolCalls.length - 1, name: chunk.toolCall.name, args: chunk.toolCall.arguments });
         }
@@ -541,6 +596,11 @@ export class Agent {
       this.session.addMessage(this.currentSessionId!, msg);
       // Auto-save long generated content to file
       this.autoSaveLongContent(assistantMessage);
+    }
+
+    if (this.hooks?.postLlmCall) {
+      const postMsg: Message = { role: 'assistant', content: assistantMessage, toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined };
+      await this.hooks.postLlmCall({ turn: this.currentTurn, signal, message: postMsg, userInput: this.currentUserInput, toolDefinitions: tools });
     }
 
     // Execute ALL tool calls before re-running LLM
@@ -630,6 +690,7 @@ export class Agent {
 
     const stopReason = signal.aborted ? 'aborted' : (pendingToolCalls.length > 0 ? 'tool_use' : 'end_turn');
     this.onEvent?.({ type: 'turn_end', stopReason });
+    await this.hooks?.onTurnEnd?.({ turn: this.currentTurn, signal, userInput: this.currentUserInput });
 
     // If there were tool calls, re-run LLM with results
     if (pendingToolCalls.length > 0) {
@@ -726,6 +787,16 @@ export class Agent {
     // Handle remember tool (agent-level, saves to KG)
     if (call.name === 'remember') {
       return this.handleRemember(safeArgs);
+    }
+
+    // Handle recall tool (agent-level, reads from KG)
+    if (call.name === 'recall') {
+      return this.handleRecall();
+    }
+
+    // Handle remember_project tool (saves project-specific info to .nexus/knowledge/)
+    if (call.name === 'remember_project') {
+      return this.handleRememberProject(safeArgs);
     }
 
     // 1. Check local skills first
@@ -924,38 +995,55 @@ export class Agent {
       const hasMemoryTools = allTools.some(t => ['search_nodes', 'open_nodes'].includes(t.name));
       if (!hasMemoryTools) return;
 
+      // Retrieve all entities from the knowledge graph for context injection
       const result = await this.mcp.callTool('search_nodes', { query: '' });
-      if (result.isError || !result.content) return;
+      if (result.isError || !result.content) {
+        // Fallback: try semantic search to retrieve remembered user info
+        const semantic = await this.mcp.callTool('search_semantic', { query: 'user', limit: 20 });
+        if (semantic.isError || !semantic.content) return;
+        const sContent = semantic.content.trim();
+        if (!sContent || sContent === '[]' || sContent === '{}') return;
+        try {
+          const parsed = JSON.parse(sContent);
+          if (!parsed.results?.length) return;
+        } catch { return; }
+        this._injectToSystemPrompt(sContent);
+        return;
+      }
 
       const content = result.content.trim();
-      // check if result is effectively empty
       try {
         const parsed = JSON.parse(content);
         const entities = parsed.entities ?? parsed.results ?? [];
         if (entities.length === 0) return;
       } catch {
-        // fallback: skip if empty-looking
         if (!content || content === '[]' || content === '{}') return;
       }
 
-      const msgs = this.context.getMessages();
-      const sysMsg = msgs.find(m => m.role === 'system');
-      if (sysMsg) {
-        const section = `[知识图谱中已有的用户信息]:`;
-        const existingIdx = sysMsg.content.indexOf(section);
-        if (existingIdx >= 0) {
-          sysMsg.content = sysMsg.content.substring(0, existingIdx);
-        }
-        sysMsg.content += `\n\n${section}\n${content}`;
-      }
+      this._injectToSystemPrompt(content);
     } catch {
       // Memory tools unavailable, skip injection
     }
   }
 
+  private _injectToSystemPrompt(content: string): void {
+    const msgs = this.context.getMessages();
+    const sysMsg = msgs.find(m => m.role === 'system');
+    if (sysMsg) {
+      const section = `[知识图谱中已有的用户信息]:`;
+      const existingIdx = sysMsg.content.indexOf(section);
+      if (existingIdx >= 0) {
+        sysMsg.content = sysMsg.content.substring(0, existingIdx);
+      }
+      sysMsg.content += `\n\n${section}\n${content}`;
+    }
+  }
+
+  private readonly OBSERVATION_CONSOLIDATION_THRESHOLD = 15;
+
   private async handleRemember(_args: Record<string, unknown> | undefined): Promise<ToolResult> {
-    const content = this.currentUserInput || '';
-    if (!content.trim()) {
+    const content = (typeof _args?.content === 'string' ? _args.content : this.currentUserInput || '').trim();
+    if (!content) {
       return { content: 'Nothing to remember.', isError: true };
     }
     const approval = await this.audit.requestApproval({ type: 'tool_call', name: 'remember', args: {} });
@@ -967,16 +1055,169 @@ export class Agent {
       if (!allTools.some(t => t.name === 'create_entities')) {
         return { content: 'Knowledge graph tools not available.', isError: true };
       }
-      await this.mcp.callTool('create_entities', {
-        entities: [{
+
+      // Check if 'user' entity already exists — append if so, create if not
+      const existing = await this.mcp.callTool('search_nodes', { query: 'user' });
+      let entityExists = false;
+      if (!existing.isError && existing.content) {
+        try {
+          const parsed = JSON.parse(existing.content.trim());
+          const entities = parsed.entities ?? parsed.results ?? [];
+          entityExists = entities.some((e: { name?: string }) => e.name === 'user');
+        } catch { /* ignore parse error */ }
+      }
+
+      if (entityExists && allTools.some(t => t.name === 'add_observations')) {
+        // Append to existing entity
+        await this.mcp.callTool('add_observations', {
           name: 'user',
-          entityType: 'person',
           observations: [content],
-        }],
-      });
+        });
+        // Auto-consolidate if too many observations
+        await this.autoConsolidateObservations('user');
+      } else {
+        // Create new entity (create_entities merges observations on conflict)
+        await this.mcp.callTool('create_entities', {
+          entities: [{
+            name: 'user',
+            entityType: 'person',
+            observations: [content],
+          }],
+        });
+      }
+
       return { content: `Remembered: ${content}` };
     } catch (err) {
       return { content: `Failed to save: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+    }
+  }
+
+  private async handleRecall(): Promise<ToolResult> {
+    try {
+      const allTools = this.mcp.getAllTools();
+      if (!allTools.some(t => t.name === 'search_nodes')) {
+        // KG not available, fall back to .remember files directly
+        const rememberContent = this.readRememberFiles();
+        if (rememberContent) return { content: rememberContent, isError: false };
+        return { content: 'No previous remembered data found.', isError: false };
+      }
+
+      // 1st priority: search mcp-memory knowledge graph
+      const queries = ['', 'user'];
+      for (const q of queries) {
+        const result = await this.mcp.callTool('search_nodes', { query: q });
+        if (!result.isError && result.content) {
+          const content = result.content.trim();
+          if (content && content !== '[]' && content !== '{}') {
+            return { content: `[知识图谱]\n${content}`, isError: false };
+          }
+        }
+      }
+
+      // 2nd priority: semantic search
+      const semantic = await this.mcp.callTool('search_semantic', { query: 'user', limit: 20 });
+      if (!semantic.isError && semantic.content) {
+        const sContent = semantic.content.trim();
+        if (sContent && sContent !== '[]' && sContent !== '{}') {
+          return { content: `[知识图谱]\n${sContent}`, isError: false };
+        }
+      }
+
+      // 3rd priority: fall back to .remember session files
+      const rememberContent = this.readRememberFiles();
+      if (rememberContent) return { content: `[.remember 会话记忆]\n${rememberContent}`, isError: false };
+
+      return { content: 'No previous remembered data found.', isError: false };
+    } catch {
+      return { content: 'No previous remembered data found.', isError: false };
+    }
+  }
+
+  private readRememberFiles(): string {
+    try {
+      const rememberDir = resolve(process.cwd(), '.remember');
+      if (!existsSync(rememberDir)) return '';
+
+      const parts: string[] = [];
+
+      // Priority order: now.md > today-*.md > recent.md > remember.md > archive.md
+      const nowPath = join(rememberDir, 'now.md');
+      if (existsSync(nowPath)) {
+        const content = readFileSync(nowPath, 'utf-8').trim();
+        if (content) parts.push(`[近期记忆]\n${content}`);
+      }
+
+      // Read today-*.md files (newest first)
+      try {
+        const files = readdirSync(rememberDir)
+          .filter(f => /^today-\d{4}-\d{2}-\d{2}\.md$/.test(f))
+          .sort()
+          .reverse();
+        for (const file of files.slice(0, 3)) {
+          const content = readFileSync(join(rememberDir, file), 'utf-8').trim();
+          if (content) parts.push(`[${file.replace('.md', '')}]\n${content}`);
+        }
+      } catch { /* ignore read errors */ }
+
+      const recentPath = join(rememberDir, 'recent.md');
+      if (existsSync(recentPath)) {
+        const content = readFileSync(recentPath, 'utf-8').trim();
+        if (content) parts.push(`[近期归档]\n${content}`);
+      }
+
+      const rememberPath = join(rememberDir, 'remember.md');
+      if (existsSync(rememberPath)) {
+        const content = readFileSync(rememberPath, 'utf-8').trim();
+        if (content) parts.push(`[持久记忆]\n${content}`);
+      }
+
+      return parts.join('\n\n');
+    } catch {
+      return '';
+    }
+  }
+
+  private async handleRememberProject(_args: Record<string, unknown> | undefined): Promise<ToolResult> {
+    const content = this.currentUserInput || '';
+    if (!content.trim()) {
+      return { content: 'Nothing to remember.', isError: true };
+    }
+    try {
+      const projectDir = process.cwd();
+      const projectName = projectDir.split(/[/\\]/).pop() || 'project';
+      const key = `memory-${Date.now()}`;
+      await this.projectContext.saveKnowledge(key, content);
+      return { content: `Saved project memory: ${content.slice(0, 100)}${content.length > 100 ? '...' : ''}` };
+    } catch (err) {
+      return { content: `Failed to save project memory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+    }
+  }
+
+  private async autoConsolidateObservations(entityName: string): Promise<void> {
+    try {
+      const allTools = this.mcp.getAllTools();
+      if (!allTools.some(t => t.name === 'open_nodes')) return;
+
+      const open = await this.mcp.callTool('open_nodes', { names: [entityName] });
+      if (open.isError || !open.content) return;
+
+      const parsed = JSON.parse(open.content.trim());
+      const entities = parsed.entities ?? [];
+      if (entities.length === 0) return;
+
+      const obs = entities[0].observations ?? [];
+      if (obs.length < this.OBSERVATION_CONSOLIDATION_THRESHOLD) return;
+
+      // Add a consolidation metadata observation to track auto-summary
+      if (allTools.some(t => t.name === 'add_observations')) {
+        await this.mcp.callTool('add_observations', {
+          name: entityName,
+          observations: [`[auto-summary] ${obs.length} observations recorded for ${entityName}`],
+          kind: 'metadata',
+        });
+      }
+    } catch {
+      // Silent: consolidation is best-effort
     }
   }
 
@@ -998,13 +1239,31 @@ export class Agent {
       if (nameMatch?.[1]) observations.push(`User's name is ${nameMatch[1]}`);
       if (nicknameMatch?.[1]) observations.push(`User's nickname is ${nicknameMatch[1]}`);
 
-      await this.mcp.callTool('create_entities', {
-        entities: [{
+      // Append to existing 'user' entity or create a new person entity
+      const existing = await this.mcp.callTool('search_nodes', { query: name });
+      let entityExists = false;
+      if (!existing.isError && existing.content) {
+        try {
+          const parsed = JSON.parse(existing.content.trim());
+          const entities = parsed.entities ?? parsed.results ?? [];
+          entityExists = entities.some((e: { name?: string }) => e.name === name);
+        } catch { /* ignore */ }
+      }
+
+      if (entityExists && allTools.some(t => t.name === 'add_observations')) {
+        await this.mcp.callTool('add_observations', {
           name,
-          entityType: 'person',
           observations,
-        }],
-      });
+        });
+      } else {
+        await this.mcp.callTool('create_entities', {
+          entities: [{
+            name,
+            entityType: 'person',
+            observations,
+          }],
+        });
+      }
     } catch {
       // Silent fail
     }

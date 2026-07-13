@@ -144,7 +144,7 @@ export class ClientManager {
         if (schema) {
           const s = schema as { required?: string[]; properties?: Record<string, { type?: string }> };
           if (s.required) {
-            const missing = s.required.filter(k => safeArgs[k] === undefined || safeArgs[k] === null || safeArgs[k] === '');
+            const missing = s.required.filter(k => safeArgs[k] === undefined || safeArgs[k] === null);
             if (missing.length > 0) {
               const typeHints = missing.map(k => {
                 const prop = s.properties?.[k];

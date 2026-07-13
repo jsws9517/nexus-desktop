@@ -61,7 +61,7 @@ async function promptUser(path: string): Promise<boolean> {
   }
 
   const filename = path.split(/[\\/]/).pop() || path;
-  const question = `\x1b[33m⚠ Security: read/write "${filename}"? [y] once  [a] always  [n] deny \x1b[0m`;
+  const question = `\n\x1b[33m⚠ Security: read/write "${filename}"? [y] once  [a] always  [n] deny \x1b[0m`;
   const answer = _permissionPrompter
     ? await _permissionPrompter(question)
     : await new Promise<string>(resolve => {
@@ -129,6 +129,17 @@ export function preAuthorizeRoot(root: string): void {
 }
 
 export async function authorizePath(absPath: string): Promise<boolean> {
-  if (checkPathAllowed(absPath)) return true;
+  if (checkPathAllowed(absPath)) {
+    // Even if a parent root was authorized (e.g. "/" once), .remember
+    // directories outside the current project always require a fresh prompt.
+    const normalized = normalize(absPath).toLowerCase();
+    if (normalized.includes('.remember')) {
+      const cwd = process.cwd().toLowerCase();
+      if (!normalized.startsWith(cwd)) {
+        return promptUser(absPath);
+      }
+    }
+    return true;
+  }
   return promptUser(absPath);
 }
