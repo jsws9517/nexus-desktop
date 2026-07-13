@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -45,8 +45,7 @@ export class SessionMemory {
 
   remove(sessionId: string): void {
     try {
-      const fs = require('fs');
-      fs.unlinkSync(this.filePath(sessionId));
+      unlinkSync(this.filePath(sessionId));
     } catch {}
   }
 

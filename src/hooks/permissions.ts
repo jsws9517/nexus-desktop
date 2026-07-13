@@ -31,24 +31,10 @@ const SENSITIVE_COMMANDS = [
   '>', '>>', '|', '`',
 ];
 
-const CORE_TOOL_ALLOW_LIST = new Set([
-  'read_file', 'read_files', 'file_read', 'read_text_file', 'read_multiple_files',
-  'list_directory', 'directory_tree', 'get_file_info',
-  'search_files', 'grep', 'glob',
-  'list_files',
-]);
-
 const WRITE_TOOLS = new Set([
   'write_file', 'file_write', 'edit_file', 'file_edit',
   'create_file', 'append_file', 'create_directory',
   'move_file', 'rename', 'copy_file',
-]);
-
-const DANGEROUS_TOOLS = new Set([
-  'delete_file', 'remove_file', 'rm', 'rmdir',
-  'execute_command', 'exec_command', 'bash', 'shell',
-  'install_package', 'npm_install', 'pip_install',
-  'execute_sql', 'run_sql',
 ]);
 
 const DEFAULT_PERMISSIONS: ToolPermission[] = [

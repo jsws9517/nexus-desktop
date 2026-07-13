@@ -5,15 +5,11 @@ import { join, dirname } from 'path';
 import { Session, StoredMessage } from './types.js';
 
 const DB_PATH = (() => {
-  import('fs').then(fs => {
-    const dir = process.env.LLMA_DATA_DIR
-      ? join(process.env.LLMA_DATA_DIR, '.nexus')
-      : join(homedir(), '.nexus');
-    fs.mkdirSync(dir, { recursive: true });
-  });
-  return process.env.LLMA_DATA_DIR
-    ? join(process.env.LLMA_DATA_DIR, '.nexus', 'sessions.db')
-    : join(homedir(), '.nexus', 'sessions.db');
+  const dir = process.env.LLMA_DATA_DIR
+    ? join(process.env.LLMA_DATA_DIR, '.nexus')
+    : join(homedir(), '.nexus');
+  mkdirSync(dir, { recursive: true });
+  return join(dir, 'sessions.db');
 })();
 
 const INIT_SQL = `

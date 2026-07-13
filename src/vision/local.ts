@@ -17,9 +17,12 @@ let loadError: string | null = null;
 let ready = false;
 let pendingResolves: Map<string, { resolve: (v: any) => void; reject: (e: Error) => void }> = new Map();
 
+let starting = false;
+
 function startProcess(): void {
-  if (proc || modelLoading) return;
+  if (proc || modelLoading || starting) return;
   modelLoading = true;
+  starting = true;
 
   const pythonBin = process.env.LLMA_VISION_PYTHON || 'python';
   proc = spawn(pythonBin, [SCRIPT_PATH], {
@@ -73,18 +76,22 @@ function startProcess(): void {
 }
 
 function handleResponse(msg: any): void {
-  for (const [id, p] of pendingResolves) {
-    p.resolve(msg);
+  // Resolve the oldest pending request (FIFO order)
+  const entry = pendingResolves.entries().next();
+  if (!entry.done) {
+    const [id, p] = entry.value;
     pendingResolves.delete(id);
-    break;
+    p.resolve(msg);
   }
 }
 
 function handleError(msg: any): void {
-  for (const [id, p] of pendingResolves) {
-    p.reject(new Error(msg.error));
+  // Reject the oldest pending request (FIFO order)
+  const entry = pendingResolves.entries().next();
+  if (!entry.done) {
+    const [id, p] = entry.value;
     pendingResolves.delete(id);
-    break;
+    p.reject(new Error(msg.error));
   }
 }
 
@@ -138,7 +145,13 @@ export async function analyzeLocal(imagePath: string, question?: string): Promis
     });
 
     const req = { image: imageB64, question: question || '' };
-    proc!.stdin!.write(JSON.stringify(req) + '\n');
+    if (!proc || !proc.stdin || proc.killed) {
+      pendingResolves.delete(id);
+      clearTimeout(timer);
+      reject(new Error('Local vision process is not running'));
+      return;
+    }
+    proc.stdin.write(JSON.stringify(req) + '\n');
   });
 }
 

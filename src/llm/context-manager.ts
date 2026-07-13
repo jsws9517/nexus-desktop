@@ -173,8 +173,11 @@ export class ContextManager {
     return true;
   }
 
-  async compress(): Promise<void> {
+  private static readonly MAX_COMPRESS_DEPTH = 10;
+
+  async compress(depth = 0): Promise<void> {
     if (!this.provider || this.messages.length < 10) return;
+    if (depth >= ContextManager.MAX_COMPRESS_DEPTH) return;
 
     this.compressionRound++;
     const round = this.compressionRound;
@@ -223,9 +226,9 @@ export class ContextManager {
       this.compressionRound = Math.max(0, this.compressionRound - 1);
     }
 
-    // Recurse if still over budget
+    // Recurse if still over budget (with depth limit as safety valve)
     if (this.getTokenCount() > this.maxContextTokens) {
-      await this.compress();
+      await this.compress(depth + 1);
     }
   }
 

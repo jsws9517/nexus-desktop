@@ -234,33 +234,6 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
   },
   {
-    name: 'file_read',
-    description: 'Read the contents of a file at the given path',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Absolute file path' },
-      },
-      required: ['path'],
-    },
-    async execute(args): Promise<ToolResult> {
-      const path = String(args.path || '');
-      const authorized = await authorizePath(path);
-      if (!authorized) {
-        return { content: `Access denied: "${path}" is not in the allowed path list and access was rejected by user.`, isError: true };
-      }
-      try {
-        if (!existsSync(path)) {
-          return { content: `File not found: ${path}`, isError: true };
-        }
-        const content = readFileSync(path, 'utf-8');
-        return { content };
-      } catch (err) {
-        return { content: `Error reading file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
-      }
-    },
-  },
-  {
     name: 'read_multiple_files',
     description: 'Read the contents of multiple files at once',
     inputSchema: {
