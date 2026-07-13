@@ -147,7 +147,7 @@ Run the setup script to create a `.venv`, install dependencies, and pre-download
 .\scripts\setup-vision.ps1
 
 # HF mirror for China users
-.\scripts\setup-vision.ps1 -Mirror hf-mirror.com
+.\scripts\setup-vision.ps1 -Mirror hf-mirror.com -PypiMirror https://pypi.mirrors.ustc.edu.cn/simple
 ```
 
 The agent auto-detects Python in the project `.venv`. To use a custom Python path, set:
