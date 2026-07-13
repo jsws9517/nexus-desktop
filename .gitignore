@@ -38,6 +38,9 @@ tests/
 tasks/
 images/
 
+# Python venv
+.venv/
+
 # Temporary files
 *.tmp
 *.temp

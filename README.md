@@ -158,7 +158,7 @@ set LLMA_VISION_PYTHON=C:\path\to\python.exe
 
 ### Cloud Vision Providers
 
-Configure a cloud vision provider (e.g., Zhipu GLM-4V, OpenRouter Agnes-2V):
+Configure a cloud vision provider (e.g., Zhipu GLM-4V, Agnes-AI Agnes-2V):
 
 ```bash
 # Add a provider (API key can reference an env var)
