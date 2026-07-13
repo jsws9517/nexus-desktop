@@ -77,7 +77,7 @@ Write-Host "[...] Upgrading pip ..." -ForegroundColor Yellow
 if (-not $?) { Write-Host "[..] pip upgrade skipped" -ForegroundColor Yellow }
 
 # ── 4. Install Python packages ──
-$pipArgs = @("install", "torch", "transformers", "Pillow")
+$pipArgs = @("install", "torch", "transformers<5", "Pillow")
 if ($PypiMirror) {
   $pipArgs += "-i"; $pipArgs += $PypiMirror
   Write-Host "[..] Using PyPI mirror: $PypiMirror" -ForegroundColor Cyan
@@ -94,17 +94,7 @@ if ($Mirror) {
   Write-Host "[...] Using HF mirror: $Mirror" -ForegroundColor Cyan
 }
 
-Write-Host "[...] Testing connection to $env:HF_ENDPOINT ..." -ForegroundColor Yellow
-try {
-  $status = (Invoke-WebRequest -Uri "$env:HF_ENDPOINT" -Method Head -TimeoutSec 10 -UseBasicParsing).StatusCode
-  Write-Host "[OK] Mirror reachable (HTTP $status)" -ForegroundColor Green
-} catch {
-  Write-Host "[..] Cannot reach $env:HF_ENDPOINT, falling back to direct HuggingFace" -ForegroundColor Yellow
-  if ($Mirror) {
-    if (Test-Path Env:HF_ENDPOINT) { Remove-Item Env:HF_ENDPOINT -Force }
-  }
-}
-
+$env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
 Write-Host "[...] Downloading microsoft/Florence-2-base ..." -ForegroundColor Yellow
 & $venvPath\Scripts\hf download microsoft/Florence-2-base
 if (-not $?) { throw "Model download failed" }
@@ -115,7 +105,14 @@ if ($Mirror) {
 
 Write-Host "[OK] Model downloaded and cached" -ForegroundColor Green
 
-# ── 6. Quick verification (with local_files_only=True to confirm cache) ──
+# ── 6. Clear stale cached model code (compatibility guard) ──
+$modelCacheModule = "$env:USERPROFILE\.cache\huggingface\modules\transformers_modules\microsoft"
+if (Test-Path $modelCacheModule) {
+  Remove-Item -Recurse -Force $modelCacheModule -ErrorAction SilentlyContinue
+  Write-Host "[..] Cleared cached Florence-2 module code" -ForegroundColor Yellow
+}
+
+# ── 7. Quick verification (with local_files_only=True to confirm cache) ──
 Write-Host "[...] Verifying model loads correctly from cache ..." -ForegroundColor Yellow
 & $venvPath\Scripts\python -c "
 import sys
