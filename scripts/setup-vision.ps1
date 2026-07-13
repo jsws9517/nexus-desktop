@@ -94,13 +94,19 @@ if ($Mirror) {
   Write-Host "[...] Using HF mirror: $Mirror" -ForegroundColor Cyan
 }
 
-Write-Host "[...] Downloading microsoft/Florence-2-base (this may take a while) ..." -ForegroundColor Yellow
-& $venvPath\Scripts\python -c "
-import sys
-from transformers import AutoModelForCausalLM, AutoProcessor
-AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', trust_remote_code=True)
-AutoProcessor.from_pretrained('microsoft/Florence-2-base', trust_remote_code=True)
-" 2>&1
+Write-Host "[...] Testing connection to $env:HF_ENDPOINT ..." -ForegroundColor Yellow
+try {
+  $status = (Invoke-WebRequest -Uri "$env:HF_ENDPOINT/api/models" -Method Head -TimeoutSec 10 -UseBasicParsing).StatusCode
+  Write-Host "[OK] Mirror reachable (HTTP $status)" -ForegroundColor Green
+} catch {
+  Write-Host "[..] Cannot reach $env:HF_ENDPOINT, falling back to direct HuggingFace" -ForegroundColor Yellow
+  if ($Mirror) {
+    if (Test-Path Env:HF_ENDPOINT) { Remove-Item Env:HF_ENDPOINT -Force }
+  }
+}
+
+Write-Host "[...] Downloading microsoft/Florence-2-base ..." -ForegroundColor Yellow
+& $venvPath\Scripts\huggingface-cli download microsoft/Florence-2-base --local-dir-use-symlinks False --resume-download
 if (-not $?) { throw "Model download failed" }
 
 if ($Mirror) {
@@ -118,7 +124,7 @@ m = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', trust_remo
 p = AutoProcessor.from_pretrained('microsoft/Florence-2-base', trust_remote_code=True, local_files_only=True)
 print(f'Model: {m.__class__.__name__}')
 print(f'Params: {sum(p.numel() for p in m.parameters())/1e6:.0f}M')
-" 2>&1
+"
 if (-not $?) { throw "Verification failed" }
 Write-Host "[OK] Florence-2 is ready!" -ForegroundColor Green
 
