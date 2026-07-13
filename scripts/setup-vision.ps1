@@ -117,7 +117,7 @@ Write-Host "[...] Verifying model loads correctly from cache ..." -ForegroundCol
 & $venvPath\Scripts\python -c "
 import sys
 from transformers import AutoModelForCausalLM, AutoProcessor
-m = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', trust_remote_code=True, local_files_only=True)
+m = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', trust_remote_code=True, local_files_only=True, attn_implementation='eager')
 p = AutoProcessor.from_pretrained('microsoft/Florence-2-base', trust_remote_code=True, local_files_only=True)
 print(f'Model: {m.__class__.__name__}')
 print(f'Params: {sum(p.numel() for p in m.parameters())/1e6:.0f}M')

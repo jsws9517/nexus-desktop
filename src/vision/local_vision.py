@@ -12,7 +12,7 @@ if not hasattr(PretrainedConfig, 'forced_bos_token_id'):
 def main():
     print("Loading Florence-2-base...", file=sys.stderr, flush=True)
     t0 = time.time()
-    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, trust_remote_code=True, local_files_only=True)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, trust_remote_code=True, local_files_only=True, attn_implementation='eager')
     processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True, local_files_only=True)
     t1 = time.time()
     print(f"Model loaded in {t1-t0:.1f}s", file=sys.stderr, flush=True)
