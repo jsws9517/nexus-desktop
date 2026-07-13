@@ -44,6 +44,7 @@ export const ConfigSchema = z.object({
   promptName: z.string().optional(),
   modelContextLimits: z.record(z.number()).optional(),
   nativeInstalled: z.array(z.string()).optional(),
+  language: z.enum(['en', 'zh-CN']).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;

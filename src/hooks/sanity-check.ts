@@ -1,9 +1,11 @@
 import { HookContext, HookResult } from './types.js';
+import { t, tf } from '../i18n/index.js';
 
 const TIME_PATTERNS = [
-  /历史/i, /历史上的今天/i, /today in history/i, /historical event/i,
-  /今年/i, /去年/i, /新闻/i, /news/i, /current event/i,
-  /天气/i, /weather/i, /时间/i, /time/i, /日期/i, /date/i,
+  /history/i, /today in history/i, /historical event/i,
+  /news/i, /current event/i,
+  /weather/i, /time/i, /date/i,
+  /历史/i, /历史上的今天/i, /今年/i, /去年/i, /新闻/i, /天气/i, /时间/i, /日期/i,
 ];
 
 const LOCAL_TOOLS = new Set([
@@ -26,7 +28,7 @@ export function createSanityCheckHook(userInput: string) {
 
     // Only block local-search tools when the query clearly needs real-time data
     if (LOCAL_TOOLS.has(toolName)) {
-      return { verdict: 'deny', reason: `当前查询需要实时数据，但工具"${toolName}"只能搜索本地数据。` };
+      return { verdict: 'deny', reason: tf('sanity_check')(toolName) };
     }
 
     return 'allow';

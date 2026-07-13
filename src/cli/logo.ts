@@ -1,4 +1,5 @@
 import { ThemeManager } from '../theme/manager.js';
+import { t as i18nTr, tf as i18nTf } from '../i18n/index.js';
 
 const _theme = new ThemeManager();
 const t = _theme.token;
@@ -12,20 +13,6 @@ const NEXUS_LOGO: string[] = [
   '  ◉         ◉   ',
   '   ╲  ◉  ◉  ╱   ',
   '    ╰─────╯    ',
-];
-
-const TIPS: string[] = [
-  'Run /init to set up providers and MCP',
-  'Use /help to see all available commands',
-  'Press /tools to list MCP tools & skills',
-  'Try `nexus run "task"` for one-shot mode',
-];
-
-const WHATS_NEW: string[] = [
-  'PageUp/PageDown: browse prompt history',
-  'Ctrl+O: toggle compact / full reasoning',
-  'Auto-import Claude Code MCP and skills',
-  'Persistent sessions, cross-process safe',
 ];
 
 export interface WelcomeInfo {
@@ -55,8 +42,18 @@ function calcFillMax(columns: number): number {
 export function showWelcomeScreen(info: WelcomeInfo, mode?: BorderMode): void {
   const borderMode = mode ?? (process.env.NEXUS_BORDER_MODE as BorderMode) ?? 'fill';
 
-  const tipsItems = TIPS.map((x) => `  ${t.textDim('•')} ${x}`);
-  const newsItems = WHATS_NEW.map((x) => `  ${t.textDim('•')} ${x}`);
+  const tipsItems: string[] = [
+    `  ${t.textDim('•')} ${i18nTr('tip_init')}`,
+    `  ${t.textDim('•')} ${i18nTr('tip_help')}`,
+    `  ${t.textDim('•')} ${i18nTr('tip_tools')}`,
+    `  ${t.textDim('•')} ${i18nTr('tip_run')}`,
+  ];
+  const newsItems: string[] = [
+    `  ${t.textDim('•')} ${i18nTr('wn_history')}`,
+    `  ${t.textDim('•')} ${i18nTr('wn_detail')}`,
+    `  ${t.textDim('•')} ${i18nTr('wn_import')}`,
+    `  ${t.textDim('•')} ${i18nTr('wn_persist')}`,
+  ];
 
   const termWidth = process.stdout.columns ?? 120;
 
@@ -68,9 +65,9 @@ export function showWelcomeScreen(info: WelcomeInfo, mode?: BorderMode): void {
   }
 
   console.log('');
-  console.log(t.textDim(`Session ${info.sessionId}`));
-  console.log(t.textDim('Type /help for commands, /exit to quit'));
-  console.log(t.textDim('PageUp/PageDown: history  ·  Ctrl+O: detail mode'));
+  console.log(t.textDim(i18nTf('session_label')(info.sessionId)));
+  console.log(t.textDim(i18nTr('type_help')));
+  console.log(t.textDim(i18nTr('shortcuts_line')));
   console.log('');
 }
 
@@ -103,7 +100,7 @@ function buildLeftLines(info: WelcomeInfo, lw: number): string[] {
   const indent = ' '.repeat(Math.max(0, Math.floor(((lw - 2) - 15) / 2)));
   return [
     '',
-    `${indent}${t.heading('Welcome back!')}`,
+    `${indent}${t.heading(i18nTr('welcome_back'))}`,
     '',
     ...NEXUS_LOGO.map((line) => `${indent}${t.borderAccent(line)}`),
     '',
@@ -116,11 +113,11 @@ function buildLeftLines(info: WelcomeInfo, lw: number): string[] {
 function buildRightLines(tipsItems: string[], newsItems: string[], rw: number): string[] {
   const sepLine = t.textDim('─'.repeat(Math.min(rw - 2, 50)));
   return [
-    t.heading('Tips for getting started'),
+    t.heading(i18nTr('tips_title')),
     sepLine,
     ...tipsItems,
     '',
-    t.heading("What's new"),
+    t.heading(i18nTr('whatsnew_title')),
     sepLine,
     ...newsItems,
   ];

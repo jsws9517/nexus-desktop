@@ -9,6 +9,7 @@ import { promisify } from 'util';
 import { homedir } from 'os';
 import { Agent } from '../agent.js';
 import { showWelcomeScreen, BorderMode } from './logo.js';
+import { t as i18nTr, tf as i18nTf } from '../i18n/index.js';
 import { ThemeManager } from '../theme/manager.js';
 import { authorizePath, setPermissionPrompter } from '../security/path-authorizer.js';
 import { isDangerousBash } from '../security/audit.js';
@@ -777,11 +778,11 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     // Inject buffered bash command outputs into session context
     if (bashOutputBuffer.length > 0) {
       const bufContent = bashOutputBuffer.map(
-        b => `用户执行了命令 \`${b.cmd}\`，输出结果：\n\`\`\`\n${b.output}\n\`\`\``
+        b => i18nTf('bash_injection')(b.cmd, b.output)
       ).join('\n\n');
       const sid = agent.getCurrentSessionId();
       if (sid) {
-        agent.session.addMessage(sid, { role: 'system', content: `[bash 命令执行结果]\n${bufContent}` });
+        agent.session.addMessage(sid, { role: 'system', content: i18nTf('bash_section')(bufContent) });
       }
       bashOutputBuffer = [];
     }
@@ -862,52 +863,52 @@ async function handleSlashCommand(
       return true;
 
     case 'help':
-      console.log(t().heading('Session:'));
-      console.log('  /session         - Show current session info');
-      console.log('  /resume          - Resume a session (-id <n> | -name <str> | -ssid <uuid>)');
-      console.log('  /delete          - Delete sessions (-ids <n,n> | -filter <str> | -size <N> | -days <N>)');
-      console.log('  /view [id|#]     - Browse raw messages for a session');
-      console.log('  /memory          - Show persistent memory for this session');
-      console.log('  /insight         - Cross-session memory analysis');
-      console.log('  /rename <name>   - Rename the current session');
+      console.log(t().heading(i18nTr('h_session')));
+      console.log(`  /session         - ${i18nTr('h_session_info')}`);
+      console.log(`  /resume          - ${i18nTr('h_resume')}`);
+      console.log(`  /delete          - ${i18nTr('h_delete')}`);
+      console.log(`  /view [id|#]     - ${i18nTr('h_view')}`);
+      console.log(`  /memory          - ${i18nTr('h_memory')}`);
+      console.log(`  /insight         - ${i18nTr('h_insight')}`);
+      console.log(`  /rename <name>   - ${i18nTr('h_rename')}`);
 
-      console.log(t().heading('Model & Provider:'));
-      console.log('  /model           - Show or switch the LLM model');
-      console.log('  /provider        - Show or switch the LLM provider');
-      console.log('  /compact         - Compress current session context');
-      console.log('  /new             - Compress history and start a fresh session');
-      console.log('  /clear           - Clear current context (starts fresh)');
+      console.log(t().heading(i18nTr('h_model')));
+      console.log(`  /model           - ${i18nTr('h_model_switch')}`);
+      console.log(`  /provider        - ${i18nTr('h_provider')}`);
+      console.log(`  /compact         - ${i18nTr('h_compact')}`);
+      console.log(`  /new             - ${i18nTr('h_new')}`);
+      console.log(`  /clear           - ${i18nTr('h_clear')}`);
 
-      console.log(t().heading('Task Planning:'));
-      console.log('  /plan <request>  - Decompose request into tasks');
-      console.log('  /go              - Execute the current plan');
-      console.log('  /tasks [-step <id>] - Show task graph (or details for a specific step)');
+      console.log(t().heading(i18nTr('h_task')));
+      console.log(`  /plan <request>  - ${i18nTr('h_plan')}`);
+      console.log(`  /go              - ${i18nTr('h_go')}`);
+      console.log(`  /tasks [-step <id>] - ${i18nTr('h_tasks')}`);
 
-      console.log(t().heading('Tools & Skills:'));
-      console.log('  /tools           - List all callable tools (builtin + MCP + skills/plugins)');
-      console.log('  /mcp             - List MCP server connections');
-      console.log('  /skills          - List loaded skills');
-      console.log('  /plugins         - List loaded plugins');
-      console.log('  /btw <info>      - Inject context (added before next LLM turn)');
-      console.log('  /theme           - Show or switch color theme');
+      console.log(t().heading(i18nTr('h_tools')));
+      console.log(`  /tools           - ${i18nTr('h_tools_list')}`);
+      console.log(`  /mcp             - ${i18nTr('h_mcp')}`);
+      console.log(`  /skills          - ${i18nTr('h_skills')}`);
+      console.log(`  /plugins         - ${i18nTr('h_plugins')}`);
+      console.log(`  /btw <info>      - ${i18nTr('h_btw')}`);
+      console.log(`  /theme           - ${i18nTr('h_theme')}`);
 
-      console.log(t().heading('Terminal:'));
-      console.log('  /flush           - Clear the screen');
-      console.log('  /exit, /quit     - Exit the agent');
-      console.log(t().textDim('\nInput prefixes:'));
-      console.log(t().textDim('  !<cmd>          - Execute a bash command'));
-      console.log(t().textDim('  @<path>         - Inline file/directory content into prompt'));
-      console.log(t().textDim('                   (also: @"path with spaces", @file.ts#L10-20)'));
-      console.log(t().textDim('\nShortcuts:'));
-      console.log(t().textDim(' ↑/PageUp         - Browse older messages in session history'));
-      console.log(t().textDim(' ↓/PageDown       - Browse newer messages (or back to draft)'));
-      console.log(t().textDim('  Ctrl+O          - Toggle detail mode (compact / full)'));
-      console.log(t().textDim('  Ctrl+T          - Toggle thinking visibility'));
-      console.log(t().textDim('  Ctrl+E          - View turn/metrics status'));
-      console.log(t().textDim('\nInput:'));
-      console.log(t().textDim('  Enter           - Submit prompt (ignored if empty)'));
-      console.log(t().textDim('  Ctrl+Enter      - Newline(Major), Alternative: Ctrl+J | \\ + Enter'));
-      console.log(t().textDim('  Paste           - Auto-detected, Enter inserts newline'));
+      console.log(t().heading(i18nTr('h_terminal')));
+      console.log(`  /flush           - ${i18nTr('h_flush')}`);
+      console.log(`  /exit, /quit     - ${i18nTr('h_exit')}`);
+      console.log(t().textDim(`\n${i18nTr('h_prefixes')}:`));
+      console.log(t().textDim(`  !<cmd>          - ${i18nTr('h_bash')}`));
+      console.log(t().textDim(`  @<path>         - ${i18nTr('h_file')}`));
+      console.log(t().textDim(`                   ${i18nTr('h_file_detail')}`));
+      console.log(t().textDim(`\n${i18nTr('h_shortcuts')}:`));
+      console.log(t().textDim(` ↑/PageUp         - ${i18nTr('h_hist_up')}`));
+      console.log(t().textDim(` ↓/PageDown       - ${i18nTr('h_hist_down')}`));
+      console.log(t().textDim(`  Ctrl+O          - ${i18nTr('h_detail')}`));
+      console.log(t().textDim(`  Ctrl+T          - ${i18nTr('h_thinking')}`));
+      console.log(t().textDim(`  Ctrl+E          - ${i18nTr('h_metrics')}`));
+      console.log(t().textDim(`\n${i18nTr('h_input')}:`));
+      console.log(t().textDim(`  Enter           - ${i18nTr('h_submit')}`));
+      console.log(t().textDim(`  Ctrl+Enter      - ${i18nTr('h_newline')}`));
+      console.log(t().textDim(`  Paste           - ${i18nTr('h_paste')}`));
       return false;
 
     case 'session': {
@@ -1146,16 +1147,7 @@ async function handleSlashCommand(
       try {
         const result = await agent.provider.complete([{
           role: 'user',
-          content: `以下是用户所有会话的记忆摘要，每个会话的格式为：
-- 用户提问 → 助手回答/操作
-
-请分析：
-1. 用户提过哪些主要需求/请求？
-2. 哪些主题是高频关注的？
-3. 用户的深层目标是什么？
-
-记忆摘要：
-${aggregated}`,
+          content: i18nTf('session_analysis')(aggregated),
         }]);
         console.log(t().heading(`\nCross-Session Analysis:\n`));
         console.log(result);

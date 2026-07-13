@@ -3,45 +3,44 @@ import { ToolDefinition, ToolResult } from '../types.js';
 import { TaskNode, TaskGraph } from './types.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { SubAgentWorker } from './sub-agent-worker.js';
-
-const TASK_TOOL_DEFINITIONS: ToolDefinition[] = [
-  {
-    name: 'decompose_task',
-    description: '将复杂请求拆解为有依赖关系的子任务列表，返回 TaskGraph（不执行）',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        request: { type: 'string', description: '需要拆解的原始请求' },
-      },
-      required: ['request'],
-    },
-  },
-  {
-    name: 'spawn_subagent',
-    description: '创建子 agent 执行单个任务并返回结果',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        task: { type: 'string', description: '子任务描述' },
-        agent_hint: { type: 'string', description: '可选的能力提示（如 code, search, test）' },
-      },
-      required: ['task'],
-    },
-  },
-  {
-    name: 'query_tasks',
-    description: '查询当前 TaskGraph 中所有子任务的执行进度',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        graph_id: { type: 'string', description: '可选，指定 TaskGraph ID，不传则查当前 session 的最新 graph' },
-      },
-    },
-  },
-];
+import { t, tf } from '../i18n/index.js';
 
 export function getTaskToolDefinitions(): ToolDefinition[] {
-  return TASK_TOOL_DEFINITIONS;
+  return [
+    {
+      name: 'decompose_task',
+      description: t('plan_tool_desc'),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          request: { type: 'string', description: t('plan_request_desc') },
+        },
+        required: ['request'],
+      },
+    },
+    {
+      name: 'spawn_subagent',
+      description: t('exec_tool_desc'),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: t('exec_task_desc') },
+          agent_hint: { type: 'string', description: t('exec_hint_desc') },
+        },
+        required: ['task'],
+      },
+    },
+    {
+      name: 'query_tasks',
+      description: t('status_tool_desc'),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          graph_id: { type: 'string', description: t('status_graph_desc') },
+        },
+      },
+    },
+  ];
 }
 
 export async function executeTaskTool(
@@ -77,9 +76,9 @@ async function handleDecompose(
   try {
     const response = await ctx.agent.provider.complete([{
       role: 'user',
-      content: `将以下请求拆解为子任务列表，并给出一个简短的英文项目名（project_name，用作目录名，如 snake-game、blog-api）。
+      content: `Decompose the following request into a list of sub-tasks, and provide a short English project name (project_name, used as directory name, e.g. snake-game, blog-api).
 
-输出格式（严格 JSON，不要多余文本）：
+Output format (strict JSON, no extra text):
 {
   "project_name": "...",
   "tasks": [
@@ -88,14 +87,14 @@ async function handleDecompose(
   ]
 }
 
-要求：
-- project_name: 根据请求内容生成的简短英文目录名（仅含小写字母、数字、连字符）
-- 每个任务有 id（如 "t1","t2"）、description（任务描述）、dependencies（依赖的其他任务id列表）
-- dependencies 形成有向无环图（DAG），无依赖的任务用空数组
-- 每个任务应当足够小以便独立执行（约 5-15 分钟工作量）
-- 不要遗漏关键步骤，不要重复
+Requirements:
+- project_name: short English directory name generated from the request (lowercase letters, digits, hyphens only)
+- Each task has id (e.g. "t1","t2"), description, and dependencies (list of other task ids it depends on)
+- dependencies must form a Directed Acyclic Graph (DAG); tasks with no dependencies use empty array
+- Each task should be small enough to execute independently (~5-15 minutes work)
+- Do not miss critical steps, do not repeat
 
-请求: ${request}`,
+Request: ${request}`,
     }]);
 
     const jsonMatch = response.match(/\{[\s\S]*\}/);

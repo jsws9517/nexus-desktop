@@ -1,12 +1,15 @@
 import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve, join, extname } from 'path';
 import { ContextManager } from '../llm/context-manager.js';
+import { t, tf } from '../i18n/index.js';
 
 interface ProjectContextConfig {
   systemPrompt: string;
   rules: Array<{ name: string; content: string }>;
   knowledge: Array<{ key: string; value: string }>;
 }
+
+const PROJECT_CONTEXT_LABEL = '[Project context]';
 
 const PROJECT_MD_CANDIDATES = [
   '.nexus/PROJECT.md',
@@ -43,12 +46,12 @@ export class ProjectContext {
 
     if (this.config.rules.length > 0) {
       const rulesText = this.config.rules.map((r) => `## ${r.name}\n${r.content}`).join('\n\n');
-      parts.push(`[项目规则]:\n${rulesText}`);
+      parts.push(tf('project_rules')(rulesText));
     }
 
     if (this.config.knowledge.length > 0) {
       const knowledgeText = this.config.knowledge.map((k) => `- ${k.key}: ${k.value}`).join('\n');
-      parts.push(`[项目知识]:\n${knowledgeText}`);
+      parts.push(tf('project_knowledge')(knowledgeText));
     }
 
     if (parts.length === 0) return;
@@ -59,10 +62,10 @@ export class ProjectContext {
     const sysIdx = msgs.findIndex((m) => m.role === 'system');
     if (sysIdx >= 0) {
       const sys = msgs[sysIdx];
-      if (!sys.content.includes('[项目上下文]')) {
+      if (!sys.content.includes(PROJECT_CONTEXT_LABEL)) {
         sys.content = sys.content.replace(
-          /(你是一个智能助手)/,
-          `$1\n\n[项目上下文]:\n${contextBlock}`,
+          /(You are an intelligent assistant|你是一个智能助手)/,
+          `$1\n\n${PROJECT_CONTEXT_LABEL}:\n${contextBlock}`,
         );
       }
     }

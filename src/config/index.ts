@@ -77,6 +77,15 @@ export class ConfigManager {
     return this.config;
   }
 
+  getLanguage(): string {
+    return this.config.language || 'en';
+  }
+
+  setLanguage(lang: string): void {
+    this.config.language = lang as 'en' | 'zh-CN';
+    this.save();
+  }
+
   getActiveProvider(): string {
     return this.config.activeProvider;
   }

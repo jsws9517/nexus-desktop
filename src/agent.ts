@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { resolve, join } from 'path';
+import { t, tf } from './i18n/index.js';
 import { homedir } from 'os';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
 import { ConfigManager } from './config/index.js';
@@ -307,19 +308,12 @@ export class Agent {
     // Add system prompt to encourage tool use
     const hasSystem = this.context.getMessages().some((m) => m.role === 'system');
     if (!hasSystem) {
-      let systemPrompt = `你是一个智能助手，可以根据用户请求调用工具完成任务。
-当前可用的工具包括本地工具和由 ACP 智能体提供的远程工具。
-当用户明确要求调用某个工具时（如 text2image-free-CogView、text2image-trial-aliyun 等），请严格按照要求调用相应的工具，不要自行决定使用其他工具代替。
-如果某个工具调用失败，请报告具体的错误信息。
- 用户信息会在获得许可后通过 remember 工具保存到知识图谱（存储于 ~/.nexus 目录）。
- 会话中用户通过 ! 命令执行的 bash 输出结果（如系统配置、硬件信息等）也包含在对话上下文中，若其中有可用于个性化服务的用户信息（如电脑配置、工作环境等），请主动调用 remember 将其持久化到知识图谱。
- 使用 recall 工具可以获取之前记住的用户信息（如姓名、昵称、爱好、电脑配置等），当用户询问个人信息时请先调用 recall。
- 使用 remember_project 工具可以保存项目相关的信息（如架构决策、编码约定等），这些信息会保存在当前项目的 .nexus/knowledge/ 目录中。`;
+      let systemPrompt = t('systemPrompt');
 
       if (this.isAcpServer) {
         const acpTools = this.getAcpTools();
         if (acpTools.length > 0) {
-          systemPrompt += `\n\n可用的远程 ACP 工具: ${acpTools.map(t => t.name).join(', ')}`;
+          systemPrompt += tf('acpToolsAvailable')(acpTools.map(t => t.name).join(', '));
         }
       }
 
@@ -476,11 +470,12 @@ export class Agent {
     const sysIdx = msgs.findIndex((m) => m.role === 'system');
     if (sysIdx >= 0) {
       const sys = msgs[sysIdx]!;
-      if (!sys.content.includes('[会话记忆]')) {
-        sys.content += `\n\n[会话记忆]:\n${memory}`;
+      const memTag = t('memory_section');
+      if (!sys.content.includes(memTag)) {
+        sys.content += tf('session_memory')(memory);
       }
     } else {
-      this.context.add({ role: 'system', content: `[会话记忆]:\n${memory}` });
+      this.context.add({ role: 'system', content: tf('session_memory')(memory) });
     }
   }
 
@@ -771,7 +766,7 @@ export class Agent {
         for (const t of agent.tools) {
           tools.push({
             name: t.name,
-            description: `${t.description} (由 ${agent.name} agent 提供)`,
+            description: `${t.description}${tf('acp_tool_suffix')(agent.name)}`,
             inputSchema: (t.inputSchema || { type: 'object', properties: {} }) as Record<string, unknown>,
           });
         }
@@ -931,10 +926,10 @@ export class Agent {
       const summary = await this.summarizeMessages(toSummarize);
       const memoryContent = this.sessionMemory.load(sessionId);
       const memoryNote = memoryContent
-        ? `\n\n[会话记忆]:\n${memoryContent}`
+        ? tf('session_memory')(memoryContent)
         : '';
       this.context.setMessages([
-        { role: 'system', content: `[已恢复会话「${loaded.session.name}」— 原始 ${tokenCount} tokens，已压缩为摘要，保留了最近 ${keepCount} 条消息]\n\n${summary}${memoryNote}` },
+        { role: 'system', content: tf('session_restore')(loaded.session.name, tokenCount, keepCount, summary, memoryNote) },
         ...toKeep,
       ]);
       this.currentSessionId = sessionId;
@@ -971,7 +966,7 @@ export class Agent {
 
     return await this.provider.complete([{
       role: 'user',
-      content: `请将以下对话历史压缩为详细的上下文摘要，保留关键信息、所有已生成的内容（如小说章节正文、代码等）、用户的要求、以及已做出的决策和结论。\n\n${lines.join('\n')}`,
+      content: tf('compression_prompt')(lines.join('\n')),
     }]);
   }
 
@@ -1030,7 +1025,7 @@ export class Agent {
     const msgs = this.context.getMessages();
     const sysMsg = msgs.find(m => m.role === 'system');
     if (sysMsg) {
-      const section = `[知识图谱中已有的用户信息]:`;
+      const section = t('remembered_info');
       const existingIdx = sysMsg.content.indexOf(section);
       if (existingIdx >= 0) {
         sysMsg.content = sysMsg.content.substring(0, existingIdx);
@@ -1109,7 +1104,7 @@ export class Agent {
         if (!result.isError && result.content) {
           const content = result.content.trim();
           if (content && content !== '[]' && content !== '{}') {
-            return { content: `[知识图谱]\n${content}`, isError: false };
+            return { content: tf('knowledge_graph')(content), isError: false };
           }
         }
       }
@@ -1119,13 +1114,13 @@ export class Agent {
       if (!semantic.isError && semantic.content) {
         const sContent = semantic.content.trim();
         if (sContent && sContent !== '[]' && sContent !== '{}') {
-          return { content: `[知识图谱]\n${sContent}`, isError: false };
+          return { content: tf('knowledge_graph')(sContent), isError: false };
         }
       }
 
       // 3rd priority: fall back to .remember session files
       const rememberContent = this.readRememberFiles();
-      if (rememberContent) return { content: `[.remember 会话记忆]\n${rememberContent}`, isError: false };
+      if (rememberContent) return { content: tf('remember_session')(rememberContent), isError: false };
 
       return { content: 'No previous remembered data found.', isError: false };
     } catch {
@@ -1144,7 +1139,7 @@ export class Agent {
       const nowPath = join(rememberDir, 'now.md');
       if (existsSync(nowPath)) {
         const content = readFileSync(nowPath, 'utf-8').trim();
-        if (content) parts.push(`[近期记忆]\n${content}`);
+        if (content) parts.push(tf('recent_memory')(content));
       }
 
       // Read today-*.md files (newest first)
@@ -1162,13 +1157,13 @@ export class Agent {
       const recentPath = join(rememberDir, 'recent.md');
       if (existsSync(recentPath)) {
         const content = readFileSync(recentPath, 'utf-8').trim();
-        if (content) parts.push(`[近期归档]\n${content}`);
+        if (content) parts.push(tf('recent_archive')(content));
       }
 
       const rememberPath = join(rememberDir, 'remember.md');
       if (existsSync(rememberPath)) {
         const content = readFileSync(rememberPath, 'utf-8').trim();
-        if (content) parts.push(`[持久记忆]\n${content}`);
+        if (content) parts.push(tf('persistent_memory')(content));
       }
 
       return parts.join('\n\n');
@@ -1273,15 +1268,7 @@ export class Agent {
     this.planMode = true;
     const response = await this.provider.complete([{
       role: 'user',
-      content: `你是一个架构师。请对以下需求进行分析，输出详细的实现计划。
-
-要求：
-1. 分析需求的关键点
-2. 列出实现步骤（按依赖关系排序）
-3. 每个步骤标注需要使用的技术/工具
-4. 不可执行任何代码修改操作，只输出计划
-
-需求: ${request}`,
+      content: tf('plan_prompt')(request),
     }]);
     return response;
   }

@@ -4,6 +4,7 @@ import { ConfigManager } from '../config/index.js';
 import { NativeManager, SearchResult } from '../config/native.js';
 import { importFromClaude } from '../config/claude-import.js';
 import { ThemeManager } from '../theme/manager.js';
+import { setCurrentLang } from '../i18n/index.js';
 
 const _theme = new ThemeManager();
 const t = _theme.token;
@@ -126,6 +127,34 @@ export function registerConfigCommand(program: Command): void {
       const config = new ConfigManager();
       config.setPromptName(name);
       console.log(t.success(`Chat prompt name set to: ${name}`));
+    });
+
+  const langCmd = configCmd.command('language').description('Language settings (en / zh-CN)');
+
+  langCmd
+    .command('list')
+    .description('List available languages and current setting')
+    .action(() => {
+      const config = new ConfigManager();
+      const current = config.getLanguage();
+      console.log(`\nConfigured language: ${t.entityName(current)}`);
+      console.log(t.heading('Available languages:'));
+      console.log('  en     - English');
+      console.log('  zh-CN  - 简体中文');
+    });
+
+  langCmd
+    .command('set <lang>')
+    .description('Set language (en | zh-CN)')
+    .action((lang: string) => {
+      if (lang !== 'en' && lang !== 'zh-CN') {
+        console.log(t.error(`Invalid language: ${lang}. Available: en, zh-CN`));
+        return;
+      }
+      const config = new ConfigManager();
+      config.setLanguage(lang);
+      setCurrentLang(lang);
+      console.log(t.success(`Language set to: ${lang}`));
     });
 
   const mcpCmd = configCmd.command('mcp').description('MCP server management');

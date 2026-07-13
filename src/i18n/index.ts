@@ -1,0 +1,295 @@
+import { ConfigManager } from '../config/index.js';
+
+export type Lang = 'en' | 'zh-CN';
+
+const ALLOWED_LANGS: Lang[] = ['en', 'zh-CN'];
+const LANG_KEY = 'language';
+
+let _currentLang: Lang = getConfigLang();
+
+function getConfigLang(): Lang {
+  try {
+    const cfg = new ConfigManager().get() as Record<string, unknown>;
+    if (ALLOWED_LANGS.includes(cfg[LANG_KEY] as Lang)) return cfg[LANG_KEY] as Lang;
+  } catch { /* ignore */ }
+  return 'en';
+}
+
+export function getCurrentLang(): Lang {
+  return _currentLang;
+}
+
+export function setCurrentLang(lang: Lang): void {
+  _currentLang = lang;
+}
+
+export function refreshLang(): void {
+  _currentLang = getConfigLang();
+}
+
+const L = {
+  en: {
+    /* ── Agent system prompt ── */
+    systemPrompt:
+      'You are an intelligent assistant that can call tools to complete tasks based on user requests.\n' +
+      'Available tools include local tools and remote tools provided by ACP agents.\n' +
+      'When the user explicitly requests a specific tool (e.g. text2image-free-CogView), call that tool exactly — do not substitute another.\n' +
+      'If a tool call fails, report the specific error.\n' +
+      'User information is saved to the knowledge graph (~/.nexus) via the remember tool after user approval.\n' +
+      'Bash command output (system config, hardware info, etc.) from `!` commands is available in context; if it contains personal information useful for personalization, proactively call remember to persist it to the knowledge graph.\n' +
+      'Use the recall tool to retrieve previously remembered user info (name, nickname, preferences, computer config, etc.). Call recall first when the user asks about personal information.\n' +
+      'Use the remember_project tool to save project-related info (architecture decisions, coding conventions, etc.) to .nexus/knowledge/ in the current project directory.',
+    acpToolsAvailable: (names: string) => `\n\nAvailable remote ACP tools: ${names}`,
+
+    /* ── Labels / Section headers ── */
+    memory_section: '[Memory]:',
+    session_memory: (t: string) => `\n\n[Session memory]:\n${t}`,
+    remembered_info: '[User info from knowledge graph]:',
+    knowledge_graph: (t: string) => `[Knowledge graph]\n${t}`,
+    remember_session: (t: string) => `[.remember session memory]\n${t}`,
+    recent_memory: (t: string) => `[Recent memory]\n${t}`,
+    recent_archive: (t: string) => `[Recent archive]\n${t}`,
+    persistent_memory: (t: string) => `[Persistent memory]\n${t}`,
+
+    /* ── Session ── */
+    session_restore: (n: string, tokens: number, keep: number, sum: string, note: string) =>
+      `[Resumed session "${n}" — original ${tokens} tokens, compressed to summary, kept last ${keep} messages]\n\n${sum}${note}`,
+    compression_prompt: (lines: string) =>
+      `Compress the following conversation history into a detailed context summary. Keep key information, all generated content (e.g. novel chapters, code), user requirements, decisions made, and conclusions.\n\n${lines}`,
+
+    /* ── Tasks ── */
+    plan_prompt: (req: string) =>
+      `You are an architect. Analyze the following requirements and output a detailed implementation plan.\n\nRequirements:\n1. Analyze key points of the requirements\n2. List implementation steps (sorted by dependency)\n3. Each step should note the technology/tools to use\n4. Do NOT execute any code modifications, only output the plan\n\nRequest: ${req}`,
+
+    /* ── Tool descriptions ── */
+    plan_tool_desc: 'Decompose a complex request into a dependency-ordered task list. Returns a TaskGraph (does not execute).',
+    plan_request_desc: 'The original request to decompose',
+    exec_tool_desc: 'Create a sub-agent to execute a single task and return the result',
+    exec_task_desc: 'Task description',
+    exec_hint_desc: 'Optional capability hint (e.g. code, search, test)',
+    status_tool_desc: 'Query the execution progress of all tasks in the current TaskGraph',
+    status_graph_desc: 'Optional TaskGraph ID; defaults to the latest graph in the current session',
+    remember_tool_desc: 'Save user information to the knowledge graph for future reference across sessions. Call this whenever the user shares personal preferences, facts, or anything they want remembered. Pass the content to save — summarize the key info from the conversation (e.g. "CPU: Intel i5-1240P, RAM: 40GB").',
+    remember_content_desc: 'The content to save to the knowledge graph',
+    recall_tool_desc: 'MUST CALL FIRST when the user asks about their personal information, identity, name, preferences, computer config, or anything that may have been saved in the knowledge graph from previous sessions. Retrieves all previously remembered user data. No arguments needed.',
+    remember_project_desc: 'Save project-related information (architecture decisions, coding conventions, etc.) to .nexus/knowledge/ in the current project directory.',
+
+    /* ── Bash ── */
+    bash_injection: (cmd: string, out: string) => `The user executed the command \`${cmd}\`, output:\n\`\`\`\n${out}\n\`\`\``,
+    bash_section: (t: string) => `[Bash command output]\n${t}`,
+
+    /* ── Session analysis ── */
+    session_analysis: (agg: string) =>
+      `Below are memory summaries of all user sessions, each in the format:\n- User request → Assistant response/action\n\nAnalyze:\n1. What main requests/requirements has the user made?\n2. Which topics are frequently discussed?\n3. What are the user's deeper goals?\n\nMemory summaries:\n${agg}`,
+
+    /* ── Project context ── */
+    project_rules: (t: string) => `[Project rules]:\n${t}`,
+    project_knowledge: (t: string) => `[Project knowledge]:\n${t}`,
+
+    /* ── Sanity check ── */
+    sanity_check: (tool: string) =>
+      `The current query requires real-time data, but the tool "${tool}" can only search local data.`,
+
+    /* ── ACP ── */
+    acp_tool_suffix: (name: string) => ` (provided by ${name} agent)`,
+
+    /* ── Welcome screen ── */
+    welcome_back: 'Welcome back!',
+    tips_title: 'Tips for getting started',
+    whatsnew_title: "What's new",
+    session_label: (id: string) => `Session ${id}`,
+    type_help: 'Type /help for commands, /exit to quit',
+    shortcuts_line: 'PageUp/PageDown: history  ·  Ctrl+O: detail mode',
+    tip_init: 'Run /init to set up providers and MCP',
+    tip_help: 'Use /help to see all available commands',
+    tip_tools: 'Press /tools to list MCP tools & skills',
+    tip_run: 'Try `nexus run "task"` for one-shot mode',
+    wn_history: 'PageUp/PageDown: browse prompt history',
+    wn_detail: 'Ctrl+O: toggle compact / full reasoning',
+    wn_import: 'Auto-import Claude Code MCP and skills',
+    wn_persist: 'Persistent sessions, cross-process safe',
+
+    /* ── Help ── */
+    h_session: 'Session:',
+    h_session_info: 'Show current session info',
+    h_resume: 'Resume a session (-id <n> | -name <str> | -ssid <uuid>)',
+    h_delete: 'Delete sessions (-ids <n,n> | -filter <str> | -size <N> | -days <N>)',
+    h_view: 'Browse raw messages for a session',
+    h_memory: 'Show persistent memory for this session',
+    h_insight: 'Cross-session memory analysis',
+    h_rename: 'Rename the current session',
+    h_model: 'Model & Provider:',
+    h_model_switch: 'Show or switch the LLM model',
+    h_provider: 'Show or switch the LLM provider',
+    h_compact: 'Compress current session context',
+    h_new: 'Compress history and start a fresh session',
+    h_clear: 'Clear current context (starts fresh)',
+    h_task: 'Task Planning:',
+    h_plan: 'Decompose request into tasks',
+    h_go: 'Execute the current plan',
+    h_tasks: 'Show task graph (or details for a specific step)',
+    h_tools: 'Tools & Skills:',
+    h_tools_list: 'List all callable tools (builtin + MCP + skills/plugins)',
+    h_mcp: 'List MCP server connections',
+    h_skills: 'List loaded skills',
+    h_plugins: 'List loaded plugins',
+    h_btw: 'Inject context (added before next LLM turn)',
+    h_theme: 'Show or switch color theme',
+    h_terminal: 'Terminal:',
+    h_flush: 'Clear the screen',
+    h_exit: 'Exit the agent',
+    h_prefixes: 'Input prefixes:',
+    h_bash: 'Execute a bash command',
+    h_file: 'Inline file/directory content into prompt',
+    h_file_detail: '(also: @"path with spaces", @file.ts#L10-20)',
+    h_shortcuts: 'Shortcuts:',
+    h_hist_up: 'Browse older messages in session history',
+    h_hist_down: 'Browse newer messages (or back to draft)',
+    h_detail: 'Toggle detail mode (compact / full)',
+    h_thinking: 'Toggle thinking visibility',
+    h_metrics: 'View turn/metrics status',
+    h_input: 'Input:',
+    h_submit: 'Submit prompt (ignored if empty)',
+    h_newline: 'Newline (Major), Alternative: Ctrl+J | \\ + Enter',
+    h_paste: 'Auto-detected, Enter inserts newline',
+
+    /* ── Config ── */
+    config_lang_list: (cur: string, langs: string) => `Configured language: ${cur}\nAvailable languages:\n${langs}`,
+    config_lang_set: (lang: string) => `Language set to: ${lang}`,
+    config_lang_invalid: (lang: string) => `Invalid language: ${lang}. Available: en, zh-CN`,
+    config_lang_usage: 'Usage: nexus config language set <en|zh-CN>',
+  },
+
+  'zh-CN': {
+    systemPrompt:
+      '你是一个智能助手，可以根据用户请求调用工具完成任务。\n' +
+      '当前可用的工具包括本地工具和由 ACP 智能体提供的远程工具。\n' +
+      '当用户明确要求调用某个工具时（如 text2image-free-CogView），请严格按照要求调用相应的工具，不要自行决定使用其他工具代替。\n' +
+      '如果某个工具调用失败，请报告具体的错误信息。\n' +
+      '用户信息会在获得许可后通过 remember 工具保存到知识图谱（存储于 ~/.nexus 目录）。\n' +
+      '会话中用户通过 ! 命令执行的 bash 输出结果（如系统配置、硬件信息等）也包含在对话上下文中，若其中有可用于个性化服务的用户信息（如电脑配置、工作环境等），请主动调用 remember 将其持久化到知识图谱。\n' +
+      '使用 recall 工具可以获取之前记住的用户信息（如姓名、昵称、爱好、电脑配置等），当用户询问个人信息时请先调用 recall。\n' +
+      '使用 remember_project 工具可以保存项目相关的信息（如架构决策、编码约定等），这些信息会保存在当前项目的 .nexus/knowledge/ 目录中。',
+    acpToolsAvailable: (names: string) => `\n\n可用的远程 ACP 工具: ${names}`,
+
+    memory_section: '[会话记忆]:',
+    session_memory: (t: string) => `\n\n[会话记忆]:\n${t}`,
+    remembered_info: '[知识图谱中已有的用户信息]:',
+    knowledge_graph: (t: string) => `[知识图谱]\n${t}`,
+    remember_session: (t: string) => `[.remember 会话记忆]\n${t}`,
+    recent_memory: (t: string) => `[近期记忆]\n${t}`,
+    recent_archive: (t: string) => `[近期归档]\n${t}`,
+    persistent_memory: (t: string) => `[持久记忆]\n${t}`,
+
+    session_restore: (n: string, tokens: number, keep: number, sum: string, note: string) =>
+      `[已恢复会话「${n}」— 原始 ${tokens} tokens，已压缩为摘要，保留了最近 ${keep} 条消息]\n\n${sum}${note}`,
+    compression_prompt: (lines: string) =>
+      `请将以下对话历史压缩为详细的上下文摘要，保留关键信息、所有已生成的内容（如小说章节正文、代码等）、用户的要求、以及已做出的决策和结论。\n\n${lines}`,
+
+    plan_prompt: (req: string) =>
+      `你是一个架构师。请对以下需求进行分析，输出详细的实现计划。\n\n要求：\n1. 分析需求的关键点\n2. 列出实现步骤（按依赖关系排序）\n3. 每个步骤标注需要使用的技术/工具\n4. 不可执行任何代码修改操作，只输出计划\n\n需求: ${req}`,
+
+    plan_tool_desc: '将复杂请求拆解为有依赖关系的子任务列表，返回 TaskGraph（不执行）',
+    plan_request_desc: '需要拆解的原始请求',
+    exec_tool_desc: '创建子 agent 执行单个任务并返回结果',
+    exec_task_desc: '子任务描述',
+    exec_hint_desc: '可选的能力提示（如 code, search, test）',
+    status_tool_desc: '查询当前 TaskGraph 中所有子任务的执行进度',
+    status_graph_desc: '可选，指定 TaskGraph ID，不传则查当前 session 的最新 graph',
+    remember_tool_desc: '将用户信息保存到知识图谱，供以后跨会话参考。当用户分享个人偏好、事实或任何希望被记住的内容时调用此工具。传入要保存的内容——从对话中总结关键信息（例如"CPU: Intel i5-1240P, RAM: 40GB"）。',
+    remember_content_desc: '要保存到知识图谱的内容',
+    recall_tool_desc: '当用户询问他们的个人信息、身份、姓名、偏好、电脑配置或任何可能已在之前会话中保存到知识图谱的内容时，必须先调用此工具。获取所有之前记住的用户数据。不需要参数。',
+    remember_project_desc: '保存项目相关信息（架构决策、编码约定等）到当前项目目录下的 .nexus/knowledge/',
+
+    bash_injection: (cmd: string, out: string) =>
+      `用户执行了命令 \`${cmd}\`，输出结果：\n\`\`\`\n${out}\n\`\`\``,
+    bash_section: (t: string) => `[bash 命令执行结果]\n${t}`,
+
+    session_analysis: (agg: string) =>
+      `以下是用户所有会话的记忆摘要，每个会话的格式为：\n- 用户提问 → 助手回答/操作\n\n请分析：\n1. 用户提过哪些主要需求/请求？\n2. 哪些主题是高频关注的？\n3. 用户的深层目标是什么？\n\n记忆摘要：\n${agg}`,
+
+    project_rules: (t: string) => `[项目规则]:\n${t}`,
+    project_knowledge: (t: string) => `[项目知识]:\n${t}`,
+
+    sanity_check: (tool: string) =>
+      `当前查询需要实时数据，但工具"${tool}"只能搜索本地数据。`,
+
+    acp_tool_suffix: (name: string) => ` (由 ${name} agent 提供)`,
+
+    welcome_back: '欢迎回来！',
+    tips_title: '快速开始提示',
+    whatsnew_title: '最新功能',
+    session_label: (id: string) => `会话 ${id}`,
+    type_help: '输入 /help 查看命令，/exit 退出',
+    shortcuts_line: 'PageUp/PageDown: 历史  ·  Ctrl+O: 详情模式',
+    tip_init: '运行 /init 设置 provider 和 MCP',
+    tip_help: '使用 /help 查看所有可用命令',
+    tip_tools: '按 /tools 查看 MCP 工具和技能',
+    tip_run: '尝试 `nexus run "任务"` 单次运行模式',
+    wn_history: 'PageUp/PageDown: 浏览提示词历史',
+    wn_detail: 'Ctrl+O: 切换紧凑/完整推理模式',
+    wn_import: '自动导入 Claude Code MCP 和技能',
+    wn_persist: '持久会话，跨进程安全',
+
+    h_session: '会话管理:',
+    h_session_info: '显示当前会话信息',
+    h_resume: '恢复会话（-id <编号> | -name <名称> | -ssid <UUID>）',
+    h_delete: '删除会话（-ids <编号,编号> | -filter <筛选词> | -size <N> | -days <N>）',
+    h_view: '浏览会话的原始消息',
+    h_memory: '显示此会话的持久记忆',
+    h_insight: '跨会话记忆分析',
+    h_rename: '重命名当前会话',
+    h_model: '模型与 Provider:',
+    h_model_switch: '显示或切换 LLM 模型',
+    h_provider: '显示或切换 LLM provider',
+    h_compact: '压缩当前会话上下文',
+    h_new: '压缩历史并开始新会话',
+    h_clear: '清除当前上下文（重新开始）',
+    h_task: '任务规划:',
+    h_plan: '将请求拆解为任务列表',
+    h_go: '执行当前计划',
+    h_tasks: '显示任务图（或指定步骤详情）',
+    h_tools: '工具与技能:',
+    h_tools_list: '列出所有可调用工具（内建 + MCP + 技能/插件）',
+    h_mcp: '列出 MCP 服务器连接',
+    h_skills: '列出已加载的技能',
+    h_plugins: '列出已加载的插件',
+    h_btw: '注入上下文（在下次 LLM 调用前添加）',
+    h_theme: '显示或切换颜色主题',
+    h_terminal: '终端:',
+    h_flush: '清除屏幕',
+    h_exit: '退出 agent',
+    h_prefixes: '输入前缀:',
+    h_bash: '执行 bash 命令',
+    h_file: '将文件/目录内容嵌入提示词',
+    h_file_detail: '（也支持：@"带空格的路径", @file.ts#L10-20）',
+    h_shortcuts: '快捷键:',
+    h_hist_up: '浏览会话历史中更早的消息',
+    h_hist_down: '浏览更新的消息（或返回草稿）',
+    h_detail: '切换详情模式（紧凑/完整）',
+    h_thinking: '切换思考过程可见性',
+    h_metrics: '查看轮次/指标状态',
+    h_input: '输入:',
+    h_submit: '提交提示词（空内容忽略）',
+    h_newline: '换行（主要），备用：Ctrl+J | \\ + Enter',
+    h_paste: '自动检测，Enter 插入换行',
+
+    config_lang_list: (cur: string, langs: string) => `当前语言：${cur}\n可用语言：\n${langs}`,
+    config_lang_set: (lang: string) => `语言已设置为：${lang}`,
+    config_lang_invalid: (lang: string) => `无效语言：${lang}。可用选项：en, zh-CN`,
+    config_lang_usage: '用法：nexus config language set <en|zh-CN>',
+  },
+} satisfies Record<Lang, Record<string, string | ((...args: any[]) => string)>>;
+
+type LocaleKeys = keyof typeof L.en;
+
+/** Get a plain string from the current language locale */
+export function t(key: LocaleKeys): string {
+  const val = L[_currentLang][key];
+  return typeof val === 'function' ? '' : val;
+}
+
+/** Get a template function from the current language locale */
+export function tf<T extends (...args: any[]) => string>(key: LocaleKeys): T {
+  return L[_currentLang][key] as unknown as T;
+}
