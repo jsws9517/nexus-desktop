@@ -23,6 +23,15 @@ const DEFAULT_CONFIG: Config = {
       model: 'gpt-4o',
     },
   },
+  visionMode: 'local-first',
+  activeVisionProvider: 'glm-4v',
+  visionProviders: {
+    'glm-4v': {
+      apiKey: '',
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+      model: 'glm-4.6v-flash',
+    },
+  },
 };
 
 export class ConfigManager {
@@ -84,6 +93,58 @@ export class ConfigManager {
   setLanguage(lang: string): void {
     this.config.language = lang as 'en' | 'zh-CN';
     this.save();
+  }
+
+  getVisionMode(): string {
+    return this.config.visionMode || 'local-first';
+  }
+
+  setVisionMode(mode: string): void {
+    this.config.visionMode = mode as 'local-first' | 'cloud-first' | 'local-only' | 'cloud-only';
+    this.save();
+  }
+
+  getVisionProviders(): Record<string, { apiKey: string; baseUrl: string; model: string }> {
+    return (this.config.visionProviders || {}) as any;
+  }
+
+  getActiveVisionProvider(): string {
+    return this.config.activeVisionProvider || 'glm-4v';
+  }
+
+  setActiveVisionProvider(name: string): void {
+    this.config.activeVisionProvider = name;
+    this.save();
+  }
+
+  getVisionProvider(name?: string): { apiKey: string; baseUrl: string; model: string } {
+    const key = name || this.getActiveVisionProvider();
+    const providers = this.getVisionProviders();
+    const provider = providers[key];
+    if (!provider) {
+      throw new Error(`Vision provider "${key}" not found`);
+    }
+    const resolved = resolveApiKey(provider.apiKey, 'custom', key);
+    return { ...provider, apiKey: resolved.apiKey };
+  }
+
+  setVisionProvider(name: string, config: { apiKey: string; baseUrl: string; model: string }): void {
+    if (!this.config.visionProviders) {
+      this.config.visionProviders = {};
+    }
+    this.config.visionProviders[name] = { ...config, apiKey: atRestEncrypt(config.apiKey) };
+    this.save();
+  }
+
+  removeVisionProvider(name: string): void {
+    if (this.config.visionProviders) {
+      delete this.config.visionProviders[name];
+      if (this.config.activeVisionProvider === name) {
+        const remaining = Object.keys(this.config.visionProviders);
+        this.config.activeVisionProvider = remaining[0] || 'glm-4v';
+      }
+      this.save();
+    }
   }
 
   getActiveProvider(): string {

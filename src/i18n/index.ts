@@ -38,7 +38,9 @@ const L = {
       'User information is saved to the knowledge graph (~/.nexus) via the remember tool after user approval.\n' +
       'Bash command output (system config, hardware info, etc.) from `!` commands is available in context; if it contains personal information useful for personalization, proactively call remember to persist it to the knowledge graph.\n' +
       'Use the recall tool to retrieve previously remembered user info (name, nickname, preferences, computer config, etc.). Call recall first when the user asks about personal information.\n' +
-      'Use the remember_project tool to save project-related info (architecture decisions, coding conventions, etc.) to .nexus/knowledge/ in the current project directory.',
+      'Use the remember_project tool to save project-related info (architecture decisions, coding conventions, etc.) to .nexus/knowledge/ in the current project directory.\n' +
+      'Use the analyze_image tool when the user references or attaches an image file (.png, .jpg, etc.) — it sends the image to a vision-capable model and returns a text description.\n' +
+      'When the analyze_image tool returns a result, it includes the source of the analysis (e.g. "local (Florence-2-base)" or cloud provider name). Mention this source when describing the image to the user.',
     acpToolsAvailable: (names: string) => `\n\nAvailable remote ACP tools: ${names}`,
 
     /* ── Labels / Section headers ── */
@@ -169,7 +171,9 @@ const L = {
       '用户信息会在获得许可后通过 remember 工具保存到知识图谱（存储于 ~/.nexus 目录）。\n' +
       '会话中用户通过 ! 命令执行的 bash 输出结果（如系统配置、硬件信息等）也包含在对话上下文中，若其中有可用于个性化服务的用户信息（如电脑配置、工作环境等），请主动调用 remember 将其持久化到知识图谱。\n' +
       '使用 recall 工具可以获取之前记住的用户信息（如姓名、昵称、爱好、电脑配置等），当用户询问个人信息时请先调用 recall。\n' +
-      '使用 remember_project 工具可以保存项目相关的信息（如架构决策、编码约定等），这些信息会保存在当前项目的 .nexus/knowledge/ 目录中。',
+      '使用 remember_project 工具可以保存项目相关的信息（如架构决策、编码约定等），这些信息会保存在当前项目的 .nexus/knowledge/ 目录中。\n' +
+      '当用户引用或附加图片文件（.png、.jpg 等）时，使用 analyze_image 工具 — 它会将图片发送给视觉模型并返回文字描述。\n' +
+      'analyze_image 工具的结果中包含分析来源（如 "local (Florence-2-base)" 或云端提供商名称），在向用户描述图片时要明确指出这个来源。',
     acpToolsAvailable: (names: string) => `\n\n可用的远程 ACP 工具: ${names}`,
 
     memory_section: '[会话记忆]:',

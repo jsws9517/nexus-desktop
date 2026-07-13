@@ -36,6 +36,12 @@ export const AcpConfigSchema = z.object({
   skillsPath: z.string().optional(),
 });
 
+export const VisionProviderConfigSchema = z.object({
+  apiKey: z.string(),
+  baseUrl: z.string(),
+  model: z.string(),
+});
+
 export const ConfigSchema = z.object({
   activeProvider: z.string(),
   providers: z.record(ProviderConfigSchema),
@@ -45,6 +51,9 @@ export const ConfigSchema = z.object({
   modelContextLimits: z.record(z.number()).optional(),
   nativeInstalled: z.array(z.string()).optional(),
   language: z.enum(['en', 'zh-CN']).optional(),
+  activeVisionProvider: z.string().optional(),
+  visionProviders: z.record(VisionProviderConfigSchema).optional(),
+  visionMode: z.enum(['local-first', 'cloud-first', 'local-only', 'cloud-only']).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;

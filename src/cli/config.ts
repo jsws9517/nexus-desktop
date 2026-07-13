@@ -157,6 +157,142 @@ export function registerConfigCommand(program: Command): void {
       console.log(t.success(`Language set to: ${lang}`));
     });
 
+  const visionCmd = configCmd.command('vision').description('Vision provider settings for analyze_image tool');
+
+  visionCmd
+    .command('list')
+    .description('List configured vision providers (* = active)')
+    .action(() => {
+      const config = new ConfigManager();
+      const active = config.getActiveVisionProvider();
+      const providers = config.getVisionProviders();
+      console.log(t.heading('Vision Providers:'));
+      if (Object.keys(providers).length === 0) {
+        console.log(t.textDim('  No vision providers configured.'));
+        console.log(t.textDim('  Use "nexus config vision set <name> -k ... -u ... -m ..." to add one.'));
+        return;
+      }
+      for (const [name, p] of Object.entries(providers)) {
+        const marker = name === active ? t.success('*') : ' ';
+        const keyHint = p.apiKey
+          ? (p.apiKey.startsWith('$') || p.apiKey.startsWith('env:')
+            ? t.textDim('[env ref]')
+            : t.textDim('[key set]'))
+          : t.warning('[no key]');
+        console.log(`  ${marker} ${name}: ${p.model} ${keyHint}`);
+        console.log(`    ${t.textDim(p.baseUrl)}`);
+      }
+    });
+
+  visionCmd
+    .command('set <name>')
+    .description(`Configure a vision provider for the analyze_image tool.\n` +
+      `    -k <key>    API key (plaintext, or \\$ENV_VAR / env:ENV_VAR to read from environment)\n` +
+      `    -u <url>    Full API endpoint URL (e.g. https://open.bigmodel.cn/api/paas/v4/chat/completions)\n` +
+      `    -m <model>  Model name (e.g. glm-4.6v-flash)\n` +
+      `  The key is encrypted at rest.\n` +
+      `  \\$VAR / env:VAR stores the variable name and resolves at runtime.\n` +
+      `  PowerShell: use single quotes to prevent \\$var expansion:\n` +
+      `    nexus config vision set glm-4v -k '\\$ZHIPU_KEY' -u 'https://open.bigmodel.cn/api/paas/v4/chat/completions' -m glm-4.6v-flash\n` +
+      `  CMD: no quoting needed, but \\%VAR\\% expands immediately:\n` +
+      `    nexus config vision set glm-4v -k %ZHIPU_KEY% -u https://open.bigmodel.cn/api/paas/v4/chat/completions -m glm-4.6v-flash`)
+    .option('-k, --apiKey [key]', 'API key (plaintext, or $ENV_VAR / env:ENV_VAR; use quotes in PowerShell)')
+    .requiredOption('-u, --baseUrl <url>', 'Full API endpoint URL (e.g. .../chat/completions)')
+    .requiredOption('-m, --model <model>', 'Model name')
+    .action((name: string, options: { apiKey?: string | boolean; baseUrl: string; model: string }) => {
+      const missing: string[] = [];
+      const hints: string[] = [];
+
+      if (typeof options.apiKey !== 'string' || !options.apiKey) {
+        missing.push('--apiKey (-k)');
+        hints.push(
+          '  API key is missing or empty.\n' +
+          '  In PowerShell, use single quotes so $VAR is NOT expanded:\n' +
+          '    nexus config vision set <name> -k \'$ENV_VAR_NAME\' -u \'...\' -m \'...\'\n' +
+          '  Or use $env:VAR (expands to the actual value):\n' +
+          '    nexus config vision set <name> -k "$env:ENV_VAR_NAME" -u "..." -m "..."'
+        );
+      }
+      if (!options.baseUrl) {
+        missing.push('--baseUrl (-u)');
+        hints.push(
+          '  URL is missing. This can happen when PowerShell drops an empty\n' +
+          '  argument after $VAR expansion. Use single quotes around all args.'
+        );
+      }
+      if (!options.model) {
+        missing.push('--model (-m)');
+        hints.push('  Model name is missing.');
+      }
+
+      if (missing.length > 0) {
+        console.log(t.error(`Missing required options: ${missing.join(', ')}`));
+        for (const h of hints) console.log(t.textDim(h));
+        return;
+      }
+
+      const config = new ConfigManager();
+      config.setVisionProvider(name, { apiKey: options.apiKey as string, baseUrl: options.baseUrl, model: options.model });
+      config.setActiveVisionProvider(name);
+      console.log(t.success(`Vision provider "${name}" configured and set as active.`));
+    });
+
+  visionCmd
+    .command('switch <name>')
+    .description('Switch the active vision provider (used by analyze_image tool)')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      try {
+        config.setActiveVisionProvider(name);
+        console.log(t.success(`Active vision provider: ${name}`));
+      } catch (err) {
+        console.log(t.error(`Failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  visionCmd
+    .command('remove <name>')
+    .description('Remove a vision provider')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      const providers = config.getVisionProviders();
+      if (!providers[name]) {
+        console.log(t.error(`Vision provider "${name}" not found.`));
+        return;
+      }
+      config.removeVisionProvider(name);
+      console.log(t.success(`Removed vision provider: ${name}`));
+    });
+
+  const visionModeCmd = configCmd.command('vision-mode').description('Vision mode settings (local-first | cloud-first | local-only | cloud-only)');
+
+  visionModeCmd
+    .command('list')
+    .description('Show current vision mode and available options')
+    .action(() => {
+      const config = new ConfigManager();
+      const mode = config.getVisionMode();
+      console.log(t.heading(`\nCurrent vision mode: ${t.entityName(mode)}`));
+      console.log(t.textDim('  local-first   — Try local Florence-2 first, fall back to cloud'));
+      console.log(t.textDim('  cloud-first   — Try cloud provider first, fall back to local'));
+      console.log(t.textDim('  local-only    — Use local Florence-2 only (no cloud calls)'));
+      console.log(t.textDim('  cloud-only    — Use cloud provider only (no local calls)'));
+    });
+
+  visionModeCmd
+    .command('set <mode>')
+    .description('Set vision mode (local-first | cloud-first | local-only | cloud-only)')
+    .action((mode: string) => {
+      const valid = ['local-first', 'cloud-first', 'local-only', 'cloud-only'] as const;
+      if (!valid.includes(mode as typeof valid[number])) {
+        console.log(t.error(`Invalid mode: "${mode}". Available: ${valid.join(', ')}`));
+        return;
+      }
+      const config = new ConfigManager();
+      config.setVisionMode(mode);
+      console.log(t.success(`Vision mode set to: ${mode}`));
+    });
+
   const mcpCmd = configCmd.command('mcp').description('MCP server management');
 
   mcpCmd

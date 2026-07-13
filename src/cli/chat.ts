@@ -367,7 +367,13 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       const stored = agent.session.getMessages(sessionId);
       return stored
         .filter((m) => m.role === 'user')
-        .map((m) => m.content);
+        .map((m) => {
+          // Strip appended context from @-expansion (e.g. "\n\n[Referenced file: ...]" or "\n\n[Directory: ...]")
+          // so the readline shows only the user's original input line.
+          const idx = m.content.search(/\n\n\[(Referenced file|Directory|Access denied|File\/Directory not found)/);
+          const raw = idx === -1 ? m.content : m.content.slice(0, idx);
+          return raw.replace(/\n+$/, '');
+        });
     } catch (e) {
       debugLog(`store error: ${e instanceof Error ? e.message : String(e)}`);
       return [];
@@ -442,7 +448,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         if ((_s === 'y' || _s === 'a' || _s === 'n' || _s === 'Y' || _s === 'A' || _s === 'N') && !k.ctrl && !k.meta && !k.shift) {
           const answer = _s.toLowerCase();
           (rl as any).line = '';
-          _rawStdoutWrite(answer + '\n');
+          _rawStdoutWrite('\n');
           cleanup();
           resolve(answer);
         }

@@ -18,8 +18,23 @@ import { AuditManager } from './security/audit.js';
 import { resolveApiKey } from './security/env-key-encrypt.js';
 import { ThemeManager } from './theme/manager.js';
 import { ProgressTracker, TaskGraph, DAGScheduler, SubAgentWorker } from './task/index.js';
+import { preloadLocalVision } from './vision/local.js';
 import { getTaskToolDefinitions, executeTaskTool } from './task/task-tools.js';
 import { ProjectContext } from './context/index.js';
+import { analyzeImage, isImageFile } from './vision/index.js';
+
+/**
+ * Strip the @-expansion suffix appended by expandAtMentions() from user input.
+ * The suffix is of the form "\n\n[Referenced file: ...]" etc. and should NOT
+ * be stored in the session or restored into LLM context, because:
+ * 1) It causes the LLM to attempt redundant file-access tool calls on resume
+ * 2) It triggers duplicate authorization prompts
+ * 3) The original @path syntax in the user message is sufficient context.
+ */
+function stripExpansionSuffix(content: string): string {
+  const idx = content.search(/\n\n\[(Referenced file|Directory|Access denied|File\/Directory not found)/);
+  return idx === -1 ? content : content.slice(0, idx);
+}
 
 const REMEMBER_TOOL_DEF: ToolDefinition = {
   name: 'remember',
@@ -48,6 +63,19 @@ const REMEMBER_PROJECT_TOOL_DEF: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {},
+  },
+};
+
+const ANALYZE_IMAGE_TOOL_DEF: ToolDefinition = {
+  name: 'analyze_image',
+  description: 'Analyze an image file and return a text description of its contents. Call this when the user references or attaches an image (file paths ending in .png, .jpg, .jpeg, .gif, .webp, .bmp). The image is sent to a vision-capable AI model for analysis.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Path to the image file (relative to the working directory)' },
+      question: { type: 'string', description: 'Optional specific question about the image (e.g. "What text is in this screenshot?")' },
+    },
+    required: ['path'],
   },
 };
 
@@ -163,6 +191,9 @@ export class Agent {
   }
 
   async init(): Promise<void> {
+    // Preload local vision model (Florence-2) in background
+    preloadLocalVision();
+
     const cfg = this.config.get();
 
     // Determine ACP mode: CLI flag > config
@@ -241,7 +272,12 @@ export class Agent {
       const loaded = this.session.loadSession(sessionId);
       if (loaded) {
         this.currentSessionId = sessionId;
-        this.context.setMessages(loaded.messages);
+        // Strip expansion suffix from stored user messages so the LLM doesn't
+        // see stale [Referenced file: ...] markers and attempt redundant tool calls.
+        const cleanMessages = loaded.messages.map(m =>
+          m.role === 'user' ? { ...m, content: stripExpansionSuffix(m.content) } : m,
+        );
+        this.context.setMessages(cleanMessages);
         this.injectSessionMemory();
         return sessionId;
       }
@@ -335,7 +371,10 @@ export class Agent {
     this.currentUserInput = userInput;
     const userMessage: Message = { role: 'user', content: userInput };
     this.context.add(userMessage);
-    this.session.addMessage(this.currentSessionId!, userMessage);
+    // Store only the raw input (without expandAtMentions suffix) in the session
+    // so that on history recall / session resume the LLM doesn't see
+    // [Referenced file: ...] markers and attempt redundant file tool calls.
+    this.session.addMessage(this.currentSessionId!, { ...userMessage, content: stripExpansionSuffix(userInput) });
 
     // Set compression progress callback to emit thinking events
     this.context.onProgress = (msg) => this.onEvent?.({ type: 'thinking', thinking: msg });
@@ -495,6 +534,7 @@ export class Agent {
       REMEMBER_TOOL_DEF,
       RECALL_TOOL_DEF,
       REMEMBER_PROJECT_TOOL_DEF,
+      ANALYZE_IMAGE_TOOL_DEF,
       ...getTaskToolDefinitions(),
     ];
 
@@ -794,6 +834,10 @@ export class Agent {
       return this.handleRememberProject(safeArgs);
     }
 
+    if (call.name === 'analyze_image') {
+      return this.handleAnalyzeImage(safeArgs);
+    }
+
     // 1. Check local skills first
     const skillResult = await this.skills.callTool(call.name, safeArgs);
     if (skillResult) return skillResult;
@@ -920,8 +964,12 @@ export class Agent {
         break;
       }
 
-      const toSummarize = messages.slice(0, splitIdx);
-      const toKeep = messages.slice(splitIdx);
+      const toSummarize = messages.slice(0, splitIdx).map(m =>
+        m.role === 'user' ? { ...m, content: stripExpansionSuffix(m.content) } : m,
+      );
+      const toKeep = messages.slice(splitIdx).map(m =>
+        m.role === 'user' ? { ...m, content: stripExpansionSuffix(m.content) } : m,
+      );
 
       const summary = await this.summarizeMessages(toSummarize);
       const memoryContent = this.sessionMemory.load(sessionId);
@@ -937,7 +985,12 @@ export class Agent {
     }
 
     this.currentSessionId = sessionId;
-    this.context.setMessages(loaded.messages);
+    // Strip expansion suffix from stored user messages so the LLM doesn't
+    // see stale [Referenced file: ...] markers and attempt redundant tool calls.
+    const cleanMessages = loaded.messages.map(m =>
+      m.role === 'user' ? { ...m, content: stripExpansionSuffix(m.content) } : m,
+    );
+    this.context.setMessages(cleanMessages);
     this.injectSessionMemory();
     return { restored: true, compressed: false, sessionName: loaded.session.name };
   }
@@ -1185,6 +1238,24 @@ export class Agent {
       return { content: `Saved project memory: ${content.slice(0, 100)}${content.length > 100 ? '...' : ''}` };
     } catch (err) {
       return { content: `Failed to save project memory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+    }
+  }
+
+  private async handleAnalyzeImage(args: Record<string, unknown>): Promise<ToolResult> {
+    const imagePath = String(args.path || '').trim();
+    if (!imagePath) {
+      return { content: 'Error: image path is required', isError: true };
+    }
+    if (!isImageFile(imagePath)) {
+      return { content: `Error: "${imagePath}" is not a supported image file. Supported: .png, .jpg, .jpeg, .gif, .webp, .bmp`, isError: true };
+    }
+    const question = typeof args.question === 'string' ? args.question.trim() : undefined;
+    try {
+      const description = await analyzeImage(imagePath, question);
+      return { content: description, isError: false };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: `Image analysis failed: ${msg}`, isError: true };
     }
   }
 
