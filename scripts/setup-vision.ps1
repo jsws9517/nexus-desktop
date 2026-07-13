@@ -106,7 +106,7 @@ try {
 }
 
 Write-Host "[...] Downloading microsoft/Florence-2-base ..." -ForegroundColor Yellow
-& $venvPath\Scripts\huggingface-cli download microsoft/Florence-2-base --local-dir-use-symlinks False --resume-download
+& $venvPath\Scripts\hf download microsoft/Florence-2-base --local-dir-use-symlinks False --resume-download
 if (-not $?) { throw "Model download failed" }
 
 if ($Mirror) {
