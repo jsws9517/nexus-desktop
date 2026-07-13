@@ -26,6 +26,7 @@
   "files": [
     "dist/src/",
     "bin/",
+	"scripts",
     "package.json",
     "README.md"
   ],
