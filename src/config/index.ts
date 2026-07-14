@@ -70,7 +70,7 @@ export class ConfigManager {
     }
   }
 
-  private save(): void {
+  save(): void {
     mkdirSync(CONFIG_DIR, { recursive: true });
     const config = structuredClone(this.config);
     if (config.providers) {
@@ -199,9 +199,6 @@ export class ConfigManager {
 
   addMcpServer(name: string, server: NonNullable<Config['mcpServers']>[string]): void {
     this.config.mcpServers = this.config.mcpServers || {};
-    if ((this.config.mcpServers as Record<string, unknown>)[name]) {
-      return; // already registered
-    }
     (this.config.mcpServers as Record<string, unknown>)[name] = server;
     this.save();
   }

@@ -618,4 +618,18 @@ export function registerConfigCommand(program: Command): void {
         console.log(t.error(err instanceof Error ? err.message : String(err)));
       }
     });
+
+  // Web UI
+  configCmd
+    .command('web')
+    .description('Start the config management web UI')
+    .option('-p, --port <port>', 'Port number', '3457')
+    .action(async (options: { port: string }) => {
+      const port = parseInt(options.port, 10) || 3457;
+      console.log(t.textDim('Starting Config Web UI...'));
+      const { startWebUi } = await import('../config/web.js');
+      const server = await startWebUi(port);
+      // Keep running until Ctrl+C
+      await new Promise(() => {});
+    });
 }

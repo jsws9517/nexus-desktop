@@ -25,8 +25,31 @@ export interface WelcomeInfo {
 
 export type BorderMode = 'auto' | 'fill';
 
+function isCjk(char: string): boolean {
+  const code = char.codePointAt(0)!;
+  return (
+    (code >= 0x2e80 && code <= 0x2eff) || // CJK Radicals
+    (code >= 0x2f00 && code <= 0x2fdf) || // Kangxi Radicals
+    (code >= 0x3000 && code <= 0x303f) || // CJK Symbols & Punctuation
+    (code >= 0x3040 && code <= 0x309f) || // Hiragana
+    (code >= 0x30a0 && code <= 0x30ff) || // Katakana
+    (code >= 0x3100 && code <= 0x312f) || // Bopomofo
+    (code >= 0x3200 && code <= 0x32ff) || // Enclosed CJK
+    (code >= 0x3400 && code <= 0x4dbf) || // CJK Extension A
+    (code >= 0x4e00 && code <= 0x9fff) || // CJK Unified
+    (code >= 0xf900 && code <= 0xfaff) || // CJK Compatibility
+    (code >= 0xff01 && code <= 0xff60) || // Fullwidth Forms
+    (code >= 0x20000 && code <= 0x2a6df)   // CJK Extension B
+  );
+}
+
 function visibleLength(s: string): number {
-  return [...s.replace(/\x1B\[[0-9;]*m/g, '')].length;
+  const plain = s.replace(/\x1B\[[0-9;]*m/g, '');
+  let len = 0;
+  for (const char of plain) {
+    len += isCjk(char) ? 2 : 1;
+  }
+  return len;
 }
 
 function padRight(s: string, w: number): string {

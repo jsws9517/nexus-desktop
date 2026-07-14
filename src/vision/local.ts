@@ -56,11 +56,6 @@ function startProcess(): void {
     }
   });
 
-  proc.stderr!.on('data', (data: Buffer) => {
-    const text = data.toString().trim();
-    if (text) process.stderr.write(`[local-vision] ${text}\n`);
-  });
-
   proc.on('exit', (code) => {
     ready = false;
     modelLoading = false;
