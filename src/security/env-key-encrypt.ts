@@ -114,13 +114,23 @@ export function resolveApiKey(configKey: string | undefined, providerType: strin
 
   // 2) Dynamic env var lookup
   if (!configKey || configKey.startsWith('$') || configKey.startsWith('env:')) {
-    // 2a) API_key_<PROVIDER_NAME> (e.g. API_KEY_DEEPSEEK, API_KEY_ZHIPU)
+    // 2a) Provider-name-specific env vars (handles hyphens and aliases).
+    //     Examples: opencode-zen → OPENCODE_API_KEY / OPENCODE_ZEN_API_KEY
+    const nameEnvExtras: Record<string, string[]> = {
+      'opencode-zen': ['OPENCODE_API_KEY', 'OPENCODE_ZEN_API_KEY'],
+    };
+    if (providerName && nameEnvExtras[providerName]) {
+      const byNameExtra = tryEnvVar(...nameEnvExtras[providerName]!);
+      if (byNameExtra) return { apiKey: ephemeralEncrypt(byNameExtra), encrypted: true };
+    }
+
+    // 2b) API_key_<PROVIDER_NAME> (e.g. API_KEY_DEEPSEEK, API_KEY_ZHIPU)
     if (providerName) {
       const byName = tryEnvVar(`API_KEY_${providerName.toUpperCase()}`);
       if (byName) return { apiKey: ephemeralEncrypt(byName), encrypted: true };
     }
 
-    // 2b) Type-specific generic names
+    // 2c) Type-specific generic names
     const typeGenerics: Record<string, string[]> = {
       anthropic: ['ANTHROPIC_API_KEY', 'CLAUDE_API_KEY'],
       openai: ['OPENAI_API_KEY'],
@@ -130,12 +140,13 @@ export function resolveApiKey(configKey: string | undefined, providerType: strin
     const byGeneric = tryEnvVar(...generics);
     if (byGeneric) return { apiKey: ephemeralEncrypt(byGeneric), encrypted: true };
 
-    // 2c) API_key_<PROVIDER_TYPE> (e.g. API_KEY_ANTHROPIC, API_KEY_OPENAI) — catch-all
+    // 2d) API_key_<PROVIDER_TYPE> (e.g. API_KEY_ANTHROPIC, API_KEY_OPENAI) — catch-all
     const byType = tryEnvVar(`API_KEY_${providerType.toUpperCase()}`);
     if (byType) return { apiKey: ephemeralEncrypt(byType), encrypted: true };
 
     // --- Nothing worked — throw actionable error ---
     const suggestions: string[] = [];
+    if (providerName && nameEnvExtras[providerName]) suggestions.push(...nameEnvExtras[providerName]!);
     if (providerName) suggestions.push(`API_KEY_${providerName.toUpperCase()}`);
     suggestions.push(...generics);
     suggestions.push(`API_KEY_${providerType.toUpperCase()}`);

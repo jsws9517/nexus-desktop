@@ -33,8 +33,11 @@ function buildSchema(): SchemaCategory[] {
       fields: [
         { key: 'language', label: 'Language', type: 'select', enumValues: ['en', 'zh-CN'] },
         { key: 'promptName', label: 'Prompt Name', type: 'string' },
-        { key: 'activeProvider', label: 'Active Provider', type: 'string' },
+        { key: 'activeProvider', label: 'Active Provider', type: 'select', enumValues: [] },
         { key: 'visionMode', label: 'Vision Mode', type: 'select', enumValues: ['local-first', 'cloud-first', 'local-only', 'cloud-only'] },
+        { key: 'activeVisionProvider', label: 'Active Vision Provider', type: 'select', enumValues: [] },
+        { key: 'qualityGate.autoTest', label: 'Quality Gate: Auto-Test', type: 'boolean' },
+        { key: 'qualityGate.autoCommit', label: 'Quality Gate: Auto-Commit', type: 'boolean' },
       ],
     },
     {
@@ -133,7 +136,19 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
   const config = new ConfigManager();
 
   if (url === '/api/schema' && method === 'GET') {
-    return jsonResponse(res, { categories: buildSchema() });
+    const schema = buildSchema();
+    const cfg = config.get() as Record<string, unknown>;
+    const providerNames = Object.keys((cfg.providers as Record<string, unknown>) || {});
+    const visionNames = Object.keys((cfg.visionProviders as Record<string, unknown>) || {});
+    for (const cat of schema) {
+      if (cat.id === 'general') {
+        const ap = cat.fields.find((f) => f.key === 'activeProvider');
+        if (ap) ap.enumValues = providerNames;
+        const avp = cat.fields.find((f) => f.key === 'activeVisionProvider');
+        if (avp) avp.enumValues = visionNames;
+      }
+    }
+    return jsonResponse(res, { categories: schema });
   }
 
   if (url === '/api/config' && method === 'GET') {
@@ -574,6 +589,8 @@ async function saveConfig() {
       promptName: state.config.promptName,
       activeProvider: state.config.activeProvider,
       visionMode: state.config.visionMode,
+      activeVisionProvider: state.config.activeVisionProvider,
+      qualityGate: state.config.qualityGate || { autoTest: true, autoCommit: false },
       acp: state.config.acp,
     })});
     toast('Saved');

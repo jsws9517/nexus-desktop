@@ -5,6 +5,7 @@ A powerful TypeScript CLI agent connecting multiple LLM providers, MCP tools, fi
 ## Features
 
 - **Multi-Provider LLM Support**: Anthropic (Claude) and OpenAI (GPT) with easy switching, configurable via CLI
+- **OpenCode Zen Integration**: One-command auth flow for the curated OpenCode Zen gateway (`nexus config opencode-zen login`)
 - **Session Management**: Persistent chat sessions with SQLite storage, cross-process recovery, `/resume` browsing
 - **Long Context Handling**: Sliding window + automatic summarization + context compaction
 - **Per-Session Persistent Memory**: Automatic memory summaries persisted per session, `/memory` view, cross-session `/insight` analysis
@@ -83,6 +84,55 @@ During chat, type:
 - `/clear` - Clear context (starts fresh)
 - `/exit` - Quit
 
+## Development Workflow (开发规范流 / 质量门禁)
+
+Nexus 内置两类编程子 agent —— **Tester**（测试）与 **Committer**（提交），可在编程任务中按需或自动串联，形成 `实现 → 测试 → 提交` 的规范流。
+
+两类子 agent 的能力边界：
+- **Tester**：只读，自动探测并运行项目测试 / lint / typecheck，输出 `VERDICT: PASS` / `VERDICT: FAIL`；绝不改源码、不提交。
+- **Committer**：审查 git diff，跑一遍测试/构建，通过后用 Conventional Commits 风格创建**本地**原子提交；**绝不 `git push`**。
+
+### 开启状态的两种控制方式
+
+**1. 全局配置开关（config）—— 自动规范流**
+
+在 `config.json`（或 Web 面板 General 区）中配置：
+
+```json
+{
+  "qualityGate": {
+    "autoTest": true,    // 默认 true：实现任务完成后自动跑 Tester
+    "autoCommit": false  // 默认 false：测试通过也不自动提交，需手动确认
+  }
+}
+```
+
+- `autoTest=true`：每次 `file_write`/`file_edit` 后默认校验会包含 `npm run test`（当项目有 `test` 脚本时）；实现类任务（DAG 中 `agentHint=general` 的节点，或 `spawn_subagent` 的 general 角色）完成后，自动派生 Tester 子 agent 跑测试。
+- `autoCommit=true`：仅当 Tester 输出 `VERDICT: PASS` 时，自动派生 Committer 子 agent 创建本地提交。**默认关闭**以避免未经确认的提交。
+
+Web 面板：`Quality Gate: Auto-Test` / `Quality Gate: Auto-Commit` 两个开关可随时切换。
+CLI：`nexus config` 交互编辑（或网页 `nexus config web`）。
+
+**2. 按任务动态按需开启（per-task / on-demand）—— 不受全局开关限制**
+
+- **显式工具调用**：编程过程中随时调用 `spawn_tester`（只读跑测试）或 `spawn_committer`（审查并提交），无需改动任何配置。
+- **计划任务标注角色**：用 `/plan` 拆解为 DAG 后，某个节点可在 `agentHint` 标注 `tester` 或 `committer`，DAG 调度时按对应角色执行（即使 `autoTest`/`autoCommit` 关闭也会强制按角色跑）。
+- `spawn_subagent` 支持 `agent_type: general | tester | committer` 参数选择角色。
+
+### 推荐用法
+
+| 场景 | 配置 | 行为 |
+| --- | --- | --- |
+| 默认（回归保护） | `autoTest:true, autoCommit:false` | 编码时自动跑测试；提交由你确认 |
+| 全自动 | `autoTest:true, autoCommit:true` | 测试通过后自动本地提交 |
+| 单次精细控制 | 不改 config | 直接用 `spawn_tester` / `spawn_committer` 或给 DAG 节点标 `agentHint` |
+
+### 安全约束
+
+- 测试失败 / Tester 出错时，自动提交链会**中止**，不会提交未通过验证的代码。
+- Tester 仅读、`exec_command` 跑测试；Committer 只做本地 `add`+`commit`，绝不 push。
+- 相关实现：`src/config/index.ts`（`getQualityGate`/`setQualityGate`）、`src/task/task-tools.ts`（`runQualityGate`）、`src/task/sub-agent-roles.ts`（角色定义）、`src/hooks/auto-validate.ts`（写文件时自动跑测试）。
+
 ## Skills
 
 Place skill modules in `~/.nexus/skills/`:
@@ -124,8 +174,8 @@ The agent can analyze images using either a **local model** (Florence-2) or **cl
 |------|----------|
 | `local-first` (default) | Try local Florence-2 first; fall back to cloud on failure |
 | `cloud-first` | Try active cloud provider first; fall back to local |
-| `local-only` | Use local Florence-2 only; never call cloud APIs |
-| `cloud-only` | Use active cloud provider only; never call local model |
+| `local-only` | Use local Florence-2 only (no cloud calls) |
+| `cloud-only` | Use active cloud provider only (no local calls) |
 
 ```bash
 # Show current mode
@@ -135,6 +185,59 @@ nexus config vision-mode list
 nexus config vision-mode set local-only
 nexus config vision-mode set cloud-first
 ```
+
+## OpenCode Zen
+
+OpenCode Zen is a curated **Anthropic-compatible** model gateway run by the
+OpenCode team. Once authenticated, Nexus uses it just like any other
+Anthropic provider (`claude-opus-4-6`, `claude-sonnet-4-6`, `big-pickle`,
+`minimax-m2.5-free`, ...). Visit <https://opencode.ai/docs/zen/> for the
+current model list and pricing.
+
+```bash
+# Interactive login — opens https://opencode.ai/auth and saves the API key
+nexus config opencode-zen login
+
+# Or non-interactive (for CI / scripts):
+nexus config opencode-zen login --key sk-... --use
+
+# Show where the key comes from (stored key vs $OPENCODE_API_KEY)
+nexus config opencode-zen status
+
+# Activate Zen (the stored key is used by default)
+nexus config opencode-zen use
+
+# Switch to a specific model (and activate)
+nexus config opencode-zen use claude-sonnet-4-6
+nexus config opencode-zen use big-pickle
+
+# Just change the model, keep current provider
+nexus config opencode-zen use claude-opus-4-6 --no-switch
+
+# List curated models
+nexus config opencode-zen models
+
+# Remove the stored key
+nexus config opencode-zen logout
+```
+
+Behind the scenes this writes a provider entry into `~/.nexus/config.json`:
+
+```json
+{
+  "providers": {
+    "opencode-zen": {
+      "type": "anthropic",
+      "apiKey": "<encrypted>",
+      "baseUrl": "https://opencode.ai/zen",
+      "model": "claude-sonnet-4-6"
+    }
+  }
+}
+```
+
+`OPENCODE_API_KEY` / `OPENCODE_ZEN_API_KEY` are honored at runtime if set,
+without needing to log in again. Prefer the env var in shared / CI environments.
 
 ### Local Vision Setup
 

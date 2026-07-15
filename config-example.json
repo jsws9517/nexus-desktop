@@ -40,6 +40,12 @@
       "apiKey": "",
       "baseUrl": "http://localhost:6446",
       "model": "deepseek-v4-flash-free"
+    },
+    "opencode-zen": {
+      "type": "anthropic",
+      "apiKey": "$OPENCODE_API_KEY",
+      "baseUrl": "https://opencode.ai/zen",
+      "model": "claude-sonnet-4-6"
     }
   },
   "$schema": "Example config — copy to ~/.nexus/config.json and set API keys via env vars or replace apiKey fields"

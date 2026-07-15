@@ -42,6 +42,11 @@ export const VisionProviderConfigSchema = z.object({
   model: z.string(),
 });
 
+export const QualityGateConfigSchema = z.object({
+  autoTest: z.boolean().optional(),
+  autoCommit: z.boolean().optional(),
+});
+
 export const ConfigSchema = z.object({
   activeProvider: z.string(),
   providers: z.record(ProviderConfigSchema),
@@ -54,6 +59,7 @@ export const ConfigSchema = z.object({
   activeVisionProvider: z.string().optional(),
   visionProviders: z.record(VisionProviderConfigSchema).optional(),
   visionMode: z.enum(['local-first', 'cloud-first', 'local-only', 'cloud-only']).optional(),
+  qualityGate: QualityGateConfigSchema.optional(),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;

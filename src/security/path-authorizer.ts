@@ -60,8 +60,8 @@ async function promptUser(path: string): Promise<boolean> {
     return true;
   }
 
-  const filename = path.split(/[\\/]/).pop() || path;
-  const question = `\n\x1b[33m⚠ Security: read/write "${filename}"? [y] once  [a] always  [n] deny \x1b[0m`;
+  const truncated = path.length > 100 ? path.slice(0, 97) + '...' : path;
+  const question = `\n\x1b[33m⚠ Security: access "${truncated}"? [y] once  [a] always  [n] deny \x1b[0m`;
   const answer = _permissionPrompter
     ? await _permissionPrompter(question)
     : await new Promise<string>(resolve => {

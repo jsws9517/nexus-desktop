@@ -1,8 +1,9 @@
 import { randomUUID } from 'crypto';
 import { ToolDefinition, ToolResult } from '../types.js';
-import { TaskNode, TaskGraph } from './types.js';
+import { TaskNode, TaskGraph, SubAgentRole } from './types.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { SubAgentWorker } from './sub-agent-worker.js';
+import { ConfigManager } from '../config/index.js';
 import { t, tf } from '../i18n/index.js';
 
 export function getTaskToolDefinitions(): ToolDefinition[] {
@@ -26,6 +27,41 @@ export function getTaskToolDefinitions(): ToolDefinition[] {
         properties: {
           task: { type: 'string', description: t('exec_task_desc') },
           agent_hint: { type: 'string', description: t('exec_hint_desc') },
+          agent_type: {
+            type: 'string',
+            description: 'Role for the sub-agent: general | tester | committer',
+            enum: ['general', 'tester', 'committer'],
+          },
+        },
+        required: ['task'],
+      },
+    },
+    {
+      name: 'spawn_tester',
+      description:
+        'Spawn a Tester sub-agent that runs the project test / lint / typecheck suite and reports PASS/FAIL. Read-only; never modifies source.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description: 'What to validate, e.g. "run the full test suite and report results"',
+          },
+        },
+        required: ['task'],
+      },
+    },
+    {
+      name: 'spawn_committer',
+      description:
+        'Spawn a Committer sub-agent that reviews the git diff, verifies build/tests, then creates an atomic Conventional Commits commit (no push).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description: 'Commit scope/hint, e.g. "commit the implemented login feature"',
+          },
         },
         required: ['task'],
       },
@@ -56,7 +92,11 @@ export async function executeTaskTool(
     case 'decompose_task':
       return handleDecompose(args, agentContext);
     case 'spawn_subagent':
-      return handleSpawnSubagent(args, agentContext);
+      return handleSpawnSubagent(args, agentContext, normalizeRole(args.agent_type));
+    case 'spawn_tester':
+      return handleSpawnSubagent(args, agentContext, 'tester');
+    case 'spawn_committer':
+      return handleSpawnSubagent(args, agentContext, 'committer');
     case 'query_tasks':
       return handleQueryTasks(args, agentContext);
     default:
@@ -143,6 +183,7 @@ Request: ${request}`,
 async function handleSpawnSubagent(
   args: Record<string, unknown>,
   ctx: { agent: import('../agent.js').Agent; tracker: ProgressTracker },
+  role: import('./types.js').SubAgentRole = 'general',
 ): Promise<ToolResult> {
   const task = String(args.task || '');
   if (!task.trim()) {
@@ -152,6 +193,7 @@ async function handleSpawnSubagent(
   const node: TaskNode = {
     id: `manual-${Date.now()}`,
     description: task,
+    agentHint: role,
     dependencies: [],
     status: 'in_progress',
     retryCount: 0,
@@ -162,9 +204,16 @@ async function handleSpawnSubagent(
 
   const worker = new SubAgentWorker(ctx.agent);
   try {
-    const result = await worker.execute(node);
+    const result = await worker.execute(node, undefined, role);
     node.status = 'completed';
     node.result = result.output;
+
+    // After a general implementation task, optionally run the quality gate
+    // (auto tester -> auto committer) as a coding-workflow规范流.
+    if (role === 'general') {
+      await runQualityGate(ctx.agent, undefined);
+    }
+
     return { content: result.output };
   } catch (err) {
     node.status = 'failed';
@@ -174,6 +223,66 @@ async function handleSpawnSubagent(
       isError: true,
     };
   }
+}
+
+/**
+ * Quality-gate chain invoked after a general implementation task completes:
+ *   1. (if autoTest)  spawn a Tester sub-agent; stop the chain on FAIL.
+ *   2. (if autoCommit) spawn a Committer sub-agent to create a local commit.
+ * Runs in the given projectDir (or cwd when undefined).
+ */
+export async function runQualityGate(
+  parentAgent: import('../agent.js').Agent,
+  projectDir?: string,
+): Promise<void> {
+  const gate = new ConfigManager().getQualityGate();
+  if (!gate.autoTest && !gate.autoCommit) return;
+
+  const worker = new SubAgentWorker(parentAgent);
+
+  if (gate.autoTest) {
+    const testNode: TaskNode = {
+      id: `qg-test-${Date.now()}`,
+      description: 'Run the project test suite / lint / typecheck and report VERDICT: PASS or FAIL.',
+      dependencies: [],
+      status: 'in_progress',
+      retryCount: 0,
+      maxRetries: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    try {
+      const r = await worker.execute(testNode, projectDir, 'tester');
+      const passed = /VERDICT:\s*PASS/i.test(r.output);
+      if (!passed) return; // do not commit when tests fail
+    } catch {
+      return; // do not commit when the tester errors
+    }
+  }
+
+  if (gate.autoCommit) {
+    const commitNode: TaskNode = {
+      id: `qg-commit-${Date.now()}`,
+      description: 'Review the changes and create an atomic Conventional Commits git commit (do not push).',
+      dependencies: [],
+      status: 'in_progress',
+      retryCount: 0,
+      maxRetries: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    try {
+      await worker.execute(commitNode, projectDir, 'committer');
+    } catch {
+      /* committer failures are non-fatal for the implementation task */
+    }
+  }
+}
+
+function normalizeRole(value: unknown): import('./types.js').SubAgentRole {
+  const v = String(value || 'general');
+  if (v === 'tester' || v === 'committer' || v === 'general') return v;
+  return 'general';
 }
 
 async function handleQueryTasks(

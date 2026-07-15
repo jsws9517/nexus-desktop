@@ -3,6 +3,7 @@ import { extname } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { HookContext } from './types.js';
+import { ConfigManager } from '../config/index.js';
 
 interface ValidationConfig {
   onFileWrite?: string[];
@@ -42,6 +43,9 @@ function getValidationCommands(filePath: string, config: ValidationConfig): stri
     // Sensible defaults based on project setup
     if (hasPackageScript('lint')) commands.push('npm run lint -- --quiet');
     if (hasPackageScript('typecheck')) commands.push('npm run typecheck');
+    // Wire npm test into the default validation set when the quality gate is on
+    const qualityGate = new ConfigManager().getQualityGate();
+    if (qualityGate.autoTest && hasPackageScript('test')) commands.push('npm run test');
   }
   return commands;
 }

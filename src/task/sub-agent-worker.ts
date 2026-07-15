@@ -1,5 +1,6 @@
 import { Agent } from '../agent.js';
-import { TaskNode, SubTaskResult } from './types.js';
+import { TaskNode, SubTaskResult, SubAgentRole } from './types.js';
+import { getSubAgentRole } from './sub-agent-roles.js';
 import { preAuthorizeRoot } from '../security/path-authorizer.js';
 
 export class SubAgentWorker {
@@ -10,16 +11,27 @@ export class SubAgentWorker {
     private onProgress?: (taskId: string, event: string) => void,
   ) {}
 
-  async execute(task: TaskNode, projectDir?: string): Promise<SubTaskResult> {
-    if (!this.authorized) {
+  /** The parent agent that spawned this worker (used to chain quality-gate sub-agents). */
+  get parent(): Agent {
+    return this.parentAgent;
+  }
+
+  async execute(task: TaskNode, projectDir?: string, role: SubAgentRole = 'general'): Promise<SubTaskResult> {    if (!this.authorized) {
       preAuthorizeRoot(process.cwd());
       this.authorized = true;
     }
 
-    const child = new Agent();
+    const roleDef = getSubAgentRole(role);
+
+    const child = new Agent(false);
     child.detailMode = false;
     child.suppressToolOutput = true;
-    child.maxTurns = 10;
+    child.maxTurns = roleDef.maxTurns;
+
+    // Scope the child agent's tools to the role's allowlist (if any)
+    if (roleDef.allowedTools && roleDef.allowedTools.length > 0) {
+      child.toolAllowlist = new Set(roleDef.allowedTools);
+    }
 
     const outputChunks: string[] = [];
 
@@ -49,7 +61,11 @@ export class SubAgentWorker {
         `Shell commands (exec_command) already run inside this directory by default — ` +
         `do NOT prepend "cd <path>" or run git against the agent's own working directory.\n\n---\n\n`;
     }
-    await child.chat(`${dirHint}${task.description}`);
+    let prompt = `${dirHint}${task.description}`;
+    if (roleDef.systemPrompt) {
+      child.context.prependToSystem(`[Role: ${roleDef.label}]\n${roleDef.systemPrompt}`);
+    }
+    await child.chat(prompt);
 
     await child.shutdown();
 

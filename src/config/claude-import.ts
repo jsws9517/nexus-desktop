@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync, cpSync, writeFileSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, cpSync, writeFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { ConfigManager } from './index.js';
@@ -72,12 +72,15 @@ export function importFromClaude(config: ConfigManager, silent = false): ImportR
 
   // ---- Import Skills ----
   if (existsSync(CLAUDE_SKILLS_DIR)) {
+    mkdirSync(AGENT_SKILLS_DIR, { recursive: true });
+    const importedNames = new Set<string>();
+
+    // Phase 1: Import skills listed in index.json
     const indexPath = join(CLAUDE_SKILLS_DIR, 'index.json');
     if (existsSync(indexPath)) {
       try {
         const index = JSON.parse(readFileSync(indexPath, 'utf-8'));
         const skills = index.skills || [];
-        mkdirSync(AGENT_SKILLS_DIR, { recursive: true });
 
         try {
           cpSync(indexPath, join(AGENT_SKILLS_DIR, 'index.json'));
@@ -89,6 +92,8 @@ export function importFromClaude(config: ConfigManager, silent = false): ImportR
           const skillName = skill.name;
           const skillPath = join(CLAUDE_SKILLS_DIR, skill.path.replace(/^\.\//, ''));
           const targetDir = join(AGENT_SKILLS_DIR, skillName);
+
+          importedNames.add(skillName);
 
           if (existsSync(targetDir)) {
             result.skillsSkipped++;
@@ -105,6 +110,37 @@ export function importFromClaude(config: ConfigManager, silent = false): ImportR
       } catch {
         // Silently fail
       }
+    }
+
+    // Phase 2: Fallback — scan for skill directories not recorded in index.json
+    try {
+      const entries = readdirSync(CLAUDE_SKILLS_DIR);
+      for (const entry of entries) {
+        const fullPath = join(CLAUDE_SKILLS_DIR, entry);
+        if (!statSync(fullPath).isDirectory()) continue;
+        if (entry === 'node_modules' || entry.startsWith('.')) continue;
+        if (importedNames.has(entry)) continue;
+
+        // Only import directories that are recognizable skills
+        const skillIndicators = ['SKILL.md', 'skill.md', 'skill.json', 'index.js', 'index.mjs', 'skill.js', 'skill.mjs'];
+        const isSkill = skillIndicators.some(f => existsSync(join(fullPath, f)));
+        if (!isSkill) continue;
+
+        const targetDir = join(AGENT_SKILLS_DIR, entry);
+        if (existsSync(targetDir)) {
+          result.skillsSkipped++;
+          continue;
+        }
+
+        try {
+          cpSync(fullPath, targetDir, { recursive: true });
+          result.skillsImported++;
+        } catch {
+          result.skillsSkipped++;
+        }
+      }
+    } catch {
+      // Silently fail
     }
   }
 

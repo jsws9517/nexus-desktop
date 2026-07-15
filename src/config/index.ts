@@ -9,6 +9,8 @@ const CONFIG_DIR = join(homedir(), '.nexus');
 const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 const MODEL_CONTEXT_PATH = join(CONFIG_DIR, 'model-context.json');
 
+let warnedAboutSchemaOnce = false;
+
 const DEFAULT_CONFIG: Config = {
   activeProvider: 'anthropic',
   providers: {
@@ -31,6 +33,10 @@ const DEFAULT_CONFIG: Config = {
       baseUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
       model: 'glm-4.6v-flash',
     },
+  },
+  qualityGate: {
+    autoTest: true,
+    autoCommit: false,
   },
 };
 
@@ -56,17 +62,40 @@ export class ConfigManager {
       writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2));
       return DEFAULT_CONFIG;
     }
+
+    let raw: Config;
     try {
-      const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) as Config;
+      raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) as Config;
       if (raw.providers) {
         for (const key of Object.keys(raw.providers)) {
           const p = raw.providers[key]!;
-          p.apiKey = atRestDecrypt(p.apiKey);
+          try { p.apiKey = atRestDecrypt(p.apiKey); } catch { /* keep original */ }
         }
       }
-      return ConfigSchema.parse(raw);
-    } catch {
+    } catch (err) {
+      if (!warnedAboutSchemaOnce) {
+        warnedAboutSchemaOnce = true;
+        process.stderr.write('[nexus] ~/.nexus/config.json could not be parsed as JSON. Falling back to defaults; your previous config is lost.\n');
+      }
       return DEFAULT_CONFIG;
+    }
+
+    try {
+      return ConfigSchema.parse(raw);
+    } catch (err) {
+      // Schema validation failed. NEVER silently return DEFAULT_CONFIG here:
+      // any subsequent save() would then overwrite the user's on-disk config
+      // with the defaults. Return the raw object so user data is preserved.
+      if (!warnedAboutSchemaOnce) {
+        warnedAboutSchemaOnce = true;
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[nexus] ~/.nexus/config.json failed schema validation; loading raw data to prevent data loss.\n` +
+          `  ${msg.replace(/\n/g, '\n  ')}\n` +
+          `  Edit ~/.nexus/config.json manually, or run \`nexus config add-provider ...\` to overwrite a single entry.\n`
+        );
+      }
+      return raw;
     }
   }
 
@@ -101,6 +130,22 @@ export class ConfigManager {
 
   setVisionMode(mode: string): void {
     this.config.visionMode = mode as 'local-first' | 'cloud-first' | 'local-only' | 'cloud-only';
+    this.save();
+  }
+
+  getQualityGate(): { autoTest: boolean; autoCommit: boolean } {
+    const qg = (this.config as Record<string, unknown>).qualityGate as
+      | { autoTest?: boolean; autoCommit?: boolean }
+      | undefined;
+    return {
+      autoTest: qg?.autoTest ?? true,
+      autoCommit: qg?.autoCommit ?? false,
+    };
+  }
+
+  setQualityGate(partial: Partial<{ autoTest: boolean; autoCommit: boolean }>): void {
+    const cur = this.getQualityGate();
+    (this.config as Record<string, unknown>).qualityGate = { ...cur, ...partial };
     this.save();
   }
 

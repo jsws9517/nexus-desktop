@@ -5,6 +5,7 @@ import { NativeManager, SearchResult } from '../config/native.js';
 import { importFromClaude } from '../config/claude-import.js';
 import { ThemeManager } from '../theme/manager.js';
 import { setCurrentLang } from '../i18n/index.js';
+import { registerOpencodeZenCommand, renderOpencodeZenStatus } from './opencode-zen.js';
 
 const _theme = new ThemeManager();
 const t = _theme.token;
@@ -47,6 +48,11 @@ export function registerConfigCommand(program: Command): void {
         const marker = name === cfg.activeProvider ? t.success('*') : ' ';
         const base = p.baseUrl ? t.textDim(` [${p.baseUrl}]`) : '';
         console.log(`    ${marker} ${name}: ${p.type} / ${p.model}${base}`);
+      }
+      if (cfg.providers['opencode-zen']) {
+        console.log('');
+        console.log(t.heading('  OpenCode Zen:'));
+        console.log(renderOpencodeZenStatus(cfg).split('\n').map((l) => '    ' + l).join('\n'));
       }
       if (cfg.mcpServers) {
         console.log(t.heading('  MCP Servers:'));
@@ -632,4 +638,7 @@ export function registerConfigCommand(program: Command): void {
       // Keep running until Ctrl+C
       await new Promise(() => {});
     });
+
+  // OpenCode Zen authentication flow (Anthropic-compatible gateway)
+  registerOpencodeZenCommand(configCmd);
 }

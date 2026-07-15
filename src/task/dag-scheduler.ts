@@ -1,8 +1,9 @@
 import { join } from 'path';
 import { homedir } from 'os';
 import { mkdirSync } from 'fs';
-import { TaskGraph, TaskNode, TaskStatus } from './types.js';
+import { TaskGraph, TaskNode, TaskStatus, SubAgentRole } from './types.js';
 import { SubAgentWorker } from './sub-agent-worker.js';
+import { runQualityGate } from './task-tools.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { preAuthorizeRoot } from '../security/path-authorizer.js';
 
@@ -39,12 +40,22 @@ export class DAGScheduler {
         }
         for (let attempt = 0; attempt <= node.maxRetries; attempt++) {
           try {
-            const result = await this.worker.execute(node, projectDir);
+            const role = (node.agentHint === 'tester' || node.agentHint === 'committer')
+              ? node.agentHint as SubAgentRole
+              : 'general';
+            const result = await this.worker.execute(node, projectDir, role);
             node.result = result.output;
             node.status = 'completed';
             node.error = undefined;
             node.retryCount = 0;
             node.updatedAt = Date.now();
+
+            // Quality gate: after a general implementation task, auto-run
+            // tester -> committer as a coding规范流 (gated by config).
+            if (role === 'general') {
+              await runQualityGate(this.worker.parent, projectDir);
+            }
+
             this.tracker.updateGraph(graph);
             this.tracker.appendEvent({
               graphId: graph.id,
