@@ -1386,7 +1386,11 @@ async function handleSlashCommand(
       return false;
 
     case 'plan': {
-      const request = args.join(' ');
+      let request = args.join(' ');
+      if (request && request.includes('@')) {
+        request = resolveAtPathsToAbsolute(request, process.cwd());
+        request = await expandAtMentions(request, process.cwd());
+      }
       if (!request) {
         // No args → export development requirements document
         const plan = (agent as any).currentPlan;
@@ -1551,36 +1555,34 @@ async function handleSlashCommand(
     }
 
     case 'tasks': {
-      // /tasks -step <id> — show detail for a specific task
-      if (args[0] === '-step' && args[1]) {
-        const taskId = args[1];
+      // /tasks [-step] <id> — show detail for a specific task
+      //   -step is implicit: /tasks t1 works the same as /tasks -step t1
+      const rawArg = args[0];
+      const taskId = rawArg === '-step' ? args[1] : rawArg;
+
+      if (taskId) {
         const sid = agent.getCurrentSessionId();
-        if (!sid) {
-          console.log(t().textDim('No active session.'));
-          return false;
+        if (sid) {
+          const graph = (agent as any).tracker.getGraphBySession(sid);
+          if (graph) {
+            const node = graph.nodes.find((n: any) => n.id === taskId);
+            if (node) {
+              console.log(t().heading(`Task: ${node.id}\n`));
+              console.log(`  Description: ${node.description}`);
+              console.log(`  Status: ${node.status}`);
+              console.log(`  Dependencies: ${node.dependencies.join(', ') || '(none)'}`);
+              console.log(`  Retries: ${node.retryCount}/${node.maxRetries}`);
+              if (node.result) console.log(`  Result: ${node.result.slice(0, 500)}${node.result.length > 500 ? '...' : ''}`);
+              if (node.error) console.log(t().error(`  Error: ${node.error}`));
+              return false;
+            }
+          }
         }
-        const graph = (agent as any).tracker.getGraphBySession(sid);
-        if (!graph) {
-          console.log(t().textDim('No task graph found.'));
-          return false;
-        }
-        const node = graph.nodes.find((n: any) => n.id === taskId);
-        if (!node) {
-          console.log(t().error(`Task not found: ${taskId}`));
-          return false;
-        }
-        console.log(t().heading(`Task: ${node.id}\n`));
-        console.log(`  Description: ${node.description}`);
-        console.log(`  Status: ${node.status}`);
-        console.log(`  Dependencies: ${node.dependencies.join(', ') || '(none)'}`);
-        console.log(`  Retries: ${node.retryCount}/${node.maxRetries}`);
-        if (node.result) console.log(`  Result: ${node.result.slice(0, 500)}${node.result.length > 500 ? '...' : ''}`);
-        if (node.error) console.log(t().error(`  Error: ${node.error}`));
-        return false;
+        // Not found as task ID — fall through to graphId lookup
       }
 
       // /tasks [graphId] — show task graph
-      const graphId = args[0] || '';
+      const graphId = rawArg === '-step' ? '' : (rawArg || '');
       let graph: any;
       if (graphId) {
         graph = (agent as any).tracker.getGraph(graphId);

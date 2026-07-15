@@ -1,5 +1,6 @@
+import { resolve } from 'path';
 import { Agent } from '../agent.js';
-import { TaskNode, SubTaskResult, SubAgentRole } from './types.js';
+import { TaskNode, SubTaskResult, SubAgentRole, GraphMode } from './types.js';
 import { getSubAgentRole } from './sub-agent-roles.js';
 import { preAuthorizeRoot } from '../security/path-authorizer.js';
 
@@ -16,8 +17,17 @@ export class SubAgentWorker {
     return this.parentAgent;
   }
 
-  async execute(task: TaskNode, projectDir?: string, role: SubAgentRole = 'general'): Promise<SubTaskResult> {    if (!this.authorized) {
+  async execute(
+    task: TaskNode,
+    projectDir?: string,
+    role: SubAgentRole = 'general',
+    priorResults?: Record<string, string>,
+    rootRequest?: string,
+    mode?: GraphMode,
+  ): Promise<SubTaskResult> {
+    if (!this.authorized) {
       preAuthorizeRoot(process.cwd());
+      preAuthorizeRoot(resolve(process.cwd(), '..'));
       this.authorized = true;
     }
 
@@ -51,17 +61,51 @@ export class SubAgentWorker {
 
     await child.init();
 
-    let dirHint = '';
+    const sections: string[] = [];
+
     if (projectDir) {
-      // Make the child agent's exec_command default to the project directory
-      child.mcp.workDir = projectDir;
-      dirHint =
+      // workDir = parent CWD so relative paths (e.g. @../../foo/bar.py) resolve
+      // correctly against the same working directory the user sees.
+      child.mcp.workDir = process.cwd();
+      const isNew = mode === 'new' || !mode;
+      sections.push(
         `[Project Directory]\n${projectDir}\n\n` +
-        `All generated code files MUST be created under the Project Directory above.\n` +
-        `Shell commands (exec_command) already run inside this directory by default — ` +
-        `do NOT prepend "cd <path>" or run git against the agent's own working directory.\n\n---\n\n`;
+        `[Mode: ${mode || 'new'}]\n\n` +
+        (isNew
+          ? `This is a GREENFIELD project. ALL generated code files MUST be placed ` +
+            `under the Project Directory above. Do NOT modify files outside the sandbox.\n`
+          : `This is a MODIFY-EXISTING task. Edit source files IN-PLACE using their ` +
+            `absolute or relative-to-CWD paths. NEW supporting files can go to the ` +
+            `Project Directory above. A git snapshot will be created automatically ` +
+            `for rollback safety.\n`) +
+        `Shell commands (exec_command) run inside the parent working directory ` +
+        `(${process.cwd()}) by default — do NOT prepend "cd <path>" or run git against ` +
+        `the agent's own working directory.\n\n---\n`);
     }
-    let prompt = `${dirHint}${task.description}`;
+
+    if (rootRequest) {
+      sections.push(
+        `[Original Request]\n${rootRequest}\n\n---\n`);
+    }
+
+    if (priorResults) {
+      const keys = Object.keys(priorResults);
+      if (keys.length > 0) {
+        const parts: string[] = ['[Prior Task Results]'];
+        for (const taskId of keys) {
+          const result = priorResults[taskId];
+          const snippet = result.length > 1200
+            ? result.slice(0, 600) + '\n...(中间截断, 共' + result.length + '字符)...\n' + result.slice(-500)
+            : result;
+          parts.push(`\n--- ${taskId} ---\n${snippet}`);
+        }
+        parts.push('\n---\n');
+        sections.push(parts.join(''));
+      }
+    }
+
+    let prompt = sections.join('\n\n') + '\n\n' + task.description;
+
     if (roleDef.systemPrompt) {
       child.context.prependToSystem(`[Role: ${roleDef.label}]\n${roleDef.systemPrompt}`);
     }

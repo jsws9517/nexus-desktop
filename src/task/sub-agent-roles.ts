@@ -26,7 +26,7 @@ export const SUB_AGENT_ROLES: Record<SubAgentRole, SubAgentRoleDef> = {
     label: 'General',
     description: 'Generic task-executing sub-agent',
     systemPrompt: '',
-    maxTurns: 10,
+    maxTurns: 6,
   },
 
   tester: {
@@ -45,7 +45,7 @@ export const SUB_AGENT_ROLES: Record<SubAgentRole, SubAgentRoleDef> = {
       '3. Report concisely: which commands you ran, their exit status, and any failures with the key error lines.\n' +
       '4. End with a single verdict line: "VERDICT: PASS" or "VERDICT: FAIL".\n\n' +
       'Do not fix code, do not create files, do not run git commit.',
-    maxTurns: 8,
+    maxTurns: 4,
     allowedTools: [
       'read_text_file', 'read_multiple_files', 'list_directory', 'directory_tree',
       'get_file_info', 'exec_command', 'fetch_url', 'web_search', 'web_fetch',
@@ -71,7 +71,7 @@ export const SUB_AGENT_ROLES: Record<SubAgentRole, SubAgentRoleDef> = {
       '- NEVER push to remote. Local commit only.\n' +
       '- If there is nothing to commit (clean tree), say so and stop.\n' +
       '- Do NOT modify source code; only stage and commit existing changes.',
-    maxTurns: 6,
+    maxTurns: 4,
     allowedTools: [
       'read_text_file', 'read_multiple_files', 'list_directory', 'directory_tree',
       'get_file_info', 'exec_command', 'query_tasks', 'search_nodes', 'search_files', 'open_nodes',

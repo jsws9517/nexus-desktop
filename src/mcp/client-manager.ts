@@ -113,16 +113,22 @@ export class ClientManager {
   }
 
   getAllTools(): ToolDefinition[] {
-    const mcpTools: ToolDefinition[] = [];
-    for (const conn of this.connections.values()) {
-      mcpTools.push(...conn.tools);
+    const seen = new Set<string>();
+    const result: ToolDefinition[] = [];
+    // Builtin tools first (higher priority)
+    for (const t of this.builtinTools) {
+      seen.add(t.name);
+      result.push({ name: t.name, description: t.description, inputSchema: t.inputSchema });
     }
-    const builtinToolDefs: ToolDefinition[] = this.builtinTools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    }));
-    return [...builtinToolDefs, ...mcpTools];
+    // MCP tools — skip any name already registered by builtin
+    for (const conn of this.connections.values()) {
+      for (const t of conn.tools) {
+        if (seen.has(t.name)) continue;
+        seen.add(t.name);
+        result.push({ name: t.name, description: t.description || '', inputSchema: t.inputSchema as object });
+      }
+    }
+    return result;
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {

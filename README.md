@@ -11,13 +11,15 @@ A powerful TypeScript CLI agent connecting multiple LLM providers, MCP tools, fi
 - **Per-Session Persistent Memory**: Automatic memory summaries persisted per session, `/memory` view, cross-session `/insight` analysis
 - **Rich Interactive Chat**: Streaming output with gradient separator, session report, `/history` browsing, PageUp traversal
 - **Built-in Filesystem Tools**: Full file read/write/edit/move/copy/delete/directory-tree — no external MCP server needed
-- **MCP Tools**: Connect to external MCP servers for specialized capabilities
-- **Path Authorization**: Prompt/Allow/Deny with per-session (`y`) and persistent (`a`) grants, cached in `path-auth.json`
-- **Slash Commands**: `/model`, `/provider`, `/session`, `/history`, `/resume`, `/memory`, `/insight`, `/tools`, `/skill`, `/config`, `/export`, `/clean`, `/clear`, `/exit`
-- **Skills/Plugins**: Dynamic loading from `~/.nexus/skills/`
+- **MCP Tools**: Connect to external MCP servers for specialized capabilities; builtin tools take priority over MCP for deduplication
+- **Path Authorization**: Prompt/Allow/Deny with per-session (`y`) and persistent (`a`) grants, cached in `path-auth.json`; early `existsSync` checks avoid unnecessary auth prompts for missing files
+- **Slash Commands**: `/model`, `/provider`, `/session`, `/history`, `/resume`, `/memory`, `/insight`, `/tools`, `/skill`, `/config`, `/export`, `/clean`, `/clear`, `/exit`, `/plan`, `/tasks`
+- **Skills/Plugins**: Dynamic loading from `~/.nexus/skills/` with auto-generated fallback for invalid skill directories
 - **ACP Protocol**: Agent-to-agent communication via WebSocket
 - **Diff Renderer**: Colorized inline diff output for LLM responses
 - **Vision / Multi-Modal**: `analyze_image` tool with local (Florence-2) and cloud vision providers (GLM-4V, Agnes-2V, etc.), configurable fallback modes
+- **Task DAG Engine**: Decompose requests into 3-5 sub-tasks, execute with dependency resolution, support `new` (greenfield) and `modify` (edit existing) modes with automatic git snapshot & rollback safety
+- **Temp File Cleanup**: Post-task finalization removes probe/scratch/cache files and collects deliverables into a sandboxed output directory
 
 ## Installation
 
@@ -80,6 +82,8 @@ During chat, type:
 - `/skill` - List/load/unload skill plugins
 - `/config` - View/edit configuration
 - `/export` - Export session as markdown
+- `/plan <request>` - Decompose a request into a DAG of sub-tasks (supports `@path` resolution)
+- `/tasks [id]` - Show task graph or detailed step info (implicit `-step`)
 - `/clean` - Prune zero-token or old sessions
 - `/clear` - Clear context (starts fresh)
 - `/exit` - Quit
@@ -127,11 +131,30 @@ CLI：`nexus config` 交互编辑（或网页 `nexus config web`）。
 | 全自动 | `autoTest:true, autoCommit:true` | 测试通过后自动本地提交 |
 | 单次精细控制 | 不改 config | 直接用 `spawn_tester` / `spawn_committer` 或给 DAG 节点标 `agentHint` |
 
+### 任务 DAG 模式
+
+`/plan` 自动将请求分解为 3-5 个子任务，支持两种模式：
+
+| 模式 | 触发条件 | 行为 |
+| --- | --- | --- |
+| `new` | 未引用 `@path` | 所有文件写入 `~/.nexus/tasks/outputs/<project>/` 沙箱 |
+| `modify` | 请求包含 `@path` 文件引用 | 直接编辑现有文件；完成后自动创建 git snapshot（`git add -A && git commit`）用于回滚 |
+
+DAG 执行完成后自动运行 **finalize**：清理临时文件（`_probe`、`__pycache__`、`.pytest_cache`、`dist`、`build` 等）、收集可交付产物、生成 `.task-complete.json` 报告。
+
+### 性能优化
+
+- 子 agent `maxTurns` 减少：General 10→6、Tester 8→4、Committer 6→4，缩短无效轮次
+- 任务最大重试次数从 2 减为 1
+- `src/mcp/client-manager.ts` 工具名去重：内置工具优先于 MCP 同名工具
+- MCP 工具调用前置 `existsSync` 检查，避免为不存在的文件弹出授权提示
+
 ### 安全约束
 
 - 测试失败 / Tester 出错时，自动提交链会**中止**，不会提交未通过验证的代码。
 - Tester 仅读、`exec_command` 跑测试；Committer 只做本地 `add`+`commit`，绝不 push。
-- 相关实现：`src/config/index.ts`（`getQualityGate`/`setQualityGate`）、`src/task/task-tools.ts`（`runQualityGate`）、`src/task/sub-agent-roles.ts`（角色定义）、`src/hooks/auto-validate.ts`（写文件时自动跑测试）。
+- modify 模式的 git snapshot 仅本地提交，绝不 push。
+- 相关实现：`src/config/index.ts`（`getQualityGate`/`setQualityGate`）、`src/task/task-tools.ts`（`runQualityGate`）、`src/task/sub-agent-roles.ts`（角色定义）、`src/hooks/auto-validate.ts`（写文件时自动跑测试）、`src/task/dag-scheduler.ts`（finalize / snapshot）。
 
 ## Skills
 

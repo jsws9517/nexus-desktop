@@ -234,14 +234,14 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const path = resolveRelativePath(String(args.path || ''));
+      if (!existsSync(path)) {
+        return { content: `File not found: ${path}`, isError: true };
+      }
       const authorized = await authorizePath(path);
       if (!authorized) {
         return { content: `Access denied: "${path}" is not in the allowed path list and access was rejected by user.`, isError: true };
       }
       try {
-        if (!existsSync(path)) {
-          return { content: `File not found: ${path}`, isError: true };
-        }
         const content = readFileSync(path, 'utf-8');
         return { content };
       } catch (err) {
@@ -264,9 +264,9 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       const results: string[] = [];
       for (const p of paths) {
         const resolved = resolveRelativePath(p);
+        if (!existsSync(resolved)) { results.push(`\n--- ${resolved}: NOT FOUND ---`); continue; }
         const authorized = await authorizePath(resolved);
         if (!authorized) { results.push(`\n--- ${resolved}: ACCESS DENIED ---`); continue; }
-        if (!existsSync(resolved)) { results.push(`\n--- ${resolved}: NOT FOUND ---`); continue; }
         try {
           const content = readFileSync(resolved, 'utf-8');
           results.push(`\n--- ${resolved} ---\n${content}`);
@@ -303,9 +303,9 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       const path = resolveRelativePath(String(args.path || ''));
       const edits = (args.edits as Array<{ oldText: string; newText: string }>) || [];
       const dryRun = !!args.dryRun;
+      if (!existsSync(path)) return { content: `File not found: ${path}`, isError: true };
       const authorized = await authorizePath(path);
       if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
-      if (!existsSync(path)) return { content: `File not found: ${path}`, isError: true };
       try {
         const content = readFileSync(path, 'utf-8');
         const results: string[] = [];
@@ -371,6 +371,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const path = resolveRelativePath(String(args.path || ''));
+      if (!existsSync(path)) return { content: `Directory not found: ${path}`, isError: true };
       const authorized = await authorizePath(path);
       if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
       try {
@@ -396,6 +397,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     async execute(args): Promise<ToolResult> {
       const dirPath = resolveRelativePath(String(args.path || ''));
       const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 10, 1), 20);
+      if (!existsSync(dirPath)) return { content: `Directory not found: ${dirPath}`, isError: true };
       const authorized = await authorizePath(dirPath);
       if (!authorized) return { content: `Access denied: "${dirPath}"`, isError: true };
       try {
@@ -436,6 +438,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     async execute(args): Promise<ToolResult> {
       const src = resolveRelativePath(String(args.source || ''));
       const dst = resolveRelativePath(String(args.destination || ''));
+      if (!existsSync(src)) return { content: `Source not found: ${src}`, isError: true };
       const srcAuth = await authorizePath(src);
       if (!srcAuth) return { content: `Access denied: source "${src}"`, isError: true };
       const dstAuth = await authorizePath(dst);
@@ -462,6 +465,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     async execute(args): Promise<ToolResult> {
       const src = resolveRelativePath(String(args.source || ''));
       const dst = resolveRelativePath(String(args.destination || ''));
+      if (!existsSync(src)) return { content: `Source not found: ${src}`, isError: true };
       const srcAuth = await authorizePath(src);
       if (!srcAuth) return { content: `Access denied: source "${src}"`, isError: true };
       const dstAuth = await authorizePath(dst);
@@ -491,6 +495,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const path = resolveRelativePath(String(args.path || ''));
+      if (!existsSync(path)) return { content: `File not found: ${path}`, isError: true };
       const authorized = await authorizePath(path);
       if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
       try {
@@ -521,6 +526,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const path = resolveRelativePath(String(args.path || ''));
+      if (!existsSync(path)) return { content: `File not found: ${path}`, isError: true };
       const authorized = await authorizePath(path);
       if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
       try {

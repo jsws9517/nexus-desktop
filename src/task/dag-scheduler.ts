@@ -1,7 +1,7 @@
-import { join } from 'path';
+import { join, extname } from 'path';
 import { homedir } from 'os';
-import { mkdirSync } from 'fs';
-import { TaskGraph, TaskNode, TaskStatus, SubAgentRole } from './types.js';
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync, existsSync, copyFileSync, statSync, rmdirSync } from 'fs';
+import { TaskGraph, TaskNode, SubAgentRole, GraphMode } from './types.js';
 import { SubAgentWorker } from './sub-agent-worker.js';
 import { runQualityGate } from './task-tools.js';
 import { ProgressTracker } from './progress-tracker.js';
@@ -9,6 +9,31 @@ import { preAuthorizeRoot } from '../security/path-authorizer.js';
 
 /** Project code is isolated from the agent's own directory under ~/.nexus/tasks/outputs */
 const TASK_OUTPUTS_DIR = join(homedir(), '.nexus', 'tasks', 'outputs');
+
+/**
+ * Temp-file naming patterns.
+ * Universal: matched in both cwd and projectDir (safe).
+ * ProjectOnly: matched only in projectDir (more aggressive — it is a sandbox).
+ */
+const TEMP_UNIVERSAL = new Set([
+  '_probe', '_scratch', '_tmp', '_smoke', '_baseline',
+  'tmp_', '.tmp_', 'bench_', 'scratch_',
+]);
+const TEMP_PROJECT_ONLY = new Set([
+  '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+  '.coverage', '.eggs', '.tox', '.nox',
+  'dist', 'build',
+  'node_modules', 'npm-debug.log',
+  '.ipynb_checkpoints',
+]);
+/** Entries in TEMP_PROJECT_ONLY that must be an exact (not prefix) match */
+const TEMP_PROJECT_EXACT = new Set([
+  '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+  '.coverage', '.eggs', '.tox', '.nox',
+  'dist', 'build',
+  'node_modules', 'npm-debug.log',
+  '.ipynb_checkpoints',
+]);
 
 export class DAGScheduler {
   constructor(
@@ -43,7 +68,8 @@ export class DAGScheduler {
             const role = (node.agentHint === 'tester' || node.agentHint === 'committer')
               ? node.agentHint as SubAgentRole
               : 'general';
-            const result = await this.worker.execute(node, projectDir, role);
+            const priorResults = this.collectPriorResults(graph, node);
+            const result = await this.worker.execute(node, projectDir, role, priorResults, graph.rootRequest, graph.mode);
             node.result = result.output;
             node.status = 'completed';
             node.error = undefined;
@@ -92,6 +118,51 @@ export class DAGScheduler {
         }
       }));
     }
+
+    // 3. For 'modify' mode: commit changes as a rollback safety net
+    if (graph.mode === 'modify') {
+      await this.gitCommitSnapshot(projectDir, graph.rootRequest);
+    }
+
+    await this.finalize(graph, projectDir);
+  }
+
+  /**
+   * Create a git commit snapshot of all changes for rollback safety.
+   * Only commits tracked/modified files — does NOT push.
+   */
+  private async gitCommitSnapshot(projectDir: string, rootRequest: string): Promise<void> {
+    const { execSync } = await import('child_process');
+    const cwd = process.cwd();
+    try {
+      // Check if we're in a git repo
+      execSync('git rev-parse --git-dir', { cwd, stdio: 'pipe', encoding: 'utf-8' });
+    } catch {
+      console.log('[snapshot] Not a git repository, skipping commit');
+      return;
+    }
+
+    try {
+      const status = execSync('git status --porcelain', { cwd, stdio: 'pipe', encoding: 'utf-8' }).trim();
+      if (!status) {
+        console.log('[snapshot] No changes to commit');
+        return;
+      }
+
+      // Stage all modified tracked files
+      execSync('git add -A', { cwd, stdio: 'pipe', encoding: 'utf-8' });
+
+      // Extract a short summary from the root request for the commit message
+      const summary = rootRequest
+        .replace(/@[^\s]+/g, '').trim()
+        .slice(0, 72);
+      const msg = `feat(agent): auto-snapshot before task "${summary}"\n\n[nexus task snapshot — rollback with: git reset --hard HEAD@{1}]`;
+
+      execSync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, { cwd, stdio: 'pipe', encoding: 'utf-8' });
+      console.log(`[snapshot] Created rollback commit for "${summary.slice(0, 50)}"`);
+    } catch (err) {
+      console.log(`[snapshot] Failed to create snapshot commit: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private async markInProgress(graph: TaskGraph, node: TaskNode): Promise<void> {
@@ -104,6 +175,168 @@ export class DAGScheduler {
       eventType: 'task_started',
       timestamp: Date.now(),
     });
+  }
+
+  private collectPriorResults(graph: TaskGraph, node: TaskNode): Record<string, string> {
+    const results: Record<string, string> = {};
+    for (const depId of node.dependencies) {
+      const depNode = graph.nodes.find((n) => n.id === depId);
+      if (depNode?.status === 'completed' && depNode.result) {
+        results[depNode.id] = depNode.result;
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Post-execution finalization: cleanup temp files and write completion report.
+   */
+  private async finalize(graph: TaskGraph, projectDir: string): Promise<void> {
+    const cwd = process.cwd();
+    const cleaned: string[] = [];
+    const copyLog: string[] = [];
+
+    /**
+     * Check if a file/directory name should be treated as temporary.
+     * @param entry  bare file/directory name (no path)
+     * @param inProjectDir  true when scanning the project output sandbox
+     */
+    function isTempName(entry: string, inProjectDir: boolean): boolean {
+      // .pyc / .pyo / .egg-info are always temp
+      if (entry.endsWith('.pyc') || entry.endsWith('.pyo') || entry.endsWith('.egg-info')) return true;
+      // CLI flag leak in project dir only
+      if (inProjectDir && entry.startsWith('-')) return true;
+      // Universal patterns
+      for (const pat of TEMP_UNIVERSAL) {
+        if (entry.startsWith(pat)) return true;
+      }
+      // Project-only patterns
+      if (inProjectDir) {
+        for (const pat of TEMP_PROJECT_ONLY) {
+          if (TEMP_PROJECT_EXACT.has(pat)) {
+            if (entry === pat) return true;
+          } else {
+            if (entry.startsWith(pat)) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    /** Recursively remove a directory tree. */
+    function rmTree(dir: string): void {
+      try {
+        for (const e of readdirSync(dir)) {
+          const fp = join(dir, e);
+          if (statSync(fp).isDirectory()) rmTree(fp);
+          else unlinkSync(fp);
+        }
+        rmdirSync(dir);
+      } catch { /* race or permission */ }
+    }
+
+    // 1. Clean up temp/probe files from project dir (aggressive) and parent cwd (conservative)
+    for (const dir of [projectDir, cwd]) {
+      const inProject = dir === projectDir;
+      let entries: string[];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        if (!isTempName(entry, inProject)) continue;
+        try {
+          if (statSync(fullPath).isDirectory()) {
+            rmTree(fullPath);
+            cleaned.push(fullPath + '/');
+          } else {
+            unlinkSync(fullPath);
+            cleaned.push(fullPath);
+          }
+        } catch { /* race: already deleted */ }
+      }
+    }
+
+    // 2. Collect deliverables
+    const DELIVERABLE_EXTS = new Set(['.py', '.js', '.ts', '.jsx', '.tsx', '.css', '.html', '.htm']);
+    const isDeliverable = (name: string): boolean => {
+      if (isTempName(name, false)) return false;
+      if (name.startsWith('.') || name === 'node_modules') return false;
+      const ext = extname(name).toLowerCase();
+      return DELIVERABLE_EXTS.has(ext);
+    };
+
+    let deliverables: string[] = [];
+
+    // 2a. Collect from parent CWD: files created by parent agent (copy into projectDir)
+    try {
+      const taskStart = graph.createdAt;
+      deliverables = readdirSync(cwd).filter((f) => {
+        if (!isDeliverable(f)) return false;
+        const outPath = join(projectDir, f);
+        if (existsSync(outPath)) return false;
+        try {
+          const st = statSync(join(cwd, f));
+          if (!st.isFile()) return false;
+          // Only collect files created/modified during this task execution,
+          // not leftover files from previous runs
+          if (st.mtimeMs < taskStart) return false;
+          return true;
+        } catch { return false; }
+      });
+    } catch { /* ignore */ }
+
+    for (const f of deliverables) {
+      const src = join(cwd, f);
+      const dst = join(projectDir, f);
+      try {
+        copyFileSync(src, dst);
+        copyLog.push(f);
+      } catch { /* permission or race */ }
+    }
+
+    // 2b. Collect from projectDir: files written by sub-agents (already in sandbox)
+    try {
+      const sandboxFiles = readdirSync(projectDir).filter((f) => {
+        if (f === '.task-complete.json') return false;
+        return isDeliverable(f) || statSync(join(projectDir, f)).isDirectory();
+      });
+      for (const f of sandboxFiles) {
+        if (!copyLog.includes(f)) copyLog.push(f);
+      }
+    } catch { /* ignore */ }
+
+    // 3. Write completion report
+    const summary = {
+      graphId: graph.id,
+      projectName: graph.projectName,
+      rootRequest: graph.rootRequest,
+      completedAt: Date.now(),
+      taskCount: graph.nodes.length,
+      completedTasks: graph.nodes.filter((n) => n.status === 'completed').length,
+      failedTasks: graph.nodes.filter((n) => n.status === 'failed').length,
+      cleanedTempFiles: cleaned.length,
+      deliverablesCollected: copyLog,
+      outputDir: projectDir,
+    };
+
+    try {
+      writeFileSync(
+        join(projectDir, '.task-complete.json'),
+        JSON.stringify(summary, null, 2),
+        'utf-8',
+      );
+    } catch { /* write error */ }
+
+    if (cleaned.length > 0) {
+      console.log(`[finalize] Cleaned ${cleaned.length} temp file(s):`);
+      for (const f of cleaned) console.log(`         ${f}`);
+    }
+    if (copyLog.length > 0) {
+      console.log(`[finalize] Collected ${copyLog.length} deliverable(s) → ${projectDir}`);
+    }
   }
 
   private cancelDownstream(graph: TaskGraph, failedId: string): void {

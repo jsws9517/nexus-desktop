@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { ToolDefinition, ToolResult } from '../types.js';
-import { TaskNode, TaskGraph, SubAgentRole } from './types.js';
+import { TaskNode, TaskGraph, SubAgentRole, GraphMode } from './types.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { SubAgentWorker } from './sub-agent-worker.js';
 import { ConfigManager } from '../config/index.js';
@@ -116,11 +116,12 @@ async function handleDecompose(
   try {
     const response = await ctx.agent.provider.complete([{
       role: 'user',
-      content: `Decompose the following request into a list of sub-tasks, and provide a short English project name (project_name, used as directory name, e.g. snake-game, blog-api).
+      content: `Decompose the following request into a MINIMAL list of sub-tasks (3-5 tasks max). Provide a short English project name (project_name, used as directory name, e.g. snake-game, blog-api).
 
 Output format (strict JSON, no extra text):
 {
   "project_name": "...",
+  "mode": "new | modify",
   "tasks": [
     {"id":"t1","description":"...","dependencies":[]},
     {"id":"t2","description":"...","dependencies":["t1"]}
@@ -129,10 +130,11 @@ Output format (strict JSON, no extra text):
 
 Requirements:
 - project_name: short English directory name generated from the request (lowercase letters, digits, hyphens only)
+- mode: "new" for greenfield development (no existing files) or "modify" when the request references existing files via @path (optimization, refactoring, bugfix)
+- 3-5 tasks MAX. Consolidate related work (analysis + planning into one task, refactor + optimize into one task).
 - Each task has id (e.g. "t1","t2"), description, and dependencies (list of other task ids it depends on)
 - dependencies must form a Directed Acyclic Graph (DAG); tasks with no dependencies use empty array
-- Each task should be small enough to execute independently (~5-15 minutes work)
-- Do not miss critical steps, do not repeat
+- If the request references specific file paths (via @path or [Referenced file:]), embed the absolute file path in the relevant task descriptions so sub-agents know which files to work on
 
 Request: ${request}`,
     }]);
@@ -144,6 +146,7 @@ Request: ${request}`,
 
     const parsed = JSON.parse(jsonMatch[0]);
     const projectName: string | undefined = parsed.project_name || undefined;
+    const mode: GraphMode | undefined = (parsed.mode === 'new' || parsed.mode === 'modify') ? parsed.mode : undefined;
     const nodes: TaskNode[] = Array.isArray(parsed) ? parsed : parsed.tasks;
     const now = Date.now();
     const taskNodes: TaskNode[] = nodes.map((n: Partial<TaskNode>, i: number) => ({
@@ -152,7 +155,7 @@ Request: ${request}`,
       dependencies: n.dependencies || [],
       status: 'pending' as const,
       retryCount: 0,
-      maxRetries: 2,
+      maxRetries: 1,
       createdAt: now,
       updatedAt: now,
     }));
@@ -162,6 +165,7 @@ Request: ${request}`,
       sessionId: ctx.sessionId || 'unknown',
       rootRequest: request,
       projectName,
+      mode,
       nodes: taskNodes,
       createdAt: now,
       updatedAt: now,

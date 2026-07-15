@@ -17,11 +17,14 @@ export interface TaskNode {
   updatedAt: number;
 }
 
+export type GraphMode = 'new' | 'modify';
+
 export interface TaskGraph {
   id: string;
   sessionId: string;
   rootRequest: string;
   projectName?: string;
+  mode?: GraphMode;
   nodes: TaskNode[];
   createdAt: number;
   updatedAt: number;

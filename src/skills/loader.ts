@@ -64,6 +64,17 @@ export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
           skills.push(mdSkill);
           loadedNames.add(mdSkill.name);
         }
+        continue;
+      }
+
+      // Final fallback: no SKILL.md and no loadable root JS — auto-generate from directory contents
+      const genericSkill = tryLoadGenericFallback(fullPath, entry, indexData);
+      if (genericSkill) {
+        if (!loadedNames.has(genericSkill.name)) {
+          genericSkill.source = source;
+          skills.push(genericSkill);
+          loadedNames.add(genericSkill.name);
+        }
       }
     }
   }
@@ -313,6 +324,36 @@ function tryLoadMdSkill(dirPath: string, name: string, indexData?: { skills?: Ar
       return {
         content: `Skill "${skillName}" instructions:\n\n${body}\n\nUser task: ${userTask}`,
       };
+    },
+  };
+}
+
+/** Final fallback: report invalid skill when both SKILL.md and README.md are missing. */
+function tryLoadGenericFallback(dirPath: string, name: string, indexData?: { skills?: Array<{ name: string; path: string; metadata?: { version?: string; description?: string } }> }): Skill | undefined {
+  const meta = indexData?.skills?.find((s) => s.name === name)?.metadata;
+  const skillName = name;
+  const skillVersion = meta?.version || '1.0.0';
+  const skillDescription = meta?.description || `Skill: ${name}`;
+
+  const body = `ERROR: Skill "${skillName}" is invalid — neither SKILL.md nor README.md found in directory.`;
+
+  return {
+    name: skillName,
+    version: skillVersion,
+    description: skillDescription,
+    tools: [{
+      name: skillName,
+      description: `Invoke the "${skillName}" skill. ${skillDescription}`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'What you want the skill to do' },
+        },
+        required: ['task'],
+      } as Record<string, unknown>,
+    }],
+    async callTool(_toolName: string, _args: Record<string, unknown>): Promise<ToolResult> {
+      return { content: body, isError: true };
     },
   };
 }
