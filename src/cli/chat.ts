@@ -147,6 +147,27 @@ async function expandAtMentions(input: string, cwd: string): Promise<string> {
   return input;
 }
 
+/**
+ * Resolve @paths to their absolute OS paths WITHOUT file-existence check or
+ * authorization prompt.  Used by /btw so the LLM receives real paths to
+ * guide its file-search reasoning.
+ */
+function resolveAtPathsToAbsolute(input: string, cwd: string): string {
+  const paths = extractAtPaths(input);
+  if (paths.length === 0) return input;
+
+  let result = input;
+  for (const rawPath of paths) {
+    // Resolve relative to cwd; homedir (~) is handled natively by Node's path.resolve on Windows
+    const absPath = resolve(cwd, rawPath.replace(/^~/, homedir()));
+    // Replace "@rawPath" with "@absPath" in the text
+    // Use a regex that matches the exact rawPath to avoid partial replacements
+    const escaped = rawPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    result = result.replace(new RegExp(`@${escaped}\\b`), `@${absPath}`);
+  }
+  return result;
+}
+
 // ---- Security confirmation ----
 
 let _dangerousCmdPrompter: ((question: string) => Promise<string>) | null = null;
@@ -879,8 +900,10 @@ async function handleSlashCommand(
       console.log(`  /rename <name>   - ${i18nTr('h_rename')}`);
 
       console.log(t().heading(i18nTr('h_model')));
-      console.log(`  /model           - ${i18nTr('h_model_switch')}`);
-      console.log(`  /provider        - ${i18nTr('h_provider')}`);
+      console.log(`  /model                  - ${i18nTr('h_model_switch')}`);
+      console.log(`  /model switch|set <id>  - ${i18nTr('h_model_switch')}`);
+      console.log(`  /provider               - ${i18nTr('h_provider')}`);
+      console.log(`  /provider set|switch <name> - ${i18nTr('h_provider')} (switch service provider)`);
       console.log(`  /compact         - ${i18nTr('h_compact')}`);
       console.log(`  /new             - ${i18nTr('h_new')}`);
       console.log(`  /clear           - ${i18nTr('h_clear')}`);
@@ -1204,18 +1227,76 @@ async function handleSlashCommand(
       return false;
     }
 
-    case 'provider':
-      console.log(`Provider: ${agent.provider.name} (${agent.provider.model})`);
-      return false;
+    case 'provider': {
+      const current = agent.config.getActiveProvider();
+      const allProviders = agent.config.listProviders();
 
-    case 'model':
       if (!args[0]) {
-        console.log(`Current model: ${agent.provider.model}`);
+        console.log(t().success(`Active provider: ${current}`));
+        if (allProviders.length > 0) {
+          console.log(t().textDim('\nAvailable providers:'));
+          for (const p of allProviders) {
+            const marker = p === current ? t().success(' *') : '';
+            console.log(`  ${t().entityName(p)}${marker}`);
+          }
+        }
+        console.log(t().textDim('\nUsage: /provider set <name> | /provider switch <name>'));
+        return false;
+      }
+
+      const sub = args[0];
+      if (sub === 'set' || sub === 'switch') {
+        const name = args[1];
+        if (!name) {
+          console.log(t().warning(`Usage: /provider ${sub} <provider-name>`));
+          return false;
+        }
+        if (!allProviders.includes(name)) {
+          console.log(t().error(`Provider not found: ${name}`));
+          console.log(t().textDim(`Available: ${allProviders.join(', ')}`));
+          return false;
+        }
+        try {
+          await agent.switchProvider(name);
+          console.log(t().success(`Provider switched: ${name}  (model: ${agent.provider.model})`));
+        } catch (err) {
+          console.log(t().error(`Switch failed: ${err instanceof Error ? err.message : String(err)}`));
+        }
+        return false;
+      }
+
+      console.log(t().warning(`Unknown subcommand: ${sub}`));
+      console.log(t().textDim('Usage: /provider [set|switch] <name>'));
+      return false;
+    }
+
+    case 'model': {
+      // /model | /model switch <id> | /model set <id> | /model <id>
+      if (!args[0]) {
+        console.log(t().success(`Current model: ${agent.provider.name} · ${agent.provider.model}`));
+        return false;
+      }
+
+      let target: string | undefined;
+      if (args[0] === 'switch' || args[0] === 'set') {
+        target = args[1];
       } else {
-        const change = await agent.switchModel(args[0]);
+        target = args[0];
+      }
+
+      if (!target) {
+        console.log(t().warning('Usage: /model [switch|set] <model-id>'));
+        return false;
+      }
+
+      try {
+        const change = await agent.switchModel(target);
         console.log(t().success(`Model switched: ${change}`));
+      } catch (err) {
+        console.log(t().error(`Switch failed: ${err instanceof Error ? err.message : String(err)}`));
       }
       return false;
+    }
 
     case 'tools':
       const tools = [...agent.mcp.getAllTools(), ...agent.skills.getTools()];
@@ -1272,8 +1353,13 @@ async function handleSlashCommand(
         console.log(t().textDim('Usage: /btw <info>  —  Inject context for the LLM to keep in mind'));
         return false;
       }
-      agent.pendingBtw = btwInfo;
-      console.log(t().textDim(`✓ Context noted: "${btwInfo.slice(0, 80)}${btwInfo.length > 80 ? '...' : ''}"`));
+      // Resolve @paths to absolute OS paths so the LLM receives real paths
+      // instead of relative hints like @../file.md, avoiding costly brute-force
+      // searches across all allowed directories.
+      const expanded = resolveAtPathsToAbsolute(btwInfo, process.cwd());
+      agent.pendingBtw = expanded;
+      const display = expanded.slice(0, 80) + (expanded.length > 80 ? '...' : '');
+      console.log(t().textDim(`✓ Context noted: "${display}"`));
       console.log(t().textDim('  Will be injected before the next LLM turn.'));
       return false;
     }

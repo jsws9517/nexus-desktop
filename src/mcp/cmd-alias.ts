@@ -23,12 +23,29 @@ const ALIASES: [RegExp, string][] = [
   [/^time\b/, 'time /t'],
 ];
 
+/**
+ * Split a compound command (separated by &&, ||, ;, |) into individual
+ * segments, translate each one independently (preserving its leading ^
+ * anchor), then rejoin.  This ensures `cd .. && pwd` translates both
+ * segments correctly.
+ */
 export function translateCommand(cmd: string): string {
   if (process.platform !== 'win32') return cmd;
-  for (const [pattern, replacement] of ALIASES) {
-    if (pattern.test(cmd)) {
-      return cmd.replace(pattern, replacement);
+
+  // Split while preserving the separators so we can rejoin faithfully.
+  // Matches:  &&  ||  ;  |  (with optional surrounding whitespace)
+  const parts = cmd.split(/(\s*&&\s*|\s*\|\|\s*|\s*;\s*|\s*\|\s*)/);
+
+  const translated = parts.map((part, i) => {
+    // Odd indices are the separators themselves — pass through unchanged.
+    if (i % 2 === 1) return part;
+    // Even indices are command segments — apply all alias replacements.
+    let segment = part;
+    for (const [pattern, replacement] of ALIASES) {
+      segment = segment.replace(pattern, replacement);
     }
-  }
-  return cmd;
+    return segment;
+  });
+
+  return translated.join('');
 }

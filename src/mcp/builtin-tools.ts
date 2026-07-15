@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync, cpSync, unlinkSync, rmdirSync } from 'fs';
-import { join } from 'path';
+import { resolve, join } from 'path';
+import { homedir } from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { lookup } from 'dns/promises';
@@ -11,6 +12,21 @@ import { sanitizeContent } from '../utils/sanitize.js';
 import { translateCommand } from './cmd-alias.js';
 
 const execAsync = promisify(exec);
+
+/**
+ * Resolve relative paths (~, ., ..) to absolute OS paths.
+ * Lets the LLM pass paths like ~/dir/file, ../file, ./file without
+ * needing to resolve them to absolute paths first.
+ */
+function resolveRelativePath(p: string): string {
+  if (!p) return p;
+  // ~ → homedir
+  if (p.startsWith('~')) {
+    return resolve(homedir(), p.slice(1).replace(/^[/\\]/, ''));
+  }
+  // Everything else gets resolved relative to CWD (resolve handles absolute as-is)
+  return resolve(process.cwd(), p);
+}
 
 // ---- exec_command security ----
 
@@ -217,7 +233,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['path'],
     },
     async execute(args): Promise<ToolResult> {
-      const path = String(args.path || '');
+      const path = resolveRelativePath(String(args.path || ''));
       const authorized = await authorizePath(path);
       if (!authorized) {
         return { content: `Access denied: "${path}" is not in the allowed path list and access was rejected by user.`, isError: true };
@@ -247,14 +263,15 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       const paths = (args.paths as string[]) || [];
       const results: string[] = [];
       for (const p of paths) {
-        const authorized = await authorizePath(p);
-        if (!authorized) { results.push(`\n--- ${p}: ACCESS DENIED ---`); continue; }
-        if (!existsSync(p)) { results.push(`\n--- ${p}: NOT FOUND ---`); continue; }
+        const resolved = resolveRelativePath(p);
+        const authorized = await authorizePath(resolved);
+        if (!authorized) { results.push(`\n--- ${resolved}: ACCESS DENIED ---`); continue; }
+        if (!existsSync(resolved)) { results.push(`\n--- ${resolved}: NOT FOUND ---`); continue; }
         try {
-          const content = readFileSync(p, 'utf-8');
-          results.push(`\n--- ${p} ---\n${content}`);
+          const content = readFileSync(resolved, 'utf-8');
+          results.push(`\n--- ${resolved} ---\n${content}`);
         } catch (err) {
-          results.push(`\n--- ${p}: ${err instanceof Error ? err.message : String(err)} ---`);
+          results.push(`\n--- ${resolved}: ${err instanceof Error ? err.message : String(err)} ---`);
         }
       }
       return { content: results.join('') };
@@ -283,7 +300,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['path', 'edits'],
     },
     async execute(args): Promise<ToolResult> {
-      const path = String(args.path || '');
+      const path = resolveRelativePath(String(args.path || ''));
       const edits = (args.edits as Array<{ oldText: string; newText: string }>) || [];
       const dryRun = !!args.dryRun;
       const authorized = await authorizePath(path);
@@ -330,7 +347,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['path'],
     },
     async execute(args): Promise<ToolResult> {
-      const path = String(args.path || '');
+      const path = resolveRelativePath(String(args.path || ''));
       const parent = path.split(/[/\\]/).slice(0, -1).join('/') || '.';
       const authorized = await authorizePath(parent);
       if (!authorized) return { content: `Access denied: parent of "${path}"`, isError: true };
@@ -353,7 +370,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['path'],
     },
     async execute(args): Promise<ToolResult> {
-      const path = String(args.path || '');
+      const path = resolveRelativePath(String(args.path || ''));
       const authorized = await authorizePath(path);
       if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
       try {
@@ -377,7 +394,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['path'],
     },
     async execute(args): Promise<ToolResult> {
-      const dirPath = String(args.path || '');
+      const dirPath = resolveRelativePath(String(args.path || ''));
       const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 10, 1), 20);
       const authorized = await authorizePath(dirPath);
       if (!authorized) return { content: `Access denied: "${dirPath}"`, isError: true };
@@ -417,8 +434,8 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['source', 'destination'],
     },
     async execute(args): Promise<ToolResult> {
-      const src = String(args.source || '');
-      const dst = String(args.destination || '');
+      const src = resolveRelativePath(String(args.source || ''));
+      const dst = resolveRelativePath(String(args.destination || ''));
       const srcAuth = await authorizePath(src);
       if (!srcAuth) return { content: `Access denied: source "${src}"`, isError: true };
       const dstAuth = await authorizePath(dst);
@@ -443,8 +460,8 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['source', 'destination'],
     },
     async execute(args): Promise<ToolResult> {
-      const src = String(args.source || '');
-      const dst = String(args.destination || '');
+      const src = resolveRelativePath(String(args.source || ''));
+      const dst = resolveRelativePath(String(args.destination || ''));
       const srcAuth = await authorizePath(src);
       if (!srcAuth) return { content: `Access denied: source "${src}"`, isError: true };
       const dstAuth = await authorizePath(dst);
@@ -473,7 +490,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['path'],
     },
     async execute(args): Promise<ToolResult> {
-      const path = String(args.path || '');
+      const path = resolveRelativePath(String(args.path || ''));
       const authorized = await authorizePath(path);
       if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
       try {
@@ -503,7 +520,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['path'],
     },
     async execute(args): Promise<ToolResult> {
-      const path = String(args.path || '');
+      const path = resolveRelativePath(String(args.path || ''));
       const authorized = await authorizePath(path);
       if (!authorized) return { content: `Access denied: "${path}"`, isError: true };
       try {
@@ -531,7 +548,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       required: ['path', 'content'],
     },
     async execute(args): Promise<ToolResult> {
-      const path = String(args.path || '');
+      const path = resolveRelativePath(String(args.path || ''));
       const content = sanitizeContent(String(args.content || ''));
       const authorized = await authorizePath(path);
       if (!authorized) {
@@ -560,7 +577,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     async execute(args, ctx): Promise<ToolResult> {
       const command = String(args.command || '');
       const timeout = Number(args.timeout || 30000);
-      const requestedCwd = args.cwd ? String(args.cwd) : undefined;
+      const requestedCwd = args.cwd ? resolveRelativePath(String(args.cwd)) : undefined;
       if (!command) {
         return { content: 'Empty command: you must provide a non-empty "command" string to exec_command. For reading files use file_read instead.', isError: true };
       }
