@@ -1,6 +1,6 @@
 {
   "name": "nexus-coder",
-  "version": "1.1.5-1",
+  "version": "1.1.5-2",
   "description": "NexusAgent - A powerful LLM Code Agent with MCP, Skills, and ACP support",
   "main": "dist/src/index.js",
   "bin": {
