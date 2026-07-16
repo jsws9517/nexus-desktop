@@ -1,7 +1,7 @@
 export type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 
 /** Role a sub-agent runs as. `general` is the default open-ended executor. */
-export type SubAgentRole = 'general' | 'tester' | 'committer';
+export type SubAgentRole = 'general' | 'tester' | 'committer' | 'skill-fixer';
 
 export interface TaskNode {
   id: string;

@@ -188,6 +188,7 @@ export class Agent {
     const providerConfig = this.config.getProvider();
     this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options, this.config.getActiveProvider());
     this.mcp = new ClientManager();
+    this.mcp.agent = this;
     this.session = new SessionManager();
     this.sessionMemory = new SessionMemory();
     this.context = new ContextManager({ provider: this.provider, maxContextTokens: this.config.getModelContextLimit() });

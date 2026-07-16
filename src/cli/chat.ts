@@ -916,7 +916,12 @@ async function handleSlashCommand(
       console.log(t().heading(i18nTr('h_tools')));
       console.log(`  /tools           - ${i18nTr('h_tools_list')}`);
       console.log(`  /mcp             - ${i18nTr('h_mcp')}`);
-      console.log(`  /skills          - ${i18nTr('h_skills')}`);
+      console.log(`  /skills [list]   - ${i18nTr('h_skills')}`);
+      console.log(`        create     - Interactive skill creation`);
+      console.log(`        validate   - Validate skill structure against paradigm`);
+      console.log(`        fix        - Auto-fix common skill issues`);
+      console.log(`        fix-smart  - LLM-powered fix (handles complex issues)`);
+      console.log(`        reload     - Reload all skills from disk`);
       console.log(`  /plugins         - ${i18nTr('h_plugins')}`);
       console.log(`  /btw <info>      - ${i18nTr('h_btw')}`);
       console.log(`  /theme           - ${i18nTr('h_theme')}`);
@@ -1319,6 +1324,119 @@ async function handleSlashCommand(
       return false;
 
     case 'skills': {
+      const sub = args[0];
+      const { createSkillFromPrompt, validateSkill, fixSkill } = await import('../skills/manager.js');
+
+      if (sub === 'create') {
+        const name = args.slice(1).join(' ');
+        if (!name) {
+          console.log(t().textDim('Usage: /skills create <name> — interactive skill creation'));
+          return false;
+        }
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const ask = (q: string): Promise<string> => new Promise((r) => rl.question(q + ' ', r));
+        console.log(t().heading(`Creating skill "${name}"...\n`));
+        const description = await ask(t().textDim('Description:'));
+        if (!description) { rl.close(); console.log(t().error('Cancelled.')); return false; }
+        console.log(t().textDim('Enter instructions (end with Ctrl+Z or --- on its own line):'));
+        const lines: string[] = [];
+        for await (const line of rl) {
+          if (line.trim() === '---') break;
+          lines.push(line);
+        }
+        rl.close();
+        const instructions = lines.join('\n').trim();
+        if (!instructions) { console.log(t().error('Cancelled.')); return false; }
+        const result = createSkillFromPrompt(name, description, instructions);
+        console.log(t().success(`\nSkill created: ${result.name}`));
+        console.log(t().textDim(`  ${result.skillFile}`));
+        console.log(t().textDim('Reload with: /skills reload'));
+        return false;
+      }
+
+      if (sub === 'validate' || sub === 'fix') {
+        const skillPath = args.slice(1).join(' ');
+        if (!skillPath) {
+          console.log(t().textDim(`Usage: /skills ${sub} <name-or-path>`));
+          console.log(t().textDim('  name: a skill in ~/.nexus/skills/ (e.g. html-ppt-skill)'));
+          console.log(t().textDim('  path: absolute or relative path to a skill directory'));
+          return false;
+        }
+        if (sub === 'fix') {
+          const result = fixSkill(skillPath);
+          if (result.fixed.length > 0) {
+            console.log(t().heading('Fixed:'));
+            for (const f of result.fixed) console.log(`  ${t().success('✓')} ${f}`);
+          }
+          if (result.remaining.length > 0) {
+            console.log(t().heading('Remaining issues:'));
+            for (const r of result.remaining) console.log(`  ${r.severity === 'error' ? t().error('✗') : t().warning('⚠')} [${r.severity}] ${r.message}`);
+          }
+          if (result.fixed.length === 0 && result.remaining.length === 0) console.log(t().success('No issues found. Skill is valid.'));
+        } else {
+          const report = validateSkill(skillPath);
+          console.log(t().heading(`Skill Validation: ${report.valid ? t().success('PASS') : t().error('FAIL')}`));
+          for (const issue of report.issues) {
+            const icon = issue.severity === 'error' ? t().error('✗') : issue.severity === 'warning' ? t().warning('⚠') : t().textDim('ℹ');
+            console.log(`  ${icon} [${issue.severity}] ${issue.message}`);
+            if (issue.fix) console.log(`    ${t().textDim('Fix: ' + issue.fix)}`);
+          }
+          if (report.issues.length === 0) console.log('  Skill follows the expected paradigm.');
+        }
+        return false;
+      }
+
+      if (sub === 'reload') {
+        await agent.skills.reload();
+        const count = agent.skills.list().length;
+        console.log(t().success(`Skills reloaded. ${count} skill(s) loaded.`));
+        return false;
+      }
+
+      if (sub === 'fix-smart') {
+        const skillPath = args.slice(1).join(' ');
+        if (!skillPath) {
+          console.log(t().textDim('Usage: /skills fix-smart <name-or-path> [extra instructions]'));
+          return false;
+        }
+        const { validateSkill } = await import('../skills/manager.js');
+        const report = validateSkill(skillPath);
+        if (report.valid && report.issues.length === 0) {
+          console.log(t().success('No issues found. Skill already follows the paradigm.'));
+          return false;
+        }
+        const issueSummary = report.issues.map((i) =>
+          `  [${i.severity}] ${i.message}`
+        ).join('\n');
+        console.log(t().heading('Spawning Skill Fixer sub-agent...'));
+        console.log(t().textDim(`Issues to fix:\n${issueSummary}`));
+
+        const { SubAgentWorker } = await import('../task/sub-agent-worker.js');
+        const node = {
+          id: `skill-fix-${Date.now()}`,
+          description: `Fix all issues in the skill at "${skillPath}".\n\nIssues to fix:\n${issueSummary}`,
+          dependencies: [],
+          status: 'in_progress' as const,
+          retryCount: 0,
+          maxRetries: 1,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        try {
+          const worker = new SubAgentWorker(agent);
+          const result = await worker.execute(node, undefined, 'skill-fixer');
+          console.log(t().heading('Skill Fixer Result:'));
+          console.log(result.output);
+        } catch (err) {
+          console.log(t().error(`Skill fix failed: ${err instanceof Error ? err.message : String(err)}`));
+        }
+        return false;
+      }
+
+      // No subcommand or unrecognized → list skills (default)
+      if (sub && sub !== 'list') {
+        console.log(t().textDim(`Unknown subcommand: ${sub}`));
+      }
       const allSkills = agent.skills.list();
       const skills = allSkills.filter(s => s.source !== 'plugins');
       if (skills.length === 0) {
@@ -1330,6 +1448,7 @@ async function handleSlashCommand(
           console.log(`  ${t().entityName(s.name)} v${s.version}${src}${s.description ? ' - ' + s.description : ''}`);
         }
       }
+      console.log(t().textDim('\nSubcommands: create <name> | validate <path> | fix <path> | fix-smart <path> | reload'));
       return false;
     }
 
@@ -1353,9 +1472,6 @@ async function handleSlashCommand(
         console.log(t().textDim('Usage: /btw <info>  —  Inject context for the LLM to keep in mind'));
         return false;
       }
-      // Resolve @paths to absolute OS paths so the LLM receives real paths
-      // instead of relative hints like @../file.md, avoiding costly brute-force
-      // searches across all allowed directories.
       const expanded = resolveAtPathsToAbsolute(btwInfo, process.cwd());
       agent.pendingBtw = expanded;
       const display = expanded.slice(0, 80) + (expanded.length > 80 ? '...' : '');

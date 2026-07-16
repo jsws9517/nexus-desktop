@@ -72,6 +72,8 @@ export class ClientManager {
   private builtinTools = BUILTIN_TOOLS;
   /** Default working directory for builtin exec_command (e.g. active project dir). */
   workDir?: string;
+  /** Parent Agent, set by Agent.init() for tools that need agent context. */
+  agent?: import('../agent.js').Agent;
 
   async connectServer(name: string, config: ServerConfig): Promise<void> {
     const client = new Client(
@@ -135,7 +137,7 @@ export class ClientManager {
     // Check builtin tools first
     const builtin = this.builtinTools.find((t) => t.name === name);
     if (builtin) {
-      return builtin.execute(args, { workDir: this.workDir });
+      return builtin.execute(args, { workDir: this.workDir, agent: this.agent });
     }
 
     // Find in MCP servers

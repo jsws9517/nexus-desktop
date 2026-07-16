@@ -37,6 +37,8 @@ export class SubAgentWorker {
     child.detailMode = false;
     child.suppressToolOutput = true;
     child.maxTurns = roleDef.maxTurns;
+    // Sub-agents need a generous context window to read files and iterate
+    child.context.setMaxContextTokens(128000);
 
     // Scope the child agent's tools to the role's allowlist (if any)
     if (roleDef.allowedTools && roleDef.allowedTools.length > 0) {
@@ -104,11 +106,11 @@ export class SubAgentWorker {
       }
     }
 
-    let prompt = sections.join('\n\n') + '\n\n' + task.description;
+    const rolePrefix = roleDef.systemPrompt
+      ? `[Role: ${roleDef.label}]\n${roleDef.systemPrompt}\n\n---\n\n`
+      : '';
+    let prompt = sections.join('\n\n') + '\n\n' + rolePrefix + task.description;
 
-    if (roleDef.systemPrompt) {
-      child.context.prependToSystem(`[Role: ${roleDef.label}]\n${roleDef.systemPrompt}`);
-    }
     await child.chat(prompt);
 
     await child.shutdown();

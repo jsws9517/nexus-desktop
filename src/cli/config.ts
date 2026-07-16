@@ -43,6 +43,7 @@ export function registerConfigCommand(program: Command): void {
       console.log(t.heading('Configuration:'));
       console.log(`  Active provider: ${t.entityName(cfg.activeProvider)}`);
       console.log(`  Prompt name: ${t.entityName(cfg.promptName || 'you')}`);
+      console.log(`  Language: ${t.entityName(cfg.language || 'en')}`);
       console.log(t.heading('  Providers:'));
       for (const [name, p] of Object.entries(cfg.providers)) {
         const marker = name === cfg.activeProvider ? t.success('*') : ' ';
@@ -54,6 +55,20 @@ export function registerConfigCommand(program: Command): void {
         console.log(t.heading('  OpenCode Zen:'));
         console.log(renderOpencodeZenStatus(cfg).split('\n').map((l) => '    ' + l).join('\n'));
       }
+      const visionMode = cfg.visionMode || 'local-first';
+      const activeVp = cfg.activeVisionProvider || 'glm-4v';
+      const vpCount = Object.keys(cfg.visionProviders || {}).length;
+      console.log(`\n  Vision mode: ${t.entityName(visionMode)}`);
+      console.log(`  Active vision provider: ${t.entityName(activeVp)} (${vpCount} configured)`);
+      const acpCfg = cfg.acp || {};
+      const acpStatus = acpCfg.enabled ? t.success('enabled') : t.textDim('disabled');
+      const agentCount = (acpCfg.agents || []).length;
+      console.log(`  ACP mode: ${acpStatus} (${agentCount} agent(s))`);
+      if (acpCfg.port) console.log(`  ACP port: ${acpCfg.port}`);
+      const qg = cfg.qualityGate || {};
+      const autoTest = qg.autoTest !== false;
+      const autoCommit = qg.autoCommit === true;
+      console.log(`  Quality Gate: auto-test=${autoTest ? t.success('on') : t.textDim('off')}, auto-commit=${autoCommit ? t.success('on') : t.textDim('off')}`);
       if (cfg.mcpServers) {
         console.log(t.heading('  MCP Servers:'));
         for (const [name, s] of Object.entries(cfg.mcpServers)) {
@@ -341,6 +356,31 @@ export function registerConfigCommand(program: Command): void {
 
   // ACP configuration commands
   const acpCmd = configCmd.command('acp').description('ACP agent-to-agent configuration');
+
+  acpCmd
+    .command('list')
+    .description('Show ACP status and registered agents')
+    .action(() => {
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpCfg = cfg.acp || {};
+      const acpStatus = acpCfg.enabled ? t.success('enabled') : t.textDim('disabled');
+      console.log(t.heading('ACP Configuration:'));
+      console.log(`  Status: ${acpStatus}`);
+      console.log(`  Port: ${acpCfg.port || t.textDim('not set (default 3000)')}`);
+      console.log(`  Skills path: ${acpCfg.skillsPath || t.textDim('not set')}`);
+      const agents = acpCfg.agents || [];
+      if (agents.length > 0) {
+        console.log(t.heading(`  Agents (${agents.length}):`));
+        for (const agent of agents) {
+          console.log(`    ${t.entityName(agent.name)} (${agent.id})`);
+          console.log(`      Endpoint: ${agent.endpoint}`);
+          console.log(`      Capabilities: ${agent.capabilities.join(', ')}`);
+        }
+      } else {
+        console.log(t.textDim('  No ACP agents configured'));
+      }
+    });
 
   acpCmd
     .command('enable')

@@ -10,6 +10,8 @@ export interface McpServerConnection {
 export interface BuiltinToolContext {
   /** Default working directory for shell commands (e.g. the active project dir). */
   workDir?: string;
+  /** The parent Agent instance, available when called from within a chat session. */
+  agent?: import('../agent.js').Agent;
 }
 
 export interface BuiltinTool {

@@ -67,6 +67,21 @@ export function getTaskToolDefinitions(): ToolDefinition[] {
       },
     },
     {
+      name: 'spawn_skill_fixer',
+      description:
+        'Spawn a Skill Fixer sub-agent that uses LLM to intelligently fix issues in a skill directory. Fixes YAML frontmatter, adds tool references, expands instructions, converts | block scalars to inline, fixes old paths, etc.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description: 'Path or name of the skill to fix, plus any specific instructions. E.g. "Fix all issues in local-tts"',
+          },
+        },
+        required: ['task'],
+      },
+    },
+    {
       name: 'query_tasks',
       description: t('status_tool_desc'),
       inputSchema: {
@@ -97,6 +112,8 @@ export async function executeTaskTool(
       return handleSpawnSubagent(args, agentContext, 'tester');
     case 'spawn_committer':
       return handleSpawnSubagent(args, agentContext, 'committer');
+    case 'spawn_skill_fixer':
+      return handleSpawnSubagent(args, agentContext, 'skill-fixer');
     case 'query_tasks':
       return handleQueryTasks(args, agentContext);
     default:
@@ -285,7 +302,7 @@ export async function runQualityGate(
 
 function normalizeRole(value: unknown): import('./types.js').SubAgentRole {
   const v = String(value || 'general');
-  if (v === 'tester' || v === 'committer' || v === 'general') return v;
+  if (v === 'tester' || v === 'committer' || v === 'general' || v === 'skill-fixer') return v as import('./types.js').SubAgentRole;
   return 'general';
 }
 

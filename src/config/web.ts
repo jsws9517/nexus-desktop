@@ -79,9 +79,9 @@ function buildSchema(): SchemaCategory[] {
       id: 'acp',
       label: 'ACP',
       fields: [
-        { key: 'enabled', label: 'Enabled', type: 'boolean' },
-        { key: 'port', label: 'Port', type: 'number' },
-        { key: 'skillsPath', label: 'Skills Path', type: 'string' },
+        { key: 'acp.enabled', label: 'Enabled', type: 'boolean' },
+        { key: 'acp.port', label: 'Port', type: 'number' },
+        { key: 'acp.skillsPath', label: 'Skills Path', type: 'string' },
         { key: 'acp.agents', label: 'Agents', type: 'object' },
       ],
     },
@@ -509,6 +509,56 @@ function renderField(field, value, onChange) {
     };
     group.appendChild(inp); group.appendChild(toggle);
     div.appendChild(group);
+    } else if (field.type === 'object' && field.key === 'acp.agents') {
+      const agents = Array.isArray(value) ? value : [];
+      const container = document.createElement('div');
+      for (let i = 0; i < agents.length; i++) {
+        const a = agents[i];
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+          '<strong>' + esc(a.name || a.id) + '</strong>' +
+          '<button class="btn btn-danger btn-sm" data-idx="' + i + '">Remove</button></div>';
+        card.querySelector('button').onclick = () => {
+          agents.splice(i, 1);
+          onChange([...agents]);
+        };
+        const rows = [
+          { label: 'ID', val: a.id },
+          { label: 'Endpoint', val: a.endpoint },
+          { label: 'Capabilities', val: Array.isArray(a.capabilities) ? a.capabilities.join(', ') : '' },
+        ];
+        for (const r of rows) {
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;margin-bottom:4px;font-size:13px';
+          row.innerHTML = '<span style="color:var(--text-dim);width:120px;flex-shrink:0">' + r.label + ':</span>' +
+            '<span>' + esc(r.val || '') + '</span>';
+          card.appendChild(row);
+        }
+        container.appendChild(card);
+      }
+      const addBtn = document.createElement('button');
+      addBtn.className = 'btn btn-primary';
+      addBtn.textContent = '+ Add Agent';
+      addBtn.style.marginTop = '8px';
+      addBtn.onclick = () => {
+        const name = prompt('Agent name:');
+        if (!name) return;
+        const endpoint = prompt('Agent endpoint URL:');
+        if (!endpoint) return;
+        const caps = prompt('Capabilities (comma-separated, e.g. chat,code):');
+        const id = name.toLowerCase().replace(/\s+/g, '-');
+        agents.push({
+          id,
+          name,
+          endpoint,
+          capabilities: caps ? caps.split(',').map((c) => c.trim()).filter(Boolean) : [],
+        });
+        onChange([...agents]);
+      };
+      container.appendChild(addBtn);
+      div.appendChild(container);
+      return div;
     } else if (field.type === 'object') {
       const ta = document.createElement('textarea');
       ta.rows = 8;

@@ -641,4 +641,149 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       }
     },
   },
+  {
+    name: 'create_skill',
+    description: 'Create a new SKILL.md skill in ~/.nexus/skills/. Provide a name, description, and markdown instructions. The skill becomes available after reload.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Skill name (lowercase, hyphens allowed, e.g. my-weather-skill)' },
+        description: { type: 'string', description: 'Short description of what the skill does' },
+        instructions: { type: 'string', description: 'Full markdown instructions the skill should follow. Include workflow steps, tool usage, output format.' },
+        version: { type: 'string', description: 'Semantic version (optional, defaults to 1.0.0)' },
+      },
+      required: ['name', 'description', 'instructions'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const { createSkillFromPrompt } = await import('../skills/manager.js');
+      try {
+        const result = createSkillFromPrompt(
+          String(args.name || ''),
+          String(args.description || ''),
+          String(args.instructions || ''),
+          String(args.version || '') || undefined,
+        );
+        return {
+          content: `Skill created successfully.\n  Name: ${result.name}\n  Path: ${result.path}\n  File: ${result.skillFile}\n\nReload skills with /skill reload or restart the agent to use it.`,
+        };
+      } catch (err) {
+        return { content: `Failed to create skill: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'validate_skill',
+    description: 'Validate a skill directory structure against the expected paradigm. Checks for SKILL.md, frontmatter, required fields, and common issues.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Skill name (in ~/.nexus/skills/) or absolute/relative path to skill directory' },
+        fix: { type: 'boolean', description: 'Whether to auto-fix detected issues (optional, default false)' },
+      },
+      required: ['path'],
+    },
+    async execute(args): Promise<ToolResult> {
+      const { validateSkill, fixSkill } = await import('../skills/manager.js');
+      try {
+        const skillPath = String(args.path || '');
+        const doFix = args.fix === true;
+
+        if (doFix) {
+          const fixResult = fixSkill(skillPath);
+          const lines: string[] = [];
+          if (fixResult.fixed.length > 0) {
+            lines.push('Fixed:');
+            for (const f of fixResult.fixed) lines.push(`  ✓ ${f}`);
+          }
+          if (fixResult.remaining.length > 0) {
+            lines.push('Remaining issues (not auto-fixable):');
+            for (const r of fixResult.remaining) {
+              lines.push(`  ${r.severity === 'error' ? '✗' : '⚠'} [${r.severity}] ${r.message}`);
+            }
+          }
+          if (lines.length === 0) lines.push('No issues found. Skill is valid.');
+          return { content: lines.join('\n') };
+        }
+
+        const report = validateSkill(skillPath);
+        const lines: string[] = [`Validation result: ${report.valid ? '✓ VALID' : '✗ ISSUES FOUND'}`];
+        for (const issue of report.issues) {
+          const icon = issue.severity === 'error' ? '✗' : issue.severity === 'warning' ? '⚠' : 'ℹ';
+          lines.push(`  ${icon} [${issue.severity}] ${issue.message}`);
+          if (issue.fix) lines.push(`      Suggested fix: ${issue.fix}`);
+        }
+        if (report.issues.length === 0) lines.push('  Skill follows the expected paradigm.');
+        return { content: lines.join('\n') };
+      } catch (err) {
+        return { content: `Validation failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
+  {
+    name: 'fix_skill_smart',
+    description: 'Fix a skill using an LLM-powered sub-agent. Handles complex issues like YAML block scalars, missing tool references, short body, old namespace paths, non-semver versions, and description problems. Reads the skill, validates it, then spawns a Skill Fixer sub-agent to repair it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Skill name (in ~/.nexus/skills/) or absolute/relative path to skill directory' },
+        instructions: { type: 'string', description: 'Additional fix instructions (optional)' },
+      },
+      required: ['path'],
+    },
+    async execute(args, ctx): Promise<ToolResult> {
+      const { validateSkill, findSkillDir } = await import('../skills/manager.js');
+      const { preAuthorizeRoot } = await import('../security/path-authorizer.js');
+      const skillPath = String(args.path || '');
+      const extra = String(args.instructions || '');
+
+      const report = validateSkill(skillPath);
+      if (report.valid && report.issues.length === 0) {
+        return { content: 'No issues found. Skill already follows the paradigm.' };
+      }
+
+      // Resolve absolute skill path & pre-authorize so sub-agent can read/write
+      const absDir = findSkillDir(skillPath);
+      const absMd = absDir ? join(absDir, 'SKILL.md') : `${skillPath}/SKILL.md`;
+      const absEvals = absDir ? join(absDir, 'evals', 'evals.json') : null;
+      if (absDir) {
+        preAuthorizeRoot(absDir);
+        preAuthorizeRoot(join(absDir, '..'));
+      }
+
+      const issueSummary = report.issues.map((i) =>
+        `  [${i.severity}] ${i.message}${i.fix ? ` (fix: ${i.fix})` : ''}`
+      ).join('\n');
+
+      const taskDesc =
+        `Fix all issues in the skill at "${absDir}".\n\nIssues to fix:\n${issueSummary}\n\n` +
+        `Use read_text_file("${absMd}") to read SKILL.md.\n` +
+        `Use file_write("${absMd}", ...) to save SKILL.md changes.\n` +
+        (absEvals ? `Use file_write("${absEvals}", ...) to update evals.json.\n` : '') +
+        (extra ? `\nAdditional instructions: ${extra}` : '');
+
+      const { SubAgentWorker } = await import('../task/sub-agent-worker.js');
+      const node = {
+        id: `skill-fix-${Date.now()}`,
+        description: taskDesc,
+        dependencies: [] as string[],
+        status: 'in_progress' as const,
+        retryCount: 0,
+        maxRetries: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      if (!ctx?.agent) {
+        return { content: 'Error: fix_skill_smart requires an agent context', isError: true };
+      }
+
+      try {
+        const worker = new SubAgentWorker(ctx.agent);
+        const result = await worker.execute(node, undefined, 'skill-fixer');
+        return { content: result.output };
+      } catch (err) {
+        return { content: `Skill fix failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+  },
 ];
