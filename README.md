@@ -88,73 +88,73 @@ During chat, type:
 - `/clear` - Clear context (starts fresh)
 - `/exit` - Quit
 
-## Development Workflow (开发规范流 / 质量门禁)
+## Development Workflow (Quality Gate)
 
-Nexus 内置两类编程子 agent —— **Tester**（测试）与 **Committer**（提交），可在编程任务中按需或自动串联，形成 `实现 → 测试 → 提交` 的规范流。
+Nexus ships two built-in coding sub-agents — **Tester** and **Committer** — that can be chained automatically or on demand to form an `implement → test → commit` pipeline.
 
-两类子 agent 的能力边界：
-- **Tester**：只读，自动探测并运行项目测试 / lint / typecheck，输出 `VERDICT: PASS` / `VERDICT: FAIL`；绝不改源码、不提交。
-- **Committer**：审查 git diff，跑一遍测试/构建，通过后用 Conventional Commits 风格创建**本地**原子提交；**绝不 `git push`**。
+Sub-agent capabilities:
+- **Tester**: Read-only. Auto-detects and runs project tests / lint / typecheck, outputs `VERDICT: PASS` or `VERDICT: FAIL`. Never modifies source code or commits.
+- **Committer**: Reviews `git diff`, runs tests/build, then creates a **local** atomic commit using Conventional Commits style. **Never `git push`**.
 
-### 开启状态的两种控制方式
+### Enabling the Quality Gate
 
-**1. 全局配置开关（config）—— 自动规范流**
+**1. Global config toggle — automatic pipeline**
 
-在 `config.json`（或 Web 面板 General 区）中配置：
+Configure in `config.json` (or the Web panel General section):
 
 ```json
 {
   "qualityGate": {
-    "autoTest": true,    // 默认 true：实现任务完成后自动跑 Tester
-    "autoCommit": false  // 默认 false：测试通过也不自动提交，需手动确认
+    "autoTest": true,    // default true: auto-run Tester after implementation tasks
+    "autoCommit": false  // default false: don't auto-commit, requires manual confirmation
   }
 }
 ```
 
-- `autoTest=true`：每次 `file_write`/`file_edit` 后默认校验会包含 `npm run test`（当项目有 `test` 脚本时）；实现类任务（DAG 中 `agentHint=general` 的节点，或 `spawn_subagent` 的 general 角色）完成后，自动派生 Tester 子 agent 跑测试。
-- `autoCommit=true`：仅当 Tester 输出 `VERDICT: PASS` 时，自动派生 Committer 子 agent 创建本地提交。**默认关闭**以避免未经确认的提交。
+- `autoTest=true`: Every `file_write`/`file_edit` triggers `npm run test` (when a `test` script exists). After implementation tasks (DAG nodes with `agentHint=general` or `spawn_subagent` general role), a Tester sub-agent is automatically spawned.
+- `autoCommit=true`: Only when Tester outputs `VERDICT: PASS`, a Committer sub-agent is spawned to create a local commit. **Off by default** to avoid unintended commits.
 
-Web 面板：`Quality Gate: Auto-Test` / `Quality Gate: Auto-Commit` 两个开关可随时切换。
-CLI：`nexus config` 交互编辑（或网页 `nexus config web`）。
+Web panel toggles: `Quality Gate: Auto-Test` / `Quality Gate: Auto-Commit`.  
+CLI: `nexus config` interactive editing (or `nexus config web`).
 
-**2. 按任务动态按需开启（per-task / on-demand）—— 不受全局开关限制**
+**2. Per-task on-demand — bypasses global config**
 
-- **显式工具调用**：编程过程中随时调用 `spawn_tester`（只读跑测试）或 `spawn_committer`（审查并提交），无需改动任何配置。
-- **计划任务标注角色**：用 `/plan` 拆解为 DAG 后，某个节点可在 `agentHint` 标注 `tester` 或 `committer`，DAG 调度时按对应角色执行（即使 `autoTest`/`autoCommit` 关闭也会强制按角色跑）。
-- `spawn_subagent` 支持 `agent_type: general | tester | committer` 参数选择角色。
+- **Explicit tool calls**: Call `spawn_tester` (read-only test) or `spawn_committer` (review + commit) anytime without modifying config.
+- **Planned task role annotation**: After `/plan` decomposes a request into a DAG, annotate any node with `agentHint: tester` or `agentHint: committer`. The DAG scheduler executes it with the corresponding role, regardless of `autoTest`/`autoCommit` settings.
+- `spawn_subagent` supports `agent_type: general | tester | committer` to select the role.
 
-### 推荐用法
+### Recommended Usage
 
-| 场景 | 配置 | 行为 |
+| Scenario | Config | Behavior |
 | --- | --- | --- |
-| 默认（回归保护） | `autoTest:true, autoCommit:false` | 编码时自动跑测试；提交由你确认 |
-| 全自动 | `autoTest:true, autoCommit:true` | 测试通过后自动本地提交 |
-| 单次精细控制 | 不改 config | 直接用 `spawn_tester` / `spawn_committer` 或给 DAG 节点标 `agentHint` |
+| Default (regression protection) | `autoTest:true, autoCommit:false` | Auto-test during coding; you confirm commits |
+| Fully automatic | `autoTest:true, autoCommit:true` | Auto-commit after tests pass |
+| One-off fine control | Don't change config | Use `spawn_tester` / `spawn_committer` directly or annotate DAG nodes |
 
-### 任务 DAG 模式
+### Task DAG Modes
 
-`/plan` 自动将请求分解为 3-5 个子任务，支持两种模式：
+`/plan` decomposes requests into 3-5 sub-tasks with two modes:
 
-| 模式 | 触发条件 | 行为 |
+| Mode | Trigger | Behavior |
 | --- | --- | --- |
-| `new` | 未引用 `@path` | 所有文件写入 `~/.nexus/tasks/outputs/<project>/` 沙箱 |
-| `modify` | 请求包含 `@path` 文件引用 | 直接编辑现有文件；完成后自动创建 git snapshot（`git add -A && git commit`）用于回滚 |
+| `new` | No `@path` reference | All files written to `~/.nexus/tasks/outputs/<project>/` sandbox |
+| `modify` | Request contains `@path` file references | Edit existing files in-place; auto-creates git snapshot (`git add -A && git commit`) for rollback |
 
-DAG 执行完成后自动运行 **finalize**：清理临时文件（`_probe`、`__pycache__`、`.pytest_cache`、`dist`、`build` 等）、收集可交付产物、生成 `.task-complete.json` 报告。
+After DAG execution, **finalize** runs automatically: cleans up temp files (`_probe`, `__pycache__`, `.pytest_cache`, `dist`, `build`, etc.), collects deliverables, and generates a `.task-complete.json` report.
 
-### 性能优化
+### Performance Optimizations
 
-- 子 agent `maxTurns` 减少：General 10→6、Tester 8→4、Committer 6→4，缩短无效轮次
-- 任务最大重试次数从 2 减为 1
-- `src/mcp/client-manager.ts` 工具名去重：内置工具优先于 MCP 同名工具
-- MCP 工具调用前置 `existsSync` 检查，避免为不存在的文件弹出授权提示
+- Sub-agent `maxTurns` reduced: General 10→6, Tester 8→4, Committer 6→4 — fewer wasted rounds
+- Max retries per task reduced from 2 to 1
+- `src/mcp/client-manager.ts`: tool name dedup — builtin tools take priority over MCP tools with the same name
+- MCP tools call `existsSync` before prompting for authorization — avoids prompts for nonexistent files
 
-### 安全约束
+### Security Constraints
 
-- 测试失败 / Tester 出错时，自动提交链会**中止**，不会提交未通过验证的代码。
-- Tester 仅读、`exec_command` 跑测试；Committer 只做本地 `add`+`commit`，绝不 push。
-- modify 模式的 git snapshot 仅本地提交，绝不 push。
-- 相关实现：`src/config/index.ts`（`getQualityGate`/`setQualityGate`）、`src/task/task-tools.ts`（`runQualityGate`）、`src/task/sub-agent-roles.ts`（角色定义）、`src/hooks/auto-validate.ts`（写文件时自动跑测试）、`src/task/dag-scheduler.ts`（finalize / snapshot）。
+- If tests fail or Tester errors, the auto-commit chain **aborts** — no unverified code is committed.
+- Tester is read-only (only `exec_command` for tests); Committer only does local `add`+`commit`, never pushes.
+- `modify` mode git snapshots are local-only, never pushed.
+- Related source: `src/config/index.ts` (`getQualityGate`/`setQualityGate`), `src/task/task-tools.ts` (`runQualityGate`), `src/task/sub-agent-roles.ts` (role definitions), `src/hooks/auto-validate.ts` (auto-test on file write), `src/task/dag-scheduler.ts` (finalize / snapshot).
 
 ## Skills
 
