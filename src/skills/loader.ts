@@ -115,6 +115,7 @@ async function tryLoadJsSkill(dirPath: string, name: string, indexData?: { skill
   // Standard Skill object: { name, version, ... }
   const standardSkill: Skill = (mod.default || mod.skill || mod) as Skill;
   if (standardSkill.name && standardSkill.version) {
+    standardSkill.rootDir = dirPath;
     return standardSkill;
   }
 
@@ -157,7 +158,7 @@ async function tryLoadJsSkill(dirPath: string, name: string, indexData?: { skill
             const firstMode = jsonMeta.modes[0] as { mode?: string };
             modeId = firstMode.mode || 'single';
           }
-          const result = await handleSkillFn({ config: {} }, args, modeId);
+          const result = await handleSkillFn({ config: { skillRoot: dirPath } }, args, modeId);
           return { content: typeof result === 'string' ? result : JSON.stringify(result, null, 2) };
         } catch (err) {
           return { content: `Skill error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -197,7 +198,7 @@ async function tryLoadJsSkill(dirPath: string, name: string, indexData?: { skill
       tools,
       async callTool(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
         try {
-          const result = await executeFn(args, {});
+          const result = await executeFn(args, { skillRoot: dirPath });
           return { content: typeof result === 'string' ? result : JSON.stringify(result, null, 2) };
         } catch (err) {
           return { content: `Skill execution error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -223,7 +224,7 @@ async function tryLoadJsSkill(dirPath: string, name: string, indexData?: { skill
     }],
     async callTool(_toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
       try {
-        const result = await executeFn(args, {});
+        const result = await executeFn(args, { skillRoot: dirPath });
         return { content: typeof result === 'string' ? result : JSON.stringify(result, null, 2) };
       } catch (err) {
         return { content: `Skill execution error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -272,7 +273,10 @@ function tryLoadMdSkill(dirPath: string, name: string, indexData?: { skills?: Ar
   const meta = indexData?.skills?.find((s) => s.name === name)?.metadata;
 
   const content = readFileSync(mdPath, 'utf-8');
-  const { metadata, body } = parseFrontmatter(content);
+  const { metadata, body: rawBody } = parseFrontmatter(content);
+
+  // Resolve <SKILL_ROOT> placeholder to the skill's actual directory path
+  const body = rawBody.replace(/<SKILL_ROOT>/g, dirPath);
 
   const skillName = metadata.name || name;
   const skillVersion = meta?.version || metadata.version || '1.0.0';
@@ -289,6 +293,7 @@ function tryLoadMdSkill(dirPath: string, name: string, indexData?: { skills?: Ar
     name: skillName,
     version: skillVersion,
     description: skillDescription,
+    rootDir: dirPath,
     tools: [{
       name: skillName,
       description: `Invoke the "${skillName}" skill. ${skillDescription}`,
@@ -305,6 +310,7 @@ function tryLoadMdSkill(dirPath: string, name: string, indexData?: { skills?: Ar
     },
     async callTool(_toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
       const userTask = String(args.task || '');
+      if (agentCtx) agentCtx.skillRoot = dirPath;
 
       // If no agent context or no executable steps, return instructions as fallback
       if (!agentCtx || !hasExecutableSteps) {

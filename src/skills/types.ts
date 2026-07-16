@@ -5,12 +5,16 @@ export interface AgentContext {
   sendMessage(message: string): Promise<void>;
   /** Ask the user a question and wait for their response. Returns the user's answer or null if cancelled. */
   askUser(question: string, options?: string[]): Promise<string | null>;
+  /** Root directory of the currently executing skill on disk */
+  skillRoot?: string;
 }
 
 export interface Skill {
   name: string;
   version: string;
   description?: string;
+  /** Root directory of this skill on disk (set by loader) */
+  rootDir?: string;
   /** Source directory type: 'skills' | 'plugins' | 'claude' */
   source?: 'skills' | 'plugins' | 'claude';
   init?(ctx: AgentContext): Promise<void>;
