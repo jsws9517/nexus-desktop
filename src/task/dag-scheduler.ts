@@ -299,9 +299,16 @@ export class DAGScheduler {
 
     // 2b. Collect from projectDir: files written by sub-agents (already in sandbox)
     try {
+      const taskStart = graph.createdAt;
       const sandboxFiles = readdirSync(projectDir).filter((f) => {
         if (f === '.task-complete.json') return false;
-        return isDeliverable(f) || statSync(join(projectDir, f)).isDirectory();
+        const fullPath = join(projectDir, f);
+        try {
+          const st = statSync(fullPath);
+          if (st.isDirectory()) return true;
+          if (isDeliverable(f) && st.mtimeMs >= taskStart) return true;
+          return false;
+        } catch { return false; }
       });
       for (const f of sandboxFiles) {
         if (!copyLog.includes(f)) copyLog.push(f);
