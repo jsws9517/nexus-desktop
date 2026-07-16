@@ -79,7 +79,7 @@ During chat, type:
 - `/insight` - Cross-session memory analysis
 - `/model` - Show/switch LLM model
 - `/provider` - Show/switch LLM provider
-- `/skill` - List/load/unload skill plugins
+- `/skills` - Manage skill plugins (list, reload, create, validate, fix, fix-smart)
 - `/config` - View/edit configuration
 - `/export` - Export session as markdown
 - `/plan <request>` - Decompose a request into a DAG of sub-tasks (supports `@path` resolution)
@@ -158,7 +158,30 @@ DAG 执行完成后自动运行 **finalize**：清理临时文件（`_probe`、`
 
 ## Skills
 
-Place skill modules in `~/.nexus/skills/`:
+Place skill modules in `~/.nexus/skills/`. Each skill is either a **JS module** or a **markdown prompt** (`SKILL.md`).
+
+### SKILL.md (Prompt-Based Skills)
+
+```
+~/.nexus/skills/<skill-name>/
+├── SKILL.md             # Skill prompt with YAML frontmatter
+├── evals/evals.json     # Optional test cases
+└── ...                  # Supporting files
+```
+
+Frontmatter format:
+
+```yaml
+---
+name: my-skill
+version: 1.0.0
+description: One-line description of what the skill does
+---
+```
+
+The body contains detailed markdown instructions with tool usage examples. Skills are loaded at startup and on `/skills reload`.
+
+### JS Module Skills
 
 ```javascript
 // ~/.nexus/skills/my-skill.js
@@ -177,6 +200,26 @@ export default {
   }
 };
 ```
+
+### Skill Management Commands
+
+Within chat, use `/skills` to manage skills:
+
+| Command | Description |
+|---------|-------------|
+| `/skills list` | List all loaded skills |
+| `/skills reload` | Reload all skills from disk |
+| `/skills create <name> <desc>` | Create a new SKILL.md skill with frontmatter |
+| `/skills validate <name>` | Validate skill structure (frontmatter, body length, tool refs, semver, etc.) |
+| `/skills fix <name>` | Auto-fix common issues (missing fields, old paths, missing README/CHANGELOG/evals) |
+| `/skills fix-smart <name>` | Spawn a Skill Fixer sub-agent to intelligently repair complex issues |
+
+The **Skill Fixer sub-agent** (`fix-smart`) uses an LLM to:
+- Convert YAML block scalars to inline descriptions
+- Add `call`/`invoke`-prefixed tool usage examples
+- Update `~/.claude/skills/` paths to `~/.nexus/skills/`
+- Expand short body content with meaningful instructions
+- Create or populate `evals/evals.json` with placeholder test cases
 
 ## Development
 
