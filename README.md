@@ -13,7 +13,7 @@ A powerful TypeScript CLI agent connecting multiple LLM providers, MCP tools, fi
 - **Built-in Filesystem Tools**: Full file read/write/edit/move/copy/delete/directory-tree — no external MCP server needed
 - **MCP Tools**: Connect to external MCP servers for specialized capabilities; builtin tools take priority over MCP for deduplication
 - **Path Authorization**: Prompt/Allow/Deny with per-session (`y`) and persistent (`a`) grants, cached in `path-auth.json`; early `existsSync` checks avoid unnecessary auth prompts for missing files
-- **Slash Commands**: `/model`, `/provider`, `/session`, `/history`, `/resume`, `/memory`, `/insight`, `/tools`, `/skill`, `/config`, `/export`, `/clean`, `/clear`, `/exit`, `/plan`, `/tasks`
+- **Slash Commands**: `/model`, `/provider`, `/session`, `/resume`, `/memory`, `/insight`, `/tools`, `/skills`, `/config`, `/clear`, `/exit`, `/plan`, `/tasks`, `/btw`, `/theme`
 - **Skills/Plugins**: Dynamic loading from `~/.nexus/skills/` with auto-generated fallback for invalid skill directories
 - **ACP Protocol**: Agent-to-agent communication via WebSocket
 - **Diff Renderer**: Colorized inline diff output for LLM responses
@@ -71,22 +71,30 @@ nexus session delete <id>
 
 During chat, type:
 - `/help` - Show commands
-- `/tools` - List available tools
 - `/session` - Show current session info
-- `/history` - Browse all sessions
 - `/resume <id>` - Resume a past session
+- `/view [id|#]` - Browse raw messages for a session
+- `/delete` - Delete sessions
+- `/rename <name>` - Rename the current session
 - `/memory` - View this session's persistent memory
 - `/insight` - Cross-session memory analysis
 - `/model` - Show/switch LLM model
 - `/provider` - Show/switch LLM provider
-- `/skills` - Manage skill plugins (list, reload, create, validate, fix, fix-smart)
-- `/config` - View/edit configuration
-- `/export` - Export session as markdown
-- `/plan <request>` - Decompose a request into a DAG of sub-tasks (supports `@path` resolution)
-- `/tasks [id]` - Show task graph or detailed step info (implicit `-step`)
-- `/clean` - Prune zero-token or old sessions
+- `/compact` - Compress current session context
+- `/new` - Compress history and start a fresh session
 - `/clear` - Clear context (starts fresh)
-- `/exit` - Quit
+- `/plan <request>` - Decompose a request into a DAG of sub-tasks (supports `@path` resolution)
+- `/go` - Execute the current plan
+- `/tasks [id]` - Show task graph or detailed step info (implicit `-step`)
+- `/tools` - List available tools
+- `/mcp` - List MCP server connections
+- `/skills` - Manage skill plugins (list, reload, create, validate, fix, fix-smart)
+- `/plugins` - List loaded plugins
+- `/btw <info>` - Inject context before the next LLM turn
+- `/theme` - Show/switch color theme
+- `/flush` - Clear the screen
+- `/config` - View/edit configuration
+- `/exit`, `/quit` - Quit
 
 ## Development Workflow (Quality Gate)
 
@@ -209,7 +217,7 @@ Within chat, use `/skills` to manage skills:
 |---------|-------------|
 | `/skills list` | List all loaded skills |
 | `/skills reload` | Reload all skills from disk |
-| `/skills create <name> <desc>` | Create a new SKILL.md skill with frontmatter |
+| `/skills create <name>` | Interactively create a new skill — prompts for a description and multi-line instructions (end input with `---` or Ctrl+Z) |
 | `/skills validate <name>` | Validate skill structure (frontmatter, body length, tool refs, semver, etc.) |
 | `/skills fix <name>` | Auto-fix common issues (missing fields, old paths, missing README/CHANGELOG/evals) |
 | `/skills fix-smart <name>` | Spawn a Skill Fixer sub-agent to intelligently repair complex issues |

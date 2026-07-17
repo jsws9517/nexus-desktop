@@ -312,20 +312,10 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
   };
   let isMultiLine = false;
 
-  // Windows Enter sends \r\n; after \r triggers backslash continuation,
-  // consume the trailing \n so it doesn't immediately append/submit.
-  let skipNextNl = false;
-
   // Shared main _ttyWrite: used both for initial setup and after multi-line exit
   function makeMainTtyWrite() {
     return function (s: string, key: { name?: string; ctrl?: boolean; alt?: boolean; shift?: boolean }) {
       if (!key) return originalTtyWrite(s, key);
-
-      // Consume \n that follows backslash-continuation \r only if immediate
-      if (skipNextNl) {
-        skipNextNl = false;
-        if (s === '\n') return;
-      }
 
         if (isQuestionMode) {
           if (key.name === 'pageup' || key.name === 'pagedown' || key.name === 'up' || key.name === 'down' || (key.ctrl && key.name === 'o')) return;
@@ -334,7 +324,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
         if (key.name === 'pageup' || key.name === 'pagedown' || key.name === 'up' || key.name === 'down' || (key.ctrl && key.name === 'o')) return;
 
-      // === Multi-line triggers: Ctrl+J, Shift+Enter, Ctrl+Enter ===
+      // === Multi-line triggers: Ctrl+Enter (Shift+Enter / Alt+Enter) ===
       if (isNewLineKey(s, key)) {
         enterMultiLine();
         return;
@@ -342,26 +332,18 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
       // === ENTER/Return handling ===
       if (key.name === 'enter' || key.name === 'return') {
-        // 1) Backslash continuation: \ + Enter → strip \, enter multi-line
-        const line = (rl as any).line || '';
-        if (line.endsWith('\\')) {
-          (rl as any).line = line.slice(0, -1);
-          skipNextNl = true;
-          enterMultiLine();
-          return;
-        }
-        // 2) Already in multi-line mode: submit
+        // 1) Already in multi-line mode: submit
         if (isMultiLine) {
           isPasteMode = false;
           multiLineSubmit();
           return;
         }
-        // 3) Paste Enter → newline (bracketed paste or timing fallback)
+        // 2) Paste Enter → newline (bracketed paste or timing fallback)
         if (isBracketedPaste || (isPasteMode && isInPasteBurst())) {
           enterMultiLine();
           return;
         }
-        // 4) Plain Enter → let readline submit
+        // 3) Plain Enter → let readline submit
         return originalTtyWrite(s, key);
       }
 
@@ -424,8 +406,9 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
   // ---- Multi-line key detection (used across all _ttyWrite) ----
   function isNewLineKey(s: string, key: { name?: string; shift?: boolean; ctrl?: boolean; alt?: boolean }): boolean {
+    // Ctrl+Enter (and Shift+Enter / Alt+Enter) trigger a newline.
+    // Ctrl+J is intentionally NOT a newline trigger anymore.
     if ((key.name === 'enter' || key.name === 'return') && (key.shift || key.ctrl || key.alt)) return true;
-    if (s === '\x0a' || s === '\n') return true; // Ctrl+J / linefeed (universally reliable)
     return false;
   }
 
@@ -575,12 +558,6 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     setTtyWrite(function (s: string, key: { name?: string; ctrl?: boolean; meta?: boolean; alt?: boolean; shift?: boolean }) {
       if (!key) return;
 
-      // Consume \n that follows backslash-continuation \r only if immediate
-      if (skipNextNl) {
-        skipNextNl = false;
-        if (s === '\n') return;
-      }
-
       if (isQuestionMode) {
         // In singleKey mode, suppress echo for y/a/n — keyHandler writes its own output
         if (isSingleKeyMode && (s === 'y' || s === 'a' || s === 'n' || s === 'Y' || s === 'A' || s === 'N')) return;
@@ -615,7 +592,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         return;
       }
 
-      // === Multi-line triggers: Ctrl+J, Shift+Enter, Ctrl+Enter → append line ===
+      // === Multi-line triggers: Ctrl+Enter (Shift+Enter / Alt+Enter) → append line ===
       if (isNewLineKey(s, key)) {
         multiLineAppendLine();
         return;
@@ -976,11 +953,11 @@ async function handleSlashCommand(
       console.log(`  /tools           - ${i18nTr('h_tools_list')}`);
       console.log(`  /mcp             - ${i18nTr('h_mcp')}`);
       console.log(`  /skills [list]   - ${i18nTr('h_skills')}`);
-      console.log(`        create     - Interactive skill creation`);
-      console.log(`        validate   - Validate skill structure against paradigm`);
-      console.log(`        fix        - Auto-fix common skill issues`);
-      console.log(`        fix-smart  - LLM-powered fix (handles complex issues)`);
-      console.log(`        reload     - Reload all skills from disk`);
+      console.log(`        create     - ${i18nTr('h_skills_create')}`);
+      console.log(`        validate   - ${i18nTr('h_skills_validate')}`);
+      console.log(`        fix        - ${i18nTr('h_skills_fix')}`);
+      console.log(`        fix-smart  - ${i18nTr('h_skills_fix_smart')}`);
+      console.log(`        reload     - ${i18nTr('h_skills_reload')}`);
       console.log(`  /plugins         - ${i18nTr('h_plugins')}`);
       console.log(`  /btw <info>      - ${i18nTr('h_btw')}`);
       console.log(`  /theme           - ${i18nTr('h_theme')}`);

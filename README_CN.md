@@ -13,7 +13,7 @@
 - **内置文件系统工具**：完整文件读写/编辑/移动/复制/删除/目录树——无需外部 MCP 服务器
 - **MCP 工具**：连接外部 MCP 服务器获取专业能力；内置工具优先于 MCP 同名工具
 - **路径授权**：提示/允许/拒绝，支持按会话（`y`）和持久化（`a`）授权，缓存于 `path-auth.json`；提前 `existsSync` 检查避免不存在的文件弹出授权提示
-- **斜杠命令**：`/model`, `/provider`, `/session`, `/history`, `/resume`, `/memory`, `/insight`, `/tools`, `/skills`, `/config`, `/export`, `/clean`, `/clear`, `/exit`, `/plan`, `/tasks`
+- **斜杠命令**：`/model`, `/provider`, `/session`, `/resume`, `/memory`, `/insight`, `/tools`, `/skills`, `/config`, `/clear`, `/exit`, `/plan`, `/tasks`, `/btw`, `/theme`
 - **技能/插件**：从 `~/.nexus/skills/` 动态加载，无效技能目录自动生成降级
 - **ACP 协议**：基于 WebSocket 的智能体间通信
 - **差异渲染器**：LLM 响应的彩色内联差异输出
@@ -72,22 +72,30 @@ nexus session delete <id>
 聊天中键入：
 
 - `/help` - 显示命令
-- `/tools` - 列出可用工具
 - `/session` - 显示当前会话信息
-- `/history` - 浏览所有会话
 - `/resume <id>` - 恢复历史会话
+- `/view [id|#]` - 浏览会话原始消息
+- `/delete` - 删除会话
+- `/rename <名称>` - 重命名当前会话
 - `/memory` - 查看当前会话持久记忆
 - `/insight` - 跨会话记忆分析
 - `/model` - 显示/切换 LLM 模型
 - `/provider` - 显示/切换 LLM 提供商
-- `/skills` - 管理技能插件（列出、重载、创建、验证、修复、智能修复）
-- `/config` - 查看/编辑配置
-- `/export` - 将会话导出为 markdown
-- `/plan <请求>` - 将请求分解为 DAG 子任务（支持 `@path` 解析）
-- `/tasks [id]` - 显示任务图或详细步骤信息（隐式 `-step`）
-- `/clean` - 清理零令牌或旧会话
+- `/compact` - 压缩当前会话上下文
+- `/new` - 压缩历史并开始新会话
 - `/clear` - 清除上下文（重新开始）
-- `/exit` - 退出
+- `/plan <请求>` - 将请求分解为 DAG 子任务（支持 `@path` 解析）
+- `/go` - 执行当前计划
+- `/tasks [id]` - 显示任务图或详细步骤信息（隐式 `-step`）
+- `/tools` - 列出可用工具
+- `/mcp` - 列出 MCP 服务器连接
+- `/skills` - 管理技能插件（列出、重载、创建、验证、修复、智能修复）
+- `/plugins` - 列出已加载的插件
+- `/btw <信息>` - 在下次 LLM 调用前注入上下文
+- `/theme` - 显示/切换颜色主题
+- `/flush` - 清除屏幕
+- `/config` - 查看/编辑配置
+- `/exit`、 `/quit` - 退出
 
 ## 开发工作流（质量门禁）
 
@@ -210,7 +218,7 @@ export default {
 |---------|------|
 | `/skills list` | 列出所有已加载技能 |
 | `/skills reload` | 从磁盘重新加载所有技能 |
-| `/skills create <名称> <描述>` | 创建带 frontmatter 的新 SKILL.md 技能 |
+| `/skills create <名称>` | 交互式创建新技能——依次提示输入描述与多行指令（以 `---` 或 Ctrl+Z 结束输入） |
 | `/skills validate <名称>` | 验证技能结构（frontmatter、正文长度、工具引用、semver 等） |
 | `/skills fix <名称>` | 自动修复常见问题（缺失字段、旧路径、缺失 README/CHANGELOG/evals） |
 | `/skills fix-smart <名称>` | 派生子 agent 智能修复复杂问题 |

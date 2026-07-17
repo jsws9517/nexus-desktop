@@ -4,7 +4,7 @@ import { ConfigManager } from '../config/index.js';
 import { NativeManager, SearchResult } from '../config/native.js';
 import { importFromClaude } from '../config/claude-import.js';
 import { ThemeManager } from '../theme/manager.js';
-import { setCurrentLang } from '../i18n/index.js';
+import { setCurrentLang, getCurrentLang, t as i18nTr, tf as i18nTf } from '../i18n/index.js';
 import { registerOpencodeZenCommand, renderOpencodeZenStatus } from './opencode-zen.js';
 
 const _theme = new ThemeManager();
@@ -158,10 +158,11 @@ export function registerConfigCommand(program: Command): void {
     .action(() => {
       const config = new ConfigManager();
       const current = config.getLanguage();
-      console.log(`\nConfigured language: ${t.entityName(current)}`);
-      console.log(t.heading('Available languages:'));
-      console.log('  en     - English');
-      console.log('  zh-CN  - 简体中文');
+      const isZh = getCurrentLang() === 'zh-CN';
+      const langs = isZh
+        ? '  en     - English\n  zh-CN  - 简体中文'
+        : '  en     - English\n  zh-CN  - Simplified Chinese';
+      console.log(i18nTf('config_lang_list')(t.entityName(current), langs));
     });
 
   langCmd
@@ -169,13 +170,13 @@ export function registerConfigCommand(program: Command): void {
     .description('Set language (en | zh-CN)')
     .action((lang: string) => {
       if (lang !== 'en' && lang !== 'zh-CN') {
-        console.log(t.error(`Invalid language: ${lang}. Available: en, zh-CN`));
+        console.log(t.error(i18nTf('config_lang_invalid')(lang)));
         return;
       }
       const config = new ConfigManager();
       config.setLanguage(lang);
       setCurrentLang(lang);
-      console.log(t.success(`Language set to: ${lang}`));
+      console.log(t.success(i18nTf('config_lang_set')(lang)));
     });
 
   const visionCmd = configCmd.command('vision').description('Vision provider settings for analyze_image tool');

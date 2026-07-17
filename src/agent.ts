@@ -38,11 +38,11 @@ function stripExpansionSuffix(content: string): string {
 
 const REMEMBER_TOOL_DEF: ToolDefinition = {
   name: 'remember',
-  description: 'Save user information to the knowledge graph for future reference across sessions. Call this whenever the user shares personal preferences, facts, or anything they want remembered. Pass the content to save — summarize the key info from the conversation (e.g. "CPU: Intel i5-1240P, RAM: 40GB").',
+  description: t('remember_tool_desc'),
   inputSchema: {
     type: 'object',
     properties: {
-      content: { type: 'string', description: 'The content to save to the knowledge graph' },
+      content: { type: 'string', description: t('remember_content_desc') },
     },
     required: ['content'],
   },
@@ -50,7 +50,7 @@ const REMEMBER_TOOL_DEF: ToolDefinition = {
 
 const RECALL_TOOL_DEF: ToolDefinition = {
   name: 'recall',
-  description: 'MUST CALL FIRST when the user asks about their personal information, identity, name, preferences, computer config, or anything that may have been saved in the knowledge graph from previous sessions. Retrieves all previously remembered user data. No arguments needed.',
+  description: t('recall_tool_desc'),
   inputSchema: {
     type: 'object',
     properties: {},
@@ -59,7 +59,7 @@ const RECALL_TOOL_DEF: ToolDefinition = {
 
 const REMEMBER_PROJECT_TOOL_DEF: ToolDefinition = {
   name: 'remember_project',
-  description: 'Save project-specific information (architecture decisions, conventions, key facts) to the project knowledge base. The content is captured automatically from the current message. Use this for project-level context, NOT personal info.',
+  description: t('remember_project_desc'),
   inputSchema: {
     type: 'object',
     properties: {},
