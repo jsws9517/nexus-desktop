@@ -9,7 +9,9 @@ export class AnthropicProvider implements LLMProvider {
   private options?: Record<string, unknown>;
 
   constructor(apiKey: string, model: string, baseUrl?: string, name?: string, options?: Record<string, unknown>) {
-    this.client = new Anthropic({ apiKey, baseURL: baseUrl });
+    // Strip trailing /v1 from baseUrl to avoid double /v1 when SDK appends /v1/messages
+    const sanitized = baseUrl?.replace(/\/v1\/?$/, '');
+    this.client = new Anthropic({ apiKey, baseURL: sanitized || undefined });
     this.name = name || 'anthropic';
     this.model = model;
     this.options = options;

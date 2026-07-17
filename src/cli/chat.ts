@@ -757,7 +757,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       if (sid) {
         agent.session.addMessage(sid, { role: 'user', content: input });
       }
-      const handled = await handleSlashCommand(input, agent, rl, customQuestion);
+      const handled = await handleSlashCommand(input, agent, rl, customQuestion, lineHandler);
       if (!handled) {
         rl.prompt();
       }
@@ -840,10 +840,11 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     rl.prompt();
   };
 
-  rl.on('line', async (line) => {
+  const lineHandler = async (line: string) => {
     if (isQuestionMode) return;
     await handleLine(line);
-  });
+  };
+  rl.on('line', lineHandler);
 
   rl.on('close', async () => {
     process.stdout.write('\x1b[?2004l');
@@ -879,6 +880,7 @@ async function handleSlashCommand(
   agent: Agent,
   rl: ReturnType<typeof createInterface>,
   customQuestion?: (query: string) => Promise<string>,
+  lineHandler?: (line: string) => Promise<void>,
 ): Promise<boolean> {
   const [cmd, ...args] = input.slice(1).split(' ');
   const delSession = (s: { id: string }) => { agent.session.delete(s.id); agent.sessionMemory.remove(s.id); };
@@ -1333,18 +1335,34 @@ async function handleSlashCommand(
           console.log(t().textDim('Usage: /skills create <name> — interactive skill creation'));
           return false;
         }
-        const rl = createInterface({ input: process.stdin, output: process.stdout });
-        const ask = (q: string): Promise<string> => new Promise((r) => rl.question(q + ' ', r));
         console.log(t().heading(`Creating skill "${name}"...\n`));
+        // Temporarily disable main readline to prevent double-echo and duplicate processing
+        const savedTtyWrite = (rl as any)._ttyWrite;
+        const savedLineListeners = rl.listeners('line') as Array<(...args: any[]) => void>;
+        rl.removeAllListeners('line');
+        (rl as any)._ttyWrite = () => {};
+        // Use a temp readline for all interactive I/O (echo handled by its own _ttyWrite)
+        const tempRl = createInterface({ input: process.stdin, output: process.stdout });
+        const ask = (q: string): Promise<string> => new Promise((r) => tempRl.question(q + ' ', r));
         const description = await ask(t().textDim('Description:'));
-        if (!description) { rl.close(); console.log(t().error('Cancelled.')); return false; }
+        if (!description) {
+          tempRl.close();
+          (rl as any)._ttyWrite = savedTtyWrite;
+          for (const listener of savedLineListeners) rl.on('line', listener);
+          if (process.stdin.isPaused?.()) process.stdin.resume();
+          console.log(t().error('Cancelled.'));
+          return false;
+        }
         console.log(t().textDim('Enter instructions (end with Ctrl+Z or --- on its own line):'));
         const lines: string[] = [];
-        for await (const line of rl) {
+        for await (const line of tempRl) {
           if (line.trim() === '---') break;
           lines.push(line);
         }
-        rl.close();
+        tempRl.close();
+        (rl as any)._ttyWrite = savedTtyWrite;
+        for (const listener of savedLineListeners) rl.on('line', listener);
+        if (process.stdin.isPaused?.()) process.stdin.resume();
         const instructions = lines.join('\n').trim();
         if (!instructions) { console.log(t().error('Cancelled.')); return false; }
         const result = createSkillFromPrompt(name, description, instructions);
