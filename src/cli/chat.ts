@@ -491,6 +491,63 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     });
   }
 
+  // Read multiple lines from the main readline (reusing it, no second interface)
+  // until the sentinel '---' or EOF (Ctrl+Z/Ctrl+D). Prints `promptEach` before each line.
+  async function readMultiLineBlock(promptEach: string): Promise<string[]> {
+    return new Promise<string[]>((resolve) => {
+      isQuestionMode = true;
+      const collected: string[] = [];
+      _rawStdoutWrite(promptEach);
+
+      const onLine = (line: string) => {
+        const trimmed = line.trimEnd();
+        // Sentinel on its own line, or appended to the end of a content line.
+        if (trimmed === '---') {
+          cleanup();
+          resolve(collected);
+          return;
+        }
+        if (trimmed.endsWith('---')) {
+          const content = trimmed.slice(0, -3).trimEnd();
+          if (content) collected.push(content);
+          cleanup();
+          resolve(collected);
+          return;
+        }
+        collected.push(line);
+        _rawStdoutWrite(promptEach);
+      };
+      const onClose = () => { cleanup(); resolve(collected); };
+
+      function cleanup() {
+        rl.removeListener('line', onLine);
+        rl.removeListener('close', onClose);
+        isQuestionMode = false;
+      }
+
+      rl.on('line', onLine);
+      rl.on('close', onClose);
+    });
+  }
+
+  // Interactive skill creation that reuses the main readline (no second interface).
+  async function createSkillInteractive(name: string): Promise<void> {
+    const { createSkillFromPrompt } = await import('../skills/manager.js');
+    console.log(t().heading(`Creating skill "${name}"...\n`));
+    // Strip a trailing '---' the user may add out of habit; description is single-line.
+    const description = (await customQuestion(t().textDim('Description: ')))
+      .replace(/\s*-{3,}\s*$/, '').trim();
+    if (!description) { console.log(t().error('Cancelled.')); return; }
+    console.log(t().textDim('Enter instructions (end input with --- or Ctrl+Z):'));
+    const lines = await readMultiLineBlock(t().prompt('> '));
+    // Empty instructions are OK — fall back to the description so the skill is still usable.
+    const instructions = lines.join('\n').trim() || description;
+    const result = createSkillFromPrompt(name, description, instructions);
+    console.log(t().success(`\nSkill created: ${result.name}`));
+    console.log(t().textDim(`  ${result.skillFile}`));
+    console.log(t().textDim('Reload with: /skills reload'));
+  }
+
   // Wire audit confirmations to reuse main readline (avoids double-echo / readline conflict)
   agent.audit.setAskUser((q) => customQuestion(q, true));
 
@@ -757,7 +814,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       if (sid) {
         agent.session.addMessage(sid, { role: 'user', content: input });
       }
-      const handled = await handleSlashCommand(input, agent, rl, customQuestion, lineHandler);
+      const handled = await handleSlashCommand(input, agent, rl, customQuestion, createSkillInteractive);
       if (!handled) {
         rl.prompt();
       }
@@ -880,7 +937,7 @@ async function handleSlashCommand(
   agent: Agent,
   rl: ReturnType<typeof createInterface>,
   customQuestion?: (query: string) => Promise<string>,
-  lineHandler?: (line: string) => Promise<void>,
+  createSkillInteractive?: (name: string) => Promise<void>,
 ): Promise<boolean> {
   const [cmd, ...args] = input.slice(1).split(' ');
   const delSession = (s: { id: string }) => { agent.session.delete(s.id); agent.sessionMemory.remove(s.id); };
@@ -1327,7 +1384,7 @@ async function handleSlashCommand(
 
     case 'skills': {
       const sub = args[0];
-      const { createSkillFromPrompt, validateSkill, fixSkill } = await import('../skills/manager.js');
+      const { validateSkill, fixSkill } = await import('../skills/manager.js');
 
       if (sub === 'create') {
         const name = args.slice(1).join(' ');
@@ -1335,40 +1392,11 @@ async function handleSlashCommand(
           console.log(t().textDim('Usage: /skills create <name> — interactive skill creation'));
           return false;
         }
-        console.log(t().heading(`Creating skill "${name}"...\n`));
-        // Temporarily disable main readline to prevent double-echo and duplicate processing
-        const savedTtyWrite = (rl as any)._ttyWrite;
-        const savedLineListeners = rl.listeners('line') as Array<(...args: any[]) => void>;
-        rl.removeAllListeners('line');
-        (rl as any)._ttyWrite = () => {};
-        // Use a temp readline for all interactive I/O (echo handled by its own _ttyWrite)
-        const tempRl = createInterface({ input: process.stdin, output: process.stdout });
-        const ask = (q: string): Promise<string> => new Promise((r) => tempRl.question(q + ' ', r));
-        const description = await ask(t().textDim('Description:'));
-        if (!description) {
-          tempRl.close();
-          (rl as any)._ttyWrite = savedTtyWrite;
-          for (const listener of savedLineListeners) rl.on('line', listener);
-          if (process.stdin.isPaused?.()) process.stdin.resume();
-          console.log(t().error('Cancelled.'));
+        if (!createSkillInteractive) {
+          console.log(t().error('Interactive skill creation is unavailable in this context.'));
           return false;
         }
-        console.log(t().textDim('Enter instructions (end with Ctrl+Z or --- on its own line):'));
-        const lines: string[] = [];
-        for await (const line of tempRl) {
-          if (line.trim() === '---') break;
-          lines.push(line);
-        }
-        tempRl.close();
-        (rl as any)._ttyWrite = savedTtyWrite;
-        for (const listener of savedLineListeners) rl.on('line', listener);
-        if (process.stdin.isPaused?.()) process.stdin.resume();
-        const instructions = lines.join('\n').trim();
-        if (!instructions) { console.log(t().error('Cancelled.')); return false; }
-        const result = createSkillFromPrompt(name, description, instructions);
-        console.log(t().success(`\nSkill created: ${result.name}`));
-        console.log(t().textDim(`  ${result.skillFile}`));
-        console.log(t().textDim('Reload with: /skills reload'));
+        await createSkillInteractive(name);
         return false;
       }
 
