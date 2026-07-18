@@ -226,6 +226,17 @@ export class ConfigManager {
     }
   }
 
+  removeProvider(name: string): void {
+    if (!this.config.providers || !this.config.providers[name]) {
+      throw new Error(`Provider "${name}" not found`);
+    }
+    if (this.config.activeProvider === name) {
+      throw new Error(`Cannot delete the active provider "${name}". Switch to another provider first.`);
+    }
+    delete this.config.providers[name];
+    this.save();
+  }
+
   getActiveProvider(): string {
     return this.config.activeProvider;
   }

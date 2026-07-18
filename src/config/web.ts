@@ -252,14 +252,12 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
   }
 
   if (url.startsWith('/api/config/provider/') && method === 'DELETE') {
-    const name = url.slice('/api/config/provider/'.length);
-    const cfg = config.get() as Record<string, unknown>;
-    const providers = cfg.providers as Record<string, unknown>;
-    if (providers[name]) {
-      delete providers[name];
+    const name = decodeURIComponent(url.slice('/api/config/provider/'.length));
+    try {
+      config.removeProvider(name);
       jsonResponse(res, { ok: true });
-    } else {
-      jsonResponse(res, { error: 'Provider not found' }, 404);
+    } catch (err) {
+      jsonResponse(res, { error: String(err) }, 400);
     }
     return;
   }
