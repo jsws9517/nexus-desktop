@@ -443,6 +443,11 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         _rawStdoutWrite(`\r\x1b[K${lastLine}${answer}\n`);
       };
 
+      // In single-key mode, pause readline so it does NOT echo the pressed key
+      // itself — otherwise we'd get a duplicated answer (our finish() output plus
+      // readline's own echo of the same keystroke).
+      if (singleKey) rl.pause();
+
       const lineHandler = (line: string) => {
         cleanup();
         finish(line);
@@ -470,6 +475,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       };
 
       function cleanup() {
+        if (singleKey) rl.resume();
         rl.removeListener('line', lineHandler);
         process.stdin.removeListener('keypress', escHandler);
         process.stdin.removeListener('keypress', keyHandler);
