@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync, cpSync, unlinkSync, rmdirSync } from 'fs';
-import { resolve, join } from 'path';
+import { resolve, join, dirname } from 'path';
 import { homedir } from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -258,7 +258,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const path = resolveRelativePath(String(args.path || ''));
-      const parent = path.split(/[/\\]/).slice(0, -1).join('/') || '.';
+      const parent = dirname(path) || '.';
       const authorized = await authorizePath(parent);
       if (!authorized) return { content: `Access denied: parent of "${path}"`, isError: true };
       try {
@@ -678,23 +678,36 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       const absDir = findSkillDir(skillPath);
       const absMd = absDir ? join(absDir, 'SKILL.md') : `${skillPath}/SKILL.md`;
       const absEvals = absDir ? join(absDir, 'evals', 'evals.json') : null;
-      if (absDir) {
-        const norm = resolve(absDir).toLowerCase();
-        const skillsRoots = [
-          join(homedir(), '.nexus', 'skills'),
-          join(homedir(), '.claude', 'skills'),
-        ].map(p => resolve(p).toLowerCase());
-        if (skillsRoots.some(r => norm === r || norm.startsWith(r + '/'))) {
-          preAuthorizeRoot(absDir);
-        }
+
+      // Security: fix_skill_smart spawns a sub-agent with broad file tools. Only
+      // allow it for skill directories that live under a known skills root. If
+      // the LLM passes an arbitrary project path, refuse — otherwise the sub-agent
+      // could read/write arbitrary files in the cwd under the guise of "fixing".
+      const skillsRoots = [
+        join(homedir(), '.nexus', 'skills'),
+        join(homedir(), '.claude', 'skills'),
+      ].map(p => resolve(p).toLowerCase());
+      const isKnownSkill = absDir
+        ? skillsRoots.some(r => { const n = resolve(absDir).toLowerCase(); return n === r || n.startsWith(r + '/'); })
+        : false;
+
+      if (!absDir || !isKnownSkill) {
+        return {
+          content: `Refusing to run smart-fix: "${skillPath}" is not a skill directory under a known skills root (${skillsRoots.join(', ')}). Only skill directories may be auto-fixed.`,
+          isError: true,
+        };
       }
+      preAuthorizeRoot(absDir);
 
       const issueSummary = report.issues.map((i) =>
         `  [${i.severity}] ${i.message}${i.fix ? ` (fix: ${i.fix})` : ''}`
       ).join('\n');
 
       const taskDesc =
-        `Fix all issues in the skill at "${absDir}".\n\nIssues to fix:\n${issueSummary}\n\n` +
+        `Fix all issues in the skill at "${absDir}".\n\n` +
+        `STRICT SCOPE: you may ONLY read and write files inside "${absDir}". ` +
+        `Do NOT read, write, or modify any file outside that directory (no cwd files, no parent dirs, no other skills).\n\n` +
+        `Issues to fix:\n${issueSummary}\n\n` +
         `Use read_text_file("${absMd}") to read SKILL.md.\n` +
         `Use file_write("${absMd}", ...) to save SKILL.md changes.\n` +
         (absEvals ? `Use file_write("${absEvals}", ...) to update evals.json.\n` : '') +

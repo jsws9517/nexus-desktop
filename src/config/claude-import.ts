@@ -15,7 +15,7 @@ const IMPORT_FLAG = join(homedir(), '.nexus', '.claude-imported');
  * arbitrary code. We only allow simple executable names (optionally scoped via
  * npx/@scope) — anything that looks like a shell one-liner is skipped.
  */
-function isSafeMcpCommand(command: string, args: unknown): boolean {
+export function isSafeMcpCommand(command: string, args: unknown): boolean {
   if (!command) return false;
   // Reject anything that is not a single, simple executable token: no shell
   // metacharacters, no whitespace (which would indicate an inline/sh compound

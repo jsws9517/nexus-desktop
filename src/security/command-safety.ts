@@ -2,6 +2,7 @@
 // the permission layer (hooks/permissions) so dangerous-command detection is
 // identical regardless of which code path evaluates a command.
 
+// Commands that may destroy data, move/overwrite files, or change permissions.
 export const DANGEROUS_COMMANDS = new Set([
   // File destruction
   'rm', 'del', 'rmdir', 'unlink', 'erase', 'rd',
@@ -11,13 +12,28 @@ export const DANGEROUS_COMMANDS = new Set([
   'mv', 'move', 'ren', 'rename',
   // Permission changes
   'chmod', 'chown', 'chgrp', 'attrib', 'icacls', 'setfacl', 'cacls', 'takeown',
-  // Network exfiltration tools
-  'nc', 'netcat', 'ncat',
 ]);
 
+// Interpreters / shells. Running any of these — whether with -c/-e, against a
+// script file, or interactively — is treated as arbitrary code execution.
 export const INTERPRETERS = new Set([
-  'bash', 'sh', 'zsh', 'fish', 'cmd', 'powershell', 'pwsh',
-  'python', 'python3', 'python2', 'node', 'nodejs', 'perl', 'ruby', 'php',
+  'bash', 'sh', 'zsh', 'fish', 'cmd', 'powershell', 'pwsh', 'cmd.exe', 'powershell.exe',
+  'python', 'python3', 'python2', 'node', 'nodejs', 'perl', 'ruby', 'php', 'lua', 'tclsh',
+]);
+
+// Network exfiltration / remote-code primitives. Blocked outright — they have
+// no legitimate use inside a sandboxed agent exec call and are the standard
+// building blocks for "curl ... | sh" supply-chain RCE.
+export const NETWORK_EXFIL = new Set([
+  'curl', 'wget', 'nc', 'netcat', 'ncat', 'telnet', 'ftp', 'tftp', 'scp',
+  'rsync', 'ssh', 'sftp',
+]);
+
+// The full set of commands that may NEVER be auto-approved / silently run.
+export const BLOCKED_COMMANDS = new Set<string>([
+  ...DANGEROUS_COMMANDS,
+  ...INTERPRETERS,
+  ...NETWORK_EXFIL,
 ]);
 
 export function containsSubshell(command: string): boolean {
@@ -92,22 +108,26 @@ export function isDangerousCommand(command: string): { blocked: boolean; reason?
 
   const commands = extractAllCommands(command);
   for (const cmd of commands) {
-    if (DANGEROUS_COMMANDS.has(cmd)) {
+    if (BLOCKED_COMMANDS.has(cmd)) {
       return { blocked: true, reason: `"${cmd}" is not allowed` };
     }
   }
 
-  const first = commands[0];
-  if (first && INTERPRETERS.has(first)) {
-    const lowered = command.toLowerCase();
-    const hasInline = /(^|\s)(bash|sh|zsh|python|python3|node|perl|ruby|php)\s+.*(-c\s|--command\s|\/c\s|eval\s|exec\s|<\()/.test(lowered);
-    if (hasInline) {
-      return { blocked: true, reason: 'inline script execution via interpreter is not allowed' };
-    }
-    const oneShot = /(^|\s)(?:node|perl|ruby|php|python|python3)\s+.*\s-(?:e|e64|enc)\b/.test(lowered);
-    if (oneShot) {
-      return { blocked: true, reason: 'inline script evaluation via interpreter is not allowed' };
-    }
+  // Interpreter chaining: `curl … | sh`, `cat x | bash`, `… | python`, etc.
+  // Even if no single token is a known interpreter, a pipeline whose final
+  // stage is an interpreter must be blocked (the script comes from the pipe).
+  const lowered = command.toLowerCase();
+  const pipeToInterpreter = /[|]\s*(?:bash|sh|zsh|python|python3|node|perl|ruby|php|powershell|pwsh)\b/;
+  if (pipeToInterpreter.test(lowered)) {
+    return { blocked: true, reason: 'piping data into an interpreter is not allowed' };
+  }
+  const inlineInterpreter = /(^|\s)(bash|sh|zsh|python|python3|node|perl|ruby|php|powershell|pwsh)\s+.*(-c\s|--command\s|\/c\s|eval\s|exec\s|<\()/;
+  if (inlineInterpreter.test(lowered)) {
+    return { blocked: true, reason: 'inline script execution via interpreter is not allowed' };
+  }
+  const oneShot = /(^|\s)(?:node|perl|ruby|php|python|python3)\s+.*\s-(?:e|e64|enc)\b/;
+  if (oneShot.test(lowered)) {
+    return { blocked: true, reason: 'inline script evaluation via interpreter is not allowed' };
   }
 
   return { blocked: false };

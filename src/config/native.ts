@@ -685,10 +685,11 @@ export class NativeManager {
       }
     }
 
-    // Install dependencies
+    // Install dependencies. Use --ignore-scripts so a malicious/compromised
+    // repo cannot run arbitrary code via postinstall/preinstall hooks.
     if (existsSync(join(targetDir, 'package.json'))) {
       try {
-        execSync('npm install --loglevel=error', { cwd: targetDir, stdio: 'pipe', timeout: 120000 });
+        execSync('npm install --ignore-scripts --loglevel=error', { cwd: targetDir, stdio: 'pipe', timeout: 120000 });
       } catch (err) {
         // Non-fatal — the server might still work
       }

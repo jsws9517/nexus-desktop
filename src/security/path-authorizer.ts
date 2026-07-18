@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve, normalize } from 'path';
 import { createInterface } from 'readline';
@@ -126,6 +126,31 @@ export function checkPathAllowed(absPath: string): boolean {
   return false;
 }
 
+/**
+ * Resolve the real (symlink-free) path of `absPath` and verify it still falls
+ * under one of the allowed roots. A symlink (or chain of symlinks) living
+ * inside an authorized directory but pointing to e.g. /etc or ~/.ssh is a
+ * classic escape vector — the string path passes the prefix check, but the
+ * resolved inode does not. Returns false when such an escape is detected.
+ * Best-effort: if the path does not yet exist, we cannot resolve it, so we
+ * defer to the string-prefix check above.
+ */
+function realpathUnderAllowedRoots(absPath: string): boolean {
+  let real: string;
+  try {
+    real = realpathSync(absPath);
+  } catch {
+    return true; // path not present yet (e.g. create_directory target) — no escape possible yet
+  }
+  const normalizedReal = normalize(real).toLowerCase();
+  const roots = [
+    process.cwd().toLowerCase(),
+    ...getAuthorizedRoots().map(r => normalize(r).toLowerCase()),
+    ...[...alreadyConfirmed].map(r => normalize(r).toLowerCase()),
+  ];
+  return roots.some(root => normalizedReal.startsWith(root));
+}
+
 /** Batch pre-authorize a root path for the current process without prompting.
  *  All sub-paths under `root` will be auto-allowed. */
 export function preAuthorizeRoot(root: string): void {
@@ -135,6 +160,11 @@ export function preAuthorizeRoot(root: string): void {
 
 export async function authorizePath(absPath: string): Promise<boolean> {
   if (checkPathAllowed(absPath)) {
+    // Symlink escape guard: even when the string path is within an authorized
+    // root, refuse silent access if the resolved inode points outside it.
+    if (!realpathUnderAllowedRoots(absPath)) {
+      return promptUser(absPath);
+    }
     // Even if a parent root was authorized (e.g. "/" once), .remember
     // directories outside the current project always require a fresh prompt.
     const normalized = normalize(absPath).toLowerCase();

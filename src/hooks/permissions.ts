@@ -87,10 +87,30 @@ export async function permissionCheckHook(
     const writePath = (args.path || args.filePath || '') as string;
     if (writePath && typeof writePath === 'string') {
       const lower = writePath.toLowerCase();
-      if (lower.includes('node_modules') || lower.includes('.env') || lower.includes('dist/')) {
+      const PROTECTED = [
+        'node_modules',
+        '.env',
+        'dist/',
+        '.npmrc',
+        '.pypirc',
+        '.netrc',
+        '.git/',
+        'id_rsa',
+        '.pem',
+        '.key',
+        '.credentials',
+        '.bashrc',
+        '.bash_profile',
+        '.zshrc',
+        '.profile',
+        '.git-credentials',
+        '.aws/credentials',
+        '.ssh/',
+      ];
+      if (PROTECTED.some(p => lower.includes(p))) {
         return {
           verdict: 'deny',
-          reason: `Writing to "${writePath.slice(0, 100)}" requires explicit approval.`,
+          reason: `Writing to "${writePath.slice(0, 100)}" requires explicit approval (protected location).`,
         };
       }
     }

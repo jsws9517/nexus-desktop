@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { Config, ConfigSchema } from './types.js';
-import { hasClaudeConfig, hasBeenAutoImported, importFromClaude, markAutoImported } from './claude-import.js';
+import { hasClaudeConfig, hasBeenAutoImported, importFromClaude, markAutoImported, isSafeMcpCommand } from './claude-import.js';
 import { resolveApiKey, decryptApiKey, atRestEncrypt, atRestDecrypt } from '../security/env-key-encrypt.js';
 
 const CONFIG_DIR = join(homedir(), '.nexus');
@@ -277,6 +277,14 @@ export class ConfigManager {
   }
 
   addMcpServer(name: string, server: NonNullable<Config['mcpServers']>[string]): void {
+    const command = String((server as Record<string, unknown>).command || '');
+    const args = (server as Record<string, unknown>).args;
+    // All MCP servers are auto-started on next launch, so a malicious `command`
+    // would execute arbitrary code. Reject anything that is not a simple, safe
+    // executable (no shell metacharacters, no inline/sh compound commands).
+    if (!isSafeMcpCommand(command, args)) {
+      throw new Error(`Refusing to add MCP server "${name}": launch command "${command}" is not a safe, simple executable.`);
+    }
     this.config.mcpServers = this.config.mcpServers || {};
     (this.config.mcpServers as Record<string, unknown>)[name] = server;
     this.save();

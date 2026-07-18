@@ -139,8 +139,7 @@ const API_TOKEN = randomBytes(24).toString('hex');
 function jsonResponse(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': 'http://localhost',
-    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Origin': LOCAL_ORIGIN || 'null',
     'X-Content-Type-Options': 'nosniff',
     'Cache-Control': 'no-store',
   });
@@ -151,10 +150,15 @@ function unauthorized(res: ServerResponse): void {
   res.writeHead(401, {
     'Content-Type': 'application/json',
     'WWW-Authenticate': 'Bearer',
-    'Access-Control-Allow-Origin': 'http://localhost',
+    'Access-Control-Allow-Origin': LOCAL_ORIGIN || 'null',
   });
   res.end(JSON.stringify({ error: 'Unauthorized' }));
 }
+
+// The single allowed web origin is the SPA served by THIS server (same host:port).
+// We never echo a foreign origin, and we never use credentials, so a malicious
+// localhost page cannot make credentialed cross-origin calls.
+let LOCAL_ORIGIN: string | null = null;
 
 /** Validate the Authorization: Bearer <token> header on an API request. */
 function isAuthorized(req: IncomingMessage): boolean {
@@ -183,13 +187,6 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 function handleApi(req: IncomingMessage, res: ServerResponse, url: string, method: string): void {
-  // Token bootstrap: the SPA fetches this once (no auth) to learn the token
-  // for subsequent calls. Safe to expose since the token is single-use per
-  // process and only meaningful to someone who can already read this process.
-  if (url === '/api/bootstrap' && method === 'GET') {
-    return jsonResponse(res, { token: API_TOKEN });
-  }
-
   if (!isAuthorized(req)) {
     return unauthorized(res);
   }
@@ -332,7 +329,12 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
   jsonResponse(res, { error: 'Not found' }, 404);
 }
 
-const SPA_HTML = `<!DOCTYPE html>
+// The SPA is served by THIS server only. We embed the per-process access token
+// directly into the HTML so the SPA can authenticate without an unauthenticated
+// bootstrap endpoint (which previously leaked the token to any localhost origin).
+function buildSpaHtml(token: string): string {
+  const embedded = JSON.stringify(token);
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -397,6 +399,7 @@ const SPA_HTML = `<!DOCTYPE html>
 <div id="toast" class="toast"></div>
 <script>
 const API = '';
+window.__NEXUS_TOKEN__ = ${embedded};
 let API_TOKEN = '';
 let state = { config: null, schema: null, activeTab: null };
 
@@ -772,9 +775,9 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 
 (async () => {
   try {
-    const boot = await fetch(API + '/api/bootstrap');
-    const bootData = await boot.json();
-    API_TOKEN = bootData.token || '';
+    // The access token is embedded into the served HTML by the server, so there
+    // is no unauthenticated bootstrap endpoint for foreign pages to call.
+    API_TOKEN = window.__NEXUS_TOKEN__ || '';
     state.schema = (await api('/api/schema')).categories;
     state.config = await api('/api/config');
     renderNav();
@@ -793,6 +796,7 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 </script>
 </body>
 </html>`;
+}
 
 export function startWebUi(port = 3457): Promise<{ port: number; close: () => Promise<void> }> {
   return new Promise((resolve) => {
@@ -805,10 +809,14 @@ export function startWebUi(port = 3457): Promise<{ port: number; close: () => Pr
         return;
       }
 
-      // Serve SPA
+      // Serve SPA (token embedded so no unauthenticated bootstrap endpoint)
       if (url === '/' || url === '/index.html') {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(SPA_HTML);
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'no-store',
+        });
+        res.end(buildSpaHtml(API_TOKEN));
         return;
       }
 
@@ -828,6 +836,7 @@ export function startWebUi(port = 3457): Promise<{ port: number; close: () => Pr
       server.listen(p, 'localhost', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr ? addr.port : p;
+        LOCAL_ORIGIN = `http://localhost:${port}`;
         process.stderr.write(`\n  ◆ Config Web UI: http://localhost:${port}\n  ◆ Access token: ${API_TOKEN}\n  Press Ctrl+C to stop\n\n`);
         resolve({
           port,
