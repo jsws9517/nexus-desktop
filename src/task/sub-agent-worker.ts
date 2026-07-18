@@ -39,6 +39,21 @@ export class SubAgentWorker {
     child.detailMode = false;
     child.suppressToolOutput = true;
     child.maxTurns = roleDef.maxTurns;
+
+    // Inherit the parent's live permission configuration (mode / allowlist /
+    // safePaths / mcpAllowlist) so that autonomous runs (e.g. /go, which
+    // temporarily switches the parent to auto-whitelist) flow into sub-agents
+    // without re-prompting for every tool. This mirrors the parent's in-memory
+    // state and is never persisted by the child.
+    const parentPerms = this.parentAgent.config.getPermissions();
+    if (parentPerms.mode === 'auto') {
+      child.config.setPermissionsInMemory({
+        mode: parentPerms.mode,
+        allowlist: [...parentPerms.allowlist],
+        safePaths: [...parentPerms.safePaths],
+        mcpAllowlist: [...parentPerms.mcpAllowlist],
+      });
+    }
     // Sub-agents need a generous context window to read files and iterate
     child.context.setMaxContextTokens(128000);
 
