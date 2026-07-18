@@ -443,51 +443,48 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         _rawStdoutWrite(`\r\x1b[K${lastLine}${answer}\n`);
       };
 
-      // In single-key mode, pause readline so it does NOT echo the pressed key
-      // itself — otherwise we'd get a duplicated answer (our finish() output plus
-      // readline's own echo of the same keystroke).
-      if (singleKey) rl.pause();
-
       const lineHandler = (line: string) => {
         cleanup();
         finish(line);
         resolve(line);
       };
 
-      const escHandler = (_s: string, k: any) => {
-        if (k && k.name === 'escape') {
-          cleanup();
-          (rl as any).line = '';
-          finish('');
-          resolve('');
-        }
-      };
-
-      const keyHandler = (_s: string, k: any) => {
-        if (!singleKey || !k) return;
-        if ((_s === 'y' || _s === 'a' || _s === 'n' || _s === 'Y' || _s === 'A' || _s === 'N') && !k.ctrl && !k.meta && !k.shift) {
-          const answer = _s.toLowerCase();
-          (rl as any).line = '';
-          cleanup();
-          finish(answer);
-          resolve(answer);
-        }
-      };
+      // Single-key mode (y/N prompts): read raw stdin directly so readline never
+      // echoes the keystroke (which caused a duplicated answer) and so a paused
+      // readline never swallows the keypress (which caused a hang). We pause
+      // readline and attach a raw 'data' listener instead.
+      let onData: ((buf: Buffer) => void) | null = null;
+      if (singleKey) {
+        rl.pause();
+        onData = (buf: Buffer) => {
+          const s = buf.toString();
+          if (s === '\x1b') {
+            cleanup();
+            finish('');
+            resolve('');
+            return;
+          }
+          const ch = s.trim().toLowerCase();
+          if (ch === 'y' || ch === 'a' || ch === 'n') {
+            cleanup();
+            finish(ch);
+            resolve(ch);
+          }
+        };
+        process.stdin.on('data', onData);
+      }
 
       function cleanup() {
-        if (singleKey) rl.resume();
+        if (singleKey && onData) {
+          process.stdin.removeListener('data', onData);
+          rl.resume();
+        }
         rl.removeListener('line', lineHandler);
-        process.stdin.removeListener('keypress', escHandler);
-        process.stdin.removeListener('keypress', keyHandler);
         isQuestionMode = false;
         isSingleKeyMode = false;
       }
 
       rl.on('line', lineHandler);
-      process.stdin.on('keypress', escHandler);
-      if (singleKey) {
-        process.stdin.on('keypress', keyHandler);
-      }
     });
   }
 
