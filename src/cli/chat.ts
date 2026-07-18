@@ -8,6 +8,7 @@ import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { homedir } from 'os';
 import { Agent } from '../agent.js';
+import { PERMISSION_PRESETS } from '../config/types.js';
 import { showWelcomeScreen, BorderMode } from './logo.js';
 import { t as i18nTr, tf as i18nTf } from '../i18n/index.js';
 import { ThemeManager } from '../theme/manager.js';
@@ -986,6 +987,7 @@ async function handleSlashCommand(
 
       console.log(t().heading(i18nTr('h_terminal')));
       console.log(`  /flush           - ${i18nTr('h_flush')}`);
+      console.log(`  /bypass [auto|off|status] - ${i18nTr('h_bypass')}`);
       console.log(`  /exit, /quit     - ${i18nTr('h_exit')}`);
       console.log(t().textDim(`\n${i18nTr('h_prefixes')}:`));
       console.log(t().textDim(`  !<cmd>          - ${i18nTr('h_bash')}`));
@@ -1773,6 +1775,53 @@ async function handleSlashCommand(
         console.log(`  ${icon} ${t().entityName(node.id)}: ${node.description}${depInfo}${resultInfo}${errInfo}`);
       }
       console.log(t().textDim(`\nGraph ID: ${graph.id}`));
+      return false;
+    }
+
+    case 'bypass': {
+      // Toggle / query the permission whitelist (auto = whitelist active, no
+      // per-tool prompts; off/prompt = ask before each tool call).
+      const sub = (args[0] || '').toLowerCase();
+      const renderStatus = () => {
+        // Always read fresh so the printed state matches what was just persisted.
+        const live = agent.config.getPermissions();
+        const modeTag = live.mode === 'auto'
+          ? t().success('auto (whitelist active — no prompts)')
+          : t().warning('prompt (ask before each tool)');
+        console.log(t().heading('Permission mode:'));
+        console.log(`  Mode: ${modeTag}`);
+        if (live.allowlist.length === 0) {
+          console.log(t().textDim('  Allowlist: (empty)'));
+        } else {
+          console.log(`  Allowlist (${live.allowlist.length}): ${live.allowlist.join(', ')}`);
+        }
+      };
+      if (sub === 'status' || sub === '') {
+        renderStatus();
+        return false;
+      }
+      if (sub === 'auto' || sub === 'on') {
+        const cur = agent.config.getPermissions();
+        if (cur.allowlist.length === 0) {
+          agent.config.setPermissions({
+            mode: 'auto',
+            allowlist: [...PERMISSION_PRESETS.edit.allowlist],
+          });
+          console.log(t().textDim('No allowlist set — applied "edit" preset automatically.'));
+        } else {
+          agent.config.setPermissions({ mode: 'auto' });
+        }
+        console.log(t().success('Bypass ON: whitelist active, tools run without prompting.'));
+        renderStatus();
+        return false;
+      }
+      if (sub === 'off' || sub === 'prompt') {
+        agent.config.setPermissions({ mode: 'prompt' });
+        console.log(t().success('Bypass OFF: reverted to prompt mode (each tool asks).'));
+        renderStatus();
+        return false;
+      }
+      console.log(t().warning('Usage: /bypass [auto|off|status]'));
       return false;
     }
 

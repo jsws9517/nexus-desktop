@@ -38,6 +38,11 @@ const DEFAULT_CONFIG: Config = {
     autoTest: true,
     autoCommit: false,
   },
+  permissions: {
+    mode: 'prompt',
+    allowlist: [],
+    safePaths: ['~/.nexus/tasks', '.'],
+  },
 };
 
 export class ConfigManager {
@@ -146,6 +151,23 @@ export class ConfigManager {
   setQualityGate(partial: Partial<{ autoTest: boolean; autoCommit: boolean }>): void {
     const cur = this.getQualityGate();
     (this.config as Record<string, unknown>).qualityGate = { ...cur, ...partial };
+    this.save();
+  }
+
+  getPermissions(): { mode: 'prompt' | 'auto'; allowlist: string[]; safePaths: string[] } {
+    const p = (this.config as Record<string, unknown>).permissions as
+      | { mode?: 'prompt' | 'auto'; allowlist?: string[]; safePaths?: string[] }
+      | undefined;
+    return {
+      mode: p?.mode ?? 'prompt',
+      allowlist: p?.allowlist ? [...p.allowlist] : [],
+      safePaths: p?.safePaths ? [...p.safePaths] : [],
+    };
+  }
+
+  setPermissions(partial: Partial<{ mode: 'prompt' | 'auto'; allowlist: string[]; safePaths?: string[] }>): void {
+    const cur = this.getPermissions();
+    (this.config as Record<string, unknown>).permissions = { ...cur, ...partial };
     this.save();
   }
 

@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { createInterface } from 'readline';
 import { ConfigManager } from '../config/index.js';
+import { PERMISSION_PRESETS } from '../config/types.js';
 import { NativeManager, SearchResult } from '../config/native.js';
 import { importFromClaude } from '../config/claude-import.js';
 import { ThemeManager } from '../theme/manager.js';
@@ -682,4 +683,124 @@ export function registerConfigCommand(program: Command): void {
 
   // OpenCode Zen authentication flow (Anthropic-compatible gateway)
   registerOpencodeZenCommand(configCmd);
+
+  // Permission whitelist (白名单) management
+  const permCmd = configCmd.command('permissions').description('Permission whitelist — pre-approve tools so the agent never prompts (e.g. edit mode)');
+
+  permCmd
+    .command('list')
+    .description('Show current permission whitelist and mode')
+    .action(() => {
+      const config = new ConfigManager();
+      const p = config.getPermissions();
+      console.log(t.heading('Permissions:'));
+      console.log(`  Mode: ${p.mode === 'auto' ? t.success('auto (whitelist active)') : t.textDim('prompt (always ask)')}`);
+      if (p.allowlist.length === 0) {
+        console.log(t.textDim('  Allowlist: (empty)'));
+      } else {
+        console.log('  Allowlist:');
+        for (const name of p.allowlist) console.log(`    - ${name}`);
+      }
+    });
+
+  permCmd
+    .command('add <tool...>')
+    .description('Add tool(s) to the permission whitelist')
+    .action((tools: string[]) => {
+      const config = new ConfigManager();
+      const cur = config.getPermissions();
+      const next = [...new Set([...cur.allowlist, ...tools])];
+      config.setPermissions({ allowlist: next });
+      console.log(t.success(`Added to whitelist: ${tools.join(', ')}`));
+      console.log(t.textDim('Enable with: nexus config permissions enable'));
+    });
+
+  permCmd
+    .command('remove <tool...>')
+    .description('Remove tool(s) from the permission whitelist')
+    .action((tools: string[]) => {
+      const config = new ConfigManager();
+      const cur = config.getPermissions();
+      const next = cur.allowlist.filter((t) => !tools.includes(t));
+      config.setPermissions({ allowlist: next });
+      console.log(t.success(`Removed from whitelist: ${tools.join(', ')}`));
+    });
+
+  permCmd
+    .command('enable')
+    .description('Enable auto mode — whitelisted tools run without prompting')
+    .action(() => {
+      const config = new ConfigManager();
+      const cur = config.getPermissions();
+      if (cur.allowlist.length === 0) {
+        console.log(t.warning('Allowlist is empty. Add tools first, e.g. nexus config permissions preset edit'));
+        return;
+      }
+      config.setPermissions({ mode: 'auto' });
+      console.log(t.success('Permission whitelist ENABLED (auto mode). Whitelisted tools will not prompt.'));
+    });
+
+  permCmd
+    .command('disable')
+    .description('Disable auto mode — revert to always prompting')
+    .action(() => {
+      const config = new ConfigManager();
+      config.setPermissions({ mode: 'prompt' });
+      console.log(t.success('Permission whitelist DISABLED (prompt mode). Tools will ask again.'));
+    });
+
+  permCmd
+    .command('preset <name>')
+    .description('Apply a built-in preset to the allowlist. Currently: edit')
+    .action((name: string) => {
+      const preset = PERMISSION_PRESETS[name];
+      if (!preset) {
+        console.log(t.error(`Unknown preset: "${name}". Available: ${Object.keys(PERMISSION_PRESETS).join(', ') || '(none)'}`));
+        return;
+      }
+      const config = new ConfigManager();
+      config.setPermissions({ allowlist: [...preset.allowlist] });
+      console.log(t.success(`Applied preset "${name}": ${preset.description}`));
+      console.log(t.textDim('Enable with: nexus config permissions enable'));
+    });
+
+  // Path whitelist for exec_command (auto-approve commands run inside these dirs)
+  const pathCmd = permCmd.command('path').description('Manage exec safe-path whitelist (commands run inside these dirs are auto-approved)');
+
+  pathCmd
+    .command('list')
+    .description('Show configured exec safe paths')
+    .action(() => {
+      const config = new ConfigManager();
+      const p = config.getPermissions();
+      console.log(t.heading('Exec safe paths:'));
+      if (p.safePaths.length === 0) {
+        console.log(t.textDim('  (none — exec_command always prompts)'));
+      } else {
+        for (const sp of p.safePaths) console.log(`    - ${sp}`);
+      }
+      console.log(t.textDim('  "." = agent start directory (pwd); "~" = home'));
+    });
+
+  pathCmd
+    .command('add <path...>')
+    .description('Add path(s) to the exec safe-path whitelist')
+    .action((paths: string[]) => {
+      const config = new ConfigManager();
+      const cur = config.getPermissions();
+      const next = [...new Set([...cur.safePaths, ...paths])];
+      config.setPermissions({ safePaths: next });
+      console.log(t.success(`Added safe path(s): ${paths.join(', ')}`));
+    });
+
+  pathCmd
+    .command('remove <path...>')
+    .description('Remove path(s) from the exec safe-path whitelist')
+    .action((paths: string[]) => {
+      const config = new ConfigManager();
+      const cur = config.getPermissions();
+      const next = cur.safePaths.filter((p) => !paths.includes(p));
+      config.setPermissions({ safePaths: next });
+      console.log(t.success(`Removed safe path(s): ${paths.join(', ')}`));
+    });
 }

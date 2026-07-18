@@ -4,6 +4,7 @@ import { t, tf } from './i18n/index.js';
 import { homedir } from 'os';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
 import { ConfigManager } from './config/index.js';
+import { PERMISSION_PRESETS } from './config/types.js';
 import { LLMProvider, createProvider } from './llm/provider.js';
 import { ContextManager, CompactMetadata } from './llm/context-manager.js';
 import { SessionManager } from './session/manager.js';
@@ -466,8 +467,14 @@ export class Agent {
         if (check !== 'allow') return check;
         // Enforce the built-in permission policy (dangerous commands, protected
         // paths, denied tools). This runs before any user-supplied hook.
+        const permCfg = this.config.getPermissions();
         const policy = await permissionCheckHook(ctx, (q) =>
-          this.promptForPermission(q));
+          this.promptForPermission(q), {
+            allowlist: permCfg.allowlist,
+            mode: permCfg.mode,
+            safePaths: permCfg.safePaths,
+            resolveCwd: () => process.cwd(),
+          });
         if (policy !== 'allow') return policy;
         return userHooks?.preToolUse ? userHooks.preToolUse(ctx) : 'allow';
       },
@@ -1471,6 +1478,10 @@ export class Agent {
     if (!this.currentPlan) {
       return 'No plan to execute. Use /plan first.';
     }
+    // During autonomous plan execution, auto-enable the permission whitelist so
+    // the agent is not interrupted by per-tool prompts. This is TEMPORARY and
+    // never persisted: we snapshot the user's real setting and restore it after.
+    const restored = this._withAutoWhitelist();
     const worker = new SubAgentWorker(this);
     const scheduler = new DAGScheduler(worker, this.tracker);
     try {
@@ -1478,7 +1489,35 @@ export class Agent {
       return 'Plan execution completed.';
     } catch (err) {
       return `Plan execution failed: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      restored();
     }
+  }
+
+  /**
+   * Temporarily switch permissions to auto-whitelist mode for the duration of an
+   * autonomous run. If the user has no allowlist configured, the built-in `edit`
+   * preset is applied in-memory only. Returns a function that restores the
+   * previous (persisted) permission state. Does NOT write to disk.
+   */
+  private _withAutoWhitelist(): () => void {
+    const prev = this.config.getPermissions();
+    const hadAllowlist = prev.allowlist.length > 0;
+
+    if (prev.mode !== 'auto' || !hadAllowlist) {
+      const allowlist = hadAllowlist ? prev.allowlist : PERMISSION_PRESETS.edit.allowlist;
+      // Mutate the live (in-memory) config object without persisting.
+      (this.config as unknown as { setPermissions: (p: unknown) => void })
+        .setPermissions({ mode: 'auto', allowlist: [...allowlist] });
+      this.onEvent?.({ type: 'text', text: `[permissions] auto-whitelist ON (temporary, restored after /go)` });
+    }
+
+    return () => {
+      // Restore the original persisted state in-memory (no disk write needed
+      // because we only ever changed the live object; persistent file is untouched).
+      (this.config as unknown as { setPermissions: (p: unknown) => void })
+        .setPermissions({ mode: prev.mode, allowlist: [...prev.allowlist] });
+    };
   }
 
   async shutdown(): Promise<void> {

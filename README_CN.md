@@ -20,6 +20,7 @@
 - **视觉/多模态**：`analyze_image` 工具支持本地 (Florence-2) 和云端视觉提供商 (GLM-4V, Agnes-2V 等)，可配置回退模式
 - **任务 DAG 引擎**：将请求分解为 3-5 个子任务，带依赖解析执行，支持 `new`（绿地）和 `modify`（修改现有）模式，自动 git 快照与回滚安全
 - **临时文件清理**：任务结束后清理探测/暂存/缓存文件，将交付物收集到沙箱输出目录
+- **权限白名单**：预授权工具（`/bypass`）、按路径范围的 exec 自动放行（`safePaths`），以及 `edit` 预设，让 vibe-coding 会话不再被逐个工具弹窗打断。`/go` 在执行计划期间临时启用白名单，结束后自动恢复
 
 ## 安装
 
@@ -94,6 +95,7 @@ nexus session delete <id>
 - `/btw <信息>` - 在下次 LLM 调用前注入上下文
 - `/theme` - 显示/切换颜色主题
 - `/flush` - 清除屏幕
+- `/bypass [auto|off|status]` - 切换权限白名单（auto = 免确认编辑模式，off = 每个工具执行前询问）
 - `/config` - 查看/编辑配置
 - `/exit`、 `/quit` - 退出
 
@@ -157,6 +159,41 @@ DAG 执行后自动运行 **finalize**：清理临时文件（`_probe`、`__pyca
 - 任务最大重试次数从 2 减为 1
 - `src/mcp/client-manager.ts`：工具名去重——内置工具优先于 MCP 同名工具
 - MCP 工具调用前执行 `existsSync` 检查——避免为不存在的文件弹出授权提示
+
+### 权限白名单
+
+权限系统分为三级：`Allow`（永不询问）、`Prompt`（询问用户）、`Deny`（始终拒绝）。默认情况下，所有修改类工具都是 `Prompt`，即代理在每次操作前都会询问。白名单用于预授权工具，让 vibe-coding 会话不被打断地连续运行。
+
+**三套相互独立的机制：**
+
+1. **工具名白名单（`/bypass`）** —— 控制*某个工具是否会被询问*。
+   ```bash
+   /bypass on        # 启用白名单（auto 模式）；若无白名单则自动套用 "edit" 预设
+   /bypass off       # 恢复 prompt 模式（每个工具都询问）
+   /bypass status    # 显示当前模式与白名单
+   ```
+   通过 CLI 持久化管理：
+   ```bash
+   nexus config permissions preset edit   # 用读写文件工具填充白名单
+   nexus config permissions enable         # 切换到 auto 模式
+   nexus config permissions disable        # 恢复 prompt 模式
+   nexus config permissions add <tool...>  # 增加指定工具
+   nexus config permissions remove <tool...>
+   nexus config permissions list
+   ```
+
+2. **exec 路径白名单（`safePaths`）** —— 按命令的*工作目录*控制 *`exec_command` 是否会被询问*。在安全路径内运行的命令自动放行（危险命令除外）。默认安全路径：`~/.nexus/tasks` 和 `.`（代理启动目录 / pwd）。`~` 展开为用户主目录。
+   ```bash
+   nexus config permissions path list
+   nexus config permissions path add <path...>
+   nexus config permissions path remove <path...>
+   ```
+
+3. **路径授权（`path-authorizer`）** —— 独立的安全层，控制*某个目录是否允许访问*。首次访问新目录时总会提示，并记住授权（`y` 本次 / `a` 始终）。它与白名单无关，且不会被绕过。
+
+**`/go` 集成：** 运行 `/go` 执行计划时，白名单会在执行期间临时切换为 auto（若未配置白名单则套用 `edit` 预设），执行结束后恢复为你持久化的设置——该临时变更**不会写入磁盘**。
+
+> 危险命令（`rm -rf /`、`mkfs` 等）和破坏性工具（`delete_file`、`remove_file`）无论白名单状态如何，始终被拦截。
 
 ### 安全约束
 

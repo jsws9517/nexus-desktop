@@ -20,6 +20,7 @@ A powerful TypeScript CLI agent connecting multiple LLM providers, MCP tools, fi
 - **Vision / Multi-Modal**: `analyze_image` tool with local (Florence-2) and cloud vision providers (GLM-4V, Agnes-2V, etc.), configurable fallback modes
 - **Task DAG Engine**: Decompose requests into 3-5 sub-tasks, execute with dependency resolution, support `new` (greenfield) and `modify` (edit existing) modes with automatic git snapshot & rollback safety
 - **Temp File Cleanup**: Post-task finalization removes probe/scratch/cache files and collects deliverables into a sandboxed output directory
+- **Permission Whitelist**: Pre-approve tools (`/bypass`), path-scoped exec auto-approval (`safePaths`), and an `edit` preset so vibe-coding sessions run without per-tool prompts. `/go` temporarily enables the whitelist during plan execution and restores it afterward
 
 ## Installation
 
@@ -93,6 +94,7 @@ During chat, type:
 - `/btw <info>` - Inject context before the next LLM turn
 - `/theme` - Show/switch color theme
 - `/flush` - Clear the screen
+- `/bypass [auto|off|status]` - Toggle the permission whitelist (auto = no-prompt edit mode, off = ask before each tool)
 - `/config` - View/edit configuration
 - `/exit`, `/quit` - Quit
 
@@ -157,7 +159,42 @@ After DAG execution, **finalize** runs automatically: cleans up temp files (`_pr
 - `src/mcp/client-manager.ts`: tool name dedup — builtin tools take priority over MCP tools with the same name
 - MCP tools call `existsSync` before prompting for authorization — avoids prompts for nonexistent files
 
-### Security Constraints
+### Permission Whitelist
+
+The permission system has three levels: `Allow` (never prompt), `Prompt` (ask the user), and `Deny` (always refuse). By default every mutating tool is `Prompt`, so the agent asks before each action. The whitelist lets you pre-approve tools so vibe-coding sessions run uninterrupted.
+
+**Three independent mechanisms:**
+
+1. **Tool-name whitelist (`/bypass`)** — controls *whether a tool is asked*.
+   ```bash
+   /bypass on        # enable whitelist (auto mode); applies the "edit" preset if none set
+   /bypass off       # revert to prompt mode (each tool asks)
+   /bypass status    # show current mode + allowlist
+   ```
+   Manage it persistently via CLI:
+   ```bash
+   nexus config permissions preset edit   # fill allowlist with read+write file tools
+   nexus config permissions enable         # switch to auto mode
+   nexus config permissions disable        # back to prompt mode
+   nexus config permissions add <tool...>  # add specific tools
+   nexus config permissions remove <tool...>
+   nexus config permissions list
+   ```
+
+2. **Path whitelist for exec (`safePaths`)** — controls *whether `exec_command` is asked*, based on the command's working directory. Commands run inside a safe path are auto-approved (unless dangerous). Default safe paths: `~/.nexus/tasks` and `.` (the agent's start directory / pwd). `~` expands to the user home.
+   ```bash
+   nexus config permissions path list
+   nexus config permissions path add <path...>
+   nexus config permissions path remove <path...>
+   ```
+
+3. **Path authorization (`path-authorizer`)** — a separate security layer that controls *whether a directory can be accessed at all*. It always prompts on first access to a new directory and remembers the grant (`y` once / `a` always). This is independent of the whitelist and is never bypassed.
+
+**`/go` integration:** when you run `/go` to execute a plan, the whitelist is temporarily switched to auto (applying the `edit` preset if no allowlist is configured) for the duration of execution, then restored to your persisted setting afterward — the change is never written to disk.
+
+> Dangerous commands (`rm -rf /`, `mkfs`, etc.) and destructive tools (`delete_file`, `remove_file`) are always blocked regardless of whitelist state.
+
+## Security Constraints
 
 - If tests fail or Tester errors, the auto-commit chain **aborts** — no unverified code is committed.
 - Tester is read-only (only `exec_command` for tests); Committer only does local `add`+`commit`, never pushes.

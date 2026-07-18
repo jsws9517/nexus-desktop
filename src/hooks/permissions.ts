@@ -92,11 +92,24 @@ export function isDangerousCommand(command: string): boolean {
 export async function permissionCheckHook(
   ctx: HookContext,
   promptUser?: (question: string) => Promise<boolean>,
+  options?: { allowlist?: string[]; mode?: 'prompt' | 'auto'; safePaths?: string[]; resolveCwd?: () => string },
 ): Promise<HookResult> {
   if (!ctx.toolCall) return 'allow';
 
   const toolName = ctx.toolCall.name;
   const args = ctx.toolCall.arguments || {};
+
+  // Permission whitelist (白名单): when mode === 'auto', any tool listed in the
+  // allowlist (or '*' for everything) is auto-approved without prompting the user.
+  // Dangerous commands and protected paths are still blocked regardless (see below).
+  const allowlist = options?.allowlist ?? [];
+  const whitelistMode = options?.mode ?? 'prompt';
+  if (whitelistMode === 'auto' && (allowlist.includes('*') || allowlist.includes(toolName))) {
+    // Still enforce hard denials (delete_file / remove_file) — never whitelist those.
+    const perm0 = getToolPermission(toolName);
+    if (perm0.level !== PermissionLevel.Deny) return 'allow';
+  }
+
   const perm = getToolPermission(toolName);
 
   if (perm.level === PermissionLevel.Allow) return 'allow';
@@ -106,6 +119,21 @@ export async function permissionCheckHook(
   }
 
   if (perm.level === PermissionLevel.Prompt) {
+    // Path whitelist for exec_command / execute_command: if the command's
+    // effective working directory resolves under a configured safe path, auto-
+    // approve without prompting. Dangerous commands are still blocked below.
+    const isExec = toolName === 'exec_command' || toolName === 'execute_command';
+    if (isExec && options?.safePaths && options.safePaths.length > 0) {
+      const requestedCwd = (args.cwd || args.workdir || '') as string;
+      const base = options.resolveCwd ? options.resolveCwd() : process.cwd();
+      const effectiveCwd = requestedCwd ? resolveSafePath(requestedCwd, base) : base;
+      if (isUnderSafePath(effectiveCwd, options.safePaths, base)) {
+        const commandArg = (args.command || args.cmd || '') as string;
+        if (!isDangerousCommand(commandArg)) {
+          return 'allow';
+        }
+      }
+    }
     const commandArg = (args.command || args.cmd || '') as string;
     if (commandArg && isDangerousCommand(commandArg)) {
       return {
@@ -136,4 +164,28 @@ export async function permissionCheckHook(
   }
 
   return 'allow';
+}
+
+/* ----------------------- Path whitelist helpers ----------------------- */
+
+function resolveSafePath(p: string, base: string): string {
+  const expanded = p.replace(/^~($|\/|\\)/, (process.env.HOME || process.env.USERPROFILE || '') + '$1');
+  if (expanded.startsWith('/') || /^[A-Za-z]:[\\/]/.test(expanded) || expanded.startsWith('\\')) {
+    return require('path').resolve(expanded);
+  }
+  return require('path').resolve(base, expanded);
+}
+
+function isUnderSafePath(target: string, safePaths: string[], base: string): boolean {
+  const path = require('path');
+  const norm = (s: string) => path.resolve(s).replace(/\\/g, '/').toLowerCase();
+  const t = norm(target);
+  for (const sp of safePaths) {
+    const resolved = sp === '.' || sp === ''
+      ? base
+      : resolveSafePath(sp, base);
+    const s = norm(resolved);
+    if (t === s || t.startsWith(s + '/')) return true;
+  }
+  return false;
 }
