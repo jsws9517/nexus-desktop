@@ -371,10 +371,27 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     const sessionId = agent.getCurrentSessionId();
     if (!sessionId) return [];
 
+    // Markers that identify system-injected plan/role context. These are stored
+    // as user-role messages by sub-agents during /plan + /go execution, but they
+    // are NOT real user input and must never surface in history recall (otherwise
+    // PageUp re-submits them as bogus prompts, polluting the context).
+    const INJECTED_MARKERS = [
+      '[Project Directory]',
+      '[Mode:',
+      '[Original Request]',
+      '[Prior Task Results]',
+      '[Role:',
+    ];
+    const isInjected = (content: string): boolean => {
+      const head = content.slice(0, 200);
+      return INJECTED_MARKERS.some((mk) => head.includes(mk));
+    };
+
     try {
       const stored = agent.session.getMessages(sessionId);
       return stored
         .filter((m) => m.role === 'user')
+        .filter((m) => !isInjected(m.content))
         .map((m) => {
           // Strip appended context from @-expansion (e.g. "\n\n[Referenced file: ...]" or "\n\n[Directory: ...]")
           // so the readline shows only the user's original input line.

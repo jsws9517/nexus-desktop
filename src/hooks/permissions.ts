@@ -1,4 +1,5 @@
 import { HookContext, HookResult } from './types.js';
+import * as path from 'path';
 
 export enum PermissionLevel {
   Allow = 'allow',
@@ -190,13 +191,12 @@ export async function permissionCheckHook(
 function resolveSafePath(p: string, base: string): string {
   const expanded = p.replace(/^~($|\/|\\)/, (process.env.HOME || process.env.USERPROFILE || '') + '$1');
   if (expanded.startsWith('/') || /^[A-Za-z]:[\\/]/.test(expanded) || expanded.startsWith('\\')) {
-    return require('path').resolve(expanded);
+    return path.resolve(expanded);
   }
-  return require('path').resolve(base, expanded);
+  return path.resolve(base, expanded);
 }
 
 function isUnderSafePath(target: string, safePaths: string[], base: string): boolean {
-  const path = require('path');
   const norm = (s: string) => path.resolve(s).replace(/\\/g, '/').toLowerCase();
   const t = norm(target);
   for (const sp of safePaths) {
