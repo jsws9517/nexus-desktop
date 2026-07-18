@@ -456,6 +456,10 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       let onData: ((buf: Buffer) => void) | null = null;
       if (singleKey) {
         rl.pause();
+        // rl.pause() also pauses process.stdin, which would stop 'data' events
+        // from flowing — so resume the stream to keep our raw listener working
+        // while readline itself stays paused (no echo / no consumption).
+        if (process.stdin.isPaused()) process.stdin.resume();
         onData = (buf: Buffer) => {
           const s = buf.toString();
           if (s === '\x1b') {
