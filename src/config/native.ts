@@ -596,6 +596,11 @@ export class NativeManager {
    * Adds a config entry: npx -y <package-name>
    */
   async installFromNpm(pkgName: string, params?: Record<string, string>): Promise<string> {
+    // Only allow plain package-name specifiers. Reject anything that could run
+    // an install script or point at an arbitrary URL/tarball (supply-chain RCE).
+    if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(pkgName) || /[&|;`$()<>]/.test(pkgName)) {
+      throw new Error(`Refusing to install "${pkgName}": only simple package names are allowed (no URLs, tarballs, tags, or shell metacharacters).`);
+    }
     // Validate via npm registry — check if package exists
     try {
       const checkUrl = `https://registry.npmjs.org/${encodeURIComponent(pkgName).replace(/%2F/g, '/')}/latest`;
@@ -603,10 +608,14 @@ export class NativeManager {
       if (!checkRes.ok) {
         throw new Error(`npm registry: package "${pkgName}" not found (HTTP ${checkRes.status}).`);
       }
-      const pkgMeta = await checkRes.json() as { description?: string; name?: string };
+      const pkgMeta = await checkRes.json() as { description?: string; name?: string; deprecated?: string | boolean };
       const desc = (pkgMeta.description || '').toLowerCase();
       const isLikelyMcp = desc.includes('mcp') || desc.includes('model context protocol') || desc.includes('language server');
       const realName = pkgMeta.name || pkgName;
+
+      if (pkgMeta.deprecated) {
+        throw new Error(`Refusing to install "${pkgName}": the package is deprecated on npm.`);
+      }
 
       if (!isLikelyMcp) {
         // Warn but still allow install (user knows what they're doing)
@@ -649,7 +658,13 @@ export class NativeManager {
     if (parts.length < 2) {
       throw new Error('Invalid GitHub repo format. Use: owner/repo');
     }
-    const repoName = parts[parts.length - 1];
+    const owner = parts[0]!;
+    const repoName = parts[parts.length - 1]!;
+    // Reject shell metacharacters / traversal that could break the git clone
+    // command or escape to arbitrary code execution.
+    if (!/^[a-zA-Z0-9._-]+$/.test(owner) || !/^[a-zA-Z0-9._-]+$/.test(repoName) || /[&|;`$()<>'"\\]/.test(repo)) {
+      throw new Error(`Refusing to install "${repo}": only simple owner/repo names are allowed.`);
+    }
     const targetDir = join(MCP_DIR, repoName);
 
     if (existsSync(targetDir) && existsSync(join(targetDir, '.git'))) {

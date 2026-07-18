@@ -8,7 +8,7 @@ import { isIP } from 'net';
 import { BuiltinTool } from './types.js';
 import { ToolResult } from '../types.js';
 import { authorizePath } from '../security/path-authorizer.js';
-import { sanitizeContent } from '../utils/sanitize.js';
+import { sanitizeContent, redactPaths } from '../utils/sanitize.js';
 import { translateCommand } from './cmd-alias.js';
 
 const execAsync = promisify(exec);
@@ -49,20 +49,40 @@ const INTERPRETERS = new Set([
 ]);
 
 function containsSubshell(command: string): boolean {
-  return /\$\(|`\s|\\`|\$\{/.test(command);
+  // Detect command substitution $(...), `...`, ${...}, and process
+  // substitution <(...).  Note: a backtick starts a subshell even when it is
+  // immediately followed by a non-space (e.g. `rm -rf /`), so we do NOT
+  // require whitespace after the backtick.
+  return /(?:\$\(|`|\$\{|<\(|>\()/.test(command);
+}
+
+/**
+ * Detect base64/hex encoded payloads that are commonly used to smuggle
+ * arbitrary commands past a keyword filter, e.g.
+ *   powershell -enc <base64>
+ *   bash -c "$(echo <base64> | base64 -d)"
+ */
+function containsEncodedPayload(command: string): boolean {
+  const lowered = command.toLowerCase();
+  // -enc / -encodedcommand (PowerShell) or -e/-e64 (python/node style)
+  if (/(?:^|\s)(?:-enc(?:odedcommand)?|-e(?:64)?)\b/.test(lowered)) return true;
+  // echo <base64> | base64 -d | bash  style smuggling
+  if (/base64\s+-?d/.test(lowered) && /(bash|sh|zsh|powershell|pwsh|cmd)\b/.test(lowered)) return true;
+  return false;
 }
 
 function extractAllCommands(command: string): string[] {
   const commands: string[] = [];
-  // Split by shell control operators
-  const segments = command.split(/\s*[|&;]+\s*/);
+  // Split by shell control operators (including &&, ||, ;, | and newlines)
+  const segments = command.split(/\s*(?:\|\||&&|[|&;]|\n)\s*/);
 
   for (const segment of segments) {
     const trimmed = segment.trim();
     if (!trimmed) continue;
 
-    // Remove common prefixes
-    const withoutPrefix = trimmed.replace(/^(sudo|nohup|time|env|stdbuf|nice|ionice)\s+/i, '');
+    // Remove common privilege/execution prefix wrappers recursively so that
+    // `sudo rm ...`, `env bash -c ...`, `time dd ...` are still inspected.
+    const withoutPrefix = trimmed.replace(/^(?:sudo|nohup|time|env|stdbuf|nice|ionice|setsid|watch)\s+/i, '');
     if (!withoutPrefix) continue;
 
     // Tokenize respecting quotes
@@ -112,6 +132,10 @@ function isDangerousCommand(command: string): { blocked: boolean; reason?: strin
     return { blocked: true, reason: 'subshell/command substitution is not allowed' };
   }
 
+  if (containsEncodedPayload(command)) {
+    return { blocked: true, reason: 'encoded/obfuscated command payload is not allowed' };
+  }
+
   const commands = extractAllCommands(command);
   for (const cmd of commands) {
     if (DANGEROUS_COMMANDS.has(cmd)) {
@@ -119,13 +143,18 @@ function isDangerousCommand(command: string): { blocked: boolean; reason?: strin
     }
   }
 
-  // Block direct interpreter execution with inline code
+  // Block direct interpreter execution with inline code (e.g. sh -c "...").
   const first = commands[0];
   if (first && INTERPRETERS.has(first)) {
     const lowered = command.toLowerCase();
-    const hasInline = /(^|\s)(bash|sh|zsh|python|python3|node|perl|ruby|php)\s+.*(-c\s|--command\s|eval\s|exec\s)/.test(lowered);
+    const hasInline = /(^|\s)(bash|sh|zsh|python|python3|node|perl|ruby|php)\s+.*(-c\s|--command\s|\/c\s|eval\s|exec\s|<\()/.test(lowered);
     if (hasInline) {
       return { blocked: true, reason: 'inline script execution via interpreter is not allowed' };
+    }
+    // Also block `node -e`, `perl -e`, `python -c`, etc. one-shot evaluators.
+    const oneShot = /(^|\s)(?:node|perl|ruby|php|python|python3)\s+.*\s-(?:e|e64|enc)\b/.test(lowered);
+    if (oneShot) {
+      return { blocked: true, reason: 'inline script evaluation via interpreter is not allowed' };
     }
   }
 
@@ -140,7 +169,9 @@ function isPrivateIPv4(a: number, b: number): boolean {
   if (a === 192 && b === 168) return true;
   if (a === 127) return true;
   if (a === 0) return true;
-  if (a === 169 && b === 254) return true;
+  if (a === 169 && b === 254) return true; // link-local
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT (100.64.0.0/10)
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmarking
   return false;
 }
 
@@ -200,7 +231,9 @@ async function isPrivateUrl(urlStr: string): Promise<boolean> {
       return isPrivateIP(normalized);
     }
 
-    // DNS resolution check with timeout
+    // DNS resolution check with timeout. Fail closed: if we cannot resolve the
+    // hostname (DNS error/timeout), block the request rather than allowing it,
+    // to defend against DNS-rebinding / TOCTOU races against internal services.
     try {
       const addresses = await Promise.race([
         lookup(hostname, { all: true }),
@@ -210,7 +243,7 @@ async function isPrivateUrl(urlStr: string): Promise<boolean> {
         if (isPrivateIP(addr.address)) return true;
       }
     } catch {
-      // DNS failure: allow fetch to fail naturally rather than blocking arbitrarily
+      return true;
     }
 
     return false;
@@ -245,7 +278,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         const content = readFileSync(path, 'utf-8');
         return { content };
       } catch (err) {
-        return { content: `Error reading file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error reading file: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -271,7 +304,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
           const content = readFileSync(resolved, 'utf-8');
           results.push(`\n--- ${resolved} ---\n${content}`);
         } catch (err) {
-          results.push(`\n--- ${resolved}: ${err instanceof Error ? err.message : String(err)} ---`);
+          results.push(`\n--- ${redactPaths(resolved)}: ${redactPaths(err instanceof Error ? err.message : String(err))} ---`);
         }
       }
       return { content: results.join('') };
@@ -332,7 +365,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         writeFileSync(path, sanitizeContent(modified), 'utf-8');
         return { content: results.join('\n') };
       } catch (err) {
-        return { content: `Error editing file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error editing file: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -355,7 +388,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         mkdirSync(path, { recursive: true });
         return { content: `Created directory: ${path}` };
       } catch (err) {
-        return { content: `Error creating directory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error creating directory: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -379,7 +412,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         const list = entries.map(e => `${e.isDirectory() ? '/' : ''}${e.name}`).join('\n');
         return { content: list || '(empty directory)' };
       } catch (err) {
-        return { content: `Error listing directory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error listing directory: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -420,7 +453,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         const tree = walk(dirPath, 0);
         return { content: tree.join('\n') };
       } catch (err) {
-        return { content: `Error listing tree: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error listing tree: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -447,7 +480,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         renameSync(src, dst);
         return { content: `Moved: ${src} → ${dst}` };
       } catch (err) {
-        return { content: `Error moving file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error moving file: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -479,7 +512,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         }
         return { content: `Copied: ${src} → ${dst}` };
       } catch (err) {
-        return { content: `Error copying: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error copying: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -510,7 +543,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
           ].join('\n'),
         };
       } catch (err) {
-        return { content: `Error getting file info: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error getting file info: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -538,7 +571,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         }
         return { content: `Deleted: ${path}` };
       } catch (err) {
-        return { content: `Error deleting: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error deleting: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -564,7 +597,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         writeFileSync(path, content, 'utf-8');
         return { content: `Successfully wrote to ${path}` };
       } catch (err) {
-        return { content: `Error writing file: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        return { content: `Error writing file: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },
   },
@@ -591,13 +624,31 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       if (danger.blocked) {
         return { content: `Command blocked for security: ${danger.reason}`, isError: true };
       }
+      // On Windows the command is passed through cmd-alias translation. Re-check
+      // the translated form so a translation edge case cannot reintroduce a
+      // dangerous command that the original check missed (defense in depth).
+      if (process.platform === 'win32') {
+        const translated = translateCommand(command);
+        const transDanger = isDangerousCommand(translated);
+        if (transDanger.blocked) {
+          return { content: `Command blocked for security (after alias translation): ${transDanger.reason}`, isError: true };
+        }
+      }
+      // Authorize the working directory before executing anything in it.
+      const effectiveCwd = requestedCwd || ctx?.workDir || process.cwd();
+      if (requestedCwd) {
+        const cwdAuth = await authorizePath(effectiveCwd);
+        if (!cwdAuth) {
+          return { content: `Access denied: working directory "${effectiveCwd}" is not in the allowed path list and access was rejected by user.`, isError: true };
+        }
+      }
       try {
         const actualCmd = process.platform === 'win32' ? `chcp 65001 >NUL && ${translateCommand(command)}` : command;
         const { stdout, stderr } = await execAsync(actualCmd, {
           encoding: 'utf-8',
           timeout,
           maxBuffer: 10 * 1024 * 1024,
-          cwd: requestedCwd || ctx?.workDir || process.cwd(),
+          cwd: effectiveCwd,
         });
         const output = stdout + (stderr ? '\n' + stderr : '');
         return { content: output };
@@ -606,7 +657,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         const stdout = (err as { stdout?: string }).stdout || '';
         const stderr = (err as { stderr?: string }).stderr || '';
         return {
-          content: `Error: ${message}\nstdout: ${stdout}\nstderr: ${stderr}`,
+          content: `Error: ${redactPaths(message)}\nstdout: ${redactPaths(stdout)}\nstderr: ${redactPaths(stderr)}`,
           isError: true,
         };
       }

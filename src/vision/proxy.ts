@@ -4,6 +4,8 @@ import { ConfigManager } from '../config/index.js';
 import { decryptApiKey } from '../security/env-key-encrypt.js';
 import { uploadImage, deleteImage, isCloudinaryAvailable } from './upload.js';
 import { analyzeLocal, isLocalVisionAvailable } from './local.js';
+import { authorizePath } from '../security/path-authorizer.js';
+import { redactPaths } from '../utils/sanitize.js';
 
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
 
@@ -12,9 +14,14 @@ export function isImageFile(path: string): boolean {
   return IMAGE_EXTENSIONS.some(ext => lower.endsWith(ext));
 }
 
-function imageToDataUri(filePath: string): string {
+async function imageToDataUri(filePath: string): Promise<string> {
   const absPath = resolve(process.cwd(), filePath);
-  if (!existsSync(absPath)) throw new Error(`Image file not found: ${filePath}`);
+  // Gate file reads behind the path-authorizer so the vision pipeline cannot
+  // exfiltrate arbitrary files (e.g. ~/.nexus/.storage-key) to a cloud provider.
+  if (!(await authorizePath(absPath))) {
+    throw new Error(`Access denied: "${filePath}" is not in the allowed path list.`);
+  }
+  if (!existsSync(absPath)) throw new Error(`Image file not found: ${redactPaths(filePath)}`);
   const ext = absPath.toLowerCase();
   const mime =
     ext.endsWith('.png') ? 'image/png' :
@@ -78,7 +85,7 @@ async function tryCloud(imagePath: string, q: string): Promise<string> {
       if (isCloudinaryAvailable()) {
         uploaded = await uploadImage(imagePath);
       }
-      const imageUrl = uploaded ? uploaded.url : imageToDataUri(imagePath);
+      const imageUrl = uploaded ? uploaded.url : await imageToDataUri(imagePath);
       const content = await callCloudVision(apiKey, resolved.baseUrl, resolved.model, imageUrl, q);
       return `[Image analysis via ${name} (${resolved.model})]\n${content.trim()}`;
     } catch (err) {

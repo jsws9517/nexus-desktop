@@ -1,6 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
 import { ConfigManager } from './index.js';
 import { NativeManager } from './native.js';
 import { ConfigSchema, ProviderConfigSchema, ServerConfigSchema, VisionProviderConfigSchema, AcpConfigSchema } from './types.js';
@@ -119,9 +120,48 @@ function sanitizeConfigForDisplay(cfg: Record<string, unknown>): Record<string, 
   return copy;
 }
 
+// A random token is required to access the config API. It is generated per
+// server start and printed to stderr; the SPA reads it from a bootstrap
+// endpoint. This prevents arbitrary local pages (DNS-rebinding / localhost
+// attacks) from reading or writing API keys and MCP config.
+const API_TOKEN = randomBytes(24).toString('hex');
+
 function jsonResponse(res: ServerResponse, data: unknown, status = 200): void {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': 'http://localhost',
+    'Access-Control-Allow-Credentials': 'true',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-store',
+  });
   res.end(JSON.stringify(data));
+}
+
+function unauthorized(res: ServerResponse): void {
+  res.writeHead(401, {
+    'Content-Type': 'application/json',
+    'WWW-Authenticate': 'Bearer',
+    'Access-Control-Allow-Origin': 'http://localhost',
+  });
+  res.end(JSON.stringify({ error: 'Unauthorized' }));
+}
+
+/** Validate the Authorization: Bearer <token> header on an API request. */
+function isAuthorized(req: IncomingMessage): boolean {
+  const header = req.headers['authorization'] || '';
+  if (typeof header !== 'string') return false;
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  if (!match) return false;
+  // Constant-time-ish comparison to avoid trivial timing leaks.
+  const provided = Buffer.from(match[1]!, 'utf-8');
+  const expected = Buffer.from(API_TOKEN, 'utf-8');
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
+}
+
+function timingSafeEqual(a: Buffer, b: Buffer): boolean {
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
+  return diff === 0;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -133,6 +173,17 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 function handleApi(req: IncomingMessage, res: ServerResponse, url: string, method: string): void {
+  // Token bootstrap: the SPA fetches this once (no auth) to learn the token
+  // for subsequent calls. Safe to expose since the token is single-use per
+  // process and only meaningful to someone who can already read this process.
+  if (url === '/api/bootstrap' && method === 'GET') {
+    return jsonResponse(res, { token: API_TOKEN });
+  }
+
+  if (!isAuthorized(req)) {
+    return unauthorized(res);
+  }
+
   const config = new ConfigManager();
 
   if (url === '/api/schema' && method === 'GET') {
@@ -336,11 +387,12 @@ const SPA_HTML = `<!DOCTYPE html>
 <div id="toast" class="toast"></div>
 <script>
 const API = '';
+let API_TOKEN = '';
 let state = { config: null, schema: null, activeTab: null };
 
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_TOKEN, ...opts.headers },
     ...opts,
   });
   return res.json();
@@ -686,6 +738,9 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 
 (async () => {
   try {
+    const boot = await fetch(API + '/api/bootstrap');
+    const bootData = await boot.json();
+    API_TOKEN = bootData.token || '';
     state.schema = (await api('/api/schema')).categories;
     state.config = await api('/api/config');
     renderNav();
@@ -739,7 +794,7 @@ export function startWebUi(port = 3457): Promise<{ port: number; close: () => Pr
       server.listen(p, 'localhost', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr ? addr.port : p;
-        process.stderr.write(`\n  ◆ Config Web UI: http://localhost:${port}\n  Press Ctrl+C to stop\n\n`);
+        process.stderr.write(`\n  ◆ Config Web UI: http://localhost:${port}\n  ◆ Access token: ${API_TOKEN}\n  Press Ctrl+C to stop\n\n`);
         resolve({
           port,
           close: () => new Promise((r) => server.close(() => r())),

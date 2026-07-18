@@ -53,12 +53,25 @@ function getOrCreateStorageKey(): Buffer {
   }
   const key = randomBytes(32);
   mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(STORAGE_KEY_PATH, key.toString('hex'), 'utf-8');
+  // Store the encryption key with owner-only read/write permissions so other
+  // local users/processes cannot read it and decrypt persisted API keys.
+  writeFileSync(STORAGE_KEY_PATH, key.toString('hex'), { mode: 0o600 });
   return key;
 }
 
 export function atRestEncrypt(plaintext: string): string {
-  if (!plaintext || plaintext.startsWith('$') || plaintext.startsWith('env:')) return plaintext;
+  if (!plaintext) return plaintext;
+  // A value shaped like an env-var reference ($VAR or env:VAR) is only stored
+  // in plaintext when the referenced variable is actually set. This prevents a
+  // user from accidentally persisting a real secret as "env:..." and writing it
+  // to disk unencrypted. If the reference does not resolve, treat the value as
+  // a literal secret and encrypt it.
+  if (plaintext.startsWith('$') || plaintext.startsWith('env:')) {
+    const envName = plaintext.startsWith('env:')
+      ? plaintext.slice(4)
+      : plaintext.slice(1);
+    if (process.env[envName]) return plaintext;
+  }
   const key = getOrCreateStorageKey();
   const iv = randomBytes(16);
   const cipher = createCipheriv(ALGORITHM, key, iv);

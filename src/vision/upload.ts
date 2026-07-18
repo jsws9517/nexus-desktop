@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
+import { authorizePath } from '../security/path-authorizer.js';
 
 // Lazy-loaded Cloudinary config — module loads successfully even without env vars
 let _cloudName: string | null = null;
@@ -33,6 +34,11 @@ async function uploadToCloudinary(filePath: string): Promise<{ url: string; publ
   if (!ensureConfig()) throw new Error('Cloudinary not configured — set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET');
 
   const absPath = resolve(process.cwd(), filePath);
+  // Gate the upload behind the path-authorizer so arbitrary files cannot be
+  // exfiltrated to a third-party image host.
+  if (!(await authorizePath(absPath))) {
+    throw new Error(`Access denied: "${filePath}" is not in the allowed path list.`);
+  }
   if (!existsSync(absPath)) throw new Error(`File not found: ${filePath}`);
 
   const data = readFileSync(absPath);

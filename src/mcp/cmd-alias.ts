@@ -18,7 +18,6 @@ const ALIASES: [RegExp, string][] = [
   [/^kill\b/, 'taskkill /f /pid'],
   [/^sort\b/, 'sort'],
   [/^wc\b/, 'find /c /v ""'],
-  [/^head\b/, 'cmd /c "more'],
   [/^date\b/, 'date /t'],
   [/^time\b/, 'time /t'],
 ];

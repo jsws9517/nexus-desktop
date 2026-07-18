@@ -24,6 +24,9 @@ let _permissionPrompter: ((question: string) => Promise<string>) | null = null;
 
 export function setPermissionPrompter(fn: (question: string) => Promise<string>): void {
   _permissionPrompter = fn;
+  // Expose globally so other components (e.g. the permissions policy hook)
+  // can reuse the same single stdin readline instead of spawning a second one.
+  (globalThis as Record<string, unknown>).__nexusPermissionPrompter = fn;
 }
 
 function loadAuthorizations(): AuthorizationEntry[] {
@@ -37,7 +40,9 @@ function loadAuthorizations(): AuthorizationEntry[] {
 
 function saveAuthorizations(entries: AuthorizationEntry[]): void {
   mkdirSync(AUTH_DIR, { recursive: true });
-  writeFileSync(AUTH_PATH, JSON.stringify(entries, null, 2));
+  // Owner-only permissions: this file records which paths the user granted
+  // access to, and should not be world-readable.
+  writeFileSync(AUTH_PATH, JSON.stringify(entries, null, 2), { mode: 0o600 });
 }
 
 function isGranted(absPath: string): boolean {
@@ -99,7 +104,7 @@ export function getAuthorizedRoots(): string[] {
 }
 
 export function clearAuthorizations(): void {
-  writeFileSync(AUTH_PATH, '[]');
+  writeFileSync(AUTH_PATH, '[]', { mode: 0o600 });
   alreadyConfirmed.clear();
 }
 

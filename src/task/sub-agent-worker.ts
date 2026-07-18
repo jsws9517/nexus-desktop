@@ -1,4 +1,3 @@
-import { resolve } from 'path';
 import { Agent } from '../agent.js';
 import { TaskNode, SubTaskResult, SubAgentRole, GraphMode } from './types.js';
 import { getSubAgentRole } from './sub-agent-roles.js';
@@ -26,8 +25,10 @@ export class SubAgentWorker {
     mode?: GraphMode,
   ): Promise<SubTaskResult> {
     if (!this.authorized) {
+      // Only authorize the project's own working directory. Do NOT pre-authorize
+      // the parent directory — that would silently grant sub-agents write access
+      // to sibling projects and sensitive dotfiles (e.g. ~/.ssh, ~/.nexus).
       preAuthorizeRoot(process.cwd());
-      preAuthorizeRoot(resolve(process.cwd(), '..'));
       this.authorized = true;
     }
 

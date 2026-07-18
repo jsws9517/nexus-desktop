@@ -8,6 +8,28 @@ const CLAUDE_SKILLS_DIR = join(homedir(), '.claude', 'skills');
 const AGENT_SKILLS_DIR = join(homedir(), '.nexus', 'skills');
 const IMPORT_FLAG = join(homedir(), '.nexus', '.claude-imported');
 
+/**
+ * Reject importing an MCP server whose launch command embeds shell
+ * metacharacters or a dangerous command. Imported servers are auto-started on
+ * the next launch, so a malicious ~/.claude.json entry could otherwise execute
+ * arbitrary code. We only allow simple executable names (optionally scoped via
+ * npx/@scope) — anything that looks like a shell one-liner is skipped.
+ */
+function isSafeMcpCommand(command: string, args: unknown): boolean {
+  if (!command) return false;
+  // Reject anything that is not a single, simple executable token: no shell
+  // metacharacters, no whitespace (which would indicate an inline/sh compound
+  // command), and no path separators that could point outside the package bin.
+  if (/[\s&|;`$()<>'"\\/]/.test(command)) return false;
+  const argList = Array.isArray(args) ? args.map(String) : [];
+  for (const a of argList) {
+    // Allow simple tokens (flags, package names, ports) but reject whitespace
+    // or shell metacharacters that would let a value carry an injected command.
+    if (/[\s&|;`$()<>]/.test(a)) return false;
+  }
+  return true;
+}
+
 export interface ImportResult {
   mcpImported: number;
   mcpSkipped: number;
@@ -47,6 +69,12 @@ export function importFromClaude(config: ConfigManager, silent = false): ImportR
         const server = srv as Record<string, unknown>;
         const command = String(server.command || '');
         if (!command) {
+          result.mcpSkipped++;
+          continue;
+        }
+        // Skip servers whose launch command is not a safe, simple executable —
+        // importing it would auto-execute arbitrary code on next launch.
+        if (!isSafeMcpCommand(command, server.args)) {
           result.mcpSkipped++;
           continue;
         }
