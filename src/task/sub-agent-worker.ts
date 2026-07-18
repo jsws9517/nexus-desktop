@@ -1,7 +1,6 @@
 import { Agent } from '../agent.js';
 import { TaskNode, SubTaskResult, SubAgentRole, GraphMode } from './types.js';
 import { getSubAgentRole } from './sub-agent-roles.js';
-import { preAuthorizeRoot } from '../security/path-authorizer.js';
 
 export class SubAgentWorker {
   private authorized = false;
@@ -25,10 +24,12 @@ export class SubAgentWorker {
     mode?: GraphMode,
   ): Promise<SubTaskResult> {
     if (!this.authorized) {
-      // Only authorize the project's own working directory. Do NOT pre-authorize
-      // the parent directory — that would silently grant sub-agents write access
-      // to sibling projects and sensitive dotfiles (e.g. ~/.ssh, ~/.nexus).
-      preAuthorizeRoot(process.cwd());
+      // NOTE: the project's cwd is already an implicit authorized root in
+      // checkPathAllowed(), so no explicit pre-authorization is needed here.
+      // We deliberately do NOT pre-authorize anything globally, to avoid the
+      // process-wide grant accumulation that previously let sub-agent scopes
+      // leak to unrelated tools (M5). Per-sub-agent grants, if any, should use
+      // a dedicated scope released on completion.
       this.authorized = true;
     }
 

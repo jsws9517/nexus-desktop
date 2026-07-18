@@ -13,7 +13,19 @@ const AUTH_DIR = join(homedir(), '.nexus');
 const AUTH_PATH = join(AUTH_DIR, 'path-auth.json');
 const AUTH_DURATION_MS = 24 * 60 * 60 * 1000;
 
-const alreadyConfirmed = new Set<string>();
+/**
+ * Path grants are scoped so that a grant made by one subsystem (e.g. a
+ * sub-agent or a DAG scheduler pre-authorizing its working tree) does not
+ * leak to unrelated tools or later agents in the same process.
+ *
+ * - GLOBAL_SCOPE holds explicit user answers ("y once" / "a always") and
+ *   persisted grants. These are intentionally process-lifetime.
+ * - Any other scope (e.g. a sub-agent id, "dag") is a temporary grant that
+ *   must be released via clearScope() when that subsystem finishes.
+ */
+export const GLOBAL_SCOPE = 'global';
+const scopedGrants = new Map<string, Set<string>>();
+scopedGrants.set(GLOBAL_SCOPE, new Set<string>());
 
 /**
  * Injected question function for prompting the user.
@@ -55,13 +67,14 @@ function isGranted(absPath: string): boolean {
 }
 
 async function promptUser(path: string): Promise<boolean> {
-  if (alreadyConfirmed.has(path)) return true;
+  const globalGrants = scopedGrants.get(GLOBAL_SCOPE)!;
+  if (globalGrants.has(path)) return true;
 
   const normalized = normalize(path).toLowerCase();
   const entries = loadAuthorizations();
   const existing = entries.find(e => normalize(e.path).toLowerCase() === normalized);
   if (existing && (existing.expiresAt === null || existing.expiresAt > Date.now())) {
-    alreadyConfirmed.add(path);
+    globalGrants.add(path);
     return true;
   }
 
@@ -77,7 +90,7 @@ async function promptUser(path: string): Promise<boolean> {
 
   const choice = answer.trim().toLowerCase();
   if (choice === 'y' || choice === 'a') {
-    alreadyConfirmed.add(path);
+    globalGrants.add(path);
     if (choice === 'a') {
       // "always" persists across sessions
       const newEntry: AuthorizationEntry = {
@@ -105,7 +118,14 @@ export function getAuthorizedRoots(): string[] {
 
 export function clearAuthorizations(): void {
   writeFileSync(AUTH_PATH, '[]', { mode: 0o600 });
-  alreadyConfirmed.clear();
+  scopedGrants.get(GLOBAL_SCOPE)!.clear();
+}
+
+/** Release all path grants belonging to a specific scope (e.g. a finished
+ *  sub-agent or DAG run). The global scope (user answers) is never cleared. */
+export function clearScope(scope: string): void {
+  if (scope === GLOBAL_SCOPE) return;
+  scopedGrants.delete(scope);
 }
 
 /**
@@ -118,12 +138,21 @@ export function checkPathAllowed(absPath: string): boolean {
   const roots = [
     process.cwd().toLowerCase(),
     ...getAuthorizedRoots().map(r => normalize(r).toLowerCase()),
-    ...[...alreadyConfirmed].map(r => normalize(r).toLowerCase()),
+    ...allConfirmedRoots(),
   ];
   for (const root of roots) {
     if (normalized.startsWith(root)) return true;
   }
   return false;
+}
+
+/** All in-memory confirmed roots across every scope (global + temporary). */
+function allConfirmedRoots(): string[] {
+  const out: string[] = [];
+  for (const set of scopedGrants.values()) {
+    for (const p of set) out.push(normalize(p).toLowerCase());
+  }
+  return out;
 }
 
 /**
@@ -146,16 +175,26 @@ function realpathUnderAllowedRoots(absPath: string): boolean {
   const roots = [
     process.cwd().toLowerCase(),
     ...getAuthorizedRoots().map(r => normalize(r).toLowerCase()),
-    ...[...alreadyConfirmed].map(r => normalize(r).toLowerCase()),
+    ...allConfirmedRoots(),
   ];
   return roots.some(root => normalizedReal.startsWith(root));
 }
 
-/** Batch pre-authorize a root path for the current process without prompting.
- *  All sub-paths under `root` will be auto-allowed. */
-export function preAuthorizeRoot(root: string): void {
+/**
+ * Pre-authorize a root path for the current process without prompting, scoped
+ * to `scope` (defaults to the global scope). All sub-paths under `root` are
+ * auto-allowed until clearScope(scope) is called. Scoped grants must be
+ * released when the owning subsystem finishes so they cannot leak to unrelated
+ * tools/agents in the same process.
+ */
+export function preAuthorizeRoot(root: string, scope: string = GLOBAL_SCOPE): void {
   const normalized = normalize(resolve(root));
-  alreadyConfirmed.add(normalized);
+  let set = scopedGrants.get(scope);
+  if (!set) {
+    set = new Set<string>();
+    scopedGrants.set(scope, set);
+  }
+  set.add(normalized);
 }
 
 export async function authorizePath(absPath: string): Promise<boolean> {
