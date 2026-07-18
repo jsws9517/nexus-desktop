@@ -848,7 +848,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       bashOutputBuffer = [];
     }
 
-    process.stdout.write(t().entityName('agent> '));
+    process.stdout.write(t().entityName('agent> ') + '\n');
     try {
       await agent.chat(expandedInput);
     } catch (err) {

@@ -36,6 +36,35 @@ function stripExpansionSuffix(content: string): string {
   return idx === -1 ? content : content.slice(0, idx);
 }
 
+/**
+ * Build a single-line, terminal-width-aware preview of tool call arguments.
+ * Avoids two display bugs: (1) the closing `}` being chopped off by a fixed
+ * 80-char slice, and (2) the preview wrapping onto a second line because it
+ * exceeds the terminal width. When truncated, an ellipsis is appended so the
+ * cut is explicit rather than silently dropping the trailing brace.
+ */
+function makeArgsPreview(args: Record<string, unknown>, name: string): string {
+  // A model may emit a long string (e.g. a URL) wrapped across lines; after
+  // JSON.parse that becomes a real 0x0A inside the value, which would break the
+  // display line and make the \r success-update only rewrite the wrapped tail.
+  // Strip control chars and collapse embedded newlines so the preview stays on
+  // a single logical line.
+  const raw = JSON.stringify(args ?? {})
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[\u0000-\u001f\u007f]/g, '');
+  // Cap the rendered preview to a safe constant width. We intentionally do NOT
+  // trust process.stdout.columns here: it can be inflated or stale (piped
+  // output, IDE-integrated terminals, TMUX), which would skip truncation and
+  // let a long arg (e.g. a URL) wrap across two terminal lines, producing the
+  // dangling/duplicated status line. A fixed cap guarantees the whole status
+  // line (prefix + name + args + "[12345ms]") stays under a normal terminal.
+  // Overhead = "  ✓ " + name + "(" + ") [12345ms]" + margin (ANSI codes ignored)
+  const overhead = name.length + 26;
+  const max = Math.max(24, 100 - overhead);
+  if (raw.length <= max) return raw;
+  return raw.slice(0, max - 1).replace(/\s+$/, '') + '…';
+}
+
 const REMEMBER_TOOL_DEF: ToolDefinition = {
   name: 'remember',
   description: t('remember_tool_desc'),
@@ -572,6 +601,10 @@ export class Agent {
 
     let assistantMessage = '';
     let pendingToolCalls: ToolCall[] = [];
+    // Tracks whether the last direct stdout write ended with a newline, so that
+    // tool-call spinner lines always start on a fresh line (otherwise the
+    // subsequent \r-based status overwrite clobbers streamed text on the same line).
+    let lastWriteEndedNl = true;
 
     const entry: ReasoningEntry = { assistantText: '', toolCalls: [] };
     if (!showDetail) {
@@ -593,8 +626,10 @@ export class Agent {
           this.onEvent?.({ type: 'text', text: clean });
           if (this.onOutput) {
             this.onOutput(clean);
+            lastWriteEndedNl = clean.endsWith('\n');
           } else if (showDetail) {
             process.stdout.write(clean);
+            lastWriteEndedNl = clean.endsWith('\n');
           } else {
             entry.assistantText += clean;
           }
@@ -604,6 +639,7 @@ export class Agent {
           this.onEvent?.({ type: 'thinking', thinking: clean });
           if (showDetail && !this.onOutput) {
             process.stdout.write(chalk.italic(this.t.thinking(clean)));
+            lastWriteEndedNl = clean.endsWith('\n');
           }
         }
         if (chunk.type === 'tool_call' && chunk.toolCall) {
@@ -673,9 +709,19 @@ export class Agent {
         }
       }
 
-      const argsPreview = JSON.stringify(toolCall.arguments ?? {}).slice(0, 80);
+      const argsPreview = makeArgsPreview(toolCall.arguments ?? {}, toolCall.name);
       if (showDetail && !this.suppressToolOutput) {
-        process.stdout.write(`  ${this.t.spinner('●')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)})`);
+        // Always start the spinner on its own fresh line. We deliberately avoid
+        // the \r-based in-place "spinner -> result" overwrite: the visible
+        // content area can be narrower than process.stdout.columns (the
+        // box-drawing border constrains it), so a long line wraps and \r would
+        // only rewrite the last wrapped segment, leaving the first segment
+        // dangling as a duplicate line.
+        if (!lastWriteEndedNl) {
+          process.stdout.write('\n');
+        }
+        process.stdout.write(`  ${this.t.spinner('●')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)})\n`);
+        lastWriteEndedNl = true;
       }
       let result: ToolResult;
       const toolStart = Date.now();
@@ -687,10 +733,14 @@ export class Agent {
       const toolElapsed = Date.now() - toolStart;
       if (showDetail && !this.suppressToolOutput) {
         if (result.isError) {
-          process.stdout.write(`\r  ${this.t.error('✗')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)}) ${this.t.textDim(`[${toolElapsed}ms]`)}\n`);
+          const line = `  ${this.t.error('✗')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)}) ${this.t.textDim(`[${toolElapsed}ms]`)}`;
+          process.stdout.write(`${line}\n`);
           process.stdout.write(`    ${this.t.error(result.content.slice(0, 200))}\n`);
+          lastWriteEndedNl = true;
         } else {
-          process.stdout.write(`\r  ${this.t.success('✓')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)}) ${this.t.textDim(`[${toolElapsed}ms]`)}\n`);
+          const line = `  ${this.t.success('✓')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)}) ${this.t.textDim(`[${toolElapsed}ms]`)}`;
+          process.stdout.write(`${line}\n`);
+          lastWriteEndedNl = true;
         }
       } else {
         entry.toolCalls.push({ name: toolCall.name, resultSummary: result.content.slice(0, 200) });
