@@ -14,6 +14,7 @@ import { AcpProtocol } from './acp/protocol.js';
 import { Message, ToolCall, ToolResult, ToolDefinition, AgentEvent } from './types.js';
 import { Hooks, createSanityCheckHook } from './hooks/index.js';
 import { createAutoValidateHook } from './hooks/auto-validate.js';
+import { permissionCheckHook } from './hooks/permissions.js';
 import { AuditManager } from './security/audit.js';
 import { resolveApiKey } from './security/env-key-encrypt.js';
 import { ThemeManager } from './theme/manager.js';
@@ -22,6 +23,8 @@ import { preloadLocalVision } from './vision/local.js';
 import { getTaskToolDefinitions, executeTaskTool } from './task/task-tools.js';
 import { ProjectContext } from './context/index.js';
 import { analyzeImage, isImageFile } from './vision/index.js';
+import { authorizePath } from './security/path-authorizer.js';
+import { sanitizeContent, neutralizeInstructions } from './utils/sanitize.js';
 
 /**
  * Strip the @-expansion suffix appended by expandAtMentions() from user input.
@@ -241,9 +244,20 @@ export class Agent {
     // Collect external skill paths from ACP config (validate for path traversal)
     const extraPaths: string[] = [];
     const isSafePath = (p: string): boolean => {
-      const normalized = resolve(p);
-      if (normalized.includes('\x00')) return false;
-      return !normalized.split(/[\/\\]/).some((seg: string) => seg === '..');
+      if (!p || p.includes('\x00')) return false;
+      // Reject any path that contains a parent-directory segment or an
+      // absolute path/drive root — skill paths must stay relative to the
+      // project so a malicious ACP config cannot reach arbitrary files.
+      if (p.split(/[\/\\]/).some((seg: string) => seg === '..')) return false;
+      if (/^[a-zA-Z]:[\\/]/.test(p)) return false; // Windows drive root
+      if (p.startsWith('/') || p.startsWith('\\')) return false; // absolute
+      const normalized = resolve(process.cwd(), p);
+      const cwdNorm = resolve(process.cwd());
+      // Ensure the resolved path is still inside the current working directory.
+      if (normalized !== cwdNorm && !normalized.startsWith(cwdNorm + String(process.platform === 'win32' ? '\\' : '/'))) {
+        return false;
+      }
+      return true;
     };
     if (cfg.acp?.skillsPath && isSafePath(cfg.acp.skillsPath)) {
       extraPaths.push(cfg.acp.skillsPath);
@@ -360,6 +374,23 @@ export class Agent {
     return true;
   }
 
+  /** Prompt the user for a yes/no tool-permission decision. */
+  private async promptForPermission(question: string): Promise<boolean> {
+    const prompter = (globalThis as unknown as Record<string, ((q: string) => Promise<string>) | undefined>).__nexusPermissionPrompter;
+    if (typeof prompter === 'function') {
+      const answer = await prompter(question);
+      return answer.trim().toLowerCase() === 'y';
+    }
+    const { createInterface } = await import('readline');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise<boolean>((resolve) => {
+      rl.question(question, (answer) => {
+        rl.close();
+        resolve(answer.trim().toLowerCase() === 'y');
+      });
+    });
+  }
+
   /** Abort the current chat operation (called on ESC). Safe to call even when idle. */
   abort(): void {
     this.abortController.abort();
@@ -433,6 +464,11 @@ export class Agent {
       preToolUse: async (ctx) => {
         const check = await sanityCheck(ctx);
         if (check !== 'allow') return check;
+        // Enforce the built-in permission policy (dangerous commands, protected
+        // paths, denied tools). This runs before any user-supplied hook.
+        const policy = await permissionCheckHook(ctx, (q) =>
+          this.promptForPermission(q));
+        if (policy !== 'allow') return policy;
         return userHooks?.preToolUse ? userHooks.preToolUse(ctx) : 'allow';
       },
       postToolUse: async (ctx) => {
@@ -1108,6 +1144,7 @@ export class Agent {
 
       // Retrieve all entities from the knowledge graph for context injection
       const result = await this.mcp.callTool('search_nodes', { query: '' });
+      let fetched: string | null = null;
       if (result.isError || !result.content) {
         // Fallback: try semantic search to retrieve remembered user info
         const semantic = await this.mcp.callTool('search_semantic', { query: 'user', limit: 20 });
@@ -1118,26 +1155,37 @@ export class Agent {
           const parsed = JSON.parse(sContent);
           if (!parsed.results?.length) return;
         } catch { return; }
-        this._injectToSystemPrompt(sContent);
-        return;
+        fetched = sContent;
+      } else {
+        const content = result.content.trim();
+        try {
+          const parsed = JSON.parse(content);
+          const entities = parsed.entities ?? parsed.results ?? [];
+          if (entities.length === 0) return;
+        } catch {
+          if (!content || content === '[]' || content === '{}') return;
+        }
+        fetched = content;
       }
 
-      const content = result.content.trim();
-      try {
-        const parsed = JSON.parse(content);
-        const entities = parsed.entities ?? parsed.results ?? [];
-        if (entities.length === 0) return;
-      } catch {
-        if (!content || content === '[]' || content === '{}') return;
-      }
-
-      this._injectToSystemPrompt(content);
+      if (fetched == null) return;
+      // Treat knowledge-graph content as untrusted DATA, not instructions.
+      // Strip control chars and neutralize any instruction-injection framing
+      // before it can reach the system prompt.
+      const sanitized = sanitizeContent(fetched);
+      const { text: neutralized, redacted } = neutralizeInstructions(sanitized);
+      this._injectToSystemPrompt(neutralized, redacted);
     } catch {
       // Memory tools unavailable, skip injection
     }
   }
 
-  private _injectToSystemPrompt(content: string): void {
+  /**
+   * Inject remembered knowledge-graph content into the system prompt inside an
+   * explicit untrusted-data boundary. The model is told this is read-only data
+   * it must NOT follow as instructions, mitigating indirect prompt injection.
+   */
+  private _injectToSystemPrompt(content: string, redacted = false): void {
     const msgs = this.context.getMessages();
     const sysMsg = msgs.find(m => m.role === 'system');
     if (sysMsg) {
@@ -1146,7 +1194,11 @@ export class Agent {
       if (existingIdx >= 0) {
         sysMsg.content = sysMsg.content.substring(0, existingIdx);
       }
-      sysMsg.content += `\n\n${section}\n${content}`;
+      let body = content;
+      if (redacted) {
+        body += '\n\n[Note: some content was filtered because it resembled prompt-injection instructions.]';
+      }
+      sysMsg.content += `\n\n${section}\n<user_data untrusted="true">\n${body}\n</user_data>`;
     }
   }
 
@@ -1311,6 +1363,13 @@ export class Agent {
     }
     if (!isImageFile(imagePath)) {
       return { content: `Error: "${imagePath}" is not a supported image file. Supported: .png, .jpg, .jpeg, .gif, .webp, .bmp`, isError: true };
+    }
+    // Authorize the image path — analysis reads the file and may upload it to
+    // a cloud vision provider, so arbitrary-file access must be gated.
+    const absImagePath = resolve(process.cwd(), imagePath);
+    const authorized = await authorizePath(absImagePath);
+    if (!authorized) {
+      return { content: `Access denied: "${imagePath}" is not in the allowed path list and access was rejected by user.`, isError: true };
     }
     const question = typeof args.question === 'string' ? args.question.trim() : undefined;
     try {

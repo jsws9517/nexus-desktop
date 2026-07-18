@@ -425,6 +425,9 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     return new Promise<string>((resolve) => {
       isQuestionMode = true;
       isSingleKeyMode = !!singleKey;
+      // The last line of the prompt (e.g. "  Allow? (y/N): ") is what the user's
+      // answer should be appended to. Keep it so we can re-render it cleanly.
+      const lastLine = query.slice(query.lastIndexOf('\n') + 1);
       // Flush any pending StreamWrap buffer (e.g. "agent> " prefix) so the
       // question prompt appears in correct display order rather than interleaved.
       // Only needed when streamWrap is active (process.stdout.write is overridden).
@@ -433,8 +436,16 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       }
       _rawStdoutWrite(query);
 
+      // Re-render the prompt's final line with the captured answer, then move to a
+      // fresh line. This prevents the next write (e.g. a tool spinner) from
+      // appending onto the same line as the echoed answer.
+      const finish = (answer: string) => {
+        _rawStdoutWrite(`\r\x1b[K${lastLine}${answer}\n`);
+      };
+
       const lineHandler = (line: string) => {
         cleanup();
+        finish(line);
         resolve(line);
       };
 
@@ -442,7 +453,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         if (k && k.name === 'escape') {
           cleanup();
           (rl as any).line = '';
-          _rawStdoutWrite('\n');
+          finish('');
           resolve('');
         }
       };
@@ -452,8 +463,8 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         if ((_s === 'y' || _s === 'a' || _s === 'n' || _s === 'Y' || _s === 'A' || _s === 'N') && !k.ctrl && !k.meta && !k.shift) {
           const answer = _s.toLowerCase();
           (rl as any).line = '';
-          _rawStdoutWrite('\n');
           cleanup();
+          finish(answer);
           resolve(answer);
         }
       };

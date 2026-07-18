@@ -141,6 +141,12 @@ export async function analyzeLocal(imagePath: string, question?: string): Promis
 
     const req = { image: imageB64, question: question || '' };
     if (!proc || !proc.stdin || proc.killed) {
+      // The preloaded process may have died or entered a bad state (e.g. a
+      // transient inference error). Drop the stale handle so the next call
+      // spawns a fresh process with a freshly loaded model instead of
+      // silently failing against a dead one.
+      proc = null;
+      ready = false;
       pendingResolves.delete(id);
       clearTimeout(timer);
       reject(new Error('Local vision process is not running'));
