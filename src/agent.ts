@@ -404,6 +404,18 @@ export class Agent {
       return;
     }
 
+    // Slash commands are intercepted by the CLI layer before reaching here, so a
+    // '/'-prefixed input arriving here means it came through a remote channel
+    // (ACP / cc-connect / Feishu) AND was not intercepted by cc-connect's built-in
+    // command set. Handle that safe subset directly instead of forwarding to the
+    // model (or to a remote claude agent). This keeps command handling inside nexus
+    // and avoids exposing write/destructive commands over a chat channel. CLI
+    // behavior is unaffected (the CLI intercepts '/' before calling chat()).
+    if (userInput.trim().startsWith('/')) {
+      const handled = await this.runRemoteSlashCommand(userInput);
+      if (handled) return;
+    }
+
     if (!this.currentSessionId) {
       await this.startSession();
     }
@@ -541,6 +553,136 @@ export class Agent {
       if (this.metrics.length > 1 && !this.onOutput) {
         this.printSessionReport();
       }
+    }
+  }
+
+  /**
+   * Handle a slash command arriving over a remote channel (ACP / cc-connect / Feishu).
+   *
+   * IMPORTANT: cc-connect intercepts a fixed set of built-in commands locally and
+   * never forwards them to the agent (see its builtinCommands table: /help, /memory,
+   * /skills, /model, /provider, etc.). This method therefore only ever receives the
+   * commands cc-connect does NOT recognize and forwards verbatim to the agent. So we
+   * only implement the subset that (a) is NOT a cc-connect builtin and (b) is safe to
+   * run over a chat channel (read-only, no shell/file writes).
+   *
+   * /model, /models, /provider, /providers are handled upstream by the ACP server
+   * (src/acp/server.ts handleSessionPrompt) BEFORE agent.chat is called, so they
+   * never reach this method — they are intentionally left to that layer.
+   *
+   * Returns true if the input was consumed as a command (output already emitted),
+   * false otherwise. In the interactive CLI, slash commands are intercepted by
+   * handleLine before chat() is called, so this path is only ever hit for remote input.
+   */
+  private async runRemoteSlashCommand(input: string): Promise<boolean> {
+    const trimmed = input.trim();
+    const [cmd, ...args] = trimmed.slice(1).split(' ');
+    const lc = cmd.toLowerCase();
+
+    // Emit output through the active channel (ACP onOutput), else stdout.
+    const emit = (s: string) => {
+      if (this.onOutput) this.onOutput(s.endsWith('\n') ? s : s + '\n');
+      else process.stdout.write(s.endsWith('\n') ? s : s + '\n');
+    };
+    const deny = (reason: string) => {
+      emit(this.t.warning(`Command "/${cmd}" is not available over a remote channel: ${reason}`));
+    };
+
+    // Only commands that are NOT cc-connect builtins (cc-connect intercepts those
+    // locally and never forwards them) and NOT already handled by the ACP server
+    // (/model, /models, /provider, /providers). Everything here is read-only/safe.
+    const allowed = new Set([
+      'session', 'insight', 'view', 'tools', 'mcp', 'plugins', 'theme',
+    ]);
+
+    if (!allowed.has(lc)) {
+      emit(this.t.warning(`Command "/${cmd}" is not available over a remote channel. ` +
+        `cc-connect handles /model, /provider, /help, /memory, /skills, /theme locally; ` +
+        `the ACP server handles /models and /providers. ` +
+        `Available here: /session /view /tools /mcp /plugins /theme`));
+      return true;
+    }
+
+    try {
+      switch (lc) {
+        case 'session': {
+          const sid = this.getCurrentSessionId();
+          const info = sid ? this.session.get(sid) : undefined;
+          emit(`  Name: ${info?.name || '(unnamed)'}`);
+          emit(`  ID:   ${sid ?? '(none)'}`);
+          return true;
+        }
+
+        case 'insight': {
+          emit(this.t.textDim('Cross-session insight is not available over the remote channel.'));
+          return true;
+        }
+
+        case 'view': {
+          const arg = args[0];
+          let sid: string | undefined;
+          if (arg && /^\d+$/.test(arg)) {
+            const sessions = this.session.list();
+            sid = sessions[parseInt(arg, 10) - 1]?.id;
+          } else {
+            sid = arg || this.getCurrentSessionId();
+          }
+          if (!sid) { emit(this.t.warning('No active session.')); return true; }
+          let messages;
+          try { messages = this.session.getMessages(sid); }
+          catch { emit(this.t.error(`Session not found: ${sid}`)); return true; }
+          if (!messages || messages.length === 0) { emit(this.t.textDim('No messages in this session.')); return true; }
+          emit(this.t.heading(`Session: ${sid} (${messages.length} messages)`));
+          for (let i = 0; i < messages.length; i++) {
+            const m = messages[i]!;
+            const preview = m.content.slice(0, 120).replace(/\n/g, ' ');
+            emit(`  ${String(i + 1).padStart(3)}. ${m.role}: ${this.t.textDim(preview)}`);
+          }
+          return true;
+        }
+
+        case 'tools': {
+          const tools = [...this.mcp.getAllTools(), ...this.skills.getTools()];
+          emit(this.t.heading(`Available tools (${tools.length}):`));
+          for (const tool of tools) emit(`  ${tool.name} - ${tool.description}`);
+          return true;
+        }
+
+        case 'mcp': {
+          const conns = this.mcp.listConnections();
+          if (conns.length === 0) { emit(this.t.textDim('No external MCP servers connected.')); return true; }
+          emit(this.t.heading(`MCP Servers (${conns.length}):`));
+          for (const c of conns) emit(`  ${c.name} - ${c.toolCount} tools [${c.status}]`);
+          return true;
+        }
+
+        case 'plugins': {
+          const plugins = this.skills.list().filter(s => s.source === 'plugins');
+          if (plugins.length === 0) { emit(this.t.textDim('No plugins loaded.')); return true; }
+          emit(this.t.heading(`Plugins (${plugins.length}):`));
+          for (const s of plugins) emit(`  ${s.name} v${s.version}${s.description ? ' - ' + s.description : ''}`);
+          return true;
+        }
+
+        case 'theme': {
+          if (args[0]) { deny('theme switching is disabled over remote channels'); return true; }
+          const _themeMgr = this.themeMgr;
+          if (_themeMgr) {
+            emit(this.t.heading(`Current theme: ${_themeMgr.currentThemeName}`));
+            emit(this.t.textDim('Available themes: ' + _themeMgr.listThemes().join(', ')));
+          } else {
+            emit(this.t.textDim('Theme manager unavailable.'));
+          }
+          return true;
+        }
+
+        default:
+          emit(this.t.warning(`Command "/${cmd}" is not available over a remote channel.`));
+          return true;
+      }
+    } catch (err) {
+      emit(this.t.error(`Command error: ${err instanceof Error ? err.message : String(err)}`));
+      return true;
     }
   }
 
