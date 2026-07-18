@@ -468,12 +468,21 @@ export class Agent {
         // Enforce the built-in permission policy (dangerous commands, protected
         // paths, denied tools). This runs before any user-supplied hook.
         const permCfg = this.config.getPermissions();
+        // Resolve the originating MCP server for this tool (if any) so the
+        // MCP whitelist can match by server or exact tool name.
+        const toolName = ctx.toolCall?.name;
+        const toolServer = toolName
+          ? (ctx.toolDefinitions || []).find((t) => t.name === toolName)?.server
+          : undefined;
+        if (toolServer && ctx.toolCall) ctx.toolCall.server = toolServer;
         const policy = await permissionCheckHook(ctx, (q) =>
           this.promptForPermission(q), {
             allowlist: permCfg.allowlist,
             mode: permCfg.mode,
             safePaths: permCfg.safePaths,
             resolveCwd: () => process.cwd(),
+            mcpAllowlist: permCfg.mcpAllowlist,
+            toolServer,
           });
         if (policy !== 'allow') return policy;
         return userHooks?.preToolUse ? userHooks.preToolUse(ctx) : 'allow';

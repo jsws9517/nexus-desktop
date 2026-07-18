@@ -64,6 +64,13 @@ export const PermissionsConfigSchema = z.object({
    * '~' expands to the user home; '.' / empty means the agent's start cwd.
    */
   safePaths: z.array(z.string()).optional(),
+  /**
+   * MCP whitelist. Entries auto-approve MCP tools without prompting:
+   *   'mcp:*'            — all MCP tools from every server
+   *   'mcp:<server>'     — all tools from a specific MCP server (e.g. mcp:thinking)
+   *   '<toolName>'       — a specific tool by its exact name (e.g. sequentialthinking)
+   */
+  mcpAllowlist: z.array(z.string()).optional(),
 });
 
 export const PERMISSION_PRESETS: Record<string, { allowlist: string[]; description: string }> = {

@@ -127,7 +127,7 @@ export class ClientManager {
       for (const t of conn.tools) {
         if (seen.has(t.name)) continue;
         seen.add(t.name);
-        result.push({ name: t.name, description: t.description || '', inputSchema: t.inputSchema as object });
+        result.push({ name: t.name, description: t.description || '', inputSchema: t.inputSchema as object, server: conn.name });
       }
     }
     return result;

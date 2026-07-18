@@ -42,6 +42,7 @@ const DEFAULT_CONFIG: Config = {
     mode: 'prompt',
     allowlist: [],
     safePaths: ['~/.nexus/tasks', '.'],
+    mcpAllowlist: [],
   },
 };
 
@@ -154,18 +155,19 @@ export class ConfigManager {
     this.save();
   }
 
-  getPermissions(): { mode: 'prompt' | 'auto'; allowlist: string[]; safePaths: string[] } {
+  getPermissions(): { mode: 'prompt' | 'auto'; allowlist: string[]; safePaths: string[]; mcpAllowlist: string[] } {
     const p = (this.config as Record<string, unknown>).permissions as
-      | { mode?: 'prompt' | 'auto'; allowlist?: string[]; safePaths?: string[] }
+      | { mode?: 'prompt' | 'auto'; allowlist?: string[]; safePaths?: string[]; mcpAllowlist?: string[] }
       | undefined;
     return {
       mode: p?.mode ?? 'prompt',
       allowlist: p?.allowlist ? [...p.allowlist] : [],
       safePaths: p?.safePaths ? [...p.safePaths] : [],
+      mcpAllowlist: p?.mcpAllowlist ? [...p.mcpAllowlist] : [],
     };
   }
 
-  setPermissions(partial: Partial<{ mode: 'prompt' | 'auto'; allowlist: string[]; safePaths?: string[] }>): void {
+  setPermissions(partial: Partial<{ mode: 'prompt' | 'auto'; allowlist: string[]; safePaths?: string[]; mcpAllowlist?: string[] }>): void {
     const cur = this.getPermissions();
     (this.config as Record<string, unknown>).permissions = { ...cur, ...partial };
     this.save();

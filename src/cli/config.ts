@@ -803,4 +803,46 @@ export function registerConfigCommand(program: Command): void {
       config.setPermissions({ safePaths: next });
       console.log(t.success(`Removed safe path(s): ${paths.join(', ')}`));
     });
+
+  // MCP whitelist — auto-approve MCP tools by server (mcp:<server>) or exact name.
+  // mcp:* is intentionally NOT supported.
+  const mcpPermCmd = permCmd.command('mcp').description('Manage MCP tool whitelist (auto-approve MCP tools by server or name)');
+
+  mcpPermCmd
+    .command('list')
+    .description('Show configured MCP whitelist entries')
+    .action(() => {
+      const config = new ConfigManager();
+      const p = config.getPermissions();
+      console.log(t.heading('MCP whitelist:'));
+      if (p.mcpAllowlist.length === 0) {
+        console.log(t.textDim('  (none — MCP tools always prompt)'));
+      } else {
+        for (const e of p.mcpAllowlist) console.log(`    - ${e}`);
+      }
+      console.log(t.textDim('  Format: "mcp:<server>" (e.g. mcp:thinking) or exact tool name'));
+      console.log(t.textDim('  High-risk tools (delete_*/remove_*/drop_*/exec*/run_command/...) always ask.'));
+    });
+
+  mcpPermCmd
+    .command('add <entry...>')
+    .description('Add MCP whitelist entry (mcp:<server> or exact tool name)')
+    .action((entries: string[]) => {
+      const config = new ConfigManager();
+      const cur = config.getPermissions();
+      const next = [...new Set([...cur.mcpAllowlist, ...entries])];
+      config.setPermissions({ mcpAllowlist: next });
+      console.log(t.success(`Added MCP whitelist entry: ${entries.join(', ')}`));
+    });
+
+  mcpPermCmd
+    .command('remove <entry...>')
+    .description('Remove MCP whitelist entry')
+    .action((entries: string[]) => {
+      const config = new ConfigManager();
+      const cur = config.getPermissions();
+      const next = cur.mcpAllowlist.filter((e) => !entries.includes(e));
+      config.setPermissions({ mcpAllowlist: next });
+      console.log(t.success(`Removed MCP whitelist entry: ${entries.join(', ')}`));
+    });
 }

@@ -9,6 +9,8 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Originating MCP server name, if this is an MCP-provided tool. */
+  server?: string;
 }
 
 export interface ToolResult {
@@ -20,6 +22,8 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: object;
+  /** Originating MCP server name, if this is an MCP-provided tool. */
+  server?: string;
 }
 
 export interface ChatChunk {

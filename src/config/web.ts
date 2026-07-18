@@ -93,6 +93,16 @@ function buildSchema(): SchemaCategory[] {
         { key: 'nativeInstalled', label: 'Installed Packages', type: 'array', itemType: { key: 'item', label: 'Package', type: 'string' } },
       ],
     },
+    {
+      id: 'permissions',
+      label: 'Permissions',
+      fields: [
+        { key: 'permissions.mode', label: 'Mode', type: 'select', enumValues: ['prompt', 'auto'], description: 'prompt = ask before each tool; auto = honor the whitelist' },
+        { key: 'permissions.allowlist', label: 'Tool Allowlist', type: 'array', itemType: { key: 'item', label: 'Tool', type: 'string' }, description: 'Tools auto-approved in auto mode (e.g. edit_file, write_file)' },
+        { key: 'permissions.safePaths', label: 'Exec Safe Paths', type: 'array', itemType: { key: 'item', label: 'Path', type: 'string' }, description: 'Directories where exec_command is auto-approved (e.g. ~/.nexus/tasks, .)' },
+        { key: 'permissions.mcpAllowlist', label: 'MCP Whitelist', type: 'array', itemType: { key: 'item', label: 'Entry', type: 'string' }, description: 'MCP tools auto-approved: "mcp:<server>" or exact tool name. High-risk tools always ask.' },
+      ],
+    },
   ];
 }
 
@@ -650,6 +660,29 @@ function renderField(field, value, onChange) {
     }
     renderArray();
     div.appendChild(list);
+    // Add-new row (editable for permissions-style string arrays)
+    const addRow = document.createElement('div');
+    addRow.className = 'array-item';
+    const newInp = document.createElement('input');
+    newInp.placeholder = 'Add entry, then press +';
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn btn-primary btn-sm';
+    addBtn.textContent = '+';
+    addBtn.onclick = () => {
+      const v = newInp.value.trim();
+      if (!v) return;
+      arr.push(v); newInp.value = '';
+      renderArray(); onChange([...arr]);
+    };
+    newInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.onclick(); });
+    addRow.appendChild(newInp); addRow.appendChild(addBtn);
+    div.appendChild(addRow);
+    if (field.description) {
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.5';
+      hint.textContent = field.description;
+      div.appendChild(hint);
+    }
   } else {
     const inp = document.createElement('input');
     inp.type = 'text';
@@ -694,6 +727,7 @@ async function saveConfig() {
       activeVisionProvider: state.config.activeVisionProvider,
       qualityGate: state.config.qualityGate || { autoTest: true, autoCommit: false },
       acp: state.config.acp,
+      permissions: state.config.permissions || { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [] },
     })});
     toast('Saved');
   } catch { toast('Save failed', 'error'); }

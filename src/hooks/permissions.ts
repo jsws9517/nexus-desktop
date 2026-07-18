@@ -92,7 +92,7 @@ export function isDangerousCommand(command: string): boolean {
 export async function permissionCheckHook(
   ctx: HookContext,
   promptUser?: (question: string) => Promise<boolean>,
-  options?: { allowlist?: string[]; mode?: 'prompt' | 'auto'; safePaths?: string[]; resolveCwd?: () => string },
+  options?: { allowlist?: string[]; mode?: 'prompt' | 'auto'; safePaths?: string[]; resolveCwd?: () => string; mcpAllowlist?: string[]; toolServer?: string },
 ): Promise<HookResult> {
   if (!ctx.toolCall) return 'allow';
 
@@ -119,6 +119,25 @@ export async function permissionCheckHook(
   }
 
   if (perm.level === PermissionLevel.Prompt) {
+    // MCP whitelist: auto-approve MCP tools by server or exact tool name.
+    // Supported entries (mcp:* is intentionally NOT supported to avoid
+    // blindly trusting every MCP server):
+    //   'mcp:<server>'  — all tools from a specific MCP server
+    //   '<toolName>'    — a specific tool by exact name
+    // High-risk MCP tool names (delete_*, remove_*, drop_*, exec*, run_command,
+    // etc.) are NEVER auto-approved by the whitelist — they fall through to the
+    // normal prompt flow so the user is asked before they run.
+    if (options?.mcpAllowlist && options.mcpAllowlist.length > 0 && options.toolServer) {
+      if (!isHighRiskMcpTool(toolName)) {
+        const server = options.toolServer;
+        if (
+          options.mcpAllowlist.includes(`mcp:${server}`) ||
+          options.mcpAllowlist.includes(toolName)
+        ) {
+          return 'allow';
+        }
+      }
+    }
     // Path whitelist for exec_command / execute_command: if the command's
     // effective working directory resolves under a configured safe path, auto-
     // approve without prompting. Dangerous commands are still blocked below.
@@ -188,4 +207,27 @@ function isUnderSafePath(target: string, safePaths: string[], base: string): boo
     if (t === s || t.startsWith(s + '/')) return true;
   }
   return false;
+}
+
+// High-risk MCP tool name patterns. Tools matching these are NEVER auto-approved
+// by the MCP whitelist — they fall through to the normal prompt flow so the user
+// is asked before they run. This prevents `mcp:<server>` or a tool-name entry from
+// silently granting destructive operations.
+const HIGH_RISK_MCP_PATTERNS: RegExp[] = [
+  /^delete/i,
+  /^remove/i,
+  /^drop/i,
+  /^truncate/i,
+  /^exec/i,
+  /^run_command/i,
+  /^runcommand/i,
+  /^shell/i,
+  /^kill/i,
+  /^shutdown/i,
+  /^format/i,
+  /^purge/i,
+];
+
+function isHighRiskMcpTool(toolName: string): boolean {
+  return HIGH_RISK_MCP_PATTERNS.some((re) => re.test(toolName));
 }
