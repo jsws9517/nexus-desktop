@@ -1515,17 +1515,16 @@ export class Agent {
 
     if (prev.mode !== 'auto' || !hadAllowlist) {
       const allowlist = hadAllowlist ? prev.allowlist : PERMISSION_PRESETS.edit.allowlist;
-      // Mutate the live (in-memory) config object without persisting.
-      (this.config as unknown as { setPermissions: (p: unknown) => void })
-        .setPermissions({ mode: 'auto', allowlist: [...allowlist] });
+      // Mutate the live (in-memory) config object WITHOUT persisting to disk, so
+      // an interrupted autonomous run cannot leave the on-disk config stuck in
+      // 'auto' whitelist mode.
+      this.config.setPermissionsInMemory({ mode: 'auto', allowlist: [...allowlist] });
       this.onEvent?.({ type: 'text', text: `[permissions] auto-whitelist ON (temporary, restored after /go)` });
     }
 
     return () => {
-      // Restore the original persisted state in-memory (no disk write needed
-      // because we only ever changed the live object; persistent file is untouched).
-      (this.config as unknown as { setPermissions: (p: unknown) => void })
-        .setPermissions({ mode: prev.mode, allowlist: [...prev.allowlist] });
+      // Restore the original persisted state in-memory (disk file is untouched).
+      this.config.setPermissionsInMemory({ mode: prev.mode, allowlist: [...prev.allowlist] });
     };
   }
 

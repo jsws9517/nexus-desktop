@@ -29,137 +29,14 @@ function resolveRelativePath(p: string): string {
 }
 
 // ---- exec_command security ----
+// Delegates to the shared, hardened command-safety checks (../security/
+// command-safety.js) so the permission layer and the exec tool use identical
+// detection logic. The local helpers below are re-exported there.
 
-const DANGEROUS_COMMANDS = new Set([
-  // File destruction
-  'rm', 'del', 'rmdir', 'unlink', 'erase', 'rd',
-  // Disk/formatting
-  'format', 'mkfs', 'fdisk', 'dd', 'shred', 'newfs', 'mkfs.ext4', 'mkfs.ntfs',
-  // File movement (destructive overwrite)
-  'mv', 'move', 'ren', 'rename',
-  // Permission changes
-  'chmod', 'chown', 'chgrp', 'attrib', 'icacls', 'setfacl', 'cacls', 'takeown',
-  // Network exfiltration tools
-  'nc', 'netcat', 'ncat',
-]);
-
-const INTERPRETERS = new Set([
-  'bash', 'sh', 'zsh', 'fish', 'cmd', 'powershell', 'pwsh',
-  'python', 'python3', 'python2', 'node', 'nodejs', 'perl', 'ruby', 'php',
-]);
-
-function containsSubshell(command: string): boolean {
-  // Detect command substitution $(...), `...`, ${...}, and process
-  // substitution <(...).  Note: a backtick starts a subshell even when it is
-  // immediately followed by a non-space (e.g. `rm -rf /`), so we do NOT
-  // require whitespace after the backtick.
-  return /(?:\$\(|`|\$\{|<\(|>\()/.test(command);
-}
-
-/**
- * Detect base64/hex encoded payloads that are commonly used to smuggle
- * arbitrary commands past a keyword filter, e.g.
- *   powershell -enc <base64>
- *   bash -c "$(echo <base64> | base64 -d)"
- */
-function containsEncodedPayload(command: string): boolean {
-  const lowered = command.toLowerCase();
-  // -enc / -encodedcommand (PowerShell) or -e/-e64 (python/node style)
-  if (/(?:^|\s)(?:-enc(?:odedcommand)?|-e(?:64)?)\b/.test(lowered)) return true;
-  // echo <base64> | base64 -d | bash  style smuggling
-  if (/base64\s+-?d/.test(lowered) && /(bash|sh|zsh|powershell|pwsh|cmd)\b/.test(lowered)) return true;
-  return false;
-}
-
-function extractAllCommands(command: string): string[] {
-  const commands: string[] = [];
-  // Split by shell control operators (including &&, ||, ;, | and newlines)
-  const segments = command.split(/\s*(?:\|\||&&|[|&;]|\n)\s*/);
-
-  for (const segment of segments) {
-    const trimmed = segment.trim();
-    if (!trimmed) continue;
-
-    // Remove common privilege/execution prefix wrappers recursively so that
-    // `sudo rm ...`, `env bash -c ...`, `time dd ...` are still inspected.
-    const withoutPrefix = trimmed.replace(/^(?:sudo|nohup|time|env|stdbuf|nice|ionice|setsid|watch)\s+/i, '');
-    if (!withoutPrefix) continue;
-
-    // Tokenize respecting quotes
-    const tokens: string[] = [];
-    let current = '';
-    let inQuote: string | null = null;
-    for (const char of withoutPrefix) {
-      if (inQuote) {
-        if (char === inQuote) {
-          inQuote = null;
-        } else {
-          current += char;
-        }
-      } else if (char === '"' || char === "'") {
-        inQuote = char;
-      } else if (/\s/.test(char)) {
-        if (current) {
-          tokens.push(current);
-          current = '';
-        }
-      } else {
-        current += char;
-      }
-    }
-    if (current) tokens.push(current);
-    if (tokens.length === 0) continue;
-
-    const cmd = tokens[0].toLowerCase();
-    commands.push(cmd);
-
-    // If interpreter with -c, recursively extract sub-commands from the script
-    if (INTERPRETERS.has(cmd) && tokens.length >= 3) {
-      const dashC = tokens.findIndex((t) => t === '-c' || t === '--command' || t === '/c');
-      if (dashC !== -1 && dashC + 1 < tokens.length) {
-        const script = tokens[dashC + 1];
-        const subCommands = extractAllCommands(script);
-        commands.push(...subCommands);
-      }
-    }
-  }
-
-  return commands;
-}
-
-function isDangerousCommand(command: string): { blocked: boolean; reason?: string } {
-  if (containsSubshell(command)) {
-    return { blocked: true, reason: 'subshell/command substitution is not allowed' };
-  }
-
-  if (containsEncodedPayload(command)) {
-    return { blocked: true, reason: 'encoded/obfuscated command payload is not allowed' };
-  }
-
-  const commands = extractAllCommands(command);
-  for (const cmd of commands) {
-    if (DANGEROUS_COMMANDS.has(cmd)) {
-      return { blocked: true, reason: `"${cmd}" is not allowed` };
-    }
-  }
-
-  // Block direct interpreter execution with inline code (e.g. sh -c "...").
-  const first = commands[0];
-  if (first && INTERPRETERS.has(first)) {
-    const lowered = command.toLowerCase();
-    const hasInline = /(^|\s)(bash|sh|zsh|python|python3|node|perl|ruby|php)\s+.*(-c\s|--command\s|\/c\s|eval\s|exec\s|<\()/.test(lowered);
-    if (hasInline) {
-      return { blocked: true, reason: 'inline script execution via interpreter is not allowed' };
-    }
-    // Also block `node -e`, `perl -e`, `python -c`, etc. one-shot evaluators.
-    const oneShot = /(^|\s)(?:node|perl|ruby|php|python|python3)\s+.*\s-(?:e|e64|enc)\b/.test(lowered);
-    if (oneShot) {
-      return { blocked: true, reason: 'inline script evaluation via interpreter is not allowed' };
-    }
-  }
-
-  return { blocked: false };
-}
+// Reuse the shared, hardened command-safety checks so the permission layer
+// (hooks/permissions) and the exec tool apply identical dangerous-command
+// detection.
+import { isDangerousCommand } from '../security/command-safety.js';
 
 // ---- fetch_url security ----
 
@@ -792,13 +669,24 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         return { content: 'No issues found. Skill already follows the paradigm.' };
       }
 
-      // Resolve absolute skill path & pre-authorize so sub-agent can read/write
+      // Resolve absolute skill path & pre-authorize so sub-agent can read/write.
+      // IMPORTANT: only pre-authorize the skill directory itself, and ONLY when it
+      // actually lives under a known skills root (~/.nexus/skills or ~/.claude/skills).
+      // Pre-authorizing the parent (join(absDir,'..')) previously granted silent
+      // read/write to an arbitrary parent directory for the whole process, which
+      // could suppress legitimate path prompts elsewhere.
       const absDir = findSkillDir(skillPath);
       const absMd = absDir ? join(absDir, 'SKILL.md') : `${skillPath}/SKILL.md`;
       const absEvals = absDir ? join(absDir, 'evals', 'evals.json') : null;
       if (absDir) {
-        preAuthorizeRoot(absDir);
-        preAuthorizeRoot(join(absDir, '..'));
+        const norm = resolve(absDir).toLowerCase();
+        const skillsRoots = [
+          join(homedir(), '.nexus', 'skills'),
+          join(homedir(), '.claude', 'skills'),
+        ].map(p => resolve(p).toLowerCase());
+        if (skillsRoots.some(r => norm === r || norm.startsWith(r + '/'))) {
+          preAuthorizeRoot(absDir);
+        }
       }
 
       const issueSummary = report.issues.map((i) =>

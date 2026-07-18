@@ -1,5 +1,6 @@
 import { HookContext, HookResult } from './types.js';
 import * as path from 'path';
+import { isDangerousCommand as hardenedIsDangerous } from '../security/command-safety.js';
 
 export enum PermissionLevel {
   Allow = 'allow',
@@ -15,22 +16,6 @@ export interface ToolPermission {
     cwdMatch?: string;
   };
 }
-
-const DANGEROUS_PATTERNS = [
-  /^rm\s+(-rf?)?\s*\/$/,
-  /^mkfs/,
-  /^dd\s+/,
-  /^:\(\)\{/,
-  /^chmod\s+777/,
-  /^curl\s+.*\||^wget\s+.*\|/,
-];
-
-const SENSITIVE_COMMANDS = [
-  'rm', 'mv', 'dd', 'mkfs', 'chmod', 'chown',
-  'sudo', 'su', 'passwd', 'useradd', 'usermod',
-  'iptables', 'ufw', 'mount', 'umount', 'fdisk',
-  '>', '>>', '|', '`',
-];
 
 const WRITE_TOOLS = new Set([
   'write_file', 'file_write', 'edit_file', 'file_edit',
@@ -78,18 +63,6 @@ export function getToolPermission(toolName: string): ToolPermission {
   return { name: toolName, level: PermissionLevel.Prompt };
 }
 
-export function isDangerousCommand(command: string): boolean {
-  const trimmed = command.trim();
-  for (const pattern of DANGEROUS_PATTERNS) {
-    if (pattern.test(trimmed)) return true;
-  }
-
-  const firstToken = trimmed.split(/\s+/)[0]?.toLowerCase() || '';
-  if (SENSITIVE_COMMANDS.includes(firstToken)) return true;
-
-  return false;
-}
-
 export async function permissionCheckHook(
   ctx: HookContext,
   promptUser?: (question: string) => Promise<boolean>,
@@ -105,6 +78,24 @@ export async function permissionCheckHook(
   // Dangerous commands and protected paths are still blocked regardless (see below).
   const allowlist = options?.allowlist ?? [];
   const whitelistMode = options?.mode ?? 'prompt';
+
+  // Sensitive-path write protection: writing into .env / node_modules / dist/
+  // must ALWAYS require explicit approval, even in 'auto' whitelist mode. This
+  // runs before any auto-allow so the whitelist can never silently grant writes
+  // to protected locations (e.g. during a /go autonomous run).
+  if (WRITE_TOOLS.has(toolName)) {
+    const writePath = (args.path || args.filePath || '') as string;
+    if (writePath && typeof writePath === 'string') {
+      const lower = writePath.toLowerCase();
+      if (lower.includes('node_modules') || lower.includes('.env') || lower.includes('dist/')) {
+        return {
+          verdict: 'deny',
+          reason: `Writing to "${writePath.slice(0, 100)}" requires explicit approval.`,
+        };
+      }
+    }
+  }
+
   if (whitelistMode === 'auto' && (allowlist.includes('*') || allowlist.includes(toolName))) {
     // Still enforce hard denials (delete_file / remove_file) — never whitelist those.
     const perm0 = getToolPermission(toolName);
@@ -143,36 +134,27 @@ export async function permissionCheckHook(
     // effective working directory resolves under a configured safe path, auto-
     // approve without prompting. Dangerous commands are still blocked below.
     const isExec = toolName === 'exec_command' || toolName === 'execute_command';
-    if (isExec && options?.safePaths && options.safePaths.length > 0) {
+    // Auto-approve exec only when BOTH whitelist mode is active AND the cwd is
+    // under a configured safe path. In default 'prompt' mode we still prompt the
+    // user for project-local commands (safePaths is not a blanket allow in prompt
+    // mode), preventing silent approval of exec inside the project.
+    if (isExec && whitelistMode === 'auto' && options?.safePaths && options.safePaths.length > 0) {
       const requestedCwd = (args.cwd || args.workdir || '') as string;
       const base = options.resolveCwd ? options.resolveCwd() : process.cwd();
       const effectiveCwd = requestedCwd ? resolveSafePath(requestedCwd, base) : base;
       if (isUnderSafePath(effectiveCwd, options.safePaths, base)) {
         const commandArg = (args.command || args.cmd || '') as string;
-        if (!isDangerousCommand(commandArg)) {
+        if (!hardenedIsDangerous(commandArg).blocked) {
           return 'allow';
         }
       }
     }
     const commandArg = (args.command || args.cmd || '') as string;
-    if (commandArg && isDangerousCommand(commandArg)) {
+    if (commandArg && hardenedIsDangerous(commandArg).blocked) {
       return {
         verdict: 'deny',
         reason: `Dangerous command blocked: "${commandArg.slice(0, 100)}"`,
       };
-    }
-
-    if (WRITE_TOOLS.has(toolName)) {
-      const path = (args.path || args.filePath || '') as string;
-      if (path && typeof path === 'string') {
-        const lower = path.toLowerCase();
-        if (lower.includes('node_modules') || lower.includes('.env') || lower.includes('dist/')) {
-          return {
-            verdict: 'deny',
-            reason: `Writing to "${path.slice(0, 100)}" requires explicit approval.`,
-          };
-        }
-      }
     }
 
     if (promptUser) {

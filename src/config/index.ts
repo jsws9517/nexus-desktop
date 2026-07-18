@@ -173,6 +173,16 @@ export class ConfigManager {
     this.save();
   }
 
+  /**
+   * Mutate the live (in-memory) permissions WITHOUT persisting to disk.
+   * Used by temporary switches (e.g. /go autonomous mode) so an interrupted run
+   * cannot leave the on-disk config stuck in 'auto' whitelist mode.
+   */
+  setPermissionsInMemory(partial: Partial<{ mode: 'prompt' | 'auto'; allowlist: string[]; safePaths?: string[]; mcpAllowlist?: string[] }>): void {
+    const cur = this.getPermissions();
+    (this.config as Record<string, unknown>).permissions = { ...cur, ...partial };
+  }
+
   getVisionProviders(): Record<string, { apiKey: string; baseUrl: string; model: string }> {
     return (this.config.visionProviders || {}) as any;
   }
