@@ -319,6 +319,10 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
         if (isQuestionMode) {
           if (key.name === 'pageup' || key.name === 'pagedown' || key.name === 'up' || key.name === 'down' || (key.ctrl && key.name === 'o')) return;
+          // Single-key prompts (y/N) render the answer themselves via finish(),
+          // so suppress readline's own echo here — otherwise a duplicated key
+          // appears on the following line.
+          if (isSingleKeyMode) return;
           return originalTtyWrite(s, key);
         }
 
