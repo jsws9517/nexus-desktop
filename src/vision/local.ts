@@ -6,10 +6,16 @@ import { dirname } from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-// Prefer the .py file in the source tree (works when running from dist/ too)
-const SRC_PATH = resolve(__dirname, '..', '..', '..', 'src', 'vision', 'local_vision.py');
-const DIST_PATH = resolve(__dirname, 'local_vision.py');
-const SCRIPT_PATH = existsSync(SRC_PATH) ? SRC_PATH : (existsSync(DIST_PATH) ? DIST_PATH : SRC_PATH);
+// Resolve the Florence-2 python script. Candidates, in order:
+//   1. dist/src/vision/local_vision.py  (npm package / tsc build — copied by build step)
+//   2. src/vision/local_vision.py       (running from source via tsx)
+//   3. <pkg>/src/vision/local_vision.py (dev tree relative to dist)
+const CANDIDATES = [
+  resolve(__dirname, 'local_vision.py'),
+  resolve(__dirname, '..', '..', '..', 'src', 'vision', 'local_vision.py'),
+  resolve(__dirname, '..', '..', 'src', 'vision', 'local_vision.py'),
+];
+const SCRIPT_PATH = CANDIDATES.find(p => existsSync(p)) || CANDIDATES[0];
 
 let proc: ChildProcess | null = null;
 let modelLoading = false;
@@ -31,30 +37,41 @@ function startProcess(): void {
 
   let buffer = '';
 
-  proc.stdout!.on('data', (data: Buffer) => {
+  const onChildLine = (line: string): void => {
+    if (!line.trim()) return;
+    try {
+      const msg = JSON.parse(line);
+      if (msg.content !== undefined) {
+        handleResponse(msg);
+      } else if (msg.error) {
+        handleError(msg);
+      }
+    } catch {
+      // Non-JSON diagnostics from the python child (stdout carries the JSON
+      // results; stderr carries progress like "Loading..."/"Model loaded").
+      if (line.includes('ready')) {
+        ready = true;
+        modelLoading = false;
+        process.stderr.write('[local-vision] Florence-2 ready.\n');
+      } else if (line.includes('Loading') || line.includes('loaded') || line.includes('Analysis')) {
+        process.stderr.write(`[local-vision] ${line}\n`);
+      } else if (line.toLowerCase().includes('error') || line.toLowerCase().includes('traceback')) {
+        process.stderr.write(`[local-vision] ${line}\n`);
+      }
+    }
+  };
+
+  const onChildData = (data: Buffer): void => {
     buffer += data.toString();
     const lines = buffer.split('\n');
     buffer = lines.pop() || '';
+    for (const line of lines) onChildLine(line);
+  };
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        if (msg.content !== undefined) {
-          handleResponse(msg);
-        } else if (msg.error) {
-          handleError(msg);
-        }
-      } catch {
-        if (line.includes('ready')) {
-          ready = true;
-          modelLoading = false;
-        } else if (line.includes('Loading')) {
-          process.stderr.write(`[local-vision] ${line}\n`);
-        }
-      }
-    }
-  });
+  // Python writes JSON results to stdout, and progress/diagnostics to stderr.
+  // Listen to both so load progress is surfaced to the user.
+  proc.stdout!.on('data', onChildData);
+  proc.stderr!.on('data', onChildData);
 
   proc.on('exit', (code) => {
     ready = false;
