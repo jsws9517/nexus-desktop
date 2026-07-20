@@ -317,6 +317,29 @@ export class ConfigManager {
     this.save();
   }
 
+  getAcpTimeouts(): NonNullable<NonNullable<Config['acp']>['timeouts']> {
+    return this.config.acp?.timeouts || {};
+  }
+
+  setAcpTimeout(field: 'chunkIdleMs' | 'watchdogRemoteMs' | 'heartbeatMs', value: number): void {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(`Timeout "${field}" must be a positive number (ms)`);
+    }
+    const acp = { ...(this.config.acp || {}), timeouts: { ...(this.config.acp?.timeouts || {}), [field]: Math.floor(value) } };
+    this.config.acp = acp;
+    this.save();
+  }
+
+  clearAcpTimeout(field: 'chunkIdleMs' | 'watchdogRemoteMs' | 'heartbeatMs'): void {
+    if (!this.config.acp?.timeouts) return;
+    const next = { ...this.config.acp.timeouts };
+    delete next[field];
+    const acp = { ...this.config.acp };
+    acp.timeouts = Object.keys(next).length > 0 ? next : undefined;
+    this.config.acp = acp;
+    this.save();
+  }
+
   getPromptName(): string {
     return this.config.promptName || 'you';
   }

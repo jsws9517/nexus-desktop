@@ -25,6 +25,14 @@ let pendingResolves: Map<string, { resolve: (v: any) => void; reject: (e: Error)
 
 let starting = false;
 
+// Background preload/load progress is noisy and pollutes the interactive
+// TUI input line. Suppress it by default; enable with VISION_DEBUG=1.
+const VISION_DEBUG = process.env.VISION_DEBUG === '1';
+
+function vlog(msg: string): void {
+  if (VISION_DEBUG) process.stderr.write(`[local-vision] ${msg}\n`);
+}
+
 function startProcess(): void {
   if (proc || modelLoading || starting) return;
   modelLoading = true;
@@ -52,10 +60,11 @@ function startProcess(): void {
       if (line.includes('ready')) {
         ready = true;
         modelLoading = false;
-        process.stderr.write('[local-vision] Florence-2 ready.\n');
+        vlog('Florence-2 ready.');
       } else if (line.includes('Loading') || line.includes('loaded') || line.includes('Analysis')) {
-        process.stderr.write(`[local-vision] ${line}\n`);
+        vlog(line);
       } else if (line.toLowerCase().includes('error') || line.toLowerCase().includes('traceback')) {
+        // Errors are always surfaced — they indicate a real failure.
         process.stderr.write(`[local-vision] ${line}\n`);
       }
     }
@@ -183,6 +192,6 @@ export function preloadLocalVision(): void {
   if (preloadStarted || !isLocalVisionAvailable()) return;
   preloadStarted = true;
   startProcess();
-  process.stderr.write('[local-vision] Preloading Florence-2 in background...\n');
+  vlog('Preloading Florence-2 in background...');
   // Don't await — model loads in background
 }

@@ -382,6 +382,11 @@ export function registerConfigCommand(program: Command): void {
       } else {
         console.log(t.textDim('  No ACP agents configured'));
       }
+      const to = config.getAcpTimeouts();
+      console.log(t.heading('  Timeouts:'));
+      console.log(`    chunkIdleMs:       ${to.chunkIdleMs ?? t.textDim('60000 (default)')}ms`);
+      console.log(`    watchdogRemoteMs:  ${to.watchdogRemoteMs ?? t.textDim('90000 (default)')}ms`);
+      console.log(`    heartbeatMs:       ${to.heartbeatMs ?? t.textDim('30000 (default)')}ms`);
     });
 
   acpCmd
@@ -479,6 +484,110 @@ export function registerConfigCommand(program: Command): void {
 
       config.setAcpConfig(acpConfig);
       console.log(t.success(`Removed ACP agent: ${name}`));
+    });
+
+  // ACP timeout settings (grouped under acp.timeouts)
+  const timeoutCmd = acpCmd.command('timeout').description('ACP/stream timeout settings (chunk idle + turn deadline) — CRITICAL: only change if you understand both params; defaults are tuned for safe recovery');
+
+  const TIMEOUT_FIELDS: { field: 'chunkIdleMs' | 'watchdogRemoteMs' | 'heartbeatMs'; label: string; def: number; env: string }[] = [
+    { field: 'chunkIdleMs', label: 'Per-chunk idle timeout (stream stall guard)', def: 60_000, env: 'NEXUS_CHUNK_IDLE_TIMEOUT_MS' },
+    { field: 'watchdogRemoteMs', label: 'Turn deadline for remote/ACP channels (process exits on expiry)', def: 90_000, env: 'NEXUS_WATCHDOG_REMOTE_MS' },
+    { field: 'heartbeatMs', label: 'Heartbeat interval — periodic alive ping for cc-connect', def: 30_000, env: 'NEXUS_HEARTBEAT_INTERVAL_MS' },
+  ];
+
+  timeoutCmd
+    .command('list')
+    .description('Show current timeout settings (config file + effective values)')
+    .action(() => {
+      const config = new ConfigManager();
+      const stored = config.getAcpTimeouts();
+      console.log(t.heading('ACP timeout settings:'));
+      for (const { field, label, def, env } of TIMEOUT_FIELDS) {
+        const fromConfig = stored[field];
+        const fromEnv = process.env[env];
+        const effective = fromEnv ?? fromConfig ?? def;
+        const source = fromEnv ? t.warning('env') : fromConfig ? t.entityName('config') : t.textDim('default');
+        console.log(`  ${t.entityName(field)} (${label}): ${effective}ms [${source}]`);
+      }
+      const envList = TIMEOUT_FIELDS.map(f => f.env).join(', ');
+      console.log(t.textDim(`\nEnv overrides (highest priority): ${envList}`));
+
+      const hb = stored.heartbeatMs ?? 30_000;
+      const wd = stored.watchdogRemoteMs ?? 90_000;
+      const ratio = (wd / hb).toFixed(1);
+      const ok = wd >= hb * 3;
+      console.log(ok ? t.success(`  ✓ watchdogRemoteMs / heartbeatMs = ${ratio}× (≥ 3✓)`) : t.warning(`  ⚠ watchdogRemoteMs / heartbeatMs = ${ratio}× (< 3, heartbeat may fire too few times before deadline)`));
+    });
+
+  timeoutCmd
+    .command('set <field> <ms>')
+    .description('Set a timeout (ms): chunkIdleMs | watchdogRemoteMs | heartbeatMs')
+    .action((field: string, ms: string) => {
+      const matched = TIMEOUT_FIELDS.find((f) => f.field === field);
+      if (!matched) {
+        console.log(t.error(`Unknown timeout field: ${field}. Use one of: ${TIMEOUT_FIELDS.map((f) => f.field).join(', ')}`));
+        return;
+      }
+      const value = parseInt(ms, 10);
+      if (!Number.isFinite(value) || value <= 0) {
+        console.log(t.error(`Timeout must be a positive number of ms, got: ${ms}`));
+        return;
+      }
+
+      // CRITICAL: these parameters directly change how remote (Feishu/ACP) and
+      // local sessions behave under failure. Editing them without understanding
+      // the trade-offs can make turns hang longer (too high) or get cut off
+      // mid-reply (too low). Always read the guidance below before changing.
+      console.log(t.warning('╔══════════════════════════════════════════════════════════════╗'));
+      console.log(t.warning('║  CRITICAL: you are changing a session-failure timeout.        ║'));
+      console.log(t.warning('║  Do NOT edit these unless you understand all three parameters. ║'));
+      console.log(t.warning('╚══════════════════════════════════════════════════════════════╝'));
+      console.log(t.textDim('  • chunkIdleMs      — per-chunk idle wait on the LLM stream.'));
+      console.log(t.textDim('                        Too LOW  → a slow-but-alive model gets aborted mid-reply.'));
+      console.log(t.textDim('                        Too HIGH → a stalled ("half-dead") stream hangs before recovery.'));
+      console.log(t.textDim('  • watchdogRemoteMs — hard cap on a remote/ACP turn.'));
+      console.log(t.textDim('                        Too LOW  → long legitimate answers are killed; user sees no reply.'));
+      console.log(t.textDim('                        Too HIGH → a stuck turn blocks the whole session for longer.'));
+      console.log(t.textDim('  • heartbeatMs      — interval for alive-ping heartbeats to cc-connect.'));
+      console.log(t.textDim('                        Too LOW  → extra noise on the transport channel.'));
+      console.log(t.textDim('                        Too HIGH → cc-connect may timeout the connection.'));
+      console.log(t.textDim('  Recommended: leave at defaults (60000 / 90000 / 30000).'));
+      console.log(t.textDim('  ⚖  watchdogRemoteMs should be ≥ 3× heartbeatMs so the deadline allows multiple heartbeats before firing.'));
+      console.log(t.textDim(`  Env override wins over config: ${TIMEOUT_FIELDS.map(f => f.env).join(' / ')}`));
+      console.log('');
+
+      const config = new ConfigManager();
+      config.setAcpTimeout(matched.field, value);
+
+      // Cross-field validation: watchdogRemoteMs must be large enough to
+      // allow several heartbeats before the turn deadline fires, otherwise
+      // the heartbeat is useless. Recommended: watchdog >= 3 * heartbeat.
+      const to = config.getAcpTimeouts();
+      const hb = to.heartbeatMs ?? 30_000;
+      const wd = to.watchdogRemoteMs ?? 90_000;
+      if (field === 'heartbeatMs' && wd < value * 3) {
+        console.log(t.warning(`⚠  watchdogRemoteMs (${wd}ms) is only ${(wd / value).toFixed(1)}× heartbeatMs (${value}ms) —`));
+        console.log(t.warning(`   consider raising watchdogRemoteMs to at least ${value * 3}ms for the heartbeat to be effective`));
+      }
+      if (field === 'watchdogRemoteMs' && value < hb * 3) {
+        console.log(t.warning(`⚠  watchdogRemoteMs (${value}ms) is only ${(value / hb).toFixed(1)}× heartbeatMs (${hb}ms) —`));
+        console.log(t.warning(`   consider raising watchdogRemoteMs to at least ${hb * 3}ms or lowering heartbeatMs`));
+      }
+      console.log(t.success(`Set ${matched.field} = ${value}ms (persisted under acp.timeouts)`));
+    });
+
+  timeoutCmd
+    .command('reset <field>')
+    .description('Reset a timeout to built-in default')
+    .action((field: string) => {
+      const matched = TIMEOUT_FIELDS.find((f) => f.field === field);
+      if (!matched) {
+        console.log(t.error(`Unknown timeout field: ${field}. Use one of: ${TIMEOUT_FIELDS.map((f) => f.field).join(', ')}`));
+        return;
+      }
+      const config = new ConfigManager();
+      config.clearAcpTimeout(matched.field);
+      console.log(t.success(`Reset ${matched.field} to default (${matched.def}ms)`));
     });
 
   // Native packages management (MCP servers + plugins)

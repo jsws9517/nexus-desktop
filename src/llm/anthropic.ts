@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Message, ChatChunk, ToolDefinition } from '../types.js';
 import { LLMProvider } from './provider.js';
+import { withChunkTimeout } from './chunk-timeout.js';
+import { getChunkIdleTimeoutMs } from './timeout-config.js';
 
 export class AnthropicProvider implements LLMProvider {
   private client: Anthropic;
@@ -62,6 +64,10 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async *chat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
+    yield* withChunkTimeout(this.chatStreaming(messages, tools, signal), getChunkIdleTimeoutMs(), signal);
+  }
+
+  private async *chatStreaming(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
     const systemMessages = messages.filter((m) => m.role === 'system');
     const systemContent = systemMessages.length > 0
       ? systemMessages.map(m => m.content).join('\n\n')

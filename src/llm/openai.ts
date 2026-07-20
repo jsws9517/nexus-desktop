@@ -1,6 +1,8 @@
 import OpenAI from 'openai';
 import { Message, ChatChunk, ToolDefinition } from '../types.js';
 import { LLMProvider } from './provider.js';
+import { withChunkTimeout, IdleTimeoutError } from './chunk-timeout.js';
+import { getChunkIdleTimeoutMs } from './timeout-config.js';
 
 interface PendingToolCall {
   id: string;
@@ -63,9 +65,10 @@ export class OpenAIProvider implements LLMProvider {
 
   async *chat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<ChatChunk> {
     try {
-      yield* this.chatStreaming(messages, tools, signal);
+      yield* withChunkTimeout(this.chatStreaming(messages, tools, signal), getChunkIdleTimeoutMs(), signal);
     } catch (err) {
       if ((err instanceof Error && err.name === "AbortError") || signal?.aborted) throw err;
+      if (err instanceof IdleTimeoutError) throw err;
       yield* this.chatNonStreaming(messages, tools, signal);
     }
   }

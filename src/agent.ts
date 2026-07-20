@@ -6,6 +6,8 @@ import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 
 import { ConfigManager } from './config/index.js';
 import { PERMISSION_PRESETS } from './config/types.js';
 import { LLMProvider, createProvider } from './llm/provider.js';
+import { IdleTimeoutError } from './llm/chunk-timeout.js';
+import { applyConfigTimeouts } from './llm/timeout-config.js';
 import { ContextManager, CompactMetadata } from './llm/context-manager.js';
 import { SessionManager } from './session/manager.js';
 import { SessionMemory } from './session/memory.js';
@@ -23,6 +25,7 @@ import { ProgressTracker, TaskGraph, DAGScheduler, SubAgentWorker } from './task
 import { preloadLocalVision } from './vision/local.js';
 import { getTaskToolDefinitions, executeTaskTool } from './task/task-tools.js';
 import { ProjectContext } from './context/index.js';
+
 import { analyzeImage, isImageFile } from './vision/index.js';
 import { authorizePath } from './security/path-authorizer.js';
 import { sanitizeContent, neutralizeInstructions } from './utils/sanitize.js';
@@ -185,6 +188,10 @@ export class Agent {
   private currentUserInput?: string;
   private reasoningLog: ReasoningEntry[] = [];
   private busy = false;
+  /** Turn generation counter — guards busy against stale finally blocks. When a
+   *  hung turn eventually completes in the background, its finally compares
+   *  turnGen to ensure it doesn't clear busy for a subsequently started turn. */
+  private turnGen = 0;
   private abortController = new AbortController();
   private compactStartTime?: number;
   private enableAcp?: boolean;
@@ -218,6 +225,7 @@ export class Agent {
     this.config = new ConfigManager();
     this.enableAcp = enableAcp;
     this.isAcpServer = isAcpServer;
+    applyConfigTimeouts(this.config.getAcpTimeouts());
     const providerConfig = this.config.getProvider();
     this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options, this.config.getActiveProvider());
     this.mcp = new ClientManager();
@@ -510,6 +518,7 @@ export class Agent {
     this.metrics = [];
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
+    const myGen = ++this.turnGen;
     this.busy = true;
 
     // Snapshot the display mode for this entire reasoning chain
@@ -520,7 +529,7 @@ export class Agent {
     try {
       if (!showDetail && !this.onOutput && !this.suppressToolOutput) {
         this.compactStartTime = Date.now();
-        process.stdout.write(this.t.textDim('Thought'));
+        this.renderOut(this.t.textDim('Thought'));
       }
 
       await this.runLlmTurn(showDetail, signal);
@@ -532,6 +541,15 @@ export class Agent {
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
+      // A watchdog abort or a stalled-stream idle timeout is an intentional
+      // turn termination, not a crash. Do NOT re-throw it: the turn has already
+      // been handled (partial text sent / clean error reply) and re-throwing
+      // would reject agent.chat() and risk tearing down the ACP process.
+      if (signal.aborted || e instanceof IdleTimeoutError) {
+        // Guarded: only the current turn's finally may clear busy, so a
+        // background-hung old turn doesn't corrupt a newly started turn.
+        return;
+      }
       if (this.hooks?.onError) {
         await this.hooks.onError({ turn: this.currentTurn, signal, userInput: this.currentUserInput }, err);
       }
@@ -545,7 +563,7 @@ export class Agent {
       }
       throw e;
     } finally {
-      this.busy = false;
+      if (this.turnGen === myGen) this.busy = false;
       this.onEvent?.({ type: 'session_end' });
       if (this.currentSessionId && this.currentUserInput) {
         this.updateSessionMemory();
@@ -574,6 +592,30 @@ export class Agent {
    * false otherwise. In the interactive CLI, slash commands are intercepted by
    * handleLine before chat() is called, so this path is only ever hit for remote input.
    */
+
+  /**
+   * Render output guard (P0: stdout purity for ACP/remote channels).
+   *
+   * When nexus runs as an ACP agent, `process.stdout` is the JSON-RPC transport
+   * shared with cc-connect — any non-protocol text written there corrupts the
+   * framing and the client never receives a reply (unlike a normal CLI agent
+   * where stdout is just the terminal). Every piece of user-facing rendering in
+   * this class must therefore go to stderr in remote/ACP mode; only
+   * AcpServer.writeLine may write protocol frames to stdout.
+   *
+   * This guard is defensive: the display paths are already gated by
+   * `!this.onOutput` / `showDetail`, but routing through here guarantees stdout
+   * stays pure even if those guards are relaxed.
+   */
+  private renderOut(s: string): void {
+    const text = s.endsWith('\n') ? s : s + '\n';
+    if (this.onOutput || this.isAcpServer) {
+      process.stderr.write(text);
+    } else {
+      process.stdout.write(text);
+    }
+  }
+
   private async runRemoteSlashCommand(input: string): Promise<boolean> {
     const trimmed = input.trim();
     const [cmd, ...args] = trimmed.slice(1).split(' ');
@@ -822,7 +864,7 @@ export class Agent {
             this.onOutput(clean);
             lastWriteEndedNl = clean.endsWith('\n');
           } else if (showDetail) {
-            process.stdout.write(clean);
+            this.renderOut(clean);
             lastWriteEndedNl = clean.endsWith('\n');
           } else {
             entry.assistantText += clean;
@@ -832,7 +874,7 @@ export class Agent {
           const clean = chunk.thinking.replace(/\uFFFD/g, '');
           this.onEvent?.({ type: 'thinking', thinking: clean });
           if (showDetail && !this.onOutput) {
-            process.stdout.write(chalk.italic(this.t.thinking(clean)));
+            this.renderOut(chalk.italic(this.t.thinking(clean)));
             lastWriteEndedNl = clean.endsWith('\n');
           }
         }
@@ -851,14 +893,46 @@ export class Agent {
       }
       this.turnLlmTime = Date.now() - llmStart;
     } catch (e) {
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        // Watchdog aborted the turn (e.g. upstream model stream hung). Emit a
+        // short, terminating note to the remote/ACP client so the user knows
+        // why there is no real answer (and can switch models) instead of just
+        // seeing an empty reply.
+        const note = assistantMessage
+          ? '\n\n[response truncated: the model stream was interrupted (timed out)]'
+          : '[no response: the model stream was interrupted (timed out). Try a different model or provider.]';
+        if (this.onOutput) {
+          this.onOutput(note);
+        } else if (showDetail) {
+          this.renderOut(note);
+        }
+        return;
+      }
+      if (e instanceof IdleTimeoutError) {
+        // Upstream stream went half-dead. If we already streamed some text,
+        // keep it and append a short note; otherwise surface a clean error so
+        // the (remote/ACP) client gets a terminating reply instead of hanging.
+        const note = '\n\n[model stream stalled — no response chunk received in time; truncated]';
+        const finalText = (assistantMessage || '') + (assistantMessage ? note : '[model stream stalled — no response received in time]');
+        if (this.onOutput) {
+          this.onOutput(finalText);
+        } else if (showDetail) {
+          this.renderOut(finalText);
+        }
+        if (finalText) {
+          const msg: Message = { role: 'assistant', content: finalText };
+          this.context.add(msg);
+          this.session.addMessage(this.currentSessionId!, msg);
+        }
+        return;
+      }
       throw e;
     }
 
     if (signal.aborted) return;
 
     if (showDetail && !this.onOutput) {
-      process.stdout.write('\n');
+      this.renderOut('\n');
     }
 
     // Store assistant message (with tool calls if any)
@@ -892,7 +966,7 @@ export class Agent {
         if (isDenied) {
           const reason = hookResult.verdict === 'deny' ? hookResult.reason : 'Tool was blocked by security policy.';
           if (showDetail && !this.suppressToolOutput) {
-            console.log(`\n[Blocked: ${toolCall.name}] — ${reason}`);
+            this.renderOut(`\n[Blocked: ${toolCall.name}] — ${reason}`);
           }
           const toolContent = reason;
           this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: toolContent, isError: true });
@@ -912,9 +986,9 @@ export class Agent {
         // only rewrite the last wrapped segment, leaving the first segment
         // dangling as a duplicate line.
         if (!lastWriteEndedNl) {
-          process.stdout.write('\n');
+          this.renderOut('\n');
         }
-        process.stdout.write(`  ${this.t.spinner('●')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)})\n`);
+        this.renderOut(`  ${this.t.spinner('●')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)})\n`);
         lastWriteEndedNl = true;
       }
       let result: ToolResult;
@@ -928,12 +1002,12 @@ export class Agent {
       if (showDetail && !this.suppressToolOutput) {
         if (result.isError) {
           const line = `  ${this.t.error('✗')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)}) ${this.t.textDim(`[${toolElapsed}ms]`)}`;
-          process.stdout.write(`${line}\n`);
-          process.stdout.write(`    ${this.t.error(result.content.slice(0, 200))}\n`);
+          this.renderOut(`${line}\n`);
+          this.renderOut(`    ${this.t.error(result.content.slice(0, 200))}\n`);
           lastWriteEndedNl = true;
         } else {
           const line = `  ${this.t.success('✓')} ${this.t.toolCallName(toolCall.name)}(${this.t.textDim(argsPreview)}) ${this.t.textDim(`[${toolElapsed}ms]`)}`;
-          process.stdout.write(`${line}\n`);
+          this.renderOut(`${line}\n`);
           lastWriteEndedNl = true;
         }
       } else {
@@ -962,7 +1036,7 @@ export class Agent {
     }
 
     if (!showDetail && pendingToolCalls.length > 0 && !this.onOutput) {
-      process.stdout.write('.');
+      this.renderOut('.');
     }
 
     const turnElapsed = Date.now() - this.turnStartTime;
@@ -1000,6 +1074,11 @@ export class Agent {
   }
 
   private renderCompactOutput(): void {
+    // In remote/ACP mode the assistant text is already streamed to the client
+    // via onOutput (session/update frames). Rendering compact output to stdout
+    // here would inject non-protocol text into the ACP transport and corrupt
+    // framing (the client then never receives a clean reply). Skip it entirely.
+    if (this.onOutput || this.isAcpServer) return;
     if (this.suppressToolOutput) return;
 
     const elapsed = this.compactStartTime

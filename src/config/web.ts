@@ -84,6 +84,11 @@ function buildSchema(): SchemaCategory[] {
         { key: 'acp.port', label: 'Port', type: 'number' },
         { key: 'acp.skillsPath', label: 'Skills Path', type: 'string' },
         { key: 'acp.agents', label: 'Agents', type: 'object' },
+        { key: '__acp_timeout_warning__', label: '⚠ Timeouts (CRITICAL)', type: 'string', description: 'Do NOT change these unless you understand all three. chunkIdleMs aborts a stalled LLM stream (too LOW cuts slow models mid-reply; too HIGH lets a stuck stream hang). watchdogRemoteMs caps a remote/ACP turn (too LOW kills long answers; too HIGH blocks the session longer). heartbeatMs sends periodic alive-ping to cc-connect during long tasks. Keep watchdogRemoteMs ≥ 3× heartbeatMs so the deadline allows multiple heartbeats. Defaults: 60000 / 90000 / 30000 ms. Env overrides: NEXUS_CHUNK_IDLE_TIMEOUT_MS / NEXUS_WATCHDOG_REMOTE_MS / NEXUS_HEARTBEAT_INTERVAL_MS.' },
+        { key: 'acp.timeouts.chunkIdleMs', label: 'Chunk Idle Timeout (ms)', type: 'number', description: 'Per-chunk idle wait on the LLM stream. Default 60000.' },
+        { key: 'acp.timeouts.watchdogRemoteMs', label: 'Remote Turn Deadline (ms)', type: 'number', description: 'Hard cap on a remote/ACP turn. Process exits on expiry. Should be ≥ 3× heartbeatMs. Default 90000.' },
+        { key: 'acp.timeouts.heartbeatMs', label: 'Heartbeat Interval (ms)', type: 'number', description: 'Periodic alive-ping to cc-connect during long tasks. Default 30000.' },
+        { key: '__acp_ratio_display__', label: 'Ratio', type: 'string' },
       ],
     },
     {
@@ -520,18 +525,74 @@ function renderStaticCategory(main, cat) {
   card.className = 'card';
   const fieldsDiv = document.createElement('div');
 
+  let ratioEl = null;
   for (const field of cat.fields) {
-    const val = getNestedValue(state.config, field.key);
-    fieldsDiv.appendChild(renderField(field, val, (v) => {
+    let val = getNestedValue(state.config, field.key);
+    // For ACP timeout fields, show the effective default when unset so the
+    // panel never displays a blank "none" value.
+    if (val === undefined && field.key === 'acp.timeouts.chunkIdleMs') val = 60000;
+    if (val === undefined && field.key === 'acp.timeouts.watchdogRemoteMs') val = 90000;
+    if (val === undefined && field.key === 'acp.timeouts.heartbeatMs') val = 30000;
+    const el = renderField(field, val, (v) => {
       setNestedValue(state.config, field.key, v);
       saveConfig();
-    }));
+      if (ratioEl && (field.key === 'acp.timeouts.watchdogRemoteMs' || field.key === 'acp.timeouts.heartbeatMs')) {
+        const to = state.config?.acp?.timeouts || {};
+        const hb = to.heartbeatMs || 30000;
+        const wd = to.watchdogRemoteMs || 90000;
+        const r = (wd / hb).toFixed(1);
+        const ok = wd >= hb * 3;
+        ratioEl.innerHTML = '<label style="font-weight:600;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:0.5px">Ratio (watchdog / heartbeat)</label>'
+          + '<div style="margin-top:4px;' + (ok ? 'color:#4caf50' : 'color:#ffcf66') + '">'
+          + (ok ? '✓' : '⚠') + ' ' + r + '×' + (ok ? ' (≥ 3✓)' : ' (< 3 — watchdog too tight for heartbeat)')
+          + '</div>';
+      }
+    });
+    if (field.key === '__acp_ratio_display__') ratioEl = el;
+    fieldsDiv.appendChild(el);
   }
   card.appendChild(fieldsDiv);
   main.appendChild(card);
 }
 
 function renderField(field, value, onChange) {
+  // Special read-only warning banner for ACP timeouts.
+  if (field.key === '__acp_timeout_warning__') {
+    const div = document.createElement('div');
+    div.className = 'field warning-banner';
+    div.style.cssText = 'border:1px solid #e0a000;background:#3a2e00;color:#ffcf66;padding:12px 14px;border-radius:8px;font-size:12px;line-height:1.6;margin:10px 0';
+    const strong = document.createElement('div');
+    strong.style.cssText = 'font-weight:700;margin-bottom:6px';
+    strong.textContent = field.label;
+    div.appendChild(strong);
+    if (field.description) {
+      const body = document.createElement('div');
+      body.textContent = field.description;
+      div.appendChild(body);
+    }
+    return div;
+  }
+
+  // Dynamic ratio display for watchdogRemoteMs / heartbeatMs
+  if (field.key === '__acp_ratio_display__') {
+    const div = document.createElement('div');
+    div.className = 'field';
+    div.style.cssText = 'padding:4px 0;font-size:13px';
+    const update = () => {
+      const to = state.config?.acp?.timeouts || {};
+      const hb = to.heartbeatMs || 30000;
+      const wd = to.watchdogRemoteMs || 90000;
+      const ratio = (wd / hb).toFixed(1);
+      const ok = wd >= hb * 3;
+      div.innerHTML = '<label style="font-weight:600;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:0.5px">Ratio (watchdog / heartbeat)</label>'
+        + '<div style="margin-top:4px;' + (ok ? 'color:#4caf50' : 'color:#ffcf66') + '">'
+        + (ok ? '✓' : '⚠') + ' ' + ratio + '×' + (ok ? ' (≥ 3✓)' : ' (< 3 — watchdog too tight for heartbeat)')
+        + '</div>';
+    };
+    update();
+    return div;
+  }
+
   const div = document.createElement('div');
   div.className = 'field';
 

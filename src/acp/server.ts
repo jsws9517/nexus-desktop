@@ -1,6 +1,7 @@
 import { createInterface } from 'readline';
 import { randomBytes } from 'crypto';
 import { Agent } from '../agent.js';
+import { getTurnDeadlineMs, getHeartbeatIntervalMs } from '../llm/timeout-config.js';
 
 interface JsonRpcRequest {
   jsonrpc: string;
@@ -35,6 +36,19 @@ export class AcpServer {
 
   async start(): Promise<void> {
     this.alive = true;
+
+    // Resilience: a single stalled/aborted turn (e.g. a flaky upstream model
+    // whose stream goes half-dead and is killed by the watchdog) must NEVER
+    // take down the whole agent process. The SDK may emit an asynchronous
+    // rejection on abort that is not awaited by the chat path; without these
+    // handlers such a rejection would crash the process and cc-connect would
+    // see "acp: process exited" and stop serving the session. Log and survive.
+    process.on('uncaughtException', (err) => {
+      process.stderr.write(`[acp] uncaughtException (kept alive): ${err?.stack || err}\n`);
+    });
+    process.on('unhandledRejection', (reason) => {
+      process.stderr.write(`[acp] unhandledRejection (kept alive): ${reason instanceof Error ? reason.stack : String(reason)}\n`);
+    });
 
     this.rl.on('line', (line) => {
       if (!this.alive) return;
@@ -354,32 +368,59 @@ export class AcpServer {
     };
     this.agent.suppressToolOutput = true;
 
-    try {
-      await this.agent.chat(userInput);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      responseText = `Error: ${errMsg}`;
+    // Hard cap: if agent.chat() doesn't resolve within the turn deadline,
+    // some LLM endpoints (especially local / free proxy aggregators) can
+    // stall so deeply that the ACP transport itself becomes unresponsive
+    // and the process can't cleanly recover (background promises pile up,
+    // unhandled rejections corrupt state). In that case the safest
+    // recovery is to terminate this process so cc-connect restarts a fresh
+    // one. The user already received the timeout note via watchdog+done.
+    const turnDeadlineMs = getTurnDeadlineMs();
+    const heartbeatMs = getHeartbeatIntervalMs();
+    const heartbeatTimer = setInterval(() => {
       this.sendNotification('session/update', {
         sessionId,
-        update: {
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: responseText },
-        },
+        update: { sessionUpdate: 'heartbeat' },
       });
+    }, heartbeatMs);
+
+    let timeoutExpired = false;
+    try {
+      await Promise.race([
+        this.agent.chat(userInput),
+        new Promise((_, reject) =>
+          setTimeout(() => { timeoutExpired = true; reject(new Error('Turn deadline exceeded')); }, turnDeadlineMs),
+        ),
+      ]);
+    } catch (err) {
+      if (!responseText) {
+        responseText = '[no response: the model stream was interrupted (timed out). Try a different model or provider]';
+      }
     } finally {
+      clearInterval(heartbeatTimer);
+      if (timeoutExpired) {
+        // The LLM stream could not be recovered. The agent state (busy locks,
+        // pending promises) is now unreliable. Exit cleanly so cc-connect
+        // spawns a fresh instance for the next message.
+        this.sendNotification('session/update', {
+          sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: responseText }, done: true },
+        });
+        this.agent.onOutput = undefined;
+        this.agent.onEvent = undefined;
+        this.agent.suppressToolOutput = false;
+        this.agent.abort();
+        setImmediate(() => process.exit(0));
+        return { content: responseText };
+      }
       this.agent.onOutput = undefined;
       this.agent.onEvent = undefined;
       this.agent.suppressToolOutput = false;
     }
 
-    // Send done update
     this.sendNotification('session/update', {
       sessionId,
-      update: {
-        sessionUpdate: 'agent_message_chunk',
-        content: { type: 'text', text: '' },
-        done: true,
-      },
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' }, done: true },
     });
 
     return { content: responseText };

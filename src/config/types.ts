@@ -29,11 +29,22 @@ export const AcpAgentSchema = z.object({
   })).optional(),
 });
 
+export const AcpTimeoutConfigSchema = z.object({
+  /** Per-chunk idle timeout (ms) for LLM streams; a stalled stream is aborted. */
+  chunkIdleMs: z.number().int().positive().optional(),
+  /** Turn deadline timeout (ms) for remote/ACP channels (process exits on expiry). */
+  watchdogRemoteMs: z.number().int().positive().optional(),
+  /** Heartbeat interval (ms) — periodic session/update ping so the transport
+   *  (cc-connect) knows the agent is alive during long-running tasks. */
+  heartbeatMs: z.number().int().positive().optional(),
+});
+
 export const AcpConfigSchema = z.object({
   enabled: z.boolean().optional(),
   port: z.number().optional(),
   agents: z.array(AcpAgentSchema).optional(),
   skillsPath: z.string().optional(),
+  timeouts: AcpTimeoutConfigSchema.optional(),
 });
 
 export const VisionProviderConfigSchema = z.object({
