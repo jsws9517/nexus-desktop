@@ -1,6 +1,7 @@
 import { join, extname } from 'path';
 import { homedir } from 'os';
 import { mkdirSync, readdirSync, unlinkSync, writeFileSync, existsSync, copyFileSync, statSync, rmdirSync } from 'fs';
+import { execSync } from 'child_process';
 import { TaskGraph, TaskNode, SubAgentRole, GraphMode } from './types.js';
 import { SubAgentWorker } from './sub-agent-worker.js';
 import { runQualityGate } from './task-tools.js';
@@ -163,8 +164,9 @@ export class DAGScheduler {
       // Extract a short summary from the root request for the commit message
       const summary = rootRequest
         .replace(/@[^\s]+/g, '').trim()
+        .replace(/[^a-zA-Z0-9 \u4e00-\u9fff_-]/g, '')
         .slice(0, 72);
-      const msg = `feat(agent): auto-snapshot before task "${summary}"\n\n[nexus task snapshot — rollback with: git reset --hard HEAD@{1}]`;
+      const msg = `feat(agent): auto-snapshot before task "${summary}"\n\n[nexus task snapshot - rollback with: git reset --hard HEAD at 1]`;
 
       execSync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, { cwd, stdio: 'pipe', encoding: 'utf-8' });
       console.log(`[snapshot] Created rollback commit for "${summary.slice(0, 50)}"`);

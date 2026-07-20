@@ -19,6 +19,9 @@ export const DANGEROUS_COMMANDS = new Set([
 export const INTERPRETERS = new Set([
   'bash', 'sh', 'zsh', 'fish', 'cmd', 'powershell', 'pwsh', 'cmd.exe', 'powershell.exe',
   'python', 'python3', 'python2', 'node', 'nodejs', 'perl', 'ruby', 'php', 'lua', 'tclsh',
+  // Windows PE variants (chcp/icacls normalize to lowercase in extractAllCommands)
+  'python.exe', 'python3.exe', 'python2.exe', 'node.exe', 'nodejs.exe',
+  'perl.exe', 'ruby.exe', 'php.exe', 'lua.exe',
 ]);
 
 // Network exfiltration / remote-code primitives. Blocked outright — they have

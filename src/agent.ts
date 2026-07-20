@@ -676,14 +676,14 @@ export class Agent {
     // locally and never forwards them) and NOT already handled by the ACP server
     // (/model, /models, /provider, /providers). Everything here is read-only/safe.
     const allowed = new Set([
-      'session', 'insight', 'view', 'tools', 'mcp', 'plugins', 'theme',
+      'session', 'insight', 'view', 'tools', 'mcp', 'plugins', 'theme', 'new',
     ]);
 
     if (!allowed.has(lc)) {
       emit(this.t.warning(`Command "/${cmd}" is not available over a remote channel. ` +
         `cc-connect handles /model, /provider, /help, /memory, /skills, /theme locally; ` +
         `the ACP server handles /models and /providers. ` +
-        `Available here: /session /view /tools /mcp /plugins /theme`));
+        `Available here: /session /view /tools /mcp /plugins /theme /new`));
       return true;
     }
 
@@ -745,6 +745,23 @@ export class Agent {
           if (plugins.length === 0) { emit(this.t.textDim('No plugins loaded.')); return true; }
           emit(this.t.heading(`Plugins (${plugins.length}):`));
           for (const s of plugins) emit(`  ${s.name} v${s.version}${s.description ? ' - ' + s.description : ''}`);
+          return true;
+        }
+
+        case 'new': {
+          const msgs = this.context.getMessages();
+          if (msgs.length >= 4) {
+            emit(this.t.textDim('Compressing history before new session...'));
+            try {
+              await this.context.compress();
+              const after = this.context.getMessages();
+              emit(this.t.success(`Compressed ${msgs.length} -> ${after.length} messages.`));
+            } catch (err) {
+              emit(this.t.warning('Compression failed, starting new session anyway.'));
+            }
+          }
+          const id = await this.startSession();
+          emit(this.t.success(`New session started: ${id}`));
           return true;
         }
 
@@ -1241,10 +1258,17 @@ export class Agent {
     }
   }
 
+  private acpToolsCache: ToolDefinition[] | null = null;
+  private acpToolsCachedAgents: unknown[] | null = null;
+
   getAcpTools(): ToolDefinition[] {
     const acpCfg = this.config.getAcpConfig();
+    const agents = acpCfg?.agents;
+    if (this.acpToolsCache && this.acpToolsCachedAgents === agents) {
+      return this.acpToolsCache;
+    }
     const tools: ToolDefinition[] = [];
-    for (const agent of acpCfg?.agents || []) {
+    for (const agent of agents || []) {
       if (agent.tools) {
         for (const t of agent.tools) {
           tools.push({
@@ -1255,7 +1279,14 @@ export class Agent {
         }
       }
     }
+    this.acpToolsCache = tools;
+    this.acpToolsCachedAgents = agents ?? null;
     return tools;
+  }
+
+  invalidateAcpToolsCache(): void {
+    this.acpToolsCache = null;
+    this.acpToolsCachedAgents = null;
   }
 
   async executeTool(call: ToolCall): Promise<ToolResult> {
@@ -1307,42 +1338,40 @@ export class Agent {
       return mcpResult;
     }
 
-    // 3. Forward to configured ACP agents
+    // 3. Forward to configured ACP agents in parallel, return first success
     const acpCfg = this.config.getAcpConfig();
-    if (!acpCfg?.agents || acpCfg.agents.length === 0) {
-      throw new Error(`Tool '${call.name}' not found locally and no ACP agents configured`);
+    const agents = acpCfg?.agents?.filter((agent) => {
+      const hasTool = agent.tools?.some((t) => t.name === call.name);
+      const hasCapability = agent.capabilities.some((c) => c === '*' || call.name === c || call.name.split('_').includes(c));
+      return hasTool || hasCapability;
+    });
+
+    if (!agents || agents.length === 0) {
+      throw new Error(`Tool '${call.name}' not found locally and no ACP agent provides it`);
     }
 
-    const errors: string[] = [];
-    for (const agent of acpCfg.agents) {
-      // Check if this agent provides the requested tool
-      const hasTool = agent.tools?.some((t) => t.name === call.name);
-      const hasCapability = agent.capabilities.includes(call.name) || agent.capabilities.includes('*');
+    for (const agent of agents) {
+      this.acp.registerAgent(agent);
+    }
 
-      if (!hasTool && !hasCapability) continue;
-
-      try {
-        this.acp.registerAgent(agent);
-        const msg = await this.acp.sendTask(
-          agent.id,
-            { tool: call.name, args: safeArgs },
-          'nexus',
-        );
-        return {
+    const promises = agents.map((agent) =>
+      this.acp.sendTask(agent.id, { tool: call.name, args: safeArgs }, 'nexus')
+        .then((msg) => ({
           content: typeof msg.payload === 'string'
             ? msg.payload
             : JSON.stringify(msg.payload, null, 2),
-        };
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        errors.push(`${agent.name}: ${errMsg}`);
-      }
-    }
+        })),
+    );
 
-    const errorDetail = errors.length > 0
-      ? `ACP forwarding failed:\n${errors.map((e) => '  - ' + e).join('\n')}`
-      : 'No ACP agent provides this tool';
-    throw new Error(`Tool '${call.name}' not found. ${errorDetail}`);
+    try {
+      return await Promise.any(promises);
+    } catch {
+      const results = await Promise.allSettled(promises);
+      const errors = results
+        .map((r, i) => r.status === 'rejected' ? `${agents[i]!.name}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}` : null)
+        .filter((e): e is string => e !== null);
+      throw new Error(`Tool '${call.name}' not found. All ACP agents failed:\n${errors.map((e) => '  - ' + e).join('\n')}`);
+    }
   }
 
    getCurrentSessionId(): string | undefined {

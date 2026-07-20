@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { authorizePath } from '../security/path-authorizer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -139,6 +140,11 @@ let requestId = 0;
 export async function analyzeLocal(imagePath: string, question?: string): Promise<string> {
   const absPath = resolve(process.cwd(), imagePath);
   if (!existsSync(absPath)) throw new Error(`Image not found: ${imagePath}`);
+
+  const authorized = await authorizePath(absPath);
+  if (!authorized) {
+    throw new Error(`Access denied: "${imagePath}" is not in the allowed path list and access was rejected by user.`);
+  }
 
   const imageData = readFileSync(absPath);
   const imageB64 = imageData.toString('base64');

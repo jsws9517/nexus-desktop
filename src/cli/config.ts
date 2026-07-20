@@ -451,7 +451,7 @@ export function registerConfigCommand(program: Command): void {
     .command('add-agent <name>')
     .description('Add an ACP agent')
     .requiredOption('-e, --endpoint <url>', 'Agent endpoint URL')
-    .requiredOption('-c, --capabilities <list>', 'Comma-separated capabilities (e.g., chat,code,mcp)')
+    .requiredOption('-c, --capabilities <list>', 'Comma-separated capabilities (e.g., chat,code,mcp; use "*" to match all tools)')
     .action((name: string, options: { endpoint: string; capabilities: string }) => {
       const config = new ConfigManager();
       const cfg = config.get();

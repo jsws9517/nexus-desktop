@@ -56,6 +56,22 @@ function getOrCreateStorageKey(): Buffer {
   // Store the encryption key with owner-only read/write permissions so other
   // local users/processes cannot read it and decrypt persisted API keys.
   writeFileSync(STORAGE_KEY_PATH, key.toString('hex'), { mode: 0o600 });
+  // On Windows, chmod/mode 0o600 is silently ignored. Apply ACL via icacls so
+  // only the current user can read the storage key.
+  if (process.platform === 'win32') {
+    try {
+      const { execSync } = require('child_process');
+      const user = process.env.USERNAME || process.env.USER || '';
+      if (user) {
+        execSync(
+          `icacls "${STORAGE_KEY_PATH}" /inheritance:r /grant "${user}:(R,W)" /grant "SYSTEM:(R,W)"`,
+          { stdio: 'ignore', timeout: 5000 },
+        );
+      }
+    } catch {
+      // ACL hardening is best-effort on Windows; failure does not block startup.
+    }
+  }
   return key;
 }
 

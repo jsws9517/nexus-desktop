@@ -520,12 +520,13 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         }
       }
       try {
-        const actualCmd = process.platform === 'win32' ? `chcp 65001 >NUL && ${translateCommand(command)}` : command;
+        const actualCmd = process.platform === 'win32' ? translateCommand(command) : command;
         const { stdout, stderr } = await execAsync(actualCmd, {
           encoding: 'utf-8',
           timeout,
           maxBuffer: 10 * 1024 * 1024,
           cwd: effectiveCwd,
+          shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
         });
         const output = stdout + (stderr ? '\n' + stderr : '');
         return { content: output };
@@ -660,7 +661,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args, ctx): Promise<ToolResult> {
       const { validateSkill, findSkillDir } = await import('../skills/manager.js');
-      const { preAuthorizeRoot } = await import('../security/path-authorizer.js');
+      const { preAuthorizeRoot, clearScope } = await import('../security/path-authorizer.js');
       const skillPath = String(args.path || '');
       const extra = String(args.instructions || '');
 
@@ -697,7 +698,8 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
           isError: true,
         };
       }
-      preAuthorizeRoot(absDir);
+      const fixScope = `skill-fix-${Date.now()}`;
+      preAuthorizeRoot(absDir, fixScope);
 
       const issueSummary = report.issues.map((i) =>
         `  [${i.severity}] ${i.message}${i.fix ? ` (fix: ${i.fix})` : ''}`
@@ -735,6 +737,8 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         return { content: result.output };
       } catch (err) {
         return { content: `Skill fix failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      } finally {
+        clearScope(fixScope);
       }
     },
   },

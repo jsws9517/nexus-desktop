@@ -143,12 +143,19 @@ function sanitizeConfigForDisplay(cfg: Record<string, unknown>): Record<string, 
 // attacks) from reading or writing API keys and MCP config.
 const API_TOKEN = randomBytes(24).toString('hex');
 
+const COMMON_SECURITY_HEADERS: Record<string, string> = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+};
+
 function jsonResponse(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': LOCAL_ORIGIN || 'null',
-    'X-Content-Type-Options': 'nosniff',
     'Cache-Control': 'no-store',
+    ...COMMON_SECURITY_HEADERS,
   });
   res.end(JSON.stringify(data));
 }
@@ -158,6 +165,7 @@ function unauthorized(res: ServerResponse): void {
     'Content-Type': 'application/json',
     'WWW-Authenticate': 'Bearer',
     'Access-Control-Allow-Origin': LOCAL_ORIGIN || 'null',
+    ...COMMON_SECURITY_HEADERS,
   });
   res.end(JSON.stringify({ error: 'Unauthorized' }));
 }
@@ -242,17 +250,13 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
   if (url === '/api/config/provider' && method === 'POST') {
     readBody(req).then((body) => {
       try {
-        const { name, ...providerConfig } = JSON.parse(body) as Record<string, unknown>;
-        const raw = providerConfig as { type: string; apiKey: string; model: string; baseUrl?: string };
-        config.setProvider(String(name), {
-          type: raw.type as 'anthropic' | 'openai' | 'custom',
-          apiKey: raw.apiKey,
-          model: raw.model,
-          baseUrl: raw.baseUrl,
-        });
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        const { name, ...providerConfig } = parsed;
+        const validated = ProviderConfigSchema.parse(providerConfig);
+        config.setProvider(String(name), validated);
         jsonResponse(res, { ok: true });
       } catch (err) {
-        jsonResponse(res, { error: String(err) }, 400);
+        jsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 400);
       }
     });
     return;
@@ -272,12 +276,13 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
   if (url === '/api/config/vision-provider' && method === 'POST') {
     readBody(req).then((body) => {
       try {
-        const { name, ...vpConfig } = JSON.parse(body) as Record<string, unknown>;
-        const vp = vpConfig as { apiKey: string; baseUrl: string; model: string };
-        config.setVisionProvider(String(name), vp);
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        const { name, ...vpConfig } = parsed;
+        const validated = VisionProviderConfigSchema.parse(vpConfig);
+        config.setVisionProvider(String(name), validated);
         jsonResponse(res, { ok: true });
       } catch (err) {
-        jsonResponse(res, { error: String(err) }, 400);
+        jsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 400);
       }
     });
     return;
@@ -293,12 +298,13 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
   if (url === '/api/config/mcp-server' && method === 'POST') {
     readBody(req).then((body) => {
       try {
-        const { name, ...srvConfig } = JSON.parse(body) as Record<string, unknown>;
-        const srv = srvConfig as { command: string; args?: string[]; autoStart?: boolean };
-        config.addMcpServer(String(name), srv);
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        const { name, ...srvConfig } = parsed;
+        const validated = ServerConfigSchema.parse(srvConfig);
+        config.addMcpServer(String(name), validated);
         jsonResponse(res, { ok: true });
       } catch (err) {
-        jsonResponse(res, { error: String(err) }, 400);
+        jsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 400);
       }
     });
     return;
@@ -874,8 +880,9 @@ export function startWebUi(port = 3457): Promise<{ port: number; close: () => Pr
       if (url === '/' || url === '/index.html') {
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
-          'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'no-store',
+          ...COMMON_SECURITY_HEADERS,
+          'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'",
         });
         res.end(buildSpaHtml(API_TOKEN));
         return;
@@ -898,7 +905,12 @@ export function startWebUi(port = 3457): Promise<{ port: number; close: () => Pr
         const addr = server.address();
         const port = typeof addr === 'object' && addr ? addr.port : p;
         LOCAL_ORIGIN = `http://localhost:${port}`;
-        process.stderr.write(`\n  ◆ Config Web UI: http://localhost:${port}\n  ◆ Access token: ${API_TOKEN}\n  Press Ctrl+C to stop\n\n`);
+        const isTty = process.stderr.isTTY;
+        process.stderr.write(`\n  ◆ Config Web UI: http://localhost:${port}\n`);
+        if (isTty) {
+          process.stderr.write(`  ◆ Access token: ${API_TOKEN}\n`);
+        }
+        process.stderr.write(`  Press Ctrl+C to stop\n\n`);
         resolve({
           port,
           close: () => new Promise((r) => server.close(() => r())),

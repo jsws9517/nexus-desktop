@@ -75,15 +75,32 @@ export class ClientManager {
   /** Parent Agent, set by Agent.init() for tools that need agent context. */
   agent?: import('../agent.js').Agent;
 
+  /** Environment variable names that are never safe to pass to a subprocess. */
+  private static BLOCKED_ENV_KEYS = new Set([
+    'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'LD_DEBUG',
+    'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+    'PATH', 'BASH_ENV', 'ENV', 'PROMPT_COMMAND', 'PERL5LIB',
+    'PYTHONPATH', 'PYTHONSTARTUP', 'RUBYOPT', 'RUBYLIB',
+  ]);
+
   async connectServer(name: string, config: ServerConfig): Promise<void> {
     const client = new Client(
       { name: `llm-agent-client-${name}`, version: '1.0.0' },
       { capabilities: {} }
     );
+    // Strip dangerous environment variables before passing to subprocess
+    const safeEnv: Record<string, string> = {};
+    if (config.env) {
+      for (const [k, v] of Object.entries(config.env)) {
+        if (!ClientManager.BLOCKED_ENV_KEYS.has(k.toUpperCase())) {
+          safeEnv[k] = v as string;
+        }
+      }
+    }
     const transport = new StdioClientTransport({
       command: config.command,
       args: config.args || [],
-      env: config.env as Record<string, string>,
+      env: safeEnv,
       stderr: 'pipe',
     });
 

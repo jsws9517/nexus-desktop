@@ -36,9 +36,12 @@ export class AcpServer {
   private alive = false;
   private pendingRequests = new Map<string, PendingRequest>();
   private nextReqId = 1;
+  private authenticated = false;
+  private authToken: string | null = null;
 
   constructor(agent: Agent) {
     this.agent = agent;
+    this.authToken = process.env.NEXUS_ACP_AUTH_TOKEN || null;
     this.rl = createInterface({ input: process.stdin });
 
     // Wire up ACP permission request handler
@@ -123,6 +126,15 @@ export class AcpServer {
 
     const req = msg as unknown as JsonRpcRequest;
 
+    // Optional auth check: if NEXUS_ACP_AUTH_TOKEN is set, all methods except
+    // initialize and authenticate require a matching authToken in params.
+    if (this.authToken && !this.authenticated && req.method !== 'initialize' && req.method !== 'authenticate') {
+      if (req.id !== undefined && req.id !== null) {
+        this.sendError(req.id, -32001, 'Authentication required. Call "authenticate" with the correct authToken first.');
+      }
+      return;
+    }
+
     try {
       const result = await this.handleMethod(req.method, req.params);
       if (req.id !== undefined && req.id !== null) {
@@ -178,6 +190,9 @@ export class AcpServer {
     switch (method) {
       case 'initialize':
         return this.handleInitialize(params as Record<string, unknown>);
+
+      case 'authenticate':
+        return this.handleAuthenticate(params as Record<string, unknown>);
 
       case 'session/new':
         return this.handleSessionNew(params as Record<string, unknown>);
@@ -272,6 +287,18 @@ export class AcpServer {
 
   private handleProviderList(): unknown {
     return { providers: this.agent.config.listProviders() };
+  }
+
+  private handleAuthenticate(params: Record<string, unknown>): unknown {
+    if (!this.authToken) {
+      return { authenticated: true, message: 'auth not required' };
+    }
+    const token = String(params?.authToken || '');
+    if (token === this.authToken) {
+      this.authenticated = true;
+      return { authenticated: true };
+    }
+    throw new Error('Invalid auth token');
   }
 
   private handleInitialize(_params: Record<string, unknown>): unknown {
@@ -421,17 +448,39 @@ export class AcpServer {
       await this.agent.startSession('ACP Session', sessionId);
     }
 
-    // Set up output callback for streaming
+    // Set up output callback for streaming with chunk batching
     let responseText = '';
+    let chunkBuffer = '';
+    let chunkFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const FLUSH_DEBOUNCE_MS = 30;
+
+    const flushChunks = () => {
+      if (chunkFlushTimer) {
+        clearTimeout(chunkFlushTimer);
+        chunkFlushTimer = null;
+      }
+      if (chunkBuffer) {
+        const text = chunkBuffer;
+        chunkBuffer = '';
+        this.sendNotification('session/update', {
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text },
+          },
+        });
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (chunkFlushTimer) clearTimeout(chunkFlushTimer);
+      chunkFlushTimer = setTimeout(flushChunks, FLUSH_DEBOUNCE_MS);
+    };
+
     this.agent.onOutput = (text: string) => {
       responseText += text;
-      this.sendNotification('session/update', {
-        sessionId,
-        update: {
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text },
-        },
-      });
+      chunkBuffer += text;
+      scheduleFlush();
     };
     this.agent.onEvent = (event) => {
       this.sendNotification('session/event', {
@@ -484,9 +533,10 @@ export class AcpServer {
         // The LLM stream could not be recovered. The agent state (busy locks,
         // pending promises) is now unreliable. Exit cleanly so cc-connect
         // spawns a fresh instance for the next message.
+        flushChunks();
         this.sendNotification('session/update', {
           sessionId,
-          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: responseText }, done: true },
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' }, done: true },
         });
         this.agent.onOutput = undefined;
         this.agent.onEvent = undefined;
@@ -500,6 +550,7 @@ export class AcpServer {
       this.agent.suppressToolOutput = false;
     }
 
+    flushChunks();
     this.sendNotification('session/update', {
       sessionId,
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' }, done: true },
@@ -509,53 +560,12 @@ export class AcpServer {
   }
 
   private async handleToolCall(name: string, args: unknown): Promise<unknown> {
-    // 1. Try local execution first
-    try {
-      const result = await this.agent.executeTool({
-        id: `tool-${Date.now()}`,
-        name,
-        arguments: args as Record<string, unknown>,
-      });
-      return { content: result.content };
-    } catch {
-      // Local tool not found, try ACP forwarding
-    }
-
-    // 2. Forward to configured ACP agents
-    const acpCfg = this.agent.config.getAcpConfig();
-    if (!acpCfg?.agents || acpCfg.agents.length === 0) {
-      throw new Error(`Tool '${name}' not found locally and no ACP agents configured`);
-    }
-
-    const errors: string[] = [];
-    for (const agent of acpCfg.agents) {
-      const hasTool = agent.tools?.some((t) => t.name === name);
-      const hasCapability = agent.capabilities.includes(name) || agent.capabilities.includes('*');
-
-      if (!hasTool && !hasCapability) continue;
-
-      try {
-        this.agent.acp.registerAgent(agent);
-        const msg = await this.agent.acp.sendTask(
-          agent.id,
-          { tool: name, args },
-          'nexus',
-        );
-        return {
-          content: typeof msg.payload === 'string'
-            ? msg.payload
-            : JSON.stringify(msg.payload, null, 2),
-        };
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        errors.push(`${agent.name}: ${errMsg}`);
-      }
-    }
-
-    const errorDetail = errors.length > 0
-      ? `ACP forwarding failed: ${errors.join('; ')}`
-      : 'No ACP agent provides this tool';
-    throw new Error(`Tool '${name}' not found. ${errorDetail}`);
+    const result = await this.agent.executeTool({
+      id: `tool-${Date.now()}`,
+      name,
+      arguments: args as Record<string, unknown>,
+    });
+    return { content: result.content };
   }
 
   private sendResponse(id: number | string | null | undefined, result: unknown): void {

@@ -82,6 +82,22 @@ export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
   return skills;
 }
 
+/** Suspicious patterns in skill JS modules that suggest malicious intent. */
+const SKILL_JS_DANGEROUS_PATTERNS = [
+  /require\(['"](?:child_process|cluster|v8|vm|worker_threads|node:child_process)['"]\)/,
+  /process\.(?:binding|dlopen|kill|exit|abort)/,
+  /global\.(?:process|Buffer|require)/,
+  /eval\s*\(/,
+  /Function\s*\(/,
+  /new\s+Function\s*\(/,
+  /atob\s*\(.+decode/,
+  /(?:curl|wget|fetch)\s*\(.+\)\s*\.\s*pipe/,
+];
+
+function isDangerousSkillJs(content: string): boolean {
+  return SKILL_JS_DANGEROUS_PATTERNS.some((re) => re.test(content));
+}
+
 async function tryLoadJsSkill(dirPath: string, name: string, indexData?: { skills?: Array<{ name: string; path: string; metadata?: { version?: string; description?: string } }> }): Promise<Skill | undefined> {
   const candidates = ['index.js', 'index.mjs', 'skill.js', 'skill.mjs'];
   let modulePath: string | undefined;
@@ -93,6 +109,13 @@ async function tryLoadJsSkill(dirPath: string, name: string, indexData?: { skill
     }
   }
   if (!modulePath) return undefined;
+
+  // Pre-scan JS content for suspicious patterns before executing it
+  const source = readFileSync(modulePath, 'utf-8');
+  if (isDangerousSkillJs(source)) {
+    process.stderr.write(`[skills] Warning: "${name}" at ${modulePath} contains suspicious patterns and will not be loaded.\n`);
+    return undefined;
+  }
 
   // Try to load skill.json for metadata
   const skillJsonPath = join(dirPath, 'skill.json');

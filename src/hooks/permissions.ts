@@ -228,6 +228,14 @@ const HIGH_RISK_MCP_PATTERNS: RegExp[] = [
   /^shutdown/i,
   /^format/i,
   /^purge/i,
+  /^spawn/i,
+  /^eval/i,
+  /^upload/i,
+  /^modify/i,
+  /^create/i,
+  /^write/i,
+  /^invoke/i,
+  /^destroy/i,
 ];
 
 function isHighRiskMcpTool(toolName: string): boolean {
