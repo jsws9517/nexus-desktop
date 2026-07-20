@@ -403,6 +403,41 @@ set CLOUDINARY_API_SECRET=your_secret
 
 Images are automatically cleaned up from Cloudinary after analysis.
 
+## ACP Protocol
+
+Nexus implements the **Agent-to-Agent Communication Protocol (ACP)** — a JSON-RPC 2.0 transport over stdin/stdout. It is used by cc-connect (a relay bridge for Feishu, WeChat, Telegram, etc.) to forward user messages to the agent and stream responses back.
+
+### ACP Timeouts
+
+Long-running tasks (MCP tool calls, slow model responses) can stall the transport. Three configurable parameters protect session liveness:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `chunkIdleMs` | 60000 | Per-chunk stall guard — aborts the LLM stream if no chunk arrives within this window |
+| `watchdogRemoteMs` | 90000 | Turn deadline — process exits if the entire turn exceeds this time (nuclear fallback) |
+| `heartbeatMs` | 30000 | Alive-ping interval — sends a `session/update { heartbeat }` notification to cc-connect so the transport knows the agent is still working during long tool calls |
+
+**Keep `watchdogRemoteMs ≥ 3× heartbeatMs`** so the deadline allows multiple heartbeats before firing.
+
+```bash
+# List current values (with source: config / env / default)
+nexus config acp timeout list
+
+# Set a custom value
+nexus config acp timeout set heartbeatMs 10000
+nexus config acp timeout set watchdogRemoteMs 60000
+
+# Reset to default
+nexus config acp timeout reset chunkIdleMs
+
+# Env overrides (highest priority):
+#   NEXUS_CHUNK_IDLE_TIMEOUT_MS
+#   NEXUS_WATCHDOG_REMOTE_MS
+#   NEXUS_HEARTBEAT_INTERVAL_MS
+```
+
+The ACP server emits a **heartbeat** every `heartbeatMs` during a turn. If cc-connect receives no data at all within its own connection timeout, it drops the session; the heartbeat fills that gap. If the turn stalls past `watchdogRemoteMs`, the agent process exits cleanly and cc-connect spawns a fresh instance for the next message.
+
 ## License
 
 ISC

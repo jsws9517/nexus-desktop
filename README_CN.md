@@ -399,6 +399,41 @@ set CLOUDINARY_API_SECRET=your_secret
 
 图片在分析后自动从 Cloudinary 清理。
 
+## ACP 协议
+
+Nexus 实现了 **智能体间通信协议（ACP）**——一种基于 stdin/stdout 的 JSON-RPC 2.0 传输协议。cc-connect（飞书、微信、Telegram 等平台的中继桥接器）使用该协议将用户消息转发给智能体，并流式返回响应。
+
+### ACP 超时设置
+
+长时间运行的任务（MCP 工具调用、缓慢的模型响应）可能导致传输通道卡死。三个可配置参数保障会话存活：
+
+| 参数 | 默认值 | 说明 |
+|-----------|---------|------|
+| `chunkIdleMs` | 60000 | 逐块空闲保护——若在此时间内无新数据块到达，则中止 LLM 流 |
+| `watchdogRemoteMs` | 90000 | 整轮超时——若整个轮次超过此时间，进程退出（核弹级兜底） |
+| `heartbeatMs` | 30000 | 心跳间隔——定期发送 `session/update { heartbeat }` 通知给 cc-connect，让传输层知道智能体在长时间工具调用期间仍在工作 |
+
+**建议保持 `watchdogRemoteMs ≥ 3× heartbeatMs`**，确保截止时间前能发出多次心跳。
+
+```bash
+# 查看当前值（含来源：config / env / default）
+nexus config acp timeout list
+
+# 设置自定义值
+nexus config acp timeout set heartbeatMs 10000
+nexus config acp timeout set watchdogRemoteMs 60000
+
+# 重置为默认值
+nexus config acp timeout reset chunkIdleMs
+
+# 环境变量覆盖（最高优先级）：
+#   NEXUS_CHUNK_IDLE_TIMEOUT_MS
+#   NEXUS_WATCHDOG_REMOTE_MS
+#   NEXUS_HEARTBEAT_INTERVAL_MS
+```
+
+ACP 服务器在每个轮次中每隔 `heartbeatMs` 发送一次**心跳**。如果 cc-connect 在其自身连接超时内未收到任何数据，它会断开会话；心跳正好填补这一空白。如果轮次卡住超过 `watchdogRemoteMs`，智能体进程将干净退出，cc-connect 会为下一条消息启动一个新实例。
+
 ## 许可证
 
 ISC
