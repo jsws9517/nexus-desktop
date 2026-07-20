@@ -131,7 +131,7 @@ interface ReasoningEntry {
   toolCalls: Array<{ name: string; resultSummary: string }>;
 }
 
-const _acpDebugEnabled = !!process.env.NEXUS_ACP_DEBUG;
+let _acpDebugEnabled = !!process.env.NEXUS_ACP_DEBUG;
 const _acpLog = (msg: string) => { if (_acpDebugEnabled) process.stderr.write(msg); };
 
 export interface TurnMetrics {
@@ -233,6 +233,7 @@ export class Agent {
     this.enableAcp = enableAcp;
     this.isAcpServer = isAcpServer;
     applyConfigTimeouts(this.config.getAcpTimeouts());
+    if (this.config.getAcpConfig()?.debug) _acpDebugEnabled = true;
     const providerConfig = this.config.getProvider();
     this.provider = createProvider(providerConfig.type, providerConfig.apiKey, providerConfig.model, providerConfig.baseUrl, providerConfig.options, this.config.getActiveProvider());
     this.mcp = new ClientManager();

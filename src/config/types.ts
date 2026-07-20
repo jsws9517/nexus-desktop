@@ -46,6 +46,7 @@ export const AcpConfigSchema = z.object({
   skillsPath: z.string().optional(),
   timeouts: AcpTimeoutConfigSchema.optional(),
   permissionMode: z.enum(['auto', 'prompt']).optional(),
+  debug: z.boolean().optional(),
 });
 
 export const VisionProviderConfigSchema = z.object({

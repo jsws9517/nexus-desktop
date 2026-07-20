@@ -84,6 +84,7 @@ function buildSchema(): SchemaCategory[] {
         { key: 'acp.port', label: 'Port', type: 'number' },
         { key: 'acp.skillsPath', label: 'Skills Path', type: 'string' },
         { key: 'acp.permissionMode', label: 'Permission Mode', type: 'select', enumValues: ['auto', 'prompt'], description: 'auto = auto-approve all tools; prompt = ask before each tool call' },
+        { key: 'acp.debug', label: 'Debug Logging', type: 'boolean', description: 'Show detailed ACP timing/tool debug info in stderr' },
         { key: 'acp.agents', label: 'Agents', type: 'object' },
         { key: '__acp_timeout_warning__', label: '⚠ Timeouts (CRITICAL)', type: 'string', description: 'Do NOT change these unless you understand all three. chunkIdleMs aborts a stalled LLM stream (too LOW cuts slow models mid-reply; too HIGH lets a stuck stream hang). watchdogRemoteMs caps a remote/ACP turn (too LOW kills long answers; too HIGH blocks the session longer). heartbeatMs sends periodic alive-ping to cc-connect during long tasks. Keep watchdogRemoteMs ≥ 3× heartbeatMs so the deadline allows multiple heartbeats. Defaults: 60000 / 90000 / 30000 ms. Env overrides: NEXUS_CHUNK_IDLE_TIMEOUT_MS / NEXUS_WATCHDOG_REMOTE_MS / NEXUS_HEARTBEAT_INTERVAL_MS.' },
         { key: 'acp.timeouts.chunkIdleMs', label: 'Chunk Idle Timeout (ms)', type: 'number', description: 'Per-chunk idle wait on the LLM stream. Default 60000.' },

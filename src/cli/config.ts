@@ -383,6 +383,7 @@ export function registerConfigCommand(program: Command): void {
         console.log(t.textDim('  No ACP agents configured'));
       }
       console.log(`  Permission mode: ${acpCfg.permissionMode || t.textDim('auto (default)')}`);
+      console.log(`  Debug:          ${acpCfg.debug ? t.success('on') : t.textDim('off (default)')}`);
       const to = config.getAcpTimeouts();
       console.log(t.heading('  Timeouts:'));
       console.log(`    chunkIdleMs:       ${to.chunkIdleMs ?? t.textDim('60000 (default)')}ms`);
@@ -428,6 +429,22 @@ export function registerConfigCommand(program: Command): void {
       acpConfig.permissionMode = mode;
       config.setAcpConfig(acpConfig);
       console.log(t.success(`ACP permission mode set to: ${mode}`));
+    });
+
+  acpCmd
+    .command('set-debug <on|off>')
+    .description('Toggle ACP debug logging (shows detailed timing/tool info)')
+    .action((val: string) => {
+      if (val !== 'on' && val !== 'off') {
+        console.log(t.error('Invalid value. Use "on" or "off".'));
+        return;
+      }
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpConfig = cfg.acp || {};
+      acpConfig.debug = val === 'on';
+      config.setAcpConfig(acpConfig);
+      console.log(t.success(`ACP debug logging: ${val === 'on' ? 'ON' : 'OFF'}`));
     });
 
   acpCmd
