@@ -44,6 +44,15 @@ const DEFAULT_CONFIG: Config = {
     safePaths: ['~/.nexus/tasks', '.'],
     mcpAllowlist: [],
   },
+  acp: {
+    enabled: false,
+    port: 3456,
+    permissionMode: 'auto',
+    timeouts: {
+      watchdogRemoteMs: 120000,
+      heartbeatMs: 15000,
+    },
+  },
 };
 
 export class ConfigManager {

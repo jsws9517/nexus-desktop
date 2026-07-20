@@ -556,7 +556,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         return { content: 'URL blocked: internal/private addresses are not allowed', isError: true };
       }
       try {
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
         if (!response.ok) {
           return { content: `HTTP ${response.status}: ${response.statusText}`, isError: true };
         }

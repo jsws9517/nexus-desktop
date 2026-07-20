@@ -86,6 +86,14 @@ export class OpenAIProvider implements LLMProvider {
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
+
+      // DeepSeek-style reasoning_content: yield as thinking chunk to keep
+      // the chunk idle timer alive during long thinking phases.
+      const rc = (delta && 'reasoning_content' in delta) ? (delta as Record<string, unknown>).reasoning_content : undefined;
+      if (typeof rc === 'string' && rc.length > 0) {
+        yield { type: 'thinking', thinking: rc };
+      }
+
       if (delta?.content) {
         // Flush any pending tool calls before yielding text
         for (const [, pt] of pendingTools) {
@@ -117,8 +125,8 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
 
-      // When a chunk has neither content nor tool_calls, flush pending tools
-      if (!delta?.content && !delta?.tool_calls) {
+      // When a chunk has neither content, reasoning_content, nor tool_calls, flush pending tools
+      if (!delta?.content && rc === undefined && !delta?.tool_calls) {
         for (const [, pt] of pendingTools) {
           const args = this.tryParseArgs(pt.argsBuffer);
           if (args !== undefined) {

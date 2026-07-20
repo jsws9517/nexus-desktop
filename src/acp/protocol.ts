@@ -227,6 +227,6 @@ export class AcpProtocol {
     }
 
     // Placeholder: stdio / MCP sampling transport not implemented
-    process.stderr.write(`[ACP] Deliver to ${agent.name}: ${message.type}\n`);
+    if (process.env.NEXUS_ACP_DEBUG) process.stderr.write(`[ACP] Deliver to ${agent.name}: ${message.type}\n`);
   }
 }

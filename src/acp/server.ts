@@ -22,16 +22,34 @@ interface AcpSession {
   mode?: string;
 }
 
+interface PendingRequest {
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class AcpServer {
   private agent: Agent;
   private sessions = new Map<string, AcpSession>();
   private currentSessionId?: string;
   private rl: ReturnType<typeof createInterface>;
   private alive = false;
+  private pendingRequests = new Map<string, PendingRequest>();
+  private nextReqId = 1;
 
   constructor(agent: Agent) {
     this.agent = agent;
     this.rl = createInterface({ input: process.stdin });
+
+    // Wire up ACP permission request handler
+    agent.onPermissionRequest = async (toolName: string, toolCallId: string, toolArgs: unknown) => {
+      try {
+        const result = await this.requestPermission(toolName, toolCallId, toolArgs);
+        return { verdict: result.allow ? 'allow' : 'deny' as const };
+      } catch {
+        return { verdict: 'deny' as const };
+      }
+    };
   }
 
   async start(): Promise<void> {
@@ -75,18 +93,35 @@ export class AcpServer {
     const trimmed = line.trim();
     if (!trimmed) return;
 
-    let req: JsonRpcRequest;
+    let msg: Record<string, unknown>;
     try {
-      req = JSON.parse(trimmed) as JsonRpcRequest;
+      msg = JSON.parse(trimmed) as Record<string, unknown>;
     } catch {
       this.sendError(null, -32700, 'Parse error');
       return;
     }
 
-    if (req.jsonrpc !== '2.0') {
-      this.sendError(req.id, -32600, 'Invalid Request');
+    if (msg.jsonrpc !== '2.0') {
+      this.sendError(msg.id as string | number | null | undefined, -32600, 'Invalid Request');
       return;
     }
+
+    // Check if this is a response to a pending server-initiated request
+    const msgId = msg.id !== undefined && msg.id !== null ? String(msg.id) : null;
+    if (msgId && this.pendingRequests.has(msgId)) {
+      const pending = this.pendingRequests.get(msgId)!;
+      clearTimeout(pending.timer);
+      this.pendingRequests.delete(msgId);
+      if (msg.error) {
+        const errObj = msg.error as { message?: string; code?: number };
+        pending.reject(new Error(errObj.message || `RPC error ${errObj.code}`));
+      } else {
+        pending.resolve(msg.result);
+      }
+      return;
+    }
+
+    const req = msg as unknown as JsonRpcRequest;
 
     try {
       const result = await this.handleMethod(req.method, req.params);
@@ -99,6 +134,44 @@ export class AcpServer {
         this.sendError(req.id, -32603, message);
       }
     }
+  }
+
+  /** Send a JSON-RPC request from server to client and wait for response */
+  private async sendServerRequest(method: string, params: unknown, timeoutMs = 30000): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const id = String(this.nextReqId++);
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`Server request "${method}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pendingRequests.set(id, { resolve, reject, timer });
+      const req = { jsonrpc: '2.0', id, method, params };
+      this.writeLine(JSON.stringify(req));
+    });
+  }
+
+  /** Send session/request_permission and wait for user decision */
+  async requestPermission(toolName: string, toolCallId: string, toolArgs: unknown): Promise<{ allow: boolean }> {
+    const sessionId = this.currentSessionId || '';
+    const params = {
+      sessionId,
+      toolCall: {
+        toolCallId,
+        title: toolName,
+        kind: toolName,
+        rawInput: toolArgs,
+      },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow' },
+        { optionId: 'deny', name: 'Deny', kind: 'deny' },
+      ],
+    };
+    const result = await this.sendServerRequest('session/request_permission', params, 120000) as Record<string, unknown>;
+    const outcome = result?.outcome as Record<string, unknown> | undefined;
+    if (outcome?.outcome === 'selected' && outcome?.optionId === 'allow') {
+      return { allow: true };
+    }
+    return { allow: false };
   }
 
   private async handleMethod(method: string, params: unknown): Promise<unknown> {
@@ -385,6 +458,7 @@ export class AcpServer {
     }, heartbeatMs);
 
     let timeoutExpired = false;
+    const chatStart = Date.now();
     try {
       await Promise.race([
         this.agent.chat(userInput),
@@ -392,7 +466,15 @@ export class AcpServer {
           setTimeout(() => { timeoutExpired = true; reject(new Error('Turn deadline exceeded')); }, turnDeadlineMs),
         ),
       ]);
+      process.stderr.write(`[ACP Timing] chatDone elapsed=${Date.now()-chatStart}ms\n`);
     } catch (err) {
+      const chatElapsed = Date.now() - chatStart;
+      if (timeoutExpired) {
+        process.stderr.write(`[ACP Timing] chatTimeout elapsed=${chatElapsed}ms\n`);
+      } else {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[ACP Timing] chatError elapsed=${chatElapsed}ms err=${errMsg.substring(0, 120)}\n`);
+      }
       if (!responseText) {
         responseText = '[no response: the model stream was interrupted (timed out). Try a different model or provider]';
       }

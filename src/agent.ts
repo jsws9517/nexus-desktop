@@ -131,6 +131,9 @@ interface ReasoningEntry {
   toolCalls: Array<{ name: string; resultSummary: string }>;
 }
 
+const _acpDebugEnabled = !!process.env.NEXUS_ACP_DEBUG;
+const _acpLog = (msg: string) => { if (_acpDebugEnabled) process.stderr.write(msg); };
+
 export interface TurnMetrics {
   turnNumber: number;
   llmCallTime: number;
@@ -161,6 +164,8 @@ export class Agent {
   onEvent?: (event: AgentEvent) => void;
   /** Suppress tool call console output (used in ACP server mode) */
   suppressToolOutput = false;
+  /** ACP permission request callback: await user permission before executing a tool */
+  onPermissionRequest?: (toolName: string, toolCallId: string, toolArgs: unknown) => Promise<{ verdict: 'allow' | 'deny' }>;
 
   /** User-defined hooks for lifecycle events */
   hooks?: Hooks;
@@ -199,6 +204,8 @@ export class Agent {
 
   /** Pending askUser question — resolved when user provides their next input */
   private pendingAsk: { question: string; resolve: (answer: string | null) => void } | null = null;
+  /** Pending ACP tool call awaiting permission approval (prompt mode) */
+  private pendingAcpToolCall: { toolName: string; args: Record<string, unknown> } | null = null;
 
   // Turn budget
   maxTurns = 25;
@@ -412,6 +419,23 @@ export class Agent {
       return;
     }
 
+    // ACP permission approval: user replied with "继续"/"y" to approve a pending tool call
+    if (this.isAcpServer && this.pendingAcpToolCall) {
+      const trimmed = userInput.trim().toLowerCase();
+      if (trimmed === '继续' || trimmed === 'y' || trimmed === 'yes' || trimmed === 'continue') {
+        const saved = this.pendingAcpToolCall;
+        this.pendingAcpToolCall = null;
+        const result = await this.executeTool({ id: `perm-${Date.now()}`, name: saved.toolName, arguments: saved.args });
+        const text = result.isError
+          ? `❌ 工具 "${saved.toolName}" 执行失败：${result.content}`
+          : `✅ 工具 "${saved.toolName}" 执行成功\n${result.content}`;
+        this.onOutput?.(text);
+        return;
+      }
+      // User denied; clear pending call and continue with normal flow
+      this.pendingAcpToolCall = null;
+    }
+
     // Slash commands are intercepted by the CLI layer before reaching here, so a
     // '/'-prefixed input arriving here means it came through a remote channel
     // (ACP / cc-connect / Feishu) AND was not intercepted by cc-connect's built-in
@@ -485,6 +509,23 @@ export class Agent {
       preToolUse: async (ctx) => {
         const check = await sanityCheck(ctx);
         if (check !== 'allow') return check;
+        // In ACP server mode, use configured permission mode
+        if (this.isAcpServer) {
+          const acpPermMode = this.config.getAcpConfig()?.permissionMode || 'auto';
+          if (acpPermMode === 'auto') return 'allow';
+          // prompt mode: use ACP protocol if available, else fallback to text
+          if (ctx.toolCall && this.onPermissionRequest) {
+            const result = await this.onPermissionRequest(ctx.toolCall.name, ctx.toolCall.id || '', ctx.toolCall.arguments || {});
+            if (result.verdict === 'allow') return 'allow';
+            return { verdict: 'deny', reason: 'User denied permission' };
+          }
+          if (ctx.toolCall) {
+            this.pendingAcpToolCall = { toolName: ctx.toolCall.name, args: ctx.toolCall.arguments || {} };
+            const question = `🔐 Permission needed for tool "${ctx.toolCall.name}", params: ${JSON.stringify(ctx.toolCall.arguments)}\nReply "continue" to allow, or anything else to deny`;
+            this.onOutput?.(`\n${question}\n`);
+          }
+          return { verdict: 'deny', reason: '🔐 Awaiting user permission - reply "continue" to allow' };
+        }
         // Enforce the built-in permission policy (dangerous commands, protected
         // paths, denied tools). This runs before any user-supplied hook.
         const permCfg = this.config.getPermissions();
@@ -809,6 +850,45 @@ export class Agent {
       ...getTaskToolDefinitions(),
     ];
 
+    // Filter tools based on user input keywords to reduce reasoning overhead.
+    // For reasoning models (DeepSeek-V4), 76 tools cause excessive thinking time.
+    // Strategy: extract (a) whitespace/punctuation-separated tokens for English,
+    // (b) explicit tool names (@name), and (c) Chinese bigrams for CJK text.
+    const inputText = this.currentUserInput || '';
+    const lowerInput = inputText.toLowerCase();
+    // 1. Whitespace/punctuation-separated tokens
+    const tokens = lowerInput.split(/[\s,，。.、!！?？:：;；()（）[\]【】]+/).filter(k => k.length >= 2);
+    // 2. Chinese bigrams (overlapping pairs of CJK characters)
+    const cjkBigrams: string[] = [];
+    for (let i = 0; i < inputText.length - 1; i++) {
+      const pair = inputText.slice(i, i + 2);
+      if (/[\u4e00-\u9fff]/.test(pair[0]!) && /[\u4e00-\u9fff]/.test(pair[1]!)) {
+        cjkBigrams.push(pair);
+      }
+    }
+    const keywords = [...new Set([...tokens, ...cjkBigrams])];
+    const essentialTools = new Set([
+      'file_read', 'read_text_file', 'read_multiple_files', 'list_directory', 'get_file_info', 'directory_tree',
+      'write_file', 'file_write', 'edit_file', 'file_edit', 'create_file', 'append_file',
+      'fetch_url', 'web_search', 'web_fetch',
+      'remember', 'recall', 'remember_project',
+      'decompose_task', 'query_tasks',
+    ]);
+    if (keywords.length > 0) {
+      tools = tools.filter((t) => {
+        if (essentialTools.has(t.name)) return true;
+        const text = `${t.name} ${t.description}`.toLowerCase();
+        return keywords.some((k) => text.includes(k.toLowerCase()));
+      });
+      // If filtering removed everything, restore essential + skills
+      if (tools.length === 0) {
+        tools = [
+          ...allTools.filter(t => !INTERNAL_TOOLS.has(t.name) && essentialTools.has(t.name)),
+          ...this.skills.getTools(),
+        ];
+      }
+    }
+
     // In plan mode, restrict to read-only + task tools
     if (this.planMode) {
       const allowedNames = new Set([
@@ -823,16 +903,6 @@ export class Agent {
     // Role-scoped allowlist (e.g. tester/committer sub-agents)
     if (this.toolAllowlist && this.toolAllowlist.size > 0) {
       tools = tools.filter((t) => this.toolAllowlist!.has(t.name));
-    }
-
-    // Debug: log tool count in ACP server mode
-    if (this.isAcpServer) {
-      process.stderr.write(`[ACP Debug] Tools: ${tools.length} total`);
-      const acpToolNames = this.getAcpTools().map((t) => t.name);
-      if (acpToolNames.length > 0) {
-        process.stderr.write(` | ACP: ${acpToolNames.join(', ')}`);
-      }
-      process.stderr.write('\n');
     }
 
     let assistantMessage = '';
@@ -851,11 +921,21 @@ export class Agent {
       await this.hooks.preLlmCall({ turn: this.currentTurn, signal, userInput: this.currentUserInput, toolDefinitions: tools });
     }
 
+    const llmStart = Date.now();
+    let firstChunkTime = 0;
+    if (this.isAcpServer) {
+      _acpLog(`[ACP Timing] llmStart=${llmStart} msgCount=${this.context.getMessages().length} tools=${tools.length}\n`);
+    }
     try {
-      const llmStart = Date.now();
       const stream = this.provider.chat(this.context.getMessages(), tools, signal);
 
       for await (const chunk of stream) {
+        if (firstChunkTime === 0) {
+          firstChunkTime = Date.now();
+          if (this.isAcpServer) {
+            _acpLog(`[ACP Timing] firstChunkAt=${firstChunkTime} delta=${firstChunkTime - llmStart}ms\n`);
+          }
+        }
         if (chunk.type === 'text' && chunk.text) {
           const clean = chunk.text.replace(/\uFFFD/g, '');
           assistantMessage += clean;
@@ -892,7 +972,13 @@ export class Agent {
         }
       }
       this.turnLlmTime = Date.now() - llmStart;
+      if (this.isAcpServer) {
+        _acpLog(`[ACP Timing] streamDone elapsed=${Date.now() - llmStart}ms tools=${tools.length}\n`);
+      }
     } catch (e) {
+      if (this.isAcpServer) {
+        _acpLog(`[ACP Timing] streamError elapsed=${Date.now() - llmStart}ms errType=${e instanceof IdleTimeoutError ? 'IdleTimeout' : signal.aborted ? 'Aborted' : 'Other'}\n`);
+      }
       if (signal.aborted) {
         // Watchdog aborted the turn (e.g. upstream model stream hung). Emit a
         // short, terminating note to the remote/ACP client so the user knows
@@ -954,6 +1040,10 @@ export class Agent {
     }
 
     // Execute ALL tool calls before re-running LLM
+    const toolExecStart = Date.now();
+    if (this.isAcpServer && pendingToolCalls.length > 0) {
+      _acpLog(`[ACP Timing] toolExec tool=${pendingToolCalls[0]!.name} hasApiBigModel=${!!process.env.API_BigModel}\n`);
+    }
     for (let tci = 0; tci < pendingToolCalls.length; tci++) {
       const toolCall = pendingToolCalls[tci]!;
       if (signal.aborted) return;
@@ -994,7 +1084,13 @@ export class Agent {
       let result: ToolResult;
       const toolStart = Date.now();
       try {
-        result = await this.executeTool(toolCall);
+        const TOOL_TIMEOUT_MS = 60000;
+        result = await Promise.race([
+          this.executeTool(toolCall),
+          new Promise<ToolResult>((_, reject) =>
+            setTimeout(() => reject(new Error(`Tool '${toolCall.name}' timed out after ${TOOL_TIMEOUT_MS / 1000}s`)), TOOL_TIMEOUT_MS),
+          ),
+        ]);
       } catch (err) {
         result = { content: `Error executing ${toolCall.name}: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
@@ -1035,6 +1131,10 @@ export class Agent {
       this.session.addMessage(this.currentSessionId!, toolMsg);
     }
 
+    if (this.isAcpServer && pendingToolCalls.length > 0) {
+      _acpLog(`[ACP Timing] toolDone elapsed=${Date.now() - toolExecStart}ms\n`);
+    }
+
     if (!showDetail && pendingToolCalls.length > 0 && !this.onOutput) {
       this.renderOut('.');
     }
@@ -1069,7 +1169,13 @@ export class Agent {
         }
         return;
       }
+      if (this.isAcpServer) {
+        _acpLog(`[ACP Timing] turn2Start after=${Date.now() - this.turnStartTime}ms\n`);
+      }
       await this.runLlmTurn(showDetail, signal);
+      if (this.isAcpServer) {
+        _acpLog(`[ACP Timing] turn2Done elapsed=${Date.now() - this.turnStartTime}ms\n`);
+      }
     }
   }
 

@@ -382,6 +382,7 @@ export function registerConfigCommand(program: Command): void {
       } else {
         console.log(t.textDim('  No ACP agents configured'));
       }
+      console.log(`  Permission mode: ${acpCfg.permissionMode || t.textDim('auto (default)')}`);
       const to = config.getAcpTimeouts();
       console.log(t.heading('  Timeouts:'));
       console.log(`    chunkIdleMs:       ${to.chunkIdleMs ?? t.textDim('60000 (default)')}ms`);
@@ -411,6 +412,22 @@ export function registerConfigCommand(program: Command): void {
       acpConfig.enabled = false;
       config.setAcpConfig(acpConfig);
       console.log(t.success('ACP mode disabled in configuration'));
+    });
+
+  acpCmd
+    .command('set-permission-mode <mode>')
+    .description('Set ACP permission mode (auto | prompt)')
+    .action((mode: string) => {
+      if (mode !== 'auto' && mode !== 'prompt') {
+        console.log(t.error('Invalid mode. Use "auto" or "prompt".'));
+        return;
+      }
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpConfig = cfg.acp || {};
+      acpConfig.permissionMode = mode;
+      config.setAcpConfig(acpConfig);
+      console.log(t.success(`ACP permission mode set to: ${mode}`));
     });
 
   acpCmd
@@ -776,17 +793,47 @@ export function registerConfigCommand(program: Command): void {
       }
     });
 
-  // Web UI
-  configCmd
-    .command('web')
-    .description('Start the config management web UI')
+  // Web UI (starts config management web UI, use config acp for ACP settings)
+  const webCmd = configCmd.command('web').description('Web UI (start) & web-related settings');
+
+  webCmd
+    .command('list')
+    .description('Show web server configuration')
+    .action(() => {
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpCfg = cfg.acp || {};
+      console.log(t.heading('Web Server Configuration:'));
+      console.log(`  ACP enabled:  ${acpCfg.enabled ? t.success('yes') : t.textDim('no')}`);
+      console.log(`  ACP port:     ${acpCfg.port || t.textDim('3456 (default)')}`);
+      console.log(`  Skills path:  ${acpCfg.skillsPath || t.textDim('not set')}`);
+    });
+
+  webCmd
+    .command('set <key> <value>')
+    .description('Set web setting (port)')
+    .action((key: string, value: string) => {
+      const config = new ConfigManager();
+      const cfg = config.get();
+      const acpCfg = cfg.acp || {};
+      if (key !== 'port') {
+        console.log(t.error(`Invalid key "${key}". Valid: port`));
+        return;
+      }
+      acpCfg.port = parseInt(value, 10);
+      config.setAcpConfig(acpCfg);
+      console.log(t.success(`ACP port set to: ${value}`));
+    });
+
+  webCmd
+    .command('start', { isDefault: true })
+    .description('Start the config management web UI (default: config web)')
     .option('-p, --port <port>', 'Port number', '3457')
     .action(async (options: { port: string }) => {
       const port = parseInt(options.port, 10) || 3457;
       console.log(t.textDim('Starting Config Web UI...'));
       const { startWebUi } = await import('../config/web.js');
       const server = await startWebUi(port);
-      // Keep running until Ctrl+C
       await new Promise(() => {});
     });
 
