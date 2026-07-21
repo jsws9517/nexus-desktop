@@ -1,7 +1,9 @@
 import { createInterface } from 'readline';
 import { randomBytes } from 'crypto';
+import { readFileSync } from 'fs';
 import { Agent } from '../agent.js';
 import { getTurnDeadlineMs, getHeartbeatIntervalMs } from '../llm/timeout-config.js';
+import type { FileOutput } from '../types.js';
 
 interface JsonRpcRequest {
   jsonrpc: string;
@@ -488,6 +490,54 @@ export class AcpServer {
         event,
       });
     };
+    this.agent.onFileOutput = async (file: FileOutput) => {
+      // Flush pending text chunks first
+      flushChunks();
+      try {
+        // Try uploading to Cloudinary for a public URL
+        let publicUrl: string | null = null;
+        try {
+          const { uploadImage } = await import('../vision/upload.js');
+          const result = await uploadImage(file.path);
+          publicUrl = result.url;
+        } catch {
+          // Cloudinary not configured or upload failed — fallback to file path
+        }
+
+        const fileRef = publicUrl
+          ? `![${file.name}](${publicUrl})`
+          : `\`${file.path}\``;
+
+        process.stderr.write(`[acp] file-push: ${file.name}${publicUrl ? '' : ' (no cloud)'}\n`);
+        this.sendNotification('session/update', {
+          sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: `\n\n📎 文件已生成: ${fileRef}\n\n`,
+            },
+          },
+        });
+
+        // Also try to push via cc-connect CLI for native file/image delivery
+        // cc-connect daemon must be running for this to work
+        try {
+          const { exec } = await import('child_process');
+          const isImage = file.mimeType?.startsWith('image/');
+          const flag = isImage ? '--image' : '--file';
+          exec(`npx cc-connect send -p nexus ${flag} "${file.path}"`, {
+            timeout: 30000,
+            windowsHide: true,
+          });
+          process.stderr.write(`[acp] cc-connect send dispatched for ${file.name}\n`);
+        } catch {
+          // cc-connect not running or not installed — non-critical, URL fallback works
+        }
+      } catch (err) {
+        process.stderr.write(`[acp] file-push error: ${file.path} ${err}\n`);
+      }
+    };
     this.agent.suppressToolOutput = true;
 
     // Typing indicator for Telegram / messengers: send every 5s during
@@ -563,6 +613,7 @@ export class AcpServer {
         });
         this.agent.onOutput = undefined;
         this.agent.onEvent = undefined;
+        this.agent.onFileOutput = undefined;
         this.agent.suppressToolOutput = false;
         this.agent.abort();
         setImmediate(() => process.exit(0));
@@ -570,6 +621,7 @@ export class AcpServer {
       }
       this.agent.onOutput = undefined;
       this.agent.onEvent = undefined;
+      this.agent.onFileOutput = undefined;
       this.agent.suppressToolOutput = false;
     }
 

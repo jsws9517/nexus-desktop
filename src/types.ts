@@ -39,6 +39,12 @@ export interface TurnUsage {
   outputTokens: number;
 }
 
+export interface FileOutput {
+  path: string;
+  mimeType: string;
+  name: string;
+}
+
 export type AgentEvent =
   | { type: 'session_start'; sessionId: string }
   | { type: 'turn_start'; turn: number }
@@ -47,6 +53,7 @@ export type AgentEvent =
   | { type: 'tool_call_start'; index: number; name: string; args: Record<string, unknown> }
   | { type: 'tool_call_end'; index: number; id: string; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; index: number; name: string; content: string; isError?: boolean }
+  | { type: 'file_ready'; path: string; mimeType: string; name: string }
   | { type: 'state_delta'; contextTokens: number; turn: number }
   | { type: 'turn_end'; stopReason: string; usage?: TurnUsage }
   | { type: 'session_end' };

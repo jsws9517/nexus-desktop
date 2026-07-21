@@ -29,6 +29,129 @@ import { ProjectContext } from './context/index.js';
 import { analyzeImage, isImageFile } from './vision/index.js';
 import { authorizePath } from './security/path-authorizer.js';
 import { sanitizeContent, neutralizeInstructions } from './utils/sanitize.js';
+import type { FileOutput } from './types.js';
+
+const MIME_MAP: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.bmp': 'image/bmp',
+  '.tiff': 'image/tiff',
+  '.tif': 'image/tiff',
+  '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.csv': 'text/csv',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.zip': 'application/zip',
+  '.tar': 'application/x-tar',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.mp4': 'video/mp4',
+  '.avi': 'video/x-msvideo',
+  '.mov': 'video/quicktime',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.ts': 'text/typescript',
+  '.py': 'text/x-python',
+  '.java': 'text/x-java',
+  '.c': 'text/x-c',
+  '.cpp': 'text/x-c++',
+  '.go': 'text/x-go',
+  '.rs': 'text/x-rust',
+  '.rb': 'text/x-ruby',
+  '.sh': 'text/x-shellscript',
+  '.yaml': 'text/yaml',
+  '.yml': 'text/yaml',
+  '.toml': 'text/plain',
+  '.ini': 'text/plain',
+  '.conf': 'text/plain',
+};
+
+function detectMimeType(filePath: string): string {
+  const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+  return MIME_MAP[ext] || 'application/octet-stream';
+}
+
+/** File extensions that are considered pushable output files */
+const PUSHABLE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tiff', '.tif', '.ico',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.mp3', '.wav', '.mp4', '.avi', '.mov',
+  '.zip', '.tar',
+  '.html', '.htm',
+  '.csv', '.json', '.txt', '.md',
+]);
+
+/**
+ * Detect file paths in tool result content that are pushable output files.
+ * Matches common patterns like:
+ *   - JSON: { "image_path": "/path/to/file.png" }
+ *   - "saved to /path/to/file.png"
+ *   - "output: C:\path\to\file.jpg"
+ *   - absolute paths with pushable extensions
+ */
+function detectFilesInToolResult(content: string, toolName: string): FileOutput[] {
+  const files: FileOutput[] = [];
+  const seen = new Set<string>();
+
+  function addFile(filePath: string) {
+    // Normalize path separators and collapse double backslashes (from regex on JSON string)
+    const normalized = filePath.replace(/\\\\/g, '\\').replace(/\//g, '\\');
+    if (!seen.has(normalized.toLowerCase())) {
+      if (existsSync(filePath) || existsSync(filePath.replace(/\\/g, '/'))) {
+        seen.add(normalized.toLowerCase());
+        files.push({
+          path: filePath,
+          mimeType: detectMimeType(filePath),
+          name: filePath.slice(Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1),
+        });
+      }
+    }
+  }
+
+  // 1. Try to parse as JSON and extract known path fields
+  try {
+    const obj = JSON.parse(content);
+    const pathFields = ['image_path', 'image_url', 'path', 'url', 'file_path', 'output_path',
+                        'filePath', 'outputPath', 'fileUrl', 'imageUrl', 'local_path', 'localPath'];
+    for (const field of pathFields) {
+      const val = obj[field];
+      if (typeof val === 'string') {
+        // Could be a local path or a file:// URL
+        const localPath = val.startsWith('file://') ? val.slice(7) : val;
+        if (/\.(png|jpe?g|gif|webp|svg|bmp|tiff?|ico|pdf|docx?|xlsx?|pptx?|csv|json|txt|md|html?|mp[34]|wav|avi|mov|zip|tar)$/i.test(localPath)) {
+          addFile(localPath);
+        }
+      }
+    }
+  } catch {
+    // Not JSON, fall through to regex matching
+  }
+
+  // 2. Regex: match file paths with pushable extensions in text
+  // Support both Unix and Windows paths, including Chinese characters
+  // NOTE: '.' is NOT in the path char class so extension matching works precisely
+  const pathRegex = /([A-Z]:[\\\/][\w\\\/\-\u4e00-\u9fa5]+|\/[\/\w\-\u4e00-\u9fa5]+)\.(png|jpe?g|gif|webp|svg|bmp|tiff?|ico|pdf|docx?|xlsx?|pptx?|csv|json|txt|md|html?|mp[34]|wav|avi|mov|zip|tar)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pathRegex.exec(content)) !== null) {
+    addFile(match[1] + '.' + match[2]);
+  }
+
+  return files;
+}
 
 /**
  * Strip the @-expansion suffix appended by expandAtMentions() from user input.
@@ -162,6 +285,8 @@ export class Agent {
   onOutput?: (text: string) => void;
   /** Agent event stream callback: receive structured events */
   onEvent?: (event: AgentEvent) => void;
+  /** ACP server callback: receive file output (image/document) for push to client */
+  onFileOutput?: (file: FileOutput) => void;
   /** Suppress tool call console output (used in ACP server mode) */
   suppressToolOutput = false;
   /** ACP permission request callback: await user permission before executing a tool */
@@ -1131,6 +1256,18 @@ export class Agent {
       // Emit tool_result event, but suppress intermediate errors in ACP/server mode
       if (!this.suppressToolOutput || !result.isError) {
         this.onEvent?.({ type: 'tool_result', index: tci, name: toolCall.name, content: result.content, isError: result.isError });
+      }
+
+      // Detect generated files in tool results and emit file_ready events for push
+      if (!result.isError && this.onFileOutput) {
+        const detectedFiles = detectFilesInToolResult(result.content, toolCall.name);
+        if (detectedFiles.length > 0) {
+          process.stderr.write(`[file-push] ${toolCall.name} → ${detectedFiles.length} file(s): ${detectedFiles.map(f => f.name).join(', ')}\n`);
+        }
+        for (const file of detectedFiles) {
+          this.onEvent?.({ type: 'file_ready', path: file.path, mimeType: file.mimeType, name: file.name });
+          this.onFileOutput(file);
+        }
       }
 
       // Track repeated tool failures to detect all-failed turns (break recursive loop)
