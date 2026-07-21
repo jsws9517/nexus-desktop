@@ -490,6 +490,28 @@ export class AcpServer {
     };
     this.agent.suppressToolOutput = true;
 
+    // Typing indicator for Telegram / messengers: send every 5s during
+    // processing so the bridge can call sendChatAction('typing') to show
+    // a "typing..." indicator while the model thinks or streams.
+    const TYPING_INTERVAL_MS = 5000;
+    const typingTimer = setInterval(() => {
+      this.sendNotification('session/update', {
+        sessionId,
+        update: { sessionUpdate: 'typing' },
+      });
+    }, TYPING_INTERVAL_MS);
+    // Also emit typing on thinking/tool-start events for immediate feedback.
+    const origOnEvent = this.agent.onEvent;
+    this.agent.onEvent = (event) => {
+      if (event.type === 'thinking' || event.type === 'turn_start' || event.type === 'tool_call_start') {
+        this.sendNotification('session/update', {
+          sessionId,
+          update: { sessionUpdate: 'typing' },
+        });
+      }
+      origOnEvent(event);
+    };
+
     // Hard cap: if agent.chat() doesn't resolve within the turn deadline,
     // some LLM endpoints (especially local / free proxy aggregators) can
     // stall so deeply that the ACP transport itself becomes unresponsive
@@ -529,6 +551,7 @@ export class AcpServer {
       }
     } finally {
       clearInterval(heartbeatTimer);
+      clearInterval(typingTimer);
       if (timeoutExpired) {
         // The LLM stream could not be recovered. The agent state (busy locks,
         // pending promises) is now unreliable. Exit cleanly so cc-connect
