@@ -438,6 +438,31 @@ nexus config acp timeout reset chunkIdleMs
 
 The ACP server emits a **heartbeat** every `heartbeatMs` during a turn. If cc-connect receives no data at all within its own connection timeout, it drops the session; the heartbeat fills that gap. If the turn stalls past `watchdogRemoteMs`, the agent process exits cleanly and cc-connect spawns a fresh instance for the next message.
 
+## Recent Changes (v1.1.6+)
+
+### Features
+
+- **cc-connect Native File Push**: Automatically detect generated files (images, PDFs, etc.) and push them natively to IM platforms (Telegram, Feishu, WeChat) via `cc-connect send --image` CLI, with Cloudinary URL fallback for text rendering
+- **ACP Typing Indicator**: Real-time typing indicator (`session/update { typing }`) sent every 5 seconds during LLM processing, enabling messenger bridges to show "typing..." status
+- **ACP Permission Protocol**: Tool permission requests (`session/request_permission`) forwarded through ACP to cc-connect for user approval, supporting `allow`/`deny` verdicts with 2-minute timeout
+- **ACP Debug Toggle**: Debug logging toggle via ACP config (`nexus config acp debug on/off`) instead of environment variables
+- **Config Web UI**: Browser-based configuration panel (`nexus config web`) for managing providers, MCP servers, permissions, and quality gate settings
+- **i18n Bilingual Support**: English and Chinese language support with `/lang` command, bilingual welcome screen and help output
+- **Single-key Permission Prompts**: Compact permission prompts with auto-submit (`y`/`a`/`n` without Enter), improving vibe-coding flow
+- **MCP Tool Whitelist**: Pre-approve MCP tools via `/bypass` command, with web UI permissions panel for visual management
+
+### Bugfixes
+
+- **Security Hardening**: Fixed 14 vulnerabilities across 12 files — tightened path pre-auth, unified command-safety and permission gating, scoped path grants to avoid process-wide accumulation
+- **ESM Require Crash**: Fixed ESM import crash in permissions module and PageUp recall injecting plan blocks
+- **Permission Prompt Fixes**: Fixed duplicated key echo, single-key prompt hang/duplicate, and y/N prompt not accepting input
+- **Tool-call Display**: Fixed fragile `\r` in-place update, capped preview width, put `agent>` prompt on its own line
+- **Skill Creator Fixes**: Fixed double-echo, hang-down, and dedup issues in skill creation flow
+- **Config Web UI**: Fixed provider delete never persisted (missing `config.save()`)
+- **Sub-agent Permissions**: Fixed parent permission mode propagation to sub-agents in worker mode
+- **Session Persistence**: Fixed FOREIGN KEY constraint failed when deleting sessions with task_graphs
+- **ACP Transport**: Fixed message lost random length and JSON-RPC `-32603: Invalid string length`
+
 ## License
 
 ISC

@@ -434,6 +434,31 @@ nexus config acp timeout reset chunkIdleMs
 
 ACP 服务器在每个轮次中每隔 `heartbeatMs` 发送一次**心跳**。如果 cc-connect 在其自身连接超时内未收到任何数据，它会断开会话；心跳正好填补这一空白。如果轮次卡住超过 `watchdogRemoteMs`，智能体进程将干净退出，cc-connect 会为下一条消息启动一个新实例。
 
+## 近期更新 (v1.1.6+)
+
+### 新特性
+
+- **cc-connect 原生文件推送**：自动检测生成的文件（图片、PDF 等），通过 `cc-connect send --image` CLI 原生推送到 IM 平台（Telegram、飞书、微信），Cloudinary URL 作为文本回退
+- **ACP 打字指示器**：LLM 处理期间每 5 秒发送实时打字指示器（`session/update { typing }`），让消息桥接器显示"正在输入..."状态
+- **ACP 权限协议**：工具权限请求（`session/request_permission`）通过 ACP 转发给 cc-connect 进行用户审批，支持 `allow`/`deny` 判决，超时 2 分钟
+- **ACP 调试开关**：通过 ACP 配置（`nexus config acp debug on/off`）切换调试日志，不再需要环境变量
+- **配置 Web UI**：浏览器配置面板（`nexus config web`），管理提供商、MCP 服务器、权限和质量门禁
+- **i18n 双语支持**：中英文双语支持，`/lang` 命令切换，欢迎界面和帮助输出双语显示
+- **单键权限提示**：紧凑权限提示，支持自动提交（`y`/`a`/`n` 无需回车），提升 vibe-coding 流畅度
+- **MCP 工具白名单**：通过 `/bypass` 命令预授权 MCP 工具，Web UI 权限面板可视化管理
+
+### 缺陷修复
+
+- **安全加固**：修复 12 个文件中的 14 个漏洞——收紧路径预授权、统一命令安全和权限控制、限定路径授权作用域避免进程级累积
+- **ESM Require 崩溃**：修复权限模块 ESM 导入崩溃和 PageUp 回放注入计划块
+- **权限提示修复**：修复按键重复回显、单键提示挂起/重复、y/N 提示不接受输入
+- **工具调用显示**：修复脆弱的 `\r` 就地更新，限制预览宽度，`agent>` 提示独占一行
+- **技能创建器修复**：修复技能创建流程中的双回显、挂起和去重问题
+- **配置 Web UI**：修复提供商删除未持久化（缺少 `config.save()`）
+- **子 agent 权限**：修复工作模式下父权限模式未传递给子 agent
+- **会话持久化**：修复删除含 task_graphs 的会话时 FOREIGN KEY 约束失败
+- **ACP 传输**：修复消息随机长度丢失和 JSON-RPC `-32603: Invalid string length`
+
 ## 许可证
 
 ISC
