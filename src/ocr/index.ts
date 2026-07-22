@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { ConfigManager } from '../config/index.js';
-import { decryptApiKey } from '../security/env-key-encrypt.js';
+import { decryptApiKey, resolveApiKey } from '../security/env-key-encrypt.js';
 import { authorizePath } from '../security/path-authorizer.js';
 import { redactPaths } from '../utils/sanitize.js';
 
@@ -158,14 +158,8 @@ async function tryOcrProviders(
 
     try {
       if (provider.type === 'openai-compatible') {
-        let apiKey = provider.apiKey ? decryptApiKey(provider.apiKey) : '';
-        if (!apiKey) continue;
-        // Resolve env var references ($VAR or env:VAR) that were stored as literals
-        if (apiKey.startsWith('$')) {
-          apiKey = process.env[apiKey.slice(1)] || '';
-        } else if (apiKey.startsWith('env:')) {
-          apiKey = process.env[apiKey.slice(4)] || '';
-        }
+        const resolved = resolveApiKey(provider.apiKey, 'openai', name);
+        let apiKey = decryptApiKey(resolved.apiKey);
         if (!apiKey) continue;
         const baseUrl = provider.baseUrl || '';
         const model = provider.model || '';
