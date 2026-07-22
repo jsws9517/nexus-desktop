@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import { ConfigManager } from '../config/index.js';
-import { decryptApiKey, resolveApiKey } from '../security/env-key-encrypt.js';
+import { decryptApiKey } from '../security/env-key-encrypt.js';
 import { authorizePath } from '../security/path-authorizer.js';
 import { redactPaths } from '../utils/sanitize.js';
 
@@ -48,7 +48,7 @@ async function callOpenAiCompatibleOcr(
   imageUrl: string, language?: string,
 ): Promise<string> {
   const langHint = language ? ` Language: ${language}.` : '';
-  const prompt = `Extract ALL visible text from this image. Return only the extracted text, preserving the original layout and line breaks as much as possible.${langHint} Do not describe the image, only extract text.`;
+  const prompt = `convert to markdown.${langHint} Extract ALL visible text from this image. Preserve the original layout and line breaks.`;
 
   const response = await fetch(baseUrl, {
     method: 'POST',
@@ -158,8 +158,17 @@ async function tryOcrProviders(
 
     try {
       if (provider.type === 'openai-compatible') {
-        const resolved = resolveApiKey(provider.apiKey, 'openai', name);
-        let apiKey = decryptApiKey(resolved.apiKey);
+        // Recursively decrypt: unwrap mem:/enc: layers until plaintext
+        let apiKey = provider.apiKey || '';
+        while (apiKey.startsWith('mem:') || apiKey.startsWith('enc:')) {
+          apiKey = decryptApiKey(apiKey);
+        }
+        // If decrypted key is an env var reference ($VAR or env:VAR), resolve it
+        if (apiKey.startsWith('$')) {
+          apiKey = process.env[apiKey.slice(1)] || '';
+        } else if (apiKey.startsWith('env:')) {
+          apiKey = process.env[apiKey.slice(4)] || '';
+        }
         if (!apiKey) continue;
         const baseUrl = provider.baseUrl || '';
         const model = provider.model || '';
