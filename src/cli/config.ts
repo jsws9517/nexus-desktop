@@ -219,7 +219,7 @@ export function registerConfigCommand(program: Command): void {
       `    nexus config vision set glm-4v -k '\\$ZHIPU_KEY' -u 'https://open.bigmodel.cn/api/paas/v4/chat/completions' -m glm-4.6v-flash\n` +
       `  CMD: no quoting needed, but \\%VAR\\% expands immediately:\n` +
       `    nexus config vision set glm-4v -k %ZHIPU_KEY% -u https://open.bigmodel.cn/api/paas/v4/chat/completions -m glm-4.6v-flash`)
-    .option('-k, --apiKey <key>', 'API key (plaintext, or $ENV_VAR / env:ENV_VAR; use quotes in PowerShell)')
+    .option('-k, --apiKey [key]', 'API key (plaintext, or $ENV_VAR / env:ENV_VAR; use quotes in PowerShell)')
     .requiredOption('-u, --baseUrl <url>', 'Full API endpoint URL (e.g. .../chat/completions)')
     .requiredOption('-m, --model <model>', 'Model name')
     .action((name: string, options: { apiKey?: string | boolean; baseUrl: string; model: string }) => {
@@ -350,7 +350,7 @@ export function registerConfigCommand(program: Command): void {
       `  PaddleOCR (local):\n` +
       `    nexus config ocr set <name> -t paddleocr [--command <path>] [--args '<arg1> <arg2>']`)
     .option('-t, --type <type>', 'Provider type: openai-compatible or paddleocr', 'openai-compatible')
-    .option('-k, --apiKey <key>', 'API key (for openai-compatible; plaintext or $ENV_VAR)')
+    .option('-k, --apiKey [key]', 'API key (for openai-compatible; plaintext or $ENV_VAR; use quotes if value is empty)')
     .option('-u, --baseUrl <url>', 'API endpoint URL (for openai-compatible)')
     .option('-m, --model <model>', 'Model name (for openai-compatible)')
     .option('--command <cmd>', 'Path to paddleocr binary or python script (for paddleocr)')
