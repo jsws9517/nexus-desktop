@@ -8,7 +8,7 @@ export const ProviderConfigSchema = z.object({
   maxContextTokens: z.number().optional(),
   options: z.record(z.unknown()).optional(),
   /** Whether this provider/model supports native vision (image input). When true, ocr_extract tool is excluded. */
-  vision: z.boolean().optional(),
+  vision: z.coerce.boolean().optional(),
 });
 
 export const ServerConfigSchema = z.object({
@@ -131,6 +131,13 @@ export const ConfigSchema = z.object({
   ocrProviders: z.record(OcrProviderConfigSchema).optional(),
   qualityGate: QualityGateConfigSchema.optional(),
   permissions: PermissionsConfigSchema.optional(),
+  /** Cache of model vision capability detection results.
+   *  Key: "providerName/modelName", Value: true (vision capable) / false (not capable) */
+  visionCapabilityCache: z.record(z.boolean()).optional(),
+  /** User-managed vision whitelist (model patterns that always support vision). */
+  visionWhitelist: z.array(z.string()).optional(),
+  /** User-managed vision blacklist (model patterns that never support vision). */
+  visionBlacklist: z.array(z.string()).optional(),
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
