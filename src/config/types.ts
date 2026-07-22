@@ -55,6 +55,19 @@ export const VisionProviderConfigSchema = z.object({
   model: z.string(),
 });
 
+export const OcrProviderConfigSchema = z.object({
+  type: z.enum(['openai-compatible', 'paddleocr']),
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+  model: z.string().optional(),
+  /** PaddleOCR: path to paddleocr binary or python script */
+  command: z.string().optional(),
+  /** PaddleOCR: extra args */
+  args: z.array(z.string()).optional(),
+  /** Supported language codes (e.g. ['en', 'ch']) */
+  languages: z.array(z.string()).optional(),
+});
+
 export const QualityGateConfigSchema = z.object({
   autoTest: z.boolean().optional(),
   autoCommit: z.boolean().optional(),
@@ -112,6 +125,8 @@ export const ConfigSchema = z.object({
   activeVisionProvider: z.string().optional(),
   visionProviders: z.record(VisionProviderConfigSchema).optional(),
   visionMode: z.enum(['local-first', 'cloud-first', 'local-only', 'cloud-only']).optional(),
+  activeOcrProvider: z.string().optional(),
+  ocrProviders: z.record(OcrProviderConfigSchema).optional(),
   qualityGate: QualityGateConfigSchema.optional(),
   permissions: PermissionsConfigSchema.optional(),
 });

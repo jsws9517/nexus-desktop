@@ -238,6 +238,19 @@ const ANALYZE_IMAGE_TOOL_DEF: ToolDefinition = {
   },
 };
 
+const OCR_EXTRACT_TOOL_DEF: ToolDefinition = {
+  name: 'ocr_extract',
+  description: 'Extract text from an image using OCR (Optical Character Recognition). Use this when the user asks to extract/read/copy text from a screenshot, document photo, scanned page, or any image containing text. Returns the raw extracted text.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Path to the image file (relative to the working directory)' },
+      language: { type: 'string', description: 'Optional language hint for OCR (e.g. "en", "ch", "ja"). Improves accuracy for specific languages.' },
+    },
+    required: ['path'],
+  },
+};
+
 /** Tools reserved for internal system calls — never exposed to the LLM. */
 const INTERNAL_TOOLS = new Set([
   'search_nodes', 'search_semantic', 'open_nodes',
@@ -990,6 +1003,7 @@ export class Agent {
       RECALL_TOOL_DEF,
       REMEMBER_PROJECT_TOOL_DEF,
       ANALYZE_IMAGE_TOOL_DEF,
+      OCR_EXTRACT_TOOL_DEF,
       ...getTaskToolDefinitions(),
     ];
 
@@ -1449,6 +1463,10 @@ export class Agent {
       return this.handleAnalyzeImage(safeArgs);
     }
 
+    if (call.name === 'ocr_extract') {
+      return this.handleOcrExtract(safeArgs);
+    }
+
     // 1. Check local skills first
     const skillResult = await this.skills.callTool(call.name, safeArgs);
     if (skillResult) return skillResult;
@@ -1888,6 +1906,28 @@ export class Agent {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { content: `Image analysis failed: ${msg}`, isError: true };
+    }
+  }
+
+  private async handleOcrExtract(args: Record<string, unknown>): Promise<ToolResult> {
+    const imagePath = String(args.path || '').trim();
+    if (!imagePath) {
+      return { content: 'Error: image path is required', isError: true };
+    }
+    const absImagePath = resolve(process.cwd(), imagePath);
+    const authorized = await authorizePath(absImagePath);
+    if (!authorized) {
+      return { content: `Access denied: "${imagePath}" is not in the allowed path list.`, isError: true };
+    }
+    const language = typeof args.language === 'string' ? args.language.trim() : undefined;
+    try {
+      const { extractText } = await import('./ocr/index.js');
+      const result = await extractText(imagePath, language);
+      const providerInfo = result.model ? `${result.provider} (${result.model})` : result.provider;
+      return { content: `[OCR via ${providerInfo}]\n${result.text}`, isError: false };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: `OCR extraction failed: ${msg}`, isError: true };
     }
   }
 

@@ -235,6 +235,58 @@ export class ConfigManager {
     }
   }
 
+  // ── OCR Providers ──────────────────────────────────────────────────
+
+  getOcrProviders(): Record<string, { type: string; apiKey?: string; baseUrl?: string; model?: string; command?: string; args?: string[]; languages?: string[] }> {
+    return (this.config.ocrProviders || {}) as any;
+  }
+
+  getActiveOcrProvider(): string {
+    return this.config.activeOcrProvider || '';
+  }
+
+  setActiveOcrProvider(name: string): void {
+    this.config.activeOcrProvider = name;
+    this.save();
+  }
+
+  getOcrProvider(name?: string): { type: string; apiKey?: string; baseUrl?: string; model?: string; command?: string; args?: string[]; languages?: string[] } {
+    const key = name || this.getActiveOcrProvider();
+    const providers = this.getOcrProviders();
+    const provider = providers[key];
+    if (!provider) {
+      throw new Error(`OCR provider "${key}" not found`);
+    }
+    if (provider.apiKey) {
+      const resolved = resolveApiKey(provider.apiKey, 'custom', key);
+      return { ...provider, apiKey: resolved.apiKey };
+    }
+    return { ...provider };
+  }
+
+  setOcrProvider(name: string, config: { type: string; apiKey?: string; baseUrl?: string; model?: string; command?: string; args?: string[]; languages?: string[] }): void {
+    if (!this.config.ocrProviders) {
+      this.config.ocrProviders = {};
+    }
+    const entry: any = { ...config };
+    if (entry.apiKey) {
+      entry.apiKey = atRestEncrypt(entry.apiKey);
+    }
+    this.config.ocrProviders[name] = entry;
+    this.save();
+  }
+
+  removeOcrProvider(name: string): void {
+    if (this.config.ocrProviders) {
+      delete this.config.ocrProviders[name];
+      if (this.config.activeOcrProvider === name) {
+        const remaining = Object.keys(this.config.ocrProviders);
+        this.config.activeOcrProvider = remaining[0] || '';
+      }
+      this.save();
+    }
+  }
+
   removeProvider(name: string): void {
     if (!this.config.providers || !this.config.providers[name]) {
       throw new Error(`Provider "${name}" not found`);

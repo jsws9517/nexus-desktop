@@ -316,6 +316,115 @@ export function registerConfigCommand(program: Command): void {
       console.log(t.success(`Vision mode set to: ${mode}`));
     });
 
+  // ── OCR Config ──────────────────────────────────────────────────
+
+  const ocrCmd = configCmd.command('ocr').description('OCR provider management for text extraction from images');
+
+  ocrCmd
+    .command('list')
+    .description('List configured OCR providers (* = active)')
+    .action(() => {
+      const config = new ConfigManager();
+      const active = config.getActiveOcrProvider();
+      const providers = config.getOcrProviders();
+      console.log(t.heading('OCR Providers:'));
+      if (Object.keys(providers).length === 0) {
+        console.log(t.textDim('  No OCR providers configured.'));
+        console.log(t.textDim('  Use "nexus config ocr set <name>" to add one.'));
+        return;
+      }
+      for (const [name, p] of Object.entries(providers)) {
+        const marker = name === active ? t.success('*') : ' ';
+        const typeHint = p.type === 'paddleocr' ? 'PaddleOCR (local)' : `OpenAI-compatible (${p.model || 'no model'})`;
+        console.log(`  ${marker} ${name}: ${typeHint}`);
+        if (p.baseUrl) console.log(`    ${t.textDim(p.baseUrl)}`);
+        if (p.command) console.log(`    ${t.textDim(`command: ${p.command}`)}`);
+      }
+    });
+
+  ocrCmd
+    .command('set <name>')
+    .description(`Configure an OCR provider for text extraction.\n` +
+      `  OpenAI-compatible (e.g. GLM-4V, Qwen-VL):\n` +
+      `    nexus config ocr set <name> -t openai-compatible -k <key> -u <url> -m <model>\n` +
+      `  PaddleOCR (local):\n` +
+      `    nexus config ocr set <name> -t paddleocr [--command <path>] [--args '<arg1> <arg2>']`)
+    .option('-t, --type <type>', 'Provider type: openai-compatible or paddleocr', 'openai-compatible')
+    .option('-k, --apiKey [key]', 'API key (for openai-compatible; plaintext or $ENV_VAR)')
+    .option('-u, --baseUrl [url]', 'API endpoint URL (for openai-compatible)')
+    .option('-m, --model [model]', 'Model name (for openai-compatible)')
+    .option('--command [cmd]', 'Path to paddleocr binary or python script (for paddleocr)')
+    .option('--args [args]', 'Extra args for paddleocr (space-separated string)')
+    .option('--languages [langs]', 'Supported languages (comma-separated, e.g. "en,ch")')
+    .action((name: string, options: { type?: string; apiKey?: string | boolean; baseUrl?: string; model?: string; command?: string; args?: string; languages?: string }) => {
+      const providerType = options.type || 'openai-compatible';
+      if (providerType !== 'openai-compatible' && providerType !== 'paddleocr') {
+        console.log(t.error(`Invalid type: "${providerType}". Must be "openai-compatible" or "paddleocr".`));
+        return;
+      }
+
+      const config = new ConfigManager();
+      const entry: any = { type: providerType };
+
+      if (providerType === 'openai-compatible') {
+        if (!options.apiKey || typeof options.apiKey !== 'string') {
+          console.log(t.error('API key is required for openai-compatible type. Use -k <key>.'));
+          return;
+        }
+        if (!options.baseUrl) {
+          console.log(t.error('Base URL is required for openai-compatible type. Use -u <url>.'));
+          return;
+        }
+        if (!options.model) {
+          console.log(t.error('Model name is required for openai-compatible type. Use -m <model>.'));
+          return;
+        }
+        entry.apiKey = options.apiKey as string;
+        entry.baseUrl = options.baseUrl;
+        entry.model = options.model;
+      }
+
+      if (providerType === 'paddleocr') {
+        if (options.command) entry.command = options.command;
+        if (options.args) entry.args = options.args.split(/\s+/);
+      }
+
+      if (options.languages) {
+        entry.languages = options.languages.split(',').map(l => l.trim()).filter(Boolean);
+      }
+
+      config.setOcrProvider(name, entry);
+      config.setActiveOcrProvider(name);
+      console.log(t.success(`OCR provider "${name}" (${providerType}) configured and set as active.`));
+    });
+
+  ocrCmd
+    .command('switch <name>')
+    .description('Switch the active OCR provider')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      try {
+        config.setActiveOcrProvider(name);
+        console.log(t.success(`Active OCR provider: ${name}`));
+      } catch (err) {
+        console.log(t.error(`Failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  ocrCmd
+    .command('remove <name>')
+    .description('Remove an OCR provider')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      const providers = config.getOcrProviders();
+      if (!providers[name]) {
+        console.log(t.error(`OCR provider "${name}" not found.`));
+        return;
+      }
+      config.removeOcrProvider(name);
+      console.log(t.success(`Removed OCR provider: ${name}`));
+    });
+
   const mcpCmd = configCmd.command('mcp').description('MCP server management');
 
   mcpCmd
