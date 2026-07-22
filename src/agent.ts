@@ -231,7 +231,7 @@ const ANALYZE_IMAGE_TOOL_DEF: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Path to the image file (relative to the working directory)' },
+      path: { type: 'string', description: 'Path to the image file (also accepts "image" as the key name)' },
       question: { type: 'string', description: 'Optional specific question about the image' },
     },
     required: ['path'],
@@ -244,7 +244,7 @@ const OCR_EXTRACT_TOOL_DEF: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Path to the image file (relative to the working directory)' },
+      path: { type: 'string', description: 'Path to the image file (also accepts "image" as the key name)' },
       language: { type: 'string', description: 'Optional language hint for OCR (e.g. "en", "ch", "ja"). Improves accuracy for specific languages.' },
     },
     required: ['path'],
@@ -1957,7 +1957,7 @@ export class Agent {
   }
 
   private async handleAnalyzeImage(args: Record<string, unknown>): Promise<ToolResult> {
-    const imagePath = String(args.path || '').trim();
+    const imagePath = String(args.path || args.image || '').trim();
     if (!imagePath) {
       return { content: 'Error: image path is required', isError: true };
     }
@@ -1982,7 +1982,7 @@ export class Agent {
   }
 
   private async handleOcrExtract(args: Record<string, unknown>): Promise<ToolResult> {
-    const imagePath = String(args.path || '').trim();
+    const imagePath = String(args.path || args.image || '').trim();
     if (!imagePath) {
       return { content: 'Error: image path is required', isError: true };
     }
