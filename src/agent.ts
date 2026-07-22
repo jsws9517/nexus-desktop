@@ -1086,6 +1086,7 @@ export class Agent {
       'fetch_url', 'web_search', 'web_fetch',
       'remember', 'recall', 'remember_project',
       'decompose_task', 'query_tasks',
+      'analyze_image', 'ocr_extract',
     ]);
 
     // When the current LLM model supports native vision, exclude ocr_extract
