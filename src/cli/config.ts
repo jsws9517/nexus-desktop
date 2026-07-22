@@ -425,6 +425,140 @@ export function registerConfigCommand(program: Command): void {
       console.log(t.success(`Removed OCR provider: ${name}`));
     });
 
+  // ── Vision Capability Management ────────────────────────────────────
+
+  const visionCapCmd = configCmd.command('vision-cap').description('Vision capability detection and whitelist/blacklist management');
+
+  visionCapCmd
+    .command('status')
+    .description('Show vision capability status for the active model')
+    .action(async () => {
+      const config = new ConfigManager();
+      const { isVisionCapable, getVisionDetectionSource } = await import('../vision/capability.js');
+      const providerName = config.getActiveProvider();
+      const provider = config.getProvider();
+      const model = provider.model;
+      const capable = await isVisionCapable(providerName, model, {
+        apiKey: provider.apiKey,
+        baseUrl: provider.baseUrl,
+        type: provider.type,
+      });
+      const source = getVisionDetectionSource(providerName, model);
+      console.log(t.heading(`\nVision Capability: ${providerName}/${model}`));
+      console.log(`  ${capable ? t.success('Supports vision') : t.warning('No vision support')}`);
+      console.log(`  ${t.textDim(`Detection source: ${source}`)}`);
+    });
+
+  visionCapCmd
+    .command('whitelist')
+    .description('List user-managed vision whitelist patterns')
+    .action(() => {
+      const config = new ConfigManager();
+      const list = config.getVisionWhitelist();
+      console.log(t.heading('\nVision Whitelist (model patterns that support vision):'));
+      if (list.length === 0) {
+        console.log(t.textDim('  No custom patterns. Built-in patterns are always active.'));
+      } else {
+        for (const p of list) console.log(`  ${t.success(p)}`);
+      }
+    });
+
+  visionCapCmd
+    .command('whitelist-add <pattern>')
+    .description('Add a model pattern to the vision whitelist (regex supported)')
+    .action((pattern: string) => {
+      const config = new ConfigManager();
+      try { new RegExp(pattern); } catch {
+        console.log(t.error(`Invalid regex pattern: "${pattern}"`));
+        return;
+      }
+      config.addVisionWhitelist(pattern);
+      console.log(t.success(`Added to vision whitelist: ${pattern}`));
+    });
+
+  visionCapCmd
+    .command('whitelist-remove <pattern>')
+    .description('Remove a pattern from the vision whitelist')
+    .action((pattern: string) => {
+      const config = new ConfigManager();
+      config.removeVisionWhitelist(pattern);
+      console.log(t.success(`Removed from vision whitelist: ${pattern}`));
+    });
+
+  visionCapCmd
+    .command('blacklist')
+    .description('List user-managed vision blacklist patterns')
+    .action(() => {
+      const config = new ConfigManager();
+      const list = config.getVisionBlacklist();
+      console.log(t.heading('\nVision Blacklist (model patterns that do NOT support vision):'));
+      if (list.length === 0) {
+        console.log(t.textDim('  No custom patterns. Built-in patterns are always active.'));
+      } else {
+        for (const p of list) console.log(`  ${t.error(p)}`);
+      }
+    });
+
+  visionCapCmd
+    .command('blacklist-add <pattern>')
+    .description('Add a model pattern to the vision blacklist (regex supported)')
+    .action((pattern: string) => {
+      const config = new ConfigManager();
+      try { new RegExp(pattern); } catch {
+        console.log(t.error(`Invalid regex pattern: "${pattern}"`));
+        return;
+      }
+      config.addVisionBlacklist(pattern);
+      console.log(t.success(`Added to vision blacklist: ${pattern}`));
+    });
+
+  visionCapCmd
+    .command('blacklist-remove <pattern>')
+    .description('Remove a pattern from the vision blacklist')
+    .action((pattern: string) => {
+      const config = new ConfigManager();
+      config.removeVisionBlacklist(pattern);
+      console.log(t.success(`Removed from vision blacklist: ${pattern}`));
+    });
+
+  visionCapCmd
+    .command('cache')
+    .description('Show cached vision detection results')
+    .action(() => {
+      const config = new ConfigManager();
+      const cache = config.getVisionCapabilityCache();
+      console.log(t.heading('\nVision Detection Cache:'));
+      if (Object.keys(cache).length === 0) {
+        console.log(t.textDim('  No cached results.'));
+      } else {
+        for (const [key, val] of Object.entries(cache)) {
+          console.log(`  ${val ? t.success('✓') : t.error('✗')} ${key}`);
+        }
+      }
+    });
+
+  visionCapCmd
+    .command('cache-clear')
+    .description('Clear the vision detection cache')
+    .action(() => {
+      const config = new ConfigManager();
+      config.clearVisionCapabilityCache();
+      console.log(t.success('Vision detection cache cleared.'));
+    });
+
+  visionCapCmd
+    .command('builtin')
+    .description('Show built-in vision model patterns')
+    .action(async () => {
+      const { getBuiltinPatterns } = await import('../vision/capability.js');
+      const { whitelist, blacklist } = getBuiltinPatterns();
+      console.log(t.heading('\nBuilt-in Vision Patterns:'));
+      console.log(t.success('  Whitelist (vision capable):'));
+      for (const p of whitelist) console.log(`    ${p}`);
+      console.log(t.error('  Blacklist (no vision):'));
+      for (const p of blacklist) console.log(`    ${p}`);
+    });
+
   const mcpCmd = configCmd.command('mcp').description('MCP server management');
 
   mcpCmd

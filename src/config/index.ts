@@ -320,14 +320,59 @@ export class ConfigManager {
     return { ...provider, apiKey: resolved.apiKey };
   }
 
-  /** Check if the active provider/model supports native vision (image input). */
-  isCurrentProviderVisionCapable(): boolean {
-    try {
-      const provider = this.getProvider();
-      return provider.vision === true;
-    } catch {
-      return false;
+  // ── Vision Capability Management ────────────────────────────────────────
+
+  getVisionWhitelist(): string[] {
+    return [...(this.config.visionWhitelist || [])];
+  }
+
+  addVisionWhitelist(pattern: string): void {
+    if (!this.config.visionWhitelist) this.config.visionWhitelist = [];
+    if (!this.config.visionWhitelist.includes(pattern)) {
+      this.config.visionWhitelist.push(pattern);
+      this.save();
     }
+  }
+
+  removeVisionWhitelist(pattern: string): void {
+    if (this.config.visionWhitelist) {
+      this.config.visionWhitelist = this.config.visionWhitelist.filter(p => p !== pattern);
+      this.save();
+    }
+  }
+
+  getVisionBlacklist(): string[] {
+    return [...(this.config.visionBlacklist || [])];
+  }
+
+  addVisionBlacklist(pattern: string): void {
+    if (!this.config.visionBlacklist) this.config.visionBlacklist = [];
+    if (!this.config.visionBlacklist.includes(pattern)) {
+      this.config.visionBlacklist.push(pattern);
+      this.save();
+    }
+  }
+
+  removeVisionBlacklist(pattern: string): void {
+    if (this.config.visionBlacklist) {
+      this.config.visionBlacklist = this.config.visionBlacklist.filter(p => p !== pattern);
+      this.save();
+    }
+  }
+
+  getVisionCapabilityCache(): Record<string, boolean> {
+    return { ...(this.config.visionCapabilityCache || {}) };
+  }
+
+  setVisionCapabilityCache(key: string, value: boolean): void {
+    if (!this.config.visionCapabilityCache) this.config.visionCapabilityCache = {};
+    this.config.visionCapabilityCache[key] = value;
+    this.save();
+  }
+
+  clearVisionCapabilityCache(): void {
+    this.config.visionCapabilityCache = {};
+    this.save();
   }
 
   getDecryptedApiKey(name?: string): string {

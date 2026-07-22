@@ -1034,7 +1034,16 @@ export class Agent {
 
     // When the current LLM model supports native vision, exclude ocr_extract
     // to avoid unnecessary tool calls — the model can read text directly from images.
-    if (this.config.isCurrentProviderVisionCapable()) {
+    const { isVisionCapable } = await import('./vision/capability.js');
+    const providerName = this.config.getActiveProvider();
+    const model = this.provider.model;
+    const providerConfig = (() => {
+      try {
+        const p = this.config.getProvider(providerName);
+        return { apiKey: p.apiKey, baseUrl: p.baseUrl, type: p.type };
+      } catch { return undefined; }
+    })();
+    if (await isVisionCapable(providerName, model, providerConfig)) {
       tools = tools.filter(t => t.name !== 'ocr_extract');
     }
 
