@@ -158,7 +158,14 @@ async function tryOcrProviders(
 
     try {
       if (provider.type === 'openai-compatible') {
-        const apiKey = provider.apiKey ? decryptApiKey(provider.apiKey) : '';
+        let apiKey = provider.apiKey ? decryptApiKey(provider.apiKey) : '';
+        if (!apiKey) continue;
+        // Resolve env var references ($VAR or env:VAR) that were stored as literals
+        if (apiKey.startsWith('$')) {
+          apiKey = process.env[apiKey.slice(1)] || '';
+        } else if (apiKey.startsWith('env:')) {
+          apiKey = process.env[apiKey.slice(4)] || '';
+        }
         if (!apiKey) continue;
         const baseUrl = provider.baseUrl || '';
         const model = provider.model || '';
