@@ -7,6 +7,8 @@ export const ProviderConfigSchema = z.object({
   model: z.string(),
   maxContextTokens: z.number().optional(),
   options: z.record(z.unknown()).optional(),
+  /** Whether this provider/model supports native vision (image input). When true, ocr_extract tool is excluded. */
+  vision: z.boolean().optional(),
 });
 
 export const ServerConfigSchema = z.object({

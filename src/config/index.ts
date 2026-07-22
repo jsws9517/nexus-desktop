@@ -320,6 +320,16 @@ export class ConfigManager {
     return { ...provider, apiKey: resolved.apiKey };
   }
 
+  /** Check if the active provider/model supports native vision (image input). */
+  isCurrentProviderVisionCapable(): boolean {
+    try {
+      const provider = this.getProvider();
+      return provider.vision === true;
+    } catch {
+      return false;
+    }
+  }
+
   getDecryptedApiKey(name?: string): string {
     const provider = this.getProvider(name);
     return decryptApiKey(provider.apiKey);

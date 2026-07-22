@@ -1031,6 +1031,13 @@ export class Agent {
       'remember', 'recall', 'remember_project',
       'decompose_task', 'query_tasks',
     ]);
+
+    // When the current LLM model supports native vision, exclude ocr_extract
+    // to avoid unnecessary tool calls — the model can read text directly from images.
+    if (this.config.isCurrentProviderVisionCapable()) {
+      tools = tools.filter(t => t.name !== 'ocr_extract');
+    }
+
     if (keywords.length > 0) {
       tools = tools.filter((t) => {
         if (essentialTools.has(t.name)) return true;
