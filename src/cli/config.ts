@@ -447,6 +447,20 @@ export function registerConfigCommand(program: Command): void {
       console.log(t.heading(`\nVision Capability: ${providerName}/${model}`));
       console.log(`  ${capable ? t.success('Supports vision') : t.warning('No vision support')}`);
       console.log(`  ${t.textDim(`Detection source: ${source}`)}`);
+
+      // Show active OCR provider (fallback for text extraction from images)
+      const ocrActiveName = config.getActiveOcrProvider();
+      if (ocrActiveName) {
+        const ocrProviders = config.getOcrProviders();
+        const ocrProvider = ocrProviders[ocrActiveName];
+        if (ocrProvider) {
+          const modelDesc = ocrProvider.model ? `(${ocrProvider.model})` : '';
+          const typeDesc = ocrProvider.type === 'paddleocr' ? 'PaddleOCR (local)' : 'OpenAI-compatible';
+          console.log(`  OCR fallback: ${t.entityName(ocrActiveName)} ${t.textDim(modelDesc)} ${t.textDim(`— ${typeDesc}`)}`);
+        }
+      } else {
+        console.log(`  OCR fallback: ${t.textDim('none configured')}`);
+      }
     });
 
   visionCapCmd
