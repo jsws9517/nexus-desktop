@@ -2,6 +2,7 @@ import { randomBytes, createCipheriv, createDecipheriv } from 'crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { createRequire } from 'node:module';
 
 const ALGORITHM = 'aes-256-gcm';
 
@@ -112,21 +113,39 @@ export function atRestDecrypt(encoded: string): string {
   return decrypted;
 }
 
+/**
+ * Read a Windows User environment variable from the registry.
+ * Fallback when process.env doesn't have it (session started before var was set).
+ */
+let _execSync: any;
+const _require = typeof require !== 'undefined' ? require : createRequire(import.meta.url);
+function getWindowsUserEnv(name: string): string | undefined {
+  if (process.platform !== 'win32') return undefined;
+  try {
+    if (!_execSync) _execSync = _require('child_process').execSync;
+    const val = _execSync(
+      `powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('${name}','User')"`,
+      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
+    ).trim();
+    return val || undefined;
+  } catch { return undefined; }
+}
+
 function resolveFromEnvVar(configKey: string): string | undefined {
   if (configKey.startsWith('$')) {
     const envName = configKey.slice(1);
-    return process.env[envName] || undefined;
+    return process.env[envName] || getWindowsUserEnv(envName) || undefined;
   }
   if (configKey.startsWith('env:')) {
     const envName = configKey.slice(4);
-    return process.env[envName] || undefined;
+    return process.env[envName] || getWindowsUserEnv(envName) || undefined;
   }
   return undefined;
 }
 
 function tryEnvVar(...names: string[]): string | undefined {
   for (const name of names) {
-    const val = process.env[name];
+    const val = process.env[name] || getWindowsUserEnv(name);
     if (val) return val;
   }
   return undefined;

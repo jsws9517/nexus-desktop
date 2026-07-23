@@ -399,6 +399,50 @@ set CLOUDINARY_API_SECRET=your_secret
 
 图片在分析后自动从 Cloudinary 清理。
 
+## OCR（文字提取）
+
+`ocr_extract` 工具从图片中提取文字（截图、文档、终端输出、表单、幻灯片）。支持云端 API 和本地 OCR 提供商。
+
+### 云端 OCR 提供商
+
+```bash
+# 配置云端 OCR（如 DeepSeek OCR via ModelVerse）
+nexus config ocr set ds-ocr2 -t openai-compatible \
+  -k $API_KEY_DSOCR \
+  -u https://api.modelverse.cn/v1/chat/completions \
+  -m deepseek-ai/DeepSeek-OCR
+
+# 列出提供商
+nexus config ocr list
+
+# 切换活跃提供商
+nexus config ocr switch ds-ocr2
+```
+
+### 本地 OCR（PaddleOCR 便携版）
+
+独立 **PaddleOCR** 可执行文件（`paddle-ocr.exe`，约 90MB），无需 API 密钥即可离线 OCR。基于 RapidOCR + ONNX Runtime，内置 PP-OCRv6 模型。
+
+**下载：** [paddle-ocr.exe — nexus-extensions](https://github.com/jsws9517/nexus-extensions)
+
+```bash
+# 配置 nexus 使用本地便携 OCR
+nexus config ocr set paddle-local -t paddleocr \
+  --command "C:\path\to\paddle-ocr.exe"
+
+# 设为活跃（本地优先，API 作为回退）
+nexus config ocr switch paddle-local
+```
+
+**独立使用：**
+
+```bash
+paddle-ocr.exe --image screenshot.png                    # JSON 输出
+paddle-ocr.exe --image photo.jpg --lang en --output text # 纯文本
+paddle-ocr.exe --image doc.png --show-boxes              # 含置信度
+paddle-ocr.exe --version                                 # 版本信息
+```
+
 ## ACP 协议
 
 Nexus 实现了 **智能体间通信协议（ACP）**——一种基于 stdin/stdout 的 JSON-RPC 2.0 传输协议。cc-connect（飞书、微信、Telegram 等平台的中继桥接器）使用该协议将用户消息转发给智能体，并流式返回响应。

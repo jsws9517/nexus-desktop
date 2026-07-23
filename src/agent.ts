@@ -659,6 +659,47 @@ export class Agent {
         // If capability detection fails, do not add extra info
       }
 
+      // Inject project creation directory guidance
+      try {
+        const { execSync } = await import('child_process');
+        let isGitProject = false;
+        try {
+          execSync('git rev-parse --git-dir', { cwd: process.cwd(), stdio: 'pipe', encoding: 'utf-8' });
+          isGitProject = true;
+        } catch { /* not a git project */ }
+
+        if (isGitProject) {
+          const { join } = await import('path');
+          const { homedir } = await import('os');
+          const sandboxDir = join(homedir(), '.nexus', 'tasks', 'outputs');
+          const parentDir = join(process.cwd(), '..');
+          // Skip npm global install directory — never create projects here
+          const cwdLower = process.cwd().toLowerCase();
+          const npmGlobalDir = join(homedir(), 'AppData', 'Roaming', 'npm').toLowerCase();
+          const isNpmGlobal = cwdLower === npmGlobalDir || cwdLower.startsWith(npmGlobalDir + '\\');
+          const { preAuthorizeRoot } = await import('./security/path-authorizer.js');
+          preAuthorizeRoot(sandboxDir, 'global');
+          systemPrompt +=
+            '\n\n[Project Creation — Directory Strategy]\n' +
+            (isNpmGlobal
+              ? 'The current directory is the npm global install directory — do NOT create projects here.\n'
+              : 'The current directory is an existing git project. Do NOT create new projects inside it.\n') +
+            'When the user asks you to create a NEW project (e.g. "create a new git project", "新建项目"):\n' +
+            '  1. Do NOT create inside the current directory.\n' +
+            '  2. Do NOT spend time listing directories to "find" a place — just pick one immediately.\n' +
+            '  3. DEFAULT: Create under the sandbox: ' + sandboxDir + '/<project-name>/\n' +
+            '     This is always safe, auto-authorized, and isolated.\n' +
+            '  4. ALTERNATIVE: If the user explicitly says "next to this project" or "beside it", use the parent: ' + parentDir + '/<project-name>/\n' +
+            '  5. NEVER guess, NEVER list directories repeatedly, NEVER ask where — just create in the sandbox.\n' +
+            '  6. IMPORTANT: Before writing ANY file, you MUST first create the directory using create_directory or mkdir. Files cannot be written to a non-existent directory.\n' +
+            '  7. If a directory with the same name already exists, append a sequence number: web-demo-2, web-demo-3, etc.\n' +
+            '  Step-by-step: (a) create_directory → (b) write_file files → (c) exec_command "git init && git add . && git commit"\n' +
+            '  Example: user says "create web-demo project" → create_directory ' + sandboxDir + '/web-demo → then write files.\n\n---\n';
+        }
+      } catch {
+        // If detection fails, skip
+      }
+
       this.context.add({ role: 'system', content: systemPrompt });
     }
 

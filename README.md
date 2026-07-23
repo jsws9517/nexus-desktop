@@ -403,6 +403,50 @@ set CLOUDINARY_API_SECRET=your_secret
 
 Images are automatically cleaned up from Cloudinary after analysis.
 
+## OCR (Text Extraction)
+
+The `ocr_extract` tool extracts text from images (screenshots, documents, terminal output, forms, slides). Supports both cloud API and local OCR providers.
+
+### Cloud OCR Providers
+
+```bash
+# Configure a cloud OCR provider (e.g. DeepSeek OCR via ModelVerse)
+nexus config ocr set ds-ocr2 -t openai-compatible \
+  -k $API_KEY_DSOCR \
+  -u https://api.modelverse.cn/v1/chat/completions \
+  -m deepseek-ai/DeepSeek-OCR
+
+# List providers
+nexus config ocr list
+
+# Switch active provider
+nexus config ocr switch ds-ocr2
+```
+
+### Local OCR (PaddleOCR Portable)
+
+A standalone **PaddleOCR** executable (`paddle-ocr.exe`, ~90MB) is available for offline OCR without API keys. Powered by RapidOCR + ONNX Runtime with PP-OCRv6 models.
+
+**Download:** [paddle-ocr.exe — nexus-extensions](https://github.com/jsws9517/nexus-extensions)
+
+```bash
+# Configure nexus to use the local portable OCR
+nexus config ocr set paddle-local -t paddleocr \
+  --command "C:\path\to\paddle-ocr.exe"
+
+# Set as active (local first, API as fallback)
+nexus config ocr switch paddle-local
+```
+
+**Standalone usage:**
+
+```bash
+paddle-ocr.exe --image screenshot.png                    # JSON output
+paddle-ocr.exe --image photo.jpg --lang en --output text # Plain text
+paddle-ocr.exe --image doc.png --show-boxes              # With confidence
+paddle-ocr.exe --version                                 # Version info
+```
+
 ## ACP Protocol
 
 Nexus implements the **Agent-to-Agent Communication Protocol (ACP)** — a JSON-RPC 2.0 transport over stdin/stdout. It is used by cc-connect (a relay bridge for Feishu, WeChat, Telegram, etc.) to forward user messages to the agent and stream responses back.

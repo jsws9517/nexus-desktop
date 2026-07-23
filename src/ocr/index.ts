@@ -96,25 +96,35 @@ async function callPaddleOcr(
     throw new Error(`Image file not found: ${redactPaths(imagePath)}`);
   }
 
-  // Try HTTP server mode first (PaddleOCR serving)
-  // Then fall back to CLI mode
   const cmd = command || 'paddleocr';
   const lang = language || 'en';
 
-  // CLI mode: paddleocr --image_dir <path> --lang <lang> --use_angle_cls true
-  const { execSync } = await import('child_process');
-  const cliArgs = args || ['--image_dir', absPath, '--lang', lang, '--use_angle_cls', 'true', '--ocr_version', 'PP-OCRv4'];
+  // Standalone exe uses --image, standard CLI uses --image_dir
+  const isStandaloneExe = cmd.toLowerCase().includes('paddle-ocr') || cmd.toLowerCase().endsWith('paddle-ocr.exe');
+  const cliArgs = args || (isStandaloneExe
+    ? ['--image', absPath, '--lang', lang, '--output', 'json']
+    : ['--image_dir', absPath, '--lang', lang, '--use_angle_cls', 'true', '--ocr_version', 'PP-OCRv4']);
   const fullCmd = `"${cmd}" ${cliArgs.join(' ')}`;
 
   try {
+    const { execSync } = await import('child_process');
     const output = execSync(fullCmd, {
-      timeout: 60000,
+      timeout: 120000,
       encoding: 'utf-8',
       windowsHide: true,
       maxBuffer: 10 * 1024 * 1024,
-    });
+    }).trim();
 
-    // PaddleOCR outputs text lines, parse them
+    // Try JSON parsing (standalone exe output)
+    if (output.startsWith('{')) {
+      try {
+        const json = JSON.parse(output);
+        if (json.error) throw new Error(json.error);
+        return json.text || '';
+      } catch { /* fall through to text parsing */ }
+    }
+
+    // Fallback: text line parsing (standard PaddleOCR CLI)
     const lines = output.split('\n').filter(l => l.trim() && !l.startsWith('['));
     return lines.join('\n');
   } catch (err) {
@@ -158,16 +168,12 @@ async function tryOcrProviders(
 
     try {
       if (provider.type === 'openai-compatible') {
-        // Recursively decrypt: unwrap mem:/enc: layers until plaintext
+        // getOcrProvider() already calls resolveApiKey() which resolves
+        // $VAR / env:VAR → plaintext → mem:encrypted, or convention env vars.
+        // Decrypt mem: layer to get the actual API key.
         let apiKey = provider.apiKey || '';
         while (apiKey.startsWith('mem:') || apiKey.startsWith('enc:')) {
           apiKey = decryptApiKey(apiKey);
-        }
-        // If decrypted key is an env var reference ($VAR or env:VAR), resolve it
-        if (apiKey.startsWith('$')) {
-          apiKey = process.env[apiKey.slice(1)] || '';
-        } else if (apiKey.startsWith('env:')) {
-          apiKey = process.env[apiKey.slice(4)] || '';
         }
         if (!apiKey) continue;
         const baseUrl = provider.baseUrl || '';
