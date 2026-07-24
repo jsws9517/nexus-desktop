@@ -182,9 +182,19 @@ export class ClientManager {
 
         let result;
         try {
-          result = await conn.client.callTool({ name, arguments: safeArgs });
+          const timeoutMs = 30000; // 30s timeout for MCP tool calls
+          const toolPromise = conn.client.callTool({ name, arguments: safeArgs });
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`MCP tool "${name}" timed out after ${timeoutMs / 1000}s. The ${conn.name} server may be stuck.`)), timeoutMs);
+          });
+          result = await Promise.race([toolPromise, timeoutPromise]);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
+          // On timeout, disconnect the stuck server so it can restart on next call
+          if (errMsg.includes('timed out')) {
+            try { await conn.client.close(); } catch { /* ignore */ }
+            this.connections.delete(conn.name);
+          }
           const argsDump = JSON.stringify(safeArgs).slice(0, 500);
           const schemaDump = JSON.stringify(schema).slice(0, 500);
           return { content: `MCP tool "${name}" failed: ${errMsg}\nArgs: ${argsDump}\nSchema: ${schemaDump}`, isError: true };

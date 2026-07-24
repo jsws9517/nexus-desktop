@@ -11,7 +11,7 @@ A powerful TypeScript CLI agent connecting multiple LLM providers, MCP tools, fi
 - **Per-Session Persistent Memory**: Automatic memory summaries persisted per session, `/memory` view, cross-session `/insight` analysis
 - **Rich Interactive Chat**: Streaming output with gradient separator, session report, `/history` browsing, PageUp traversal
 - **Built-in Filesystem Tools**: Full file read/write/edit/move/copy/delete/directory-tree — no external MCP server needed
-- **MCP Tools**: Connect to external MCP servers for specialized capabilities; builtin tools take priority over MCP for deduplication
+- **MCP Tools**: Connect to external MCP servers for specialized capabilities; builtin tools take priority over MCP for deduplication; 30s timeout with auto-reconnect on hung servers
 - **Path Authorization**: Prompt/Allow/Deny with per-session (`y`) and persistent (`a`) grants, cached in `path-auth.json`; early `existsSync` checks avoid unnecessary auth prompts for missing files
 - **Slash Commands**: `/model`, `/provider`, `/session`, `/resume`, `/memory`, `/insight`, `/tools`, `/skills`, `/config`, `/clear`, `/exit`, `/plan`, `/tasks`, `/btw`, `/theme`
 - **Skills/Plugins**: Dynamic loading from `~/.nexus/skills/` with auto-generated fallback for invalid skill directories
@@ -162,6 +162,8 @@ After DAG execution, **finalize** runs automatically: cleans up temp files (`_pr
 ### Permission Whitelist
 
 The permission system has three levels: `Allow` (never prompt), `Prompt` (ask the user), and `Deny` (always refuse). By default every mutating tool is `Prompt`, so the agent asks before each action. The whitelist lets you pre-approve tools so vibe-coding sessions run uninterrupted.
+
+**Session-level caching:** In `auto` mode (whitelist enabled), once you approve a tool during a session, subsequent calls to the same tool are auto-approved without re-prompting. This cache is cleared when nexus restarts.
 
 **Three independent mechanisms:**
 
@@ -482,10 +484,14 @@ nexus config acp timeout reset chunkIdleMs
 
 The ACP server emits a **heartbeat** every `heartbeatMs` during a turn. If cc-connect receives no data at all within its own connection timeout, it drops the session; the heartbeat fills that gap. If the turn stalls past `watchdogRemoteMs`, the agent process exits cleanly and cc-connect spawns a fresh instance for the next message.
 
-## Recent Changes (v1.1.6+)
+## Recent Changes (v1.1.7+)
 
 ### Features
 
+- **Session-Level Tool Approval Cache**: When permission mode is `auto`, once a user approves a tool (e.g. `file_write`) during a session, subsequent calls to the same tool are auto-approved without re-prompting. Cache is cleared on nexus restart. Eliminates repetitive `Allow tool "..."?` prompts during vibe-coding sessions
+- **MCP Tool Timeout & Auto-Reconnect**: All MCP tool calls have a 30-second timeout. If a server hangs, the call fails gracefully and the stuck server is automatically disconnected — the next call triggers a fresh restart. Prevents indefinite hangs from unresponsive MCP servers
+- **Memory Server Timeout Handling**: Knowledge graph operations (`remember`, `saveUserInfoIfNeeded`) now detect server timeouts and return actionable error messages (e.g. `taskkill /f /im uv.exe`) instead of hanging indefinitely
+- **Memory Tool Permission Defaults**: `recall` is now always-allowed (read-only); `remember` and `remember_project` default to `Prompt` — consistent with other write operations
 - **cc-connect Native File Push**: Automatically detect generated files (images, PDFs, etc.) and push them natively to IM platforms (Telegram, Feishu, WeChat) via `cc-connect send --image` CLI, with Cloudinary URL fallback for text rendering
 - **ACP Typing Indicator**: Real-time typing indicator (`session/update { typing }`) sent every 5 seconds during LLM processing, enabling messenger bridges to show "typing..." status
 - **ACP Permission Protocol**: Tool permission requests (`session/request_permission`) forwarded through ACP to cc-connect for user approval, supporting `allow`/`deny` verdicts with 2-minute timeout

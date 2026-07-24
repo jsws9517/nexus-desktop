@@ -44,4 +44,5 @@ images/
 # Temporary files
 *.tmp
 *.temp
+DEV_DIALOG.md
 test.txt

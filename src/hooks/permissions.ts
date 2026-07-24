@@ -17,6 +17,14 @@ export interface ToolPermission {
   };
 }
 
+// Session-level cache: tools approved by user during this session
+// Cleared when nexus restarts. Prevents re-prompting for same tool.
+const sessionApprovedTools = new Set<string>();
+
+export function clearSessionApprovalCache(): void {
+  sessionApprovedTools.clear();
+}
+
 const WRITE_TOOLS = new Set([
   'write_file', 'file_write', 'edit_file', 'file_edit',
   'create_file', 'append_file', 'create_directory',
@@ -38,6 +46,10 @@ const DEFAULT_PERMISSIONS: ToolPermission[] = [
   { name: 'list_directory', level: PermissionLevel.Allow },
   { name: 'directory_tree', level: PermissionLevel.Allow },
   { name: 'get_file_info', level: PermissionLevel.Allow },
+  // Memory operations — recall is always allowed (read-only), others prompt
+  { name: 'recall', level: PermissionLevel.Allow },
+  { name: 'remember', level: PermissionLevel.Prompt },
+  { name: 'remember_project', level: PermissionLevel.Prompt },
   // Write operations — Prompt
   { name: 'write_file', level: PermissionLevel.Prompt },
   { name: 'file_write', level: PermissionLevel.Prompt },
@@ -178,9 +190,18 @@ export async function permissionCheckHook(
     }
 
     if (promptUser) {
+      // Session cache: only in auto mode — if user already approved this tool
+      // this session, skip prompt. In prompt mode, always ask.
+      if (whitelistMode === 'auto' && sessionApprovedTools.has(toolName)) {
+        return 'allow';
+      }
       const argsPreview = JSON.stringify(args).slice(0, 200);
       const question = `Allow tool "${toolName}"?\n  Args: ${argsPreview}\n  Allow? (y/N): `;
       const approved = await promptUser(question);
+      if (approved && whitelistMode === 'auto') {
+        sessionApprovedTools.add(toolName);
+        return 'allow';
+      }
       return approved ? 'allow' : { verdict: 'deny', reason: 'Rejected by user.' };
     }
   }

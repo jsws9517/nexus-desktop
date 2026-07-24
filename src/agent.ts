@@ -17,7 +17,7 @@ import { AcpProtocol } from './acp/protocol.js';
 import { Message, ToolCall, ToolResult, ToolDefinition, AgentEvent } from './types.js';
 import { Hooks, createSanityCheckHook } from './hooks/index.js';
 import { createAutoValidateHook } from './hooks/auto-validate.js';
-import { permissionCheckHook } from './hooks/permissions.js';
+import { permissionCheckHook, clearSessionApprovalCache } from './hooks/permissions.js';
 import { AuditManager } from './security/audit.js';
 import { resolveApiKey } from './security/env-key-encrypt.js';
 import { ThemeManager } from './theme/manager.js';
@@ -367,6 +367,7 @@ export class Agent {
   }
 
   constructor(enableAcp?: boolean, isAcpServer?: boolean) {
+    clearSessionApprovalCache(); // Clear any stale session approvals from previous runs
     this.config = new ConfigManager();
     this.enableAcp = enableAcp;
     this.isAcpServer = isAcpServer;
@@ -1858,11 +1859,14 @@ export class Agent {
     try {
       const allTools = this.mcp.getAllTools();
       if (!allTools.some(t => t.name === 'create_entities')) {
-        return { content: 'Knowledge graph tools not available.', isError: true };
+        return { content: 'Knowledge graph tools not available. To fix: (1) run "nexus config native install memory", or (2) save to .remember files manually.', isError: true };
       }
 
       // Check if 'user' entity already exists — append if so, create if not
       const existing = await this.mcp.callTool('search_nodes', { query: 'user' });
+      if (existing.isError && existing.content?.includes('timed out')) {
+        return { content: `Memory server timed out. Kill the stuck process: taskkill /f /im uv.exe`, isError: true };
+      }
       let entityExists = false;
       if (!existing.isError && existing.content) {
         try {
@@ -1874,21 +1878,27 @@ export class Agent {
 
       if (entityExists && allTools.some(t => t.name === 'add_observations')) {
         // Append to existing entity
-        await this.mcp.callTool('add_observations', {
+        const addResult = await this.mcp.callTool('add_observations', {
           name: 'user',
           observations: [content],
         });
+        if (addResult.isError && addResult.content?.includes('timed out')) {
+          return { content: `Memory server timed out. Kill the stuck process: taskkill /f /im uv.exe`, isError: true };
+        }
         // Auto-consolidate if too many observations
         await this.autoConsolidateObservations('user');
       } else {
         // Create new entity (create_entities merges observations on conflict)
-        await this.mcp.callTool('create_entities', {
+        const createResult = await this.mcp.callTool('create_entities', {
           entities: [{
             name: 'user',
             entityType: 'person',
             observations: [content],
           }],
         });
+        if (createResult.isError && createResult.content?.includes('timed out')) {
+          return { content: `Memory server timed out. Kill the stuck process: taskkill /f /im uv.exe`, isError: true };
+        }
       }
 
       return { content: `Remembered: ${content}` };

@@ -11,7 +11,7 @@
 - **每会话持久记忆**：自动记忆摘要按会话持久化，`/memory` 查看，`/insight` 跨会话分析
 - **丰富交互式聊天**：流式输出带渐变分隔线，会话报告，`/history` 浏览，PageUp 翻页
 - **内置文件系统工具**：完整文件读写/编辑/移动/复制/删除/目录树——无需外部 MCP 服务器
-- **MCP 工具**：连接外部 MCP 服务器获取专业能力；内置工具优先于 MCP 同名工具
+- **MCP 工具**：连接外部 MCP 服务器获取专业能力；内置工具优先于 MCP 同名工具；30 秒超时，卡死服务器自动重连
 - **路径授权**：提示/允许/拒绝，支持按会话（`y`）和持久化（`a`）授权，缓存于 `path-auth.json`；提前 `existsSync` 检查避免不存在的文件弹出授权提示
 - **斜杠命令**：`/model`, `/provider`, `/session`, `/resume`, `/memory`, `/insight`, `/tools`, `/skills`, `/config`, `/clear`, `/exit`, `/plan`, `/tasks`, `/btw`, `/theme`
 - **技能/插件**：从 `~/.nexus/skills/` 动态加载，无效技能目录自动生成降级
@@ -163,6 +163,8 @@ DAG 执行后自动运行 **finalize**：清理临时文件（`_probe`、`__pyca
 ### 权限白名单
 
 权限系统分为三级：`Allow`（永不询问）、`Prompt`（询问用户）、`Deny`（始终拒绝）。默认情况下，所有修改类工具都是 `Prompt`，即代理在每次操作前都会询问。白名单用于预授权工具，让 vibe-coding 会话不被打断地连续运行。
+
+**会话级缓存：** 在 `auto` 模式（白名单启用）下，用户批准某个工具后，同会话内后续调用该工具自动放行，不再重复询问。缓存在 nexus 重启时清空。
 
 **三套相互独立的机制：**
 
@@ -478,10 +480,14 @@ nexus config acp timeout reset chunkIdleMs
 
 ACP 服务器在每个轮次中每隔 `heartbeatMs` 发送一次**心跳**。如果 cc-connect 在其自身连接超时内未收到任何数据，它会断开会话；心跳正好填补这一空白。如果轮次卡住超过 `watchdogRemoteMs`，智能体进程将干净退出，cc-connect 会为下一条消息启动一个新实例。
 
-## 近期更新 (v1.1.6+)
+## 近期更新 (v1.1.7+)
 
 ### 新特性
 
+- **会话级工具审批缓存**：在 `auto` 模式下，用户批准某个工具（如 `file_write`）后，同会话内后续调用该工具自动放行，不再重复询问。缓存在 nexus 重启时清空。消除 vibe-coding 会话中反复出现的 `Allow tool "..."?` 提示
+- **MCP 工具超时与自动重连**：所有 MCP 工具调用设有 30 秒超时。服务器卡死时调用优雅失败，卡死的服务器自动断开连接——下次调用触发全新重启。防止无响应的 MCP 服务器导致无限挂起
+- **记忆服务器超时处理**：知识图谱操作（`remember`、`saveUserInfoIfNeeded`）现在能检测服务器超时并返回可操作的错误信息（如 `taskkill /f /im uv.exe`），不再无限挂起
+- **记忆工具权限默认值**：`recall` 始终允许（只读）；`remember` 和 `remember_project` 默认为 `Prompt`——与其他写操作一致
 - **cc-connect 原生文件推送**：自动检测生成的文件（图片、PDF 等），通过 `cc-connect send --image` CLI 原生推送到 IM 平台（Telegram、飞书、微信），Cloudinary URL 作为文本回退
 - **ACP 打字指示器**：LLM 处理期间每 5 秒发送实时打字指示器（`session/update { typing }`），让消息桥接器显示"正在输入..."状态
 - **ACP 权限协议**：工具权限请求（`session/request_permission`）通过 ACP 转发给 cc-connect 进行用户审批，支持 `allow`/`deny` 判决，超时 2 分钟
