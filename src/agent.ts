@@ -368,6 +368,7 @@ export class Agent {
 
   constructor(enableAcp?: boolean, isAcpServer?: boolean) {
     clearSessionApprovalCache(); // Clear any stale session approvals from previous runs
+    this.audit.clearCache();     // Clear audit approval cache too
     this.config = new ConfigManager();
     this.enableAcp = enableAcp;
     this.isAcpServer = isAcpServer;

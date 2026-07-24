@@ -190,15 +190,16 @@ export async function permissionCheckHook(
     }
 
     if (promptUser) {
-      // Session cache: only in auto mode — if user already approved this tool
-      // this session, skip prompt. In prompt mode, always ask.
-      if (whitelistMode === 'auto' && sessionApprovedTools.has(toolName)) {
+      // Session cache: once a user approves a tool during this session,
+      // subsequent calls are auto-approved regardless of whitelist mode.
+      // Cache is cleared on nexus restart (clearSessionApprovalCache).
+      if (sessionApprovedTools.has(toolName)) {
         return 'allow';
       }
       const argsPreview = JSON.stringify(args).slice(0, 200);
       const question = `Allow tool "${toolName}"?\n  Args: ${argsPreview}\n  Allow? (y/N): `;
       const approved = await promptUser(question);
-      if (approved && whitelistMode === 'auto') {
+      if (approved) {
         sessionApprovedTools.add(toolName);
         return 'allow';
       }

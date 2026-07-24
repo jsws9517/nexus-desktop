@@ -18,6 +18,11 @@ export class AuditManager {
     this.askUser = cb;
   }
 
+  /** Clear the session-level approval cache (called on nexus restart). */
+  clearCache(): void {
+    this.pendingApprovals.clear();
+  }
+
   async requestApproval(action: AuditAction): Promise<AuditDecision> {
     if (action.type === 'user_info') {
       const detail = action.detail.slice(0, 200);
@@ -38,9 +43,12 @@ export class AuditManager {
     }
 
     if (action.type === 'tool_call' && action.name === 'remember') {
+      const cacheKey = `tool_call:${action.name}`;
+      if (this.pendingApprovals.has(cacheKey)) return 'allow';
       const allowed = await this.promptYesNo(
         chalk.yellow(`\n⚠ Agent wants to call "remember" to save information\n  Allow? (y/N): `)
       );
+      if (allowed) this.pendingApprovals.add(cacheKey);
       return allowed ? 'allow' : 'deny';
     }
 
