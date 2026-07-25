@@ -834,11 +834,24 @@ export class Agent {
       }
       // Auto-learn model context limit from API error
       const errStr = err.message;
-      const contextMatch = errStr.match(/maximum context length is (\d+)/i);
+      const contextMatch = errStr.match(/(?:maximum context length is|exceeds.*?(?:context|limit)|Request exceeds)/i);
       if (contextMatch) {
-        const actualLimit = parseInt(contextMatch[1]!, 10);
-        this.config.learnModelContextLimit(this.provider.model, actualLimit);
-        this.context.setMaxContextTokens(actualLimit);
+        const limitMatch = errStr.match(/(\d+)/);
+        if (limitMatch) {
+          const actualLimit = parseInt(limitMatch[1]!, 10);
+          this.config.learnModelContextLimit(this.provider.model, actualLimit);
+          this.context.setMaxContextTokens(actualLimit);
+        }
+        // Aggressively compress and retry once instead of throwing.
+        // Even without a learnable token count the context may be over budget,
+        // so compress first, then retry the LLM turn.
+        await this.context.compress(0);
+        await this.runLlmTurn(showDetail, signal);
+        if (signal.aborted) return;
+        if (!showDetail) {
+          this.renderCompactOutput();
+        }
+        return;
       }
       throw e;
     } finally {

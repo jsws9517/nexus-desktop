@@ -461,8 +461,11 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       // Re-render the prompt's final line with the captured answer, then move to a
       // fresh line. This prevents the next write (e.g. a tool spinner) from
       // appending onto the same line as the echoed answer.
+      // In non-singleKey mode, readline's Enter echo already advanced to a new line,
+      // so move cursor up first (\x1b[1A) to avoid duplicating the prompt line.
       const finish = (answer: string) => {
-        _rawStdoutWrite(`\r\x1b[K${lastLine}${answer}\n`);
+        const up = singleKey ? '' : '\x1b[1A';
+        _rawStdoutWrite(`${up}\r\x1b[K${lastLine}${answer}\n`);
       };
 
       const lineHandler = (line: string) => {
@@ -1070,11 +1073,27 @@ async function handleSlashCommand(
 
       const currentId = agent.getCurrentSessionId();
       const maxTokens = agent.config.getProvider().maxContextTokens || 8192;
-      const mode = args[0];
+      const flag = args[0];
       const param = args.slice(1).join(' ');
 
+      // Bare name: /resume <name> — search session names without a flag prefix.
+      // If the argument is a valid index number, treat it as index instead.
+      if (flag && !flag.startsWith('-')) {
+        const numArg = parseInt(flag, 10);
+        if (!isNaN(numArg) && numArg >= 1 && numArg <= sessions.length) {
+          return doResume(agent, sessions[numArg - 1]!, currentId, maxTokens, customQuestion);
+        }
+        const nameQuery = args.join(' ');
+        const matched = sessions.filter(s => s.name.toLowerCase().includes(nameQuery.toLowerCase()));
+        if (matched.length === 0) {
+          console.log(t().error(`No session found matching name "${nameQuery}".`));
+          return false;
+        }
+        return doResume(agent, matched[0]!, currentId, maxTokens, customQuestion);
+      }
+
       // -ssid <session-uuid>
-      if (mode === '-ssid' && param) {
+      if (flag === '-ssid' && param) {
         const session = sessions.find(s => s.id === param);
         if (!session) {
           console.log(t().error(`Session not found: ${param}`));
@@ -1084,7 +1103,7 @@ async function handleSlashCommand(
       }
 
       // -name <session name> (auto-resume first match, i.e. most recently updated)
-      if (mode === '-name' && param) {
+      if (flag === '-name' && param) {
         const matched = sessions.filter(s => s.name.toLowerCase().includes(param.toLowerCase()));
         if (matched.length === 0) {
           console.log(t().error(`No session found matching name "${param}".`));
@@ -1094,8 +1113,8 @@ async function handleSlashCommand(
       }
 
       // -id <number> or default (interactive list)
-      const numArg = mode === '-id' ? parseInt(param, 10) : NaN;
-      if (mode === '-id' && !isNaN(numArg) && numArg >= 1 && numArg <= sessions.length) {
+      const numArg = flag === '-id' ? parseInt(param, 10) : NaN;
+      if (flag === '-id' && !isNaN(numArg) && numArg >= 1 && numArg <= sessions.length) {
         return doResume(agent, sessions[numArg - 1]!, currentId, maxTokens, customQuestion);
       }
 
@@ -1882,8 +1901,8 @@ async function doResumeList(
 ): Promise<boolean> {
   const rows: { id: string; name: string; model: string; updatedAt: string; tokens: number }[] = [];
   console.log(t().heading('Sessions:'));
-  console.log(t().textDim('  #   Name                       Model                Updated              Tokens  Session ID'));
-  console.log(t().textDim('  --- ---------------------------- -------------------- -------------------- ------ ------------------------------------'));
+  console.log(t().textDim('  #   Name                         Model             Updated          Tokens    Session ID'));
+  console.log(t().textDim('  --- ---------------------------- ------------------ ------------------ ------    ------------------------------------'));
   for (const s of displaySessions) {
     const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
     const date = new Date(s.updatedAt).toLocaleString();

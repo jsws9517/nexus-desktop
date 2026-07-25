@@ -184,7 +184,7 @@ export function registerConfigCommand(program: Command): void {
 
   visionCmd
     .command('list')
-    .description('List configured vision providers (* = active)')
+    .description('List all vision & OCR config (* = active)')
     .action(() => {
       const config = new ConfigManager();
       const active = config.getActiveVisionProvider();
@@ -287,7 +287,7 @@ export function registerConfigCommand(program: Command): void {
       console.log(t.success(`Removed vision provider: ${name}`));
     });
 
-  const visionModeCmd = configCmd.command('vision-mode').description('Vision mode settings (local-first | cloud-first | local-only | cloud-only)');
+  const visionModeCmd = visionCmd.command('mode').description('Vision mode settings (local-first | cloud-first | local-only | cloud-only)');
 
   visionModeCmd
     .command('list')
@@ -318,7 +318,7 @@ export function registerConfigCommand(program: Command): void {
 
   // ── OCR Config ──────────────────────────────────────────────────
 
-  const ocrCmd = configCmd.command('ocr').description('OCR provider management for text extraction from images');
+  const ocrCmd = visionCmd.command('ocr').description('OCR provider management for text extraction from images');
 
   ocrCmd
     .command('list')
@@ -330,7 +330,7 @@ export function registerConfigCommand(program: Command): void {
       console.log(t.heading('OCR Providers:'));
       if (Object.keys(providers).length === 0) {
         console.log(t.textDim('  No OCR providers configured.'));
-        console.log(t.textDim('  Use "nexus config ocr set <name>" to add one.'));
+        console.log(t.textDim('  Use "nexus config vision ocr set <name>" to add one.'));
         return;
       }
       for (const [name, p] of Object.entries(providers)) {
@@ -346,9 +346,9 @@ export function registerConfigCommand(program: Command): void {
     .command('set <name>')
     .description(`Configure an OCR provider for text extraction.\n` +
       `  OpenAI-compatible (e.g. GLM-4V, Qwen-VL):\n` +
-      `    nexus config ocr set <name> -t openai-compatible -k <key> -u <url> -m <model>\n` +
+      `    nexus config vision ocr set <name> -t openai-compatible -k <key> -u <url> -m <model>\n` +
       `  PaddleOCR (local):\n` +
-      `    nexus config ocr set <name> -t paddleocr [--command <path>] [--args '<arg1> <arg2>']`)
+      `    nexus config vision ocr set <name> -t paddleocr [--command <path>] [--args '<arg1> <arg2>']`)
     .option('-t, --type <type>', 'Provider type: openai-compatible or paddleocr', 'openai-compatible')
     .option('-k, --apiKey [key]', 'API key (for openai-compatible; plaintext or $ENV_VAR; use quotes if value is empty)')
     .option('-u, --baseUrl <url>', 'API endpoint URL (for openai-compatible)')
@@ -427,7 +427,7 @@ export function registerConfigCommand(program: Command): void {
 
   // ── Vision Capability Management ────────────────────────────────────
 
-  const visionCapCmd = configCmd.command('vision-cap').description('Vision capability detection and whitelist/blacklist management');
+  const visionCapCmd = visionCmd.command('capability').description('Vision capability detection and whitelist/blacklist management');
 
   visionCapCmd
     .command('status')

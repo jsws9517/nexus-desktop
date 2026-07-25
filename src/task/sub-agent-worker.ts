@@ -54,8 +54,13 @@ export class SubAgentWorker {
         mcpAllowlist: [...parentPerms.mcpAllowlist],
       });
     }
-    // Sub-agents need a generous context window to read files and iterate
-    child.context.setMaxContextTokens(128000);
+    // Sub-agents need a generous context window to read files and iterate.
+    // Use the parent provider's actual model limit (auto-learned or configured)
+    // instead of a hardcoded value, so the sub-agent does not exceed the model's
+    // real context window. Fall back to 64000 for sub-agents so they have
+    // enough room to process files even when maxContextTokens is not configured.
+    const parentLimit = this.parentAgent.config.getModelContextLimit(this.parentAgent.provider.model);
+    child.context.setMaxContextTokens(Math.max(parentLimit, 64000));
 
     // Scope the child agent's tools to the role's allowlist (if any)
     if (roleDef.allowedTools && roleDef.allowedTools.length > 0) {

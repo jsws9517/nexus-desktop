@@ -34,10 +34,11 @@ function buildSchema(): SchemaCategory[] {
       fields: [
         { key: 'language', label: 'Language', type: 'select', enumValues: ['en', 'zh-CN'] },
         { key: 'promptName', label: 'Prompt Name', type: 'string' },
-        { key: 'activeProvider', label: 'Active Provider', type: 'select', enumValues: [] },
-        { key: 'visionMode', label: 'Vision Mode', type: 'select', enumValues: ['local-first', 'cloud-first', 'local-only', 'cloud-only'] },
-        { key: 'activeVisionProvider', label: 'Active Vision Provider', type: 'select', enumValues: [] },
-        { key: 'qualityGate.autoTest', label: 'Quality Gate: Auto-Test', type: 'boolean' },
+{ key: 'activeProvider', label: 'Active Provider', type: 'select', enumValues: [] },
+{ key: 'visionMode', label: 'Vision Mode', type: 'select', enumValues: ['local-first', 'cloud-first', 'local-only', 'cloud-only'] },
+{ key: 'activeVisionProvider', label: 'Active Vision Provider', type: 'select', enumValues: [] },
+{ key: 'activeOcrProvider', label: 'Active OCR Provider', type: 'select', enumValues: [] },
+{ key: 'qualityGate.autoTest', label: 'Quality Gate: Auto-Test', type: 'boolean' },
         { key: 'qualityGate.autoCommit', label: 'Quality Gate: Auto-Commit', type: 'boolean' },
       ],
     },
@@ -63,6 +64,21 @@ function buildSchema(): SchemaCategory[] {
         { key: 'apiKey', label: 'API Key', type: 'password' },
         { key: 'baseUrl', label: 'Base URL', type: 'string' },
         { key: 'model', label: 'Model', type: 'string' },
+      ],
+    },
+    {
+      id: 'ocr',
+      label: 'OCR Providers',
+      dynamic: true,
+      fields: [
+        { key: 'name', label: 'Name', type: 'string' },
+        { key: 'type', label: 'Type', type: 'select', enumValues: ['openai-compatible', 'paddleocr'] },
+        { key: 'apiKey', label: 'API Key (online)', type: 'password' },
+        { key: 'baseUrl', label: 'Base URL (online)', type: 'string' },
+        { key: 'model', label: 'Model (online)', type: 'string' },
+        { key: 'command', label: 'Command (local)', type: 'string' },
+        { key: 'args', label: 'Arguments (local)', type: 'string' },
+        { key: 'languages', label: 'Languages', type: 'string' },
       ],
     },
     {
@@ -122,16 +138,22 @@ function maskKey(key: string): string {
 
 function sanitizeConfigForDisplay(cfg: Record<string, unknown>): Record<string, unknown> {
   const copy = JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>;
-  const providers = copy.providers as Record<string, Record<string, unknown>> | undefined;
-  if (providers) {
-    for (const key of Object.keys(providers)) {
-      if (providers[key]?.apiKey) providers[key].apiKey = maskKey(String(providers[key].apiKey));
-    }
-  }
-  const visionProviders = copy.visionProviders as Record<string, Record<string, unknown>> | undefined;
-  if (visionProviders) {
-    for (const key of Object.keys(visionProviders)) {
-      if (visionProviders[key]?.apiKey) visionProviders[key].apiKey = maskKey(String(visionProviders[key].apiKey));
+const providers = copy.providers as Record<string, Record<string, unknown>> | undefined;
+const visionProviders = copy.visionProviders as Record<string, Record<string, unknown>> | undefined;
+const ocrProviders = copy.ocrProviders as Record<string, Record<string, unknown>> | undefined;
+if (providers) {
+for (const key of Object.keys(providers)) {
+if (providers[key]?.apiKey) providers[key].apiKey = maskKey(String(providers[key].apiKey));
+}
+}
+if (visionProviders) {
+for (const key of Object.keys(visionProviders)) {
+if (visionProviders[key]?.apiKey) visionProviders[key].apiKey = maskKey(String(visionProviders[key].apiKey));
+}
+}
+  if (ocrProviders) {
+    for (const key of Object.keys(ocrProviders)) {
+      if (ocrProviders[key]?.apiKey) ocrProviders[key].apiKey = maskKey(String(ocrProviders[key].apiKey));
     }
   }
   return copy;
@@ -213,12 +235,15 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
     const cfg = config.get() as Record<string, unknown>;
     const providerNames = Object.keys((cfg.providers as Record<string, unknown>) || {});
     const visionNames = Object.keys((cfg.visionProviders as Record<string, unknown>) || {});
+const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {});
     for (const cat of schema) {
       if (cat.id === 'general') {
         const ap = cat.fields.find((f) => f.key === 'activeProvider');
         if (ap) ap.enumValues = providerNames;
         const avp = cat.fields.find((f) => f.key === 'activeVisionProvider');
         if (avp) avp.enumValues = visionNames;
+        const aop = cat.fields.find((f) => f.key === 'activeOcrProvider');
+        if (aop) aop.enumValues = ocrNames;
       }
     }
     return jsonResponse(res, { categories: schema });
@@ -235,7 +260,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
         const updates = JSON.parse(body) as Record<string, unknown>;
         const cfg = config.get() as Record<string, unknown>;
         for (const [key, value] of Object.entries(updates)) {
-          if (key === 'providers' || key === 'visionProviders' || key === 'mcpServers') continue;
+          if (key === 'providers' || key === 'visionProviders' || key === 'ocrProviders' || key === 'mcpServers') continue;
           cfg[key] = value;
         }
         config.save();
@@ -292,6 +317,61 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
     const name = url.slice('/api/config/vision-provider/'.length);
     config.removeVisionProvider(name);
     jsonResponse(res, { ok: true });
+    return;
+  }
+
+  // ── OCR Provider CRUD ──────────────────────────────
+
+  if (url === '/api/config/ocr-providers' && method === 'GET') {
+    const config = new ConfigManager();
+    const active = config.getActiveOcrProvider();
+    const providers = config.getOcrProviders();
+    jsonResponse(res, { active, providers });
+    return;
+  }
+
+  if (url === '/api/config/ocr-provider' && method === 'POST') {
+    readBody(req).then((body) => {
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        const { name, ...ocrConfigRaw } = parsed;
+        const type = (String(ocrConfigRaw.type || 'openai-compatible')) as 'openai-compatible' | 'paddleocr';
+        const cfg: Record<string, unknown> = { type };
+        if (type === 'openai-compatible') {
+          cfg.apiKey = typeof ocrConfigRaw.apiKey === 'string' ? ocrConfigRaw.apiKey : undefined;
+          cfg.baseUrl = typeof ocrConfigRaw.baseUrl === 'string' ? ocrConfigRaw.baseUrl : undefined;
+          cfg.model = typeof ocrConfigRaw.model === 'string' ? ocrConfigRaw.model : undefined;
+        } else {
+          cfg.command = typeof ocrConfigRaw.command === 'string' ? ocrConfigRaw.command : undefined;
+          cfg.args = typeof ocrConfigRaw.args === 'string' ? ocrConfigRaw.args.split(',').map((s: string) => s.trim()).filter(Boolean) : undefined;
+        }
+        cfg.languages = typeof ocrConfigRaw.languages === 'string' ? ocrConfigRaw.languages.split(',').map((s: string) => s.trim()).filter(Boolean) : undefined;
+        config.setOcrProvider(String(name), cfg as { type: string; apiKey?: string; baseUrl?: string; model?: string; command?: string; args?: string[]; languages?: string[] });
+        jsonResponse(res, { ok: true });
+      } catch (err) {
+        jsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    });
+    return;
+  }
+
+  if (url.startsWith('/api/config/ocr-provider/') && method === 'DELETE') {
+    const name = decodeURIComponent(url.slice('/api/config/ocr-provider/'.length));
+    config.removeOcrProvider(name);
+    jsonResponse(res, { ok: true });
+    return;
+  }
+
+  if (url === '/api/config/ocr-switch' && method === 'POST') {
+    readBody(req).then((body) => {
+      try {
+        const { name } = JSON.parse(body) as { name: string };
+        config.setActiveOcrProvider(name);
+        jsonResponse(res, { ok: true });
+      } catch (err) {
+        jsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    });
     return;
   }
 
@@ -478,6 +558,14 @@ function renderDynamicCategory(main, cat) {
   const items = getDynamicItems(cat.id);
   const container = document.createElement('div');
 
+  function ocrFieldsFor(type) {
+    if (cat.id !== 'ocr') return cat.fields;
+    return cat.fields.filter(f => f.key === 'name' || f.key === 'type' || f.key === 'languages' ||
+      (type === 'openai-compatible' ? (f.key === 'apiKey' || f.key === 'baseUrl' || f.key === 'model') :
+       type === 'paddleocr' ? (f.key === 'command' || f.key === 'args') :
+       false));
+  }
+
   for (const [name, item] of Object.entries(items)) {
     const card = document.createElement('div');
     card.className = 'card';
@@ -485,11 +573,18 @@ function renderDynamicCategory(main, cat) {
       '<h3 style="margin:0">' + esc(name) + '</h3>' +
       '<button class="btn btn-danger btn-sm" onclick="deleteItem(\\'' + cat.id + '\\',\\'' + esc(name) + '\\')">Remove</button></div>';
     const fieldsDiv = document.createElement('div');
+    const visibleFields = ocrFieldsFor(item.type);
     for (const field of cat.fields) {
       if (field.key === 'name') continue;
+      if (!visibleFields.includes(field)) continue;
       const val = item[field.key];
       fieldsDiv.appendChild(renderField(field, val, (v) => {
         item[field.key] = v;
+        if (field.key === 'type') {
+          if (v === 'openai-compatible') { delete item.command; delete item.args; }
+          else { delete item.apiKey; delete item.baseUrl; delete item.model; }
+          renderTab(cat.id);
+        }
         saveDynamicItem(cat.id, name, item);
       }));
     }
@@ -508,17 +603,31 @@ function renderDynamicCategory(main, cat) {
     newData[field.key] = field.type === 'boolean' ? false : field.type === 'number' ? 0 : '';
   }
   let newName = '';
+  let newType = '';
   const nameField = renderField({ key: 'name', label: 'Name', type: 'string', required: true }, '', (v) => { newName = v; });
   newForm.appendChild(nameField);
-  for (const field of cat.fields) {
-    if (field.key === 'name') continue;
-    newForm.appendChild(renderField(field, newData[field.key], (v) => { newData[field.key] = v; }));
-  }
+  const typeField = renderField({ key: 'type', label: 'Type', type: 'select', enumValues: ['openai-compatible', 'paddleocr'] }, '', (v) => {
+    newType = v;
+    newData.type = v;
+    // Rebuild the dynamic fields
+    const existing = newForm.querySelectorAll('.ocr-dynamic-field');
+    existing.forEach(el => el.remove());
+    const dynFields = ocrFieldsFor(v).filter(f => f.key !== 'name' && f.key !== 'type');
+    for (const f of dynFields) {
+      newData[f.key] = f.type === 'boolean' ? false : f.type === 'number' ? 0 : '';
+      const el = renderField(f, newData[f.key], (val) => { newData[f.key] = val; });
+      el.className = (el.className || '') + ' ocr-dynamic-field';
+      newForm.insertBefore(el, addBtn);
+    }
+  });
+  newForm.appendChild(typeField);
+  // No dynamic fields until type is selected
   const addBtn = document.createElement('button');
   addBtn.className = 'btn btn-primary';
   addBtn.textContent = 'Add ' + cat.label.slice(0, -1);
   addBtn.onclick = () => {
     if (!newName) { toast('Name is required', 'error'); return; }
+    if (!newType) { toast('Type is required', 'error'); return; }
     saveNewDynamicItem(cat.id, newName, newData);
   };
   newForm.appendChild(addBtn);
@@ -767,9 +876,19 @@ function renderField(field, value, onChange) {
 
 function getDynamicItems(catId) {
   const cfg = state.config || {};
-  if (catId === 'providers') return cfg.providers || {};
-  if (catId === 'vision') return cfg.visionProviders || {};
-  if (catId === 'mcp') return cfg.mcpServers || {};
+if (catId === 'providers') return cfg.providers || {};
+if (catId === 'vision') return cfg.visionProviders || {};
+if (catId === 'ocr') {
+  const raw = cfg.ocrProviders || {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    out[k] = { ...v };
+    if (Array.isArray(out[k].args)) out[k].args = out[k].args.join(', ');
+    if (Array.isArray(out[k].languages)) out[k].languages = out[k].languages.join(', ');
+  }
+  return out;
+}
+if (catId === 'mcp') return cfg.mcpServers || {};
   return {};
 }
 
@@ -789,22 +908,23 @@ function setNestedValue(obj, key, val) {
 
 async function saveConfig() {
   try {
-    await api('/api/config', { method: 'PUT', body: JSON.stringify({
-      language: state.config.language,
-      promptName: state.config.promptName,
-      activeProvider: state.config.activeProvider,
-      visionMode: state.config.visionMode,
-      activeVisionProvider: state.config.activeVisionProvider,
-      qualityGate: state.config.qualityGate || { autoTest: true, autoCommit: false },
-      acp: state.config.acp,
-      permissions: state.config.permissions || { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [] },
-    })});
+await api('/api/config', { method: 'PUT', body: JSON.stringify({
+  language: state.config.language,
+  promptName: state.config.promptName,
+  activeProvider: state.config.activeProvider,
+  visionMode: state.config.visionMode,
+  activeVisionProvider: state.config.activeVisionProvider,
+  activeOcrProvider: state.config.activeOcrProvider,
+  qualityGate: state.config.qualityGate || { autoTest: true, autoCommit: false },
+  acp: state.config.acp,
+  permissions: state.config.permissions || { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [] },
+})});
     toast('Saved');
   } catch { toast('Save failed', 'error'); }
 }
 
 async function saveDynamicItem(catId, name, data) {
-  const map = { providers: 'provider', vision: 'vision-provider', mcp: 'mcp-server' };
+  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', mcp: 'mcp-server' };
   const ep = map[catId];
   if (!ep) return;
   try {
@@ -814,7 +934,7 @@ async function saveDynamicItem(catId, name, data) {
 }
 
 async function saveNewDynamicItem(catId, name, data) {
-  const map = { providers: 'provider', vision: 'vision-provider', mcp: 'mcp-server' };
+  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', mcp: 'mcp-server' };
   const ep = map[catId];
   if (!ep) return;
   try {
@@ -827,7 +947,7 @@ async function saveNewDynamicItem(catId, name, data) {
 
 async function deleteItem(catId, name) {
   if (!confirm('Remove "' + name + '"?')) return;
-  const map = { providers: 'provider', vision: 'vision-provider', mcp: 'mcp-server' };
+  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', mcp: 'mcp-server' };
   const ep = map[catId];
   if (!ep) return;
   try {
