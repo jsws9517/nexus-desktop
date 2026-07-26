@@ -312,14 +312,25 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     (rl as any)._ttyWrite = handler;
   };
   let isMultiLine = false;
+  let _charBeforeWasCR = false; // tracks CRLF vs standalone LF (Ctrl+Enter)
+  let _seenCR = false; // terminal uses CRLF; standalone \n = Ctrl+Enter
 
   // Shared main _ttyWrite: used both for initial setup and after multi-line exit
   function makeMainTtyWrite() {
     return function (s: string, key: { name?: string; ctrl?: boolean; alt?: boolean; shift?: boolean }) {
       if (!key) return originalTtyWrite(s, key);
 
+        // Track CRLF: Windows Enter sends \r\n; ignore the \n when it follows \r
+        if (s === '\r') { _charBeforeWasCR = true; _seenCR = true; }
+        else if (_charBeforeWasCR && s === '\n') { _charBeforeWasCR = false; return; }
+        else { _charBeforeWasCR = false; }
+
         if (isQuestionMode) {
-          if (key.name === 'pageup' || key.name === 'pagedown' || key.name === 'up' || key.name === 'down' || (key.ctrl && key.name === 'o')) return;
+        if (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && key.name === 'o')) return;
+        // On wrapped lines, let readline handle up/down for visual cursor movement.
+        // Without this, CJK long-line wraps cause readline to lose column tracking
+        // and trigger unnecessary prompt re-renders.
+        if ((key.name === 'up' || key.name === 'down') && !lineWraps()) return;
           // Single-key prompts (y/N) render the answer themselves via finish(),
           // so suppress readline's own echo here — otherwise a duplicated key
           // appears on the following line.
@@ -327,7 +338,8 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
           return originalTtyWrite(s, key);
         }
 
-        if (key.name === 'pageup' || key.name === 'pagedown' || key.name === 'up' || key.name === 'down' || (key.ctrl && key.name === 'o')) return;
+        if (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && key.name === 'o')) return;
+        if ((key.name === 'up' || key.name === 'down') && !lineWraps()) return;
 
       // === Multi-line triggers: Ctrl+Enter (Shift+Enter / Alt+Enter) ===
       if (isNewLineKey(s, key)) {
@@ -429,9 +441,28 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
   // ---- Multi-line key detection (used across all _ttyWrite) ----
   function isNewLineKey(s: string, key: { name?: string; shift?: boolean; ctrl?: boolean; alt?: boolean }): boolean {
     // Ctrl+Enter (and Shift+Enter / Alt+Enter) trigger a newline.
-    // Ctrl+J is intentionally NOT a newline trigger anymore.
-    if ((key.name === 'enter' || key.name === 'return') && (key.shift || key.ctrl || key.alt)) return true;
+    if ((key.name === 'enter' || key.name === 'return') && (key.ctrl || key.alt)) return true;
+    // On CRLF terminals (detected via _seenCR), Ctrl+Enter sends standalone \n
+    // without setting key.ctrl. On LF terminals _seenCR is false → no false positive.
+    if (s === '\n' && !key.shift && !key.ctrl && !key.alt && _seenCR) return true;
     return false;
+  }
+
+  /** Approximate visual width of a string (CJK = 2, ASCII/ANSI = 1). */
+  function visualWidth(s: string): number {
+    let w = 0;
+    for (const ch of s) {
+      const cp = ch.codePointAt(0) || 0;
+      if (cp >= 0x4E00 && cp <= 0x9FFF || cp >= 0x3400 && cp <= 0x4DBF || cp >= 0xF900 && cp <= 0xFAFF || cp >= 0xFF01 && cp <= 0xFF60 || cp >= 0xFFE0 && cp <= 0xFFE6) w += 2;
+      else w += 1;
+    }
+    return w;
+  }
+
+  /** True if the current readline line (plus prompt) wraps past terminal width. */
+  function lineWraps(): boolean {
+    const cols = process.stdout.columns || 120;
+    return visualWidth(rl.line) + promptName.length + 2 >= cols;
   }
 
   // ---- Interactive question mode (for /resume, /delete) ----
@@ -601,6 +632,11 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     setTtyWrite(function (s: string, key: { name?: string; ctrl?: boolean; meta?: boolean; alt?: boolean; shift?: boolean }) {
       if (!key) return;
 
+      // Track CRLF: Windows Enter sends \r\n; ignore the \n when it follows \r
+      if (s === '\r') { _charBeforeWasCR = true; _seenCR = true; }
+      else if (_charBeforeWasCR && s === '\n') { _charBeforeWasCR = false; return; }
+      else { _charBeforeWasCR = false; }
+
       if (isQuestionMode) {
         // In singleKey mode, suppress echo for y/a/n — keyHandler writes its own output
         if (isSingleKeyMode && (s === 'y' || s === 'a' || s === 'n' || s === 'Y' || s === 'A' || s === 'N')) return;
@@ -635,7 +671,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         return;
       }
 
-      // === Multi-line triggers: Ctrl+Enter (Shift+Enter / Alt+Enter) → append line ===
+      // === Ctrl+Enter (Shift+Enter / Alt+Enter) → append line ===
       if (isNewLineKey(s, key)) {
         multiLineAppendLine();
         return;
@@ -701,12 +737,17 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     multiLineBuffer = [];
 
     setTtyWrite(makeMainTtyWrite());
-    (rl as any).line = '';
 
     if (submit && fullInput) {
       process.stdout.write('\n');
+      (rl as any).line = ''; // Clear leftover from main-mode typing (enterMultiLine reads but does not clear rl.line)
+      // Emit the 'line' event directly — our _ttyWrite override replaces
+      // readline's Enter processing, so rl.line alone doesn't trigger
+      // submission. The CRLF \n is eaten by _charBeforeWasCR tracking
+      // to prevent double-fire.
       rl.emit('line', fullInput);
     } else {
+      (rl as any).line = '';
       process.stdout.write('\n');
       rl.prompt();
     }
@@ -1033,13 +1074,23 @@ async function handleSlashCommand(
       const msgs = agent.context.getMessages();
       let summary = '';
       for (const m of msgs) {
-        if (m.role === 'system' && m.content.includes('[Previous conversation summary]')) {
-          summary = m.content.replace('[Previous conversation summary]: ', '').slice(0, 20);
-          break;
-        }
-        if (m.content.length > 20) {
-          summary = m.content.slice(0, 20);
-          break;
+        if (m.role === 'system') {
+          // Extract meaningful summary from resume/compact markers
+          const resumed = m.content.match(/^\[Resumed session ".*?" — original \d+ tokens, compressed to summary, kept last \d+ messages\]\n\n([\s\S]*?)(?:\n\n\[|$)/);
+          const compacted = m.content.match(/^\[Previous conversation summary\]: ([\s\S]*?)(?:\n\n\[|$)/);
+          const snapshot = m.content.match(/^\[Knowledge snapshot\]: ([\s\S]*?)(?:\n\n\[|$)/);
+          const raw = resumed?.[1] || compacted?.[1] || snapshot?.[1];
+          if (raw) {
+            // Truncate near 200 chars, break at last whitespace to avoid
+            // cutting mid-word or erasing content before a newline
+            if (raw.length > 200) {
+              const boundary = raw.slice(0, 200).search(/\s\S*$/);
+              summary = boundary > 100 ? raw.slice(0, boundary + 1) : raw.slice(0, 200);
+            } else {
+              summary = raw;
+            }
+            break;
+          }
         }
       }
 

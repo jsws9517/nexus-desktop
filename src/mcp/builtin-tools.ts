@@ -139,6 +139,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute file path' },
+        head: { type: 'number', description: 'Only read the first N lines (optional)' },
       },
       required: ['path'],
     },
@@ -153,6 +154,17 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       }
       try {
         const content = readFileSync(path, 'utf-8');
+        const head = args.head ? parseInt(String(args.head), 10) : 0;
+        if (head > 0) {
+          const lines = content.split('\n').slice(0, head).join('\n');
+          const skipped = content.split('\n').length - head;
+          return { content: skipped > 0 ? `${lines}\n... (${skipped} more lines)` : lines };
+        }
+        // Enforce a 100KB max to prevent context overflow; if larger, return head-100
+        if (content.length > 100 * 1024) {
+          const truncated = content.slice(0, 100 * 1024);
+          return { content: `${truncated}\n... (content truncated at 100KB, use head=N to read specific lines)` };
+        }
         return { content };
       } catch (err) {
         return { content: `Error reading file: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
@@ -474,6 +486,16 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         writeFileSync(path, content, 'utf-8');
         return { content: `Successfully wrote to ${path}` };
       } catch (err) {
+        // Auto-create parent directory and retry once on ENOENT
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          try {
+            mkdirSync(dirname(path), { recursive: true });
+            writeFileSync(path, content, 'utf-8');
+            return { content: `Successfully wrote to ${path}` };
+          } catch (retryErr) {
+            return { content: `Error writing file: parent directory does not exist and could not be created. Please manually create the directory first.\n  ${redactPaths(retryErr instanceof Error ? retryErr.message : String(retryErr))}`, isError: true };
+          }
+        }
         return { content: `Error writing file: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
     },

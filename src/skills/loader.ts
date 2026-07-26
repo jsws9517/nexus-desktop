@@ -9,6 +9,10 @@ const SKILLS_DIR = join(homedir(), '.nexus', 'skills');
 const CLAUDE_SKILLS_DIR = join(homedir(), '.claude', 'skills');
 const NATIVE_PLUGINS_DIR = join(homedir(), '.nexus', 'native', 'plugins');
 
+/** Suppress skill loading warnings (noisy during session, shown only on first load). */
+let _warningsSuppressed = false;
+export function suppressSkillWarnings(): void { _warningsSuppressed = true; }
+
 function isSafePath(p: string): boolean {
   if (!isAbsolute(p)) return false;
   const normalized = resolve(p);
@@ -79,6 +83,8 @@ export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
     }
   }
 
+  // Auto-suppress after first load so warnings only appear on startup
+  _warningsSuppressed = true;
   return skills;
 }
 
@@ -113,7 +119,7 @@ async function tryLoadJsSkill(dirPath: string, name: string, indexData?: { skill
   // Pre-scan JS content for suspicious patterns before executing it
   const source = readFileSync(modulePath, 'utf-8');
   if (isDangerousSkillJs(source)) {
-    process.stderr.write(`[skills] Warning: "${name}" at ${modulePath} contains suspicious patterns and will not be loaded.\n`);
+    if (!_warningsSuppressed) process.stderr.write(`[skills] Warning: "${name}" at ${modulePath} contains suspicious patterns and will not be loaded.\n`);
     return undefined;
   }
 

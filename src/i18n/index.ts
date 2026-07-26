@@ -162,7 +162,7 @@ const L = {
     h_thinking: 'Toggle thinking visibility',
     h_metrics: 'View turn/metrics status',
     h_input: 'Input:',
-    h_submit: 'Submit prompt (ignored if empty)',
+    h_submit: 'Submit (Enter; same in multi-line mode)',
     h_newline: 'Newline (Ctrl+Enter)',
     h_paste: 'Auto-detected, Enter inserts newline',
 
@@ -296,7 +296,7 @@ const L = {
     h_thinking: '切换思考过程可见性',
     h_metrics: '查看轮次/指标状态',
     h_input: '输入:',
-    h_submit: '提交提示词（空内容忽略）',
+    h_submit: '提交（Enter，多行模式同样）',
     h_newline: '换行（Ctrl+Enter）',
     h_paste: '自动检测，Enter 插入换行',
 

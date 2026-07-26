@@ -836,11 +836,16 @@ export class Agent {
       const errStr = err.message;
       const contextMatch = errStr.match(/(?:maximum context length is|exceeds.*?(?:context|limit)|Request exceeds)/i);
       if (contextMatch) {
+        // Extract the numeric context limit from the error. The error may contain
+        // an HTTP status code (e.g. "400 Error from provider...") which is NOT the
+        // context limit — skip any number < 1024 to avoid the auto-learn setting
+        // maxContextTokens to e.g. 400 (the HTTP status). Minimum real context
+        // windows are 4096, and the common minimum is 8192.
         const limitMatch = errStr.match(/(\d+)/);
-        if (limitMatch) {
-          const actualLimit = parseInt(limitMatch[1]!, 10);
-          this.config.learnModelContextLimit(this.provider.model, actualLimit);
-          this.context.setMaxContextTokens(actualLimit);
+        const rawLimit = limitMatch ? parseInt(limitMatch[1]!, 10) : 0;
+        if (rawLimit >= 1024) {
+          this.config.learnModelContextLimit(this.provider.model, rawLimit);
+          this.context.setMaxContextTokens(rawLimit);
         }
         // Aggressively compress and retry once instead of throwing.
         // Even without a learnable token count the context may be over budget,
@@ -1213,6 +1218,8 @@ export class Agent {
       _acpLog(`[ACP Timing] llmStart=${llmStart} msgCount=${this.context.getMessages().length} tools=${tools.length}\n`);
     }
     try {
+      // Pre-flight token check: compress before sending if over budget
+      await this.context.compress();
       const stream = this.provider.chat(this.context.getMessages(), tools, signal);
 
       for await (const chunk of stream) {
@@ -1752,18 +1759,18 @@ export class Agent {
   }
 
   private async summarizeMessages(messages: Message[]): Promise<string> {
-    // Limit total input to ~20000 chars to balance detail vs context
-    const MAX_TOTAL_CHARS = 20000;
+    // Limit total input to ~30000 chars to balance detail vs context
+    const MAX_TOTAL_CHARS = 30000;
     let totalChars = 0;
     const lines: string[] = [];
     for (const m of messages) {
-      if (m.role !== 'user' && m.role !== 'assistant') continue;
-      // Prioritize assistant messages (they contain generated content like novels)
-      const limit = m.role === 'assistant' ? 3000 : 1500;
+      // Include tool results (file reads, analysis outputs) — they contain
+      // the most substantive information like code diffs, data samples, etc.
+      const limit = m.role === 'tool' ? 2000 : m.role === 'assistant' ? 3000 : m.role === 'user' ? 1500 : 0;
+      if (limit === 0) continue;
       const text = m.content.slice(0, limit);
       if (totalChars + text.length > MAX_TOTAL_CHARS) {
-        if (m.role === 'assistant') {
-          // Always include assistant content, truncate to remaining budget
+        if (m.role === 'assistant' || m.role === 'tool') {
           const remaining = MAX_TOTAL_CHARS - totalChars;
           if (remaining > 100) lines.push(`${m.role}: ${text.slice(0, remaining)}`);
         }

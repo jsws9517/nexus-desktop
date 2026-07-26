@@ -176,13 +176,12 @@ export class ContextManager {
   private static readonly MAX_COMPRESS_DEPTH = 10;
 
   async compress(depth = 0): Promise<void> {
-    if (!this.provider || this.messages.length < 10) return;
+    if (this.messages.length < 4) return;
     if (depth >= ContextManager.MAX_COMPRESS_DEPTH) return;
 
     this.compressionRound++;
     const round = this.compressionRound;
 
-    // Strategy escalation based on compression round
     let strategy: CompactStrategy;
     if (round <= 2) {
       strategy = CompactStrategy.Summarize;
@@ -226,6 +225,12 @@ export class ContextManager {
       this.compressionRound = Math.max(0, this.compressionRound - 1);
     }
 
+    // One-line summary showing net compression result
+    const saved = originalTokens - compactedTokens;
+    if (depth === 0 && saved > 0) {
+      process.stderr.write(`[compress] ${originalTokens}→${compactedTokens} tok, -${saved} tok (${strategy})\n`);
+    }
+
     // Recurse if still over budget (with depth limit as safety valve)
     if (this.getTokenCount() > this.maxContextTokens) {
       await this.compress(depth + 1);
@@ -233,8 +238,15 @@ export class ContextManager {
   }
 
   private async compressViaSummarize(): Promise<void> {
+    // Find a split point that protects tool results from being summarized.
+    // Tool results (role: 'tool') contain file read data that the LLM
+    // would otherwise re-request after compression, creating a read loop.
     const targetSplit = Math.floor(this.messages.length / 2);
-    const safeSplit = this.findSafeSplitIndex(targetSplit);
+    // Prefer a split at or before the first 'tool' message so tool results
+    // land in the kept (right) section rather than the summarizable (left).
+    const firstToolIdx = this.messages.findIndex(m => m.role === 'tool');
+    const adjustedTarget = firstToolIdx >= 0 ? Math.min(targetSplit, firstToolIdx) : targetSplit;
+    const safeSplit = this.findSafeSplitIndex(adjustedTarget);
 
     const summarizable: Message[] = [];
     const kept: Message[] = [];
@@ -250,10 +262,12 @@ export class ContextManager {
 
     this.onProgress?.(`Summarizing context (round ${this.compressionRound})...`);
 
+    // Include full content of tool results so the LLM can properly
+    // incorporate file data into the summary rather than truncating it.
     const summaryPrompt: Message = {
       role: 'user',
       content: `Summarize the following conversation history concisely:\n\n${summarizable
-        .map((m) => `${m.role}: ${m.content.slice(0, 500)}`)
+        .map((m) => `${m.role}: ${m.content.slice(0, m.role === 'tool' ? 2000 : 500)}`)
         .join('\n')}`,
     };
 
@@ -280,13 +294,14 @@ export class ContextManager {
 
     const kept: Message[] = [];
     for (let i = 0; i < this.messages.length; i++) {
-      if (i >= safeSplit || this.pinnedIndices.has(i) || this.messages[i].role === 'system') {
+      // Preserve tool result messages (file reads, etc.) even when old,
+      // otherwise the LLM will re-request the data after compression.
+      if (i >= safeSplit || this.pinnedIndices.has(i) || this.messages[i].role === 'system' || this.messages[i].role === 'tool') {
         kept.push(this.messages[i]);
       }
     }
 
     if (kept.length < 4) {
-      // Keep at least last 4 messages
       const tail = this.messages.slice(-4);
       const systems = this.messages.filter(m => m.role === 'system');
       this.messages = [...systems, ...tail];
@@ -299,14 +314,16 @@ export class ContextManager {
   private async compressViaSnapshot(): Promise<void> {
     this.onProgress?.(`Snapshotting context (round ${this.compressionRound})...`);
 
-    // Priority: keep system messages, pinned items, and recent turns
+    // Priority: keep system messages, pinned items, tool results, and recent turns
     const systems = this.messages.filter(m => m.role === 'system');
     const pinned = this.messages.filter((_, i) => this.pinnedIndices.has(i));
+    // Preserve tool results so file data survives snapshot compression
+    const toolResults = this.messages.filter(m => m.role === 'tool');
     const recent = this.messages.slice(-4);
 
     // Generate a summary of the full context for the snapshot
     const summarizable = this.messages
-      .filter(m => m.role !== 'system')
+      .filter(m => m.role !== 'system' && m.role !== 'tool')
       .slice(0, -4);
 
     if (summarizable.length > 4 && this.provider) {
@@ -314,21 +331,22 @@ export class ContextManager {
         const snapshotPrompt: Message = {
           role: 'user',
           content: `Capture key decisions, code patterns, and conclusions from this conversation:\n\n${summarizable
-            .map((m) => `${m.role}: ${m.content.slice(0, 200)}`)
+            .map((m) => `${m.role}: ${m.content.slice(0, 500)}`)
             .join('\n')}`,
         };
         const snapshot = await this.provider.complete([snapshotPrompt], this.compressionTimeoutMs);
         this.messages = [
           ...systems,
           ...pinned,
+          ...toolResults,
           ...recent,
           { role: 'system', content: `[Knowledge snapshot]: ${snapshot}` },
         ];
       } catch {
-        this.messages = [...systems, ...pinned, ...recent];
+        this.messages = [...systems, ...pinned, ...toolResults, ...recent];
       }
     } else {
-      this.messages = [...systems, ...pinned, ...recent];
+      this.messages = [...systems, ...pinned, ...toolResults, ...recent];
     }
     this.pinnedIndices.clear();
   }
