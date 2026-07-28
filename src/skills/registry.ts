@@ -6,9 +6,9 @@ export class SkillRegistry {
   private skills: Skill[] = [];
   private ctx?: AgentContext;
 
-  async load(ctx?: AgentContext, extraPaths?: string[]): Promise<void> {
+  async load(ctx?: AgentContext, extraPaths?: string[], disabledPlugins?: Set<string>): Promise<void> {
     this.ctx = ctx;
-    this.skills = await loadSkills(extraPaths);
+    this.skills = await loadSkills(extraPaths, disabledPlugins);
     if (ctx) {
       for (const skill of this.skills) {
         if (skill.init) {

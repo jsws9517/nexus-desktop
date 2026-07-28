@@ -470,6 +470,15 @@ export class ConfigManager {
     this.save();
   }
 
+  getNativeDisabled(): string[] {
+    return this.config.nativeDisabled || [];
+  }
+
+  setNativeDisabled(list: string[]): void {
+    this.config.nativeDisabled = [...new Set(list)];
+    this.save();
+  }
+
   setRegisteredMarketplaces(list: Array<{ name: string; source: string; plugins: Array<{ name: string; description: string; source: string; category?: string; version?: string }> }>): void {
     this.config.registeredMarketplaces = list;
     this.save();

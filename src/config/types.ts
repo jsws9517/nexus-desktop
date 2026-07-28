@@ -123,6 +123,7 @@ export const ConfigSchema = z.object({
   promptName: z.string().optional(),
   modelContextLimits: z.record(z.number()).optional(),
   nativeInstalled: z.array(z.string()).optional(),
+  nativeDisabled: z.array(z.string()).optional(),
   registeredMarketplaces: z.array(z.object({
     name: z.string(),
     source: z.string(),

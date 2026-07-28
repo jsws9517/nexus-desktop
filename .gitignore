@@ -31,6 +31,11 @@ Thumbs.db
 *.swo
 .github/
 
+# Runtime data
+.nexus/knowledge/
+data/
+results/
+
 # Test coverage
 coverage/
 .nyc_output/

@@ -20,7 +20,7 @@ function isSafePath(p: string): boolean {
   return !normalized.split(/[\/\\]/).some((seg) => seg === '..');
 }
 
-export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
+export async function loadSkills(extraPaths?: string[], disabledPlugins?: Set<string>): Promise<Skill[]> {
   const skills: Skill[] = [];
   const loadedNames = new Set<string>();
 
@@ -45,6 +45,9 @@ export async function loadSkills(extraPaths?: string[]): Promise<Skill[]> {
     const entries = readdirSync(basePath);
 
     for (const entry of entries) {
+      // Skip disabled plugins (only for native plugins dir)
+      if (source === 'plugins' && disabledPlugins?.has(entry)) continue;
+
       const fullPath = join(basePath, entry);
       const stat = statSync(fullPath);
       if (!stat.isDirectory()) continue;

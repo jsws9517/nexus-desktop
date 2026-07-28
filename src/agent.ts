@@ -438,7 +438,8 @@ export class Agent {
       sendMessage: async (msg: string) => { this.onOutput?.(msg); },
       askUser: (question: string, options?: string[]) => this.askUser(question, options),
     };
-    await this.skills.load(agentCtx, extraPaths);
+    const disabledPlugins = new Set(cfg.nativeDisabled || []);
+    await this.skills.load(agentCtx, extraPaths, disabledPlugins);
   }
 
    async switchModel(modelId: string): Promise<string> {

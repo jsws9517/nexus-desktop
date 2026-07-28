@@ -908,14 +908,15 @@ export function registerConfigCommand(program: Command): void {
 
       console.log(t.heading('  Plugins:'));
       for (const pkg of pluginPkgs) {
-        const installed = native.isInstalled(pkg.name) ? t.success(' [installed]') : '';
+        const installed = native.isInstalled(pkg.name) ? (native.isEnabled(pkg.name) ? t.success(' [installed]') : t.warning(' [disabled]')) : '';
         console.log(`    ${t.entityName(pkg.name)}${installed}`);
         console.log(`      ${pkg.description}`);
         console.log();
       }
 
-      console.log(t.textDim('  Install: nexus config native install <name>'));
-      console.log(t.textDim('  Install all: nexus config native install --all'));
+      console.log(t.textDim('  Install:  nexus config native install <name>'));
+      console.log(t.textDim('  Enable:   nexus config native enable <name>'));
+      console.log(t.textDim('  Disable:  nexus config native disable <name>'));
     });
 
   nativeCmd
@@ -942,13 +943,6 @@ export function registerConfigCommand(program: Command): void {
       if (!name) {
         console.log(t.warning('Usage: nexus config native install <name> [options]'));
         console.log(t.textDim('  Run `nexus config native list` to see available packages.'));
-        return;
-      }
-
-      const pkg = native.getPackage(name);
-      if (!pkg) {
-        console.log(t.error(`Package "${name}" not found.`));
-        console.log(t.textDim(`  Available: ${native.getAvailableNames().join(', ')}`));
         return;
       }
 
@@ -1065,6 +1059,22 @@ export function registerConfigCommand(program: Command): void {
       } catch (err) {
         console.log(t.error(err instanceof Error ? err.message : String(err)));
       }
+    });
+
+  nativeCmd
+    .command('enable <name>')
+    .description('Enable an installed native plugin')
+    .action((name: string) => {
+      const native = new NativeManager();
+      console.log(t.success(native.enable(name)));
+    });
+
+  nativeCmd
+    .command('disable <name>')
+    .description('Disable an installed native plugin')
+    .action((name: string) => {
+      const native = new NativeManager();
+      console.log(t.warning(native.disable(name)));
     });
 
   // ── Marketplace subcommands ───────────────────────────────────────────

@@ -585,12 +585,17 @@ export class NativeManager {
       `  Restart the agent to activate.`;
   }
 
-  /** Record installation in config, deduplicated */
+  /** Record installation in config, deduplicated and enabled by default */
   private trackInstalled(name: string): void {
     const installed = this.getInstalledList();
     if (!installed.includes(name)) {
       installed.push(name);
       this.saveInstalledList(installed);
+    }
+    // Ensure newly installed plugins are enabled by default
+    const disabled = this.getDisabledList();
+    if (disabled.includes(name)) {
+      this.saveDisabledList(disabled.filter(n => n !== name));
     }
   }
 
@@ -974,6 +979,47 @@ export class NativeManager {
 
   private saveInstalledList(list: string[]): void {
     this.config.setNativeInstalled([...new Set(list)]);
+  }
+
+  private getDisabledList(): string[] {
+    try {
+      return this.config.get().nativeDisabled || [];
+    } catch {
+      return [];
+    }
+  }
+
+  private saveDisabledList(list: string[]): void {
+    this.config.setNativeDisabled([...new Set(list)]);
+  }
+
+  isEnabled(name: string): boolean {
+    return this.getInstalledList().includes(name) && !this.getDisabledList().includes(name);
+  }
+
+  enable(name: string): string {
+    const disabled = this.getDisabledList();
+    if (!this.getInstalledList().includes(name)) {
+      return `"${name}" is not installed. Install it first: nexus config native install ${name}`;
+    }
+    if (!disabled.includes(name)) {
+      return `"${name}" is already enabled.`;
+    }
+    this.saveDisabledList(disabled.filter(n => n !== name));
+    return `"${name}" enabled. Restart the agent to activate.`;
+  }
+
+  disable(name: string): string {
+    const disabled = this.getDisabledList();
+    if (!this.getInstalledList().includes(name)) {
+      return `"${name}" is not installed. Install it first: nexus config native install ${name}`;
+    }
+    if (disabled.includes(name)) {
+      return `"${name}" is already disabled.`;
+    }
+    disabled.push(name);
+    this.saveDisabledList(disabled);
+    return `"${name}" disabled. Restart the agent to deactivate.`;
   }
 }
 
