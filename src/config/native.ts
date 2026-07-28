@@ -298,73 +298,31 @@ const CATALOG: Record<string, PackageInfo> = {
     },
   },
 
-  // ═══════════════════════════════════════════
-  // Plugins (SKILL.md-based skills)
-  // ═══════════════════════════════════════════
-  'code-review': {
-    name: 'code-review',
-    description: 'Automated code review with diff analysis and best practices',
-    longDescription: 'Reviews code changes by analyzing diffs, checking for common issues, security vulnerabilities, style violations, and suggesting improvements.',
-    type: 'plugin',
-    version: '1.0.0',
-    async install() {
-      mkdirSync(join(PLUGIN_DIR, 'code-review'), { recursive: true });
-      writeFileSync(join(PLUGIN_DIR, 'code-review', 'SKILL.md'), SKILL_CODE_REVIEW, 'utf-8');
-    },
-  },
-  'git-flow': {
-    name: 'git-flow',
-    description: 'Streamlined Git workflow: commit, branch, merge, rebase',
-    longDescription: 'Guides through Git best practices: semantic commits, branching strategies, interactive rebase, conflict resolution, and changelog generation.',
-    type: 'plugin',
-    version: '1.0.0',
-    async install() {
-      mkdirSync(join(PLUGIN_DIR, 'git-flow'), { recursive: true });
-      writeFileSync(join(PLUGIN_DIR, 'git-flow', 'SKILL.md'), SKILL_GIT_FLOW, 'utf-8');
-    },
-  },
-  'test-runner': {
-    name: 'test-runner',
-    description: 'Auto-discover and run tests with coverage reporting',
-    longDescription: 'Automatically discovers test files in the project, runs them with the appropriate framework, and reports results with coverage summaries.',
-    type: 'plugin',
-    version: '1.0.0',
-    async install() {
-      mkdirSync(join(PLUGIN_DIR, 'test-runner'), { recursive: true });
-      writeFileSync(join(PLUGIN_DIR, 'test-runner', 'SKILL.md'), SKILL_TEST_RUNNER, 'utf-8');
-    },
-  },
-  'deploy-check': {
-    name: 'deploy-check',
-    description: 'Pre-deployment checklist: lint, test, build, security audit',
-    longDescription: 'Runs a comprehensive pre-deployment verification checklist: linting, type checking, tests, build verification, dependency audit, and security scan.',
-    type: 'plugin',
-    version: '1.0.0',
-    async install() {
-      mkdirSync(join(PLUGIN_DIR, 'deploy-check'), { recursive: true });
-      writeFileSync(join(PLUGIN_DIR, 'deploy-check', 'SKILL.md'), SKILL_DEPLOY_CHECK, 'utf-8');
-    },
-  },
-
 };
 
-/** Known plugin repositories to enumerate individual plugins from */
-const KNOWN_PLUGIN_REPOS = [
+/**
+ * Default marketplaces auto-registered on first use.
+ * Metadata is static (no network fetch needed for listing).
+ */
+const DEFAULT_MARKETPLACES: RegisteredMarketplace[] = [
   {
-    owner: 'anthropics',
-    repo: 'claude-plugins-official',
-    skillsPath: 'skills',
-    label: 'Claude Code Official Plugins',
-    matchTerms: ['claude', 'anthropic', 'plugins'],
+    name: 'claude-code-plugins',
+    source: 'anthropics/claude-plugins-official',
+    plugins: [
+      { name: 'code-review', description: 'Automated code review with diff analysis and best practices', source: './plugins/code-review', category: 'development', version: '1.0.0' },
+      { name: 'git-flow', description: 'Streamlined Git workflow: commit, branch, merge, rebase', source: './plugins/git-flow', category: 'development', version: '1.0.0' },
+      { name: 'test-runner', description: 'Auto-discover and run tests with coverage reporting', source: './plugins/test-runner', category: 'development', version: '1.0.0' },
+      { name: 'deploy-check', description: 'Pre-deployment checklist: lint, test, build, security audit', source: './plugins/deploy-check', category: 'development', version: '1.0.0' },
+    ],
   },
   {
-    owner: 'modelcontextprotocol',
-    repo: 'servers',
-    skillsPath: 'src',
-    label: 'Official MCP Servers',
-    matchTerms: ['mcp', 'modelcontextprotocol', 'server'],
+    name: 'mattpocock',
+    source: 'mattpocock/skills',
+    plugins: [
+      { name: 'mattpocock-skills', description: 'Matt Pocock\'s agent skills for real engineering — grilling, design, debugging, and more', source: './', category: 'engineering', version: '1.0.0' },
+    ],
   },
-] as const;
+];
 
 /** Built-in curated packages for search fallback */
 const CURATED_PACKAGES: SearchResult[] = [
@@ -404,7 +362,15 @@ export class NativeManager {
   // ── Marketplace management ─────────────────────────────────────────────────
 
   getMarketplaces(): RegisteredMarketplace[] {
-    try { return this.config.get().registeredMarketplaces || []; }
+    try {
+      const config = this.config.get();
+      if (!config.registeredMarketplaces || config.registeredMarketplaces.length === 0) {
+        // First use — auto-register default marketplaces so they appear in list/search/install
+        this.config.setRegisteredMarketplaces(DEFAULT_MARKETPLACES);
+        return DEFAULT_MARKETPLACES;
+      }
+      return config.registeredMarketplaces;
+    }
     catch { return []; }
   }
 
@@ -491,29 +457,35 @@ export class NativeManager {
     const plugin = mp.plugins.find(p => p.name === pluginName);
     if (!plugin) {
       // Not found in explicit list — try to fetch as a sub-skill from the repo
-      // (common pattern: marketplace exposes one meta-plugin, real skills are under skills/)
+      // (common pattern: marketplace exposes one meta-plugin, real skills are under subdirs)
       const ghMatch2 = mp.source.match(/^([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+?)(?:\.git)?$/);
       if (ghMatch2) {
         const [, o2, r2] = ghMatch2;
-        // Try common patterns: skills/<name>/SKILL.md, skills/<category>/<name>/SKILL.md
-        const skillBody = await fetchRemoteText(`${ghRawBase(o2, r2)}/skills/${pluginName}/SKILL.md`);
-        if (skillBody) {
-          const dir = join(PLUGIN_DIR, pluginName);
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(join(dir, 'SKILL.md'), skillBody, 'utf-8');
-          this.trackInstalled(pluginName);
-          return `Plugin "${pluginName}@${mpName}" installed.\n  Source: ${mp.source}/skills/${pluginName}\n  Fetched: SKILL.md\n  Restart the agent to activate.`;
+        const rawBase = ghRawBase(o2, r2);
+        // Try common directory patterns used by Claude Code plugin repos
+        for (const pattern of [
+          `plugins/${pluginName}/SKILL.md`,
+          `skills/${pluginName}/SKILL.md`,
+          `external_plugins/${pluginName}/SKILL.md`,
+        ]) {
+          const body = await fetchRemoteText(`${rawBase}/${pattern}`);
+          if (body) {
+            const dir = join(PLUGIN_DIR, pluginName);
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, 'SKILL.md'), body, 'utf-8');
+            this.trackInstalled(pluginName);
+            return `Plugin "${pluginName}@${mpName}" installed.\n  Fetched: ${pattern}\n  Restart the agent to activate.`;
+          }
         }
-        // Try skills/<category>/<pluginName>/SKILL.md by listing categories
+        // Fallback: scan repo tree for any SKILL.md with matching directory
         const treeRes = await fetch(
           `https://api.github.com/repos/${o2}/${r2}/git/trees/main?recursive=1`,
           { headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'nexus-coder' }, signal: AbortSignal.timeout(8000) }
         );
         if (treeRes.ok) {
           const tree = await treeRes.json() as { tree: Array<{ path: string }> };
-          const matchPath = tree.tree.find((t: { path: string }) =>
-            new RegExp(`^skills/[^/]+/${pluginName}/SKILL\\.md$`, 'i').test(t.path)
-          );
+          const re = new RegExp(`(?:^|/)(?:plugins/|skills/|external_plugins/)?${pluginName}/SKILL\\.md$`, 'i');
+          const matchPath = tree.tree.find((t: { path: string }) => re.test(t.path));
           if (matchPath) {
             const body = await fetchRemoteText(`${ghRawBase(o2, r2)}/${matchPath.path}`);
             if (body) {
@@ -569,7 +541,7 @@ export class NativeManager {
     const tree = await treeRes.json() as { tree: Array<{ path: string; type: string }> };
     const skPaths = tree.tree.filter(t =>
       t.type === 'blob' &&
-      /^skills\/[^/]+\/[^/]+\/SKILL\.md$/i.test(t.path)
+      /\/(?:plugins|skills|external_plugins)\/[^/]+\/SKILL\.md$/i.test(t.path)
     );
 
     if (skPaths.length === 0) {
@@ -633,8 +605,46 @@ export class NativeManager {
 
     const pkg = CATALOG[name];
     if (!pkg) {
+      // Fallback: search registered marketplaces for a matching plugin
+      for (const mp of this.getMarketplaces()) {
+        for (const plugin of mp.plugins) {
+          if (plugin.name === name) {
+            return this.installFromMarketplace(name, mp.name);
+          }
+        }
+      }
+      // Also try as a sub-skill in any registered marketplace
+      for (const mp of this.getMarketplaces()) {
+        const ghMatch = mp.source.match(/^([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+?)(?:\.git)?$/);
+        if (!ghMatch) continue;
+        const [, o, r] = ghMatch;
+        const rawBase = ghRawBase(o, r);
+        // Try common subdir patterns
+        let found = false;
+        for (const subdir of ['plugins', 'skills', 'external_plugins', '']) {
+          const path = subdir ? `${subdir}/${name}/SKILL.md` : `${name}/SKILL.md`;
+          const body = await fetchRemoteText(`${rawBase}/${path}`);
+          if (body) { found = true; break; }
+        }
+        if (found) return this.installFromMarketplace(name, mp.name);
+        // Broad tree scan
+        const treeRes = await fetch(
+          `https://api.github.com/repos/${o}/${r}/git/trees/main?recursive=1`,
+          { headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'nexus-coder' }, signal: AbortSignal.timeout(5000) }
+        );
+        if (treeRes.ok) {
+          const tree = await treeRes.json() as { tree: Array<{ path: string }> };
+          const re = new RegExp(`(?:^|/)${name}/SKILL\\.md$`, 'i');
+          if (tree.tree.some((t: { path: string }) => re.test(t.path))) {
+            return this.installFromMarketplace(name, mp.name);
+          }
+        }
+      }
       throw new Error(
-        `Package "${name}" not found. Available: ${this.getAvailableNames().join(', ')}`
+        `Package "${name}" not found in catalog or any registered marketplace.\n` +
+        `  Available in catalog: ${this.getAvailableNames().join(', ')}\n` +
+        `  Try: nexus config native marketplace add <owner/repo>\n` +
+        `  Or: nexus config native install <name>@<marketplace>`
       );
     }
     if (this.isInstalled(name)) {
@@ -714,15 +724,7 @@ export class NativeManager {
       errors.push(`github: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // 3. Known plugin repos — enumerate individual plugins
-    try {
-      const repoResults = await this.searchPluginRepos(query);
-      results.push(...repoResults);
-    } catch (err) {
-      errors.push(`plugins: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // 4. Registered marketplaces — match marketplace plugins against query
+    // 3. Registered marketplaces — match marketplace plugins against query
     {
       const lower = query.toLowerCase();
       for (const mp of this.getMarketplaces()) {
@@ -826,87 +828,6 @@ export class NativeManager {
    * Only fetches repos whose label/name matches the query (e.g. "claude" → Claude Plugins)..
    * For each matching repo, fetches the directory listing and parses SKILL.md frontmatter.
    */
-  private async searchPluginRepos(query: string): Promise<SearchResult[]> {
-    const results: SearchResult[] = [];
-    const lower = query.toLowerCase();
-
-    for (const repo of KNOWN_PLUGIN_REPOS) {
-      const matches = repo.matchTerms.some(t => lower.includes(t) || t.includes(lower))
-        || repo.label.toLowerCase().includes(lower)
-        || repo.repo.includes(lower);
-      if (!matches) continue;
-
-      try {
-        const plugins = await this.fetchRepoPlugins(repo);
-        results.push(...plugins);
-      } catch {
-        // Skip repos that fail to fetch
-      }
-    }
-
-    return results;
-  }
-
-  /**
-   * Fetch individual plugin/skill entries from a known GitHub repository.
-   * 1. Lists the repo contents at the skills path
-   * 2. Filters to directories only
-   * 3. Fetches SKILL.md for each directory and parses frontmatter
-   */
-  private async fetchRepoPlugins(repo: typeof KNOWN_PLUGIN_REPOS[number]): Promise<SearchResult[]> {
-    const listUrl = `https://api.github.com/repos/${repo.owner}/${repo.repo}/contents/${repo.skillsPath}`;
-    const listRes = await fetch(listUrl, {
-      headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'nexus-coder' },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!listRes.ok) throw new Error(`${repo.repo}: HTTP ${listRes.status}`);
-
-    const items = await listRes.json() as Array<{ name: string; path: string; type: string }>;
-    const dirs = items.filter(i => i.type === 'dir').slice(0, 30);
-    if (dirs.length === 0) return [];
-
-    const rawBase = `https://raw.githubusercontent.com/${repo.owner}/${repo.repo}/main`;
-
-    const pluginPromises = dirs.map(async (dir): Promise<SearchResult | null> => {
-      try {
-        const rawRes = await fetch(`${rawBase}/${dir.path}/SKILL.md`, { signal: AbortSignal.timeout(5000) });
-        if (rawRes.ok) {
-          const content = await rawRes.text();
-          const meta = parseSimpleFrontmatter(content);
-          const pluginName = meta.name || dir.name;
-          const description = meta.description || `Claude Code plugin: ${dir.name}`;
-          return {
-            name: pluginName,
-            description: description.slice(0, 120),
-            version: meta.version || '1.0.0',
-            source: 'github',
-            url: `https://github.com/${repo.owner}/${repo.repo}/tree/main/${dir.path}`,
-            pkgType: 'plugin',
-            installHint: `Copy to ~/.nexus/skills/${dir.name}/ or use: git clone https://github.com/${repo.owner}/${repo.repo}.git`,
-          };
-        }
-        // No SKILL.md — still list the directory as a candidate
-        if (rawRes.status === 404) {
-          return {
-            name: dir.name,
-            description: `${repo.label} entry (no SKILL.md found)`,
-            version: '-',
-            source: 'github',
-            url: `https://github.com/${repo.owner}/${repo.repo}/tree/main/${dir.path}`,
-            pkgType: 'plugin',
-            installHint: `Explore at: https://github.com/${repo.owner}/${repo.repo}/tree/main/${dir.path}`,
-          };
-        }
-      } catch {
-        // Timeout or network error — skip this plugin
-      }
-      return null;
-    });
-
-    const plugins = await Promise.all(pluginPromises);
-    return plugins.filter((p): p is SearchResult => p !== null);
-  }
-
   /**
    * Install an npm package as an MCP server.
    * Adds a config entry: npx -y <package-name>
@@ -1101,25 +1022,6 @@ function detectMcpEntryPoint(dir: string): string | null {
   return null;
 }
 
-/** Minimal frontmatter parser for SKILL.md files */
-function parseSimpleFrontmatter(content: string): Record<string, string> {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
-  if (!match) return {};
-  const meta: Record<string, string> = {};
-  for (const line of match[1].split('\n')) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.slice(0, colonIdx).trim();
-      let val = line.slice(colonIdx + 1).trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      meta[key] = val;
-    }
-  }
-  return meta;
-}
-
 // ══════════════════════════════════════════════════════════
 // genLspServerScript — generates a single-language MCP server script
 // Each language server gets its own script for independent install
@@ -1281,171 +1183,4 @@ function genLspServerScript(opts: LspServerOpts): string {
   ].join('\n');
 }
 
-// ══════════════════════════════════════════════════════════
-// Plugin SKILL.md templates
-// ══════════════════════════════════════════════════════════
 
-const SKILL_CODE_REVIEW = `---
-name: code-review
-version: 1.0.0
-description: Automated code review with diff analysis and best practices
----
-
-# Code Review Skill
-
-Analyzes code changes and provides comprehensive review feedback.
-
-## Capabilities
-
-### 1. Review Changes
-Analyze a diff or set of files for:
-- Code quality issues
-- Security vulnerabilities
-- Performance concerns
-- Style and consistency
-- Error handling gaps
-- Testing coverage
-
-### 2. Best Practices
-Check adherence to:
-- SOLID principles
-- DRY / KISS / YAGNI
-- Language-specific idioms
-- Framework conventions
-- Security best practices (OWASP)
-
-### 3. Improvement Suggestions
-For each issue found, provide:
-- Specific file and line number
-- Why it's a concern
-- Concrete fix suggestion with code example
-- Estimated impact (high/medium/low)
-
-## Usage
-Call this skill with a task like:
-- "Review the changes in this PR"
-- "Check this file for security issues"
-- "Analyze this code for performance problems"
-`;
-
-const SKILL_GIT_FLOW = `---
-name: git-flow
-version: 1.0.0
-description: Streamlined Git workflow: commit, branch, merge, rebase
----
-
-# Git Flow Skill
-
-Guides through Git best practices for everyday development.
-
-## Capabilities
-
-### 1. Smart Commits
-- Analyze staged changes and suggest meaningful commit messages (Conventional Commits)
-- Help split large changes into logical atomic commits
-- Verify commit message formatting
-
-### 2. Branch Management
-- Create feature/bugfix/hotfix branches from correct base
-- Merge/rebase strategy advice
-- Detect stale branches
-- Suggest branch naming conventions
-
-### 3. Conflict Resolution
-- Identify merge conflict patterns
-- Suggest conflict resolution strategies
-- Verify resolved conflicts maintain logical consistency
-
-### 4. Changelog Generation
-- Generate changelog from commit history
-- Categorize changes (feat, fix, docs, refactor, test, chore)
-- Prepare release notes
-
-## Usage
-Call this skill with a task like:
-- "Help me write a commit message for these staged changes"
-- "Create a release branch for v2.1.0"
-- "Generate a changelog from the last 10 commits"
-- "Help me resolve this merge conflict"
-`;
-
-const SKILL_TEST_RUNNER = `---
-name: test-runner
-version: 1.0.0
-description: Auto-discover and run tests with coverage reporting
----
-
-# Test Runner Skill
-
-Automatically discovers and runs tests in your project.
-
-## Capabilities
-
-### 1. Test Discovery
-- Scan project for test files (*.test.ts, *.spec.js, __tests__/, etc.)
-- Identify test framework being used (jest, mocha, vitest, node:test, pytest, etc.)
-- List all available test suites
-
-### 2. Run Tests
-- Run all tests with appropriate framework command
-- Support for watch mode, specific file, or test name pattern
-- Generate coverage report
-
-### 3. Analyze Results
-- Parse test output for failures
-- Summarize pass/fail/skip counts
-- Identify flaky tests
-- Suggest fixes for failing tests
-
-## Usage
-Call this skill with a task like:
-- "Run all tests in this project"
-- "Find and run tests related to auth module"
-- "Check test coverage for the src/ directory"
-- "Debug these failing tests"
-`;
-
-const SKILL_DEPLOY_CHECK = `---
-name: deploy-check
-version: 1.0.0
-description: Pre-deployment checklist: lint, test, build, security audit
----
-
-# Deploy Check Skill
-
-Runs a comprehensive pre-deployment verification checklist.
-
-## Capabilities
-
-### 1. Code Quality
-- Run linter (ESLint, ruff, etc.)
-- Check TypeScript/Python/Go types
-- Verify no TODO/FIXME/DEBUG left in code
-
-### 2. Testing
-- Run full test suite
-- Verify minimum coverage threshold (>80%)
-- Check integration tests pass
-
-### 3. Build Verification
-- Clean build (delete dist/, rebuild)
-- Verify bundle size hasn't regressed
-- Check for dependency version mismatches
-
-### 4. Security
-- Run \`npm audit\` or \`pip audit\` for vulnerable deps
-- Check for exposed secrets/API keys in code
-- Verify CORS, auth, and rate limiting configs
-
-### 5. Configuration
-- Verify environment variables are documented
-- Check production configs match staging
-- Validate CI/CD pipeline config
-
-## Usage
-Call this skill with a task like:
-- "Run pre-deploy checks for this project"
-- "Verify we're ready to deploy to production"
-- "Check for security issues before release"
-- "Run the deployment readiness checklist"
-`;
