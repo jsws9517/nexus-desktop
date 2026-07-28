@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { get } from 'https';
 import { execSync } from 'child_process';
 import { ConfigManager } from './index.js';
 
@@ -40,6 +41,47 @@ export interface SearchResult {
   url: string;
   pkgType: 'mcp' | 'plugin' | 'unknown';
   installHint: string;
+}
+
+const REPO_BASE = 'https://raw.githubusercontent.com/mattpocock/skills/main/skills';
+
+/** HTTP GET helper for fetching remote content */
+function fetchUrl(url: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    get(url, (res) => {
+      if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => resolve(data));
+    }).on('error', () => resolve(null));
+  });
+}
+
+/** Community skill manifest — shared between CATALOG entries and CURATED_PACKAGES */
+const COMMUNITY_SKILLS: Array<{ name: string; desc: string; longDesc: string; category: string; extra: string[] }> = [
+  { name: 'diagnosing-bugs',           desc: 'Diagnosis loop for hard bugs and performance regressions',                          longDesc: 'Six-phase debugging workflow: build feedback loop, reproduce + minimise, 3+ hypotheses, instrument, fix + regression test, cleanup.', category: 'engineering',  extra: [] },
+  { name: 'code-review',               desc: 'Two-axis code review (standards + spec) via parallel sub-agents',                     longDesc: 'Reviews changes since a fixed point along Standards (coding conventions + smell baseline) and Spec (issue/PRD fidelity) axes in parallel.', category: 'engineering',  extra: [] },
+  { name: 'tdd',                       desc: 'Red-green-refactor test-driven development loop',                                     longDesc: 'TDD discipline: write failing test first, minimal implementation, refactor. Covers seams, anti-patterns, and vertical slicing.', category: 'engineering',  extra: ['tests.md'] },
+  { name: 'research',                  desc: 'Web search with background agent and structured output',                              longDesc: 'Spawns a parallel sub-agent to research a topic via web search, then synthesises findings into a structured report.', category: 'engineering',  extra: [] },
+  { name: 'resolving-merge-conflicts', desc: 'Resolve git merge conflicts systematically',                                         longDesc: 'Step-by-step merge conflict resolution: understand each conflict, evaluate options, apply resolution, verify build.', category: 'engineering',  extra: [] },
+  { name: 'grill-me',                  desc: 'A relentless interview to sharpen a plan or design',                                  longDesc: 'Thin router skill that delegates to /grilling for deep decision-tree stress-testing of plans, designs, and ideas.', category: 'productivity', extra: [] },
+  { name: 'grilling',                  desc: 'Grill the user relentlessly about a plan, decision, or idea',                         longDesc: 'Interviews the user one question at a time, walking down each branch of the decision tree, looking up facts via tools and asking decisions.', category: 'productivity', extra: [] },
+  { name: 'handoff',                   desc: 'Prepare a comprehensive handoff document for another agent',                          longDesc: 'Explores the codebase and produces a structured handoff document covering architecture, conventions, current state, and context.', category: 'productivity', extra: [] },
+  { name: 'writing-great-skills',      desc: 'Write great agent skills using the Predictability paradigm',                          longDesc: 'Reference for building skills: Invocation (model/user-invoked), Information Hierarchy, Steering (branches, leading words, completion criteria), Pruning.', category: 'productivity', extra: ['GLOSSARY.md'] },
+  { name: 'codebase-design',           desc: 'Design codebase architecture before implementation',                                  longDesc: 'DEEPEN framework: Define requirements, Explore current state, Propose architecture, Evaluate trade-offs, Note ADRs. Includes DEEPENING.md and DESIGN-IT-TWICE.md.', category: 'engineering',  extra: ['DEEPENING.md', 'DESIGN-IT-TWICE.md'] },
+  { name: 'domain-modeling',           desc: 'Model domain concepts before writing code',                                          longDesc: 'Domain-driven design workflow: define ubiquitous language, identify bounded contexts, model aggregates and entities, capture as ADRs. Includes CONTEXT-FORMAT.md and ADR-FORMAT.md.', category: 'engineering',  extra: ['CONTEXT-FORMAT.md', 'ADR-FORMAT.md'] },
+];
+
+/** Install a community skill by fetching its files from GitHub */
+async function installCommunitySkill(skill: typeof COMMUNITY_SKILLS[number]): Promise<void> {
+  const dir = join(PLUGIN_DIR, skill.name);
+  mkdirSync(dir, { recursive: true });
+  const body = await fetchUrl(`${REPO_BASE}/${skill.category}/${skill.name}/SKILL.md`);
+  if (body) writeFileSync(join(dir, 'SKILL.md'), body, 'utf-8');
+  for (const file of skill.extra) {
+    const content = await fetchUrl(`${REPO_BASE}/${skill.category}/${skill.name}/${file}`);
+    if (content) writeFileSync(join(dir, file), content, 'utf-8');
+  }
 }
 
 const CATALOG: Record<string, PackageInfo> = {
@@ -279,6 +321,17 @@ const CATALOG: Record<string, PackageInfo> = {
       writeFileSync(join(PLUGIN_DIR, 'deploy-check', 'SKILL.md'), SKILL_DEPLOY_CHECK, 'utf-8');
     },
   },
+
+  // ── Community skills (mattpocock/skills) ─────────────────────────────────
+  ...Object.fromEntries(COMMUNITY_SKILLS.map((s) => [s.name, {
+    name: s.name,
+    description: s.desc,
+    longDescription: s.longDesc,
+    type: 'plugin' as const,
+    version: '1.0.0',
+    homepage: `https://github.com/mattpocock/skills/tree/main/skills/${s.category}/${s.name}`,
+    async install() { await installCommunitySkill(s); },
+  }])),
 };
 
 /** Known plugin repositories to enumerate individual plugins from */
@@ -313,6 +366,7 @@ const CURATED_PACKAGES: SearchResult[] = [
   { name: 'git-flow', description: 'Streamlined Git workflow', version: '1.0.0', source: 'curated', url: '', pkgType: 'plugin', installHint: 'nexus config native install git-flow' },
   { name: 'test-runner', description: 'Auto-discover and run tests', version: '1.0.0', source: 'curated', url: '', pkgType: 'plugin', installHint: 'nexus config native install test-runner' },
   { name: 'deploy-check', description: 'Pre-deployment checklist', version: '1.0.0', source: 'curated', url: '', pkgType: 'plugin', installHint: 'nexus config native install deploy-check' },
+  ...COMMUNITY_SKILLS.map((s) => ({ name: s.name, description: s.desc, version: '1.0.0' as const, source: 'curated' as const, url: `https://github.com/mattpocock/skills/tree/main/skills/${s.category}/${s.name}`, pkgType: 'plugin' as const, installHint: `nexus config native install ${s.name}` })),
 ];
 
 export class NativeManager {
