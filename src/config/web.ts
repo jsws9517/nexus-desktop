@@ -438,40 +438,47 @@ const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {}
   }
 
   if (url === '/api/native/skills' && method === 'GET') {
-    const native = new NativeManager();
-    const disabledSet = new Set(native.getDisabledList());
-    const skills: Array<{ name: string; source: string; enabled: boolean }> = [];
+    try {
+      const native = new NativeManager();
+      const disabledSet = new Set(native.getDisabledList());
+      const skills: Array<{ name: string; source: string; enabled: boolean }> = [];
 
-    const scanDirs = [
-      { dir: join(homedir(), '.nexus', 'skills'), source: 'skills' },
-      { dir: join(homedir(), '.nexus', 'native', 'plugins'), source: 'plugins' },
-      { dir: join(homedir(), '.claude', 'skills'), source: 'claude' },
-    ];
+      const scanDirs = [
+        { dir: join(homedir(), '.nexus', 'skills'), source: 'skills' },
+        { dir: join(homedir(), '.nexus', 'native', 'plugins'), source: 'plugins' },
+        { dir: join(homedir(), '.claude', 'skills'), source: 'claude' },
+      ];
 
-    for (const { dir, source } of scanDirs) {
-      if (!existsSync(dir)) continue;
-      const entries = readdirSync(dir);
-      for (const entry of entries) {
-        const full = join(dir, entry);
-        if (statSync(full).isDirectory()) {
-          skills.push({
-            name: entry,
-            source,
-            enabled: !disabledSet.has(entry),
-          });
+      for (const { dir, source } of scanDirs) {
+        if (!existsSync(dir)) continue;
+        let entries: string[];
+        try { entries = readdirSync(dir); } catch { continue; }
+        for (const entry of entries) {
+          const full = join(dir, entry);
+          try {
+            if (statSync(full).isDirectory()) {
+              skills.push({
+                name: entry,
+                source,
+                enabled: !disabledSet.has(entry),
+              });
+            }
+          } catch { /* skip unreadable entries */ }
         }
       }
+
+      // Deduplicate by name (first dir wins: skills > plugins > claude)
+      const seen = new Set<string>();
+      const unique = skills.filter(s => {
+        if (seen.has(s.name)) return false;
+        seen.add(s.name);
+        return true;
+      });
+
+      jsonResponse(res, { skills: unique });
+    } catch (err) {
+      jsonResponse(res, { error: String(err) }, 500);
     }
-
-    // Deduplicate by name (first dir wins: skills > plugins > claude)
-    const seen = new Set<string>();
-    const unique = skills.filter(s => {
-      if (seen.has(s.name)) return false;
-      seen.add(s.name);
-      return true;
-    });
-
-    jsonResponse(res, { skills: unique });
     return;
   }
 
@@ -690,42 +697,7 @@ function renderNativePanel(main) {
         const ep = isDisabled ? 'enable' : 'disable';
         await api('/api/native/' + ep + '/' + encodeURIComponent(s.name), { method: 'POST' });
         toast(isDisabled ? 'Enabled' : 'Disabled');
-        skillsDiv.innerHTML = '<div class="loading">Loading...</div>';
-        const refresh = await api('/api/native/skills');
-        skillsDiv.innerHTML = '';
-        for (const r of refresh.skills) {
-          const rRow = document.createElement('div');
-          rRow.className = 'array-item';
-          const rLabel = document.createElement('span');
-          rLabel.textContent = r.name;
-          rLabel.style.cssText = 'flex:1;font-size:13px';
-          const rSrc = document.createElement('span');
-          rSrc.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;margin-right:8px;background:var(--border);color:var(--text-dim)';
-          rSrc.textContent = r.source;
-          const rDisabled = !r.enabled;
-          const rBtn = document.createElement('button');
-          rBtn.className = 'btn btn-sm ' + (rDisabled ? 'btn-primary' : 'btn');
-          rBtn.textContent = rDisabled ? 'Enable' : 'Disable';
-          rBtn.onclick = async () => {
-            const rEp = rDisabled ? 'enable' : 'disable';
-            await api('/api/native/' + rEp + '/' + encodeURIComponent(r.name), { method: 'POST' });
-            toast(rDisabled ? 'Enabled' : 'Disabled');
-            renderTab('native');
-          };
-          const rBadge = document.createElement('span');
-          rBadge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;margin-right:8px;font-weight:600';
-          if (rDisabled) { rBadge.style.background = 'var(--warn)'; rBadge.style.color = '#000'; rBadge.textContent = 'disabled'; }
-          else { rBadge.style.background = 'var(--success)'; rBadge.style.color = '#000'; rBadge.textContent = 'enabled'; }
-          rRow.appendChild(rLabel);
-          rRow.appendChild(rSrc);
-          rRow.appendChild(rBadge);
-          rRow.appendChild(rBtn);
-          skillsDiv.appendChild(rRow);
-        }
-        // Also refresh the installed section
-        await loadConfig();
-        const ic = installedCard.querySelector('.array-item');
-        if (ic) { /* re-render would need to swap cards */ }
+        renderTab('native');
       };
       const badge = document.createElement('span');
       badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;margin-right:8px;font-weight:600';
@@ -737,6 +709,8 @@ function renderNativePanel(main) {
       row.appendChild(btn);
       skillsDiv.appendChild(row);
     }
+  }).catch(() => {
+    skillsDiv.innerHTML = '<div class="empty-state">Failed to load skills. Server error.</div>';
   });
 }
 
