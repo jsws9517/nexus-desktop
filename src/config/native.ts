@@ -969,7 +969,7 @@ export class NativeManager {
            `  Restart the agent to activate.`;
   }
 
-  private getInstalledList(): string[] {
+  getInstalledList(): string[] {
     try {
       return this.config.get().nativeInstalled || [];
     } catch {

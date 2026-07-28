@@ -429,7 +429,11 @@ export class Agent {
     }
 
     if (cfg.mcpServers) {
-      await this.mcp.connectAll(cfg.mcpServers);
+      const disabledMcp = new Set(cfg.nativeDisabled || []);
+      const enabled = Object.fromEntries(
+        Object.entries(cfg.mcpServers).filter(([name]) => !disabledMcp.has(name))
+      );
+      await this.mcp.connectAll(enabled);
     }
     // Create AgentContext so skills can call MCP/builtin tools
     const agentCtx = {

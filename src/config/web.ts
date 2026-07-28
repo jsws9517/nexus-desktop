@@ -400,10 +400,14 @@ const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {}
   if (url === '/api/native/list' && method === 'GET') {
     const native = new NativeManager();
     const available = native.listAvailable();
-    const installed = native.listInstalled();
+    const installedNames = native.getInstalledList();
+    const allInstalled = installedNames.map(name => ({
+      name,
+      enabled: native.isEnabled(name),
+    }));
     jsonResponse(res, {
       available: available.map(p => ({ name: p.name, description: p.description, type: p.type, version: p.version })),
-      installed: installed.map(p => p.name),
+      installed: allInstalled,
     });
     return;
   }
@@ -414,6 +418,20 @@ const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {}
     native.install(name).then((msg) => jsonResponse(res, { ok: true, message: msg })).catch((err) => {
       jsonResponse(res, { error: String(err) }, 400);
     });
+    return;
+  }
+
+  if (url.startsWith('/api/native/enable/') && method === 'POST') {
+    const name = url.slice('/api/native/enable/'.length);
+    const native = new NativeManager();
+    jsonResponse(res, { ok: true, message: native.enable(name) });
+    return;
+  }
+
+  if (url.startsWith('/api/native/disable/') && method === 'POST') {
+    const name = url.slice('/api/native/disable/'.length);
+    const native = new NativeManager();
+    jsonResponse(res, { ok: true, message: native.disable(name) });
     return;
   }
 

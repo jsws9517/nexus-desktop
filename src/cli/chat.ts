@@ -1112,14 +1112,20 @@ async function handleSlashCommand(
 
       console.log(t().heading(i18nTr('h_tools')));
       console.log(`  /tools           - ${i18nTr('h_tools_list')}`);
-      console.log(`  /mcp             - ${i18nTr('h_mcp')}`);
+      console.log(`  /mcp [list]      - ${i18nTr('h_mcp')}`);
+      console.log(`        enable     - Enable an MCP server`);
+      console.log(`        disable    - Disable an MCP server`);
       console.log(`  /skills [list]   - ${i18nTr('h_skills')}`);
+      console.log(`        enable     - Enable a skill`);
+      console.log(`        disable    - Disable a skill`);
       console.log(`        create     - ${i18nTr('h_skills_create')}`);
       console.log(`        validate   - ${i18nTr('h_skills_validate')}`);
       console.log(`        fix        - ${i18nTr('h_skills_fix')}`);
       console.log(`        fix-smart  - ${i18nTr('h_skills_fix_smart')}`);
       console.log(`        reload     - ${i18nTr('h_skills_reload')}`);
-      console.log(`  /plugins         - ${i18nTr('h_plugins')}`);
+      console.log(`  /plugins [list]  - ${i18nTr('h_plugins')}`);
+      console.log(`        enable     - Enable a plugin`);
+      console.log(`        disable    - Disable a plugin`);
       console.log(`  /skill <name> [args] - ${i18nTr('h_skill_invoke')}`);
       console.log(`  /btw <info>      - ${i18nTr('h_btw')}`);
       console.log(`  /theme           - ${i18nTr('h_theme')}`);
@@ -1536,21 +1542,52 @@ async function handleSlashCommand(
       }
       return false;
 
-    case 'mcp':
+    case 'mcp': {
+      const { NativeManager } = await import('../config/native.js');
+      const mcpSub = args[0];
+      if (mcpSub === 'enable' || mcpSub === 'disable') {
+        const name = args[1];
+        if (!name) {
+          console.log(t().textDim(`Usage: /mcp ${mcpSub} <name>`));
+          return false;
+        }
+        const native = new NativeManager();
+        const msg = mcpSub === 'enable' ? native.enable(name) : native.disable(name);
+        console.log(mcpSub === 'enable' ? t().success(msg) : t().warning(msg));
+        return false;
+      }
       const conns = agent.mcp.listConnections();
       if (conns.length === 0) {
         console.log(t().textDim('No external MCP servers connected.'));
       } else {
         console.log(t().heading(`MCP Servers (${conns.length}):`));
         for (const c of conns) {
-          console.log(`  ${t().entityName(c.name)} - ${c.toolCount} tools [${c.status}]`);
+          const name = c.name;
+          const native = new NativeManager();
+          const status = native.isEnabled(name) ? t().success('[enabled]') : t().warning('[disabled]');
+          console.log(`  ${t().entityName(name)} ${status} - ${c.toolCount} tools [${c.status}]`);
         }
       }
+      console.log(t().textDim('  Subcommands: enable <name> | disable <name>'));
       return false;
+    }
 
     case 'skills': {
       const sub = args[0];
+      const { NativeManager } = await import('../config/native.js');
       const { validateSkill, fixSkill } = await import('../skills/manager.js');
+
+      if (sub === 'enable' || sub === 'disable') {
+        const name = args[1];
+        if (!name) {
+          console.log(t().textDim(`Usage: /skills ${sub} <name>`));
+          return false;
+        }
+        const native = new NativeManager();
+        const msg = sub === 'enable' ? native.enable(name) : native.disable(name);
+        console.log(sub === 'enable' ? t().success(msg) : t().warning(msg));
+        return false;
+      }
 
       if (sub === 'create') {
         const name = args.slice(1).join(' ');
@@ -1656,15 +1693,30 @@ async function handleSlashCommand(
       } else {
         console.log(t().heading(`Skills (${skills.length}):`));
         for (const s of skills) {
+          const native = new NativeManager();
+          const status = native.isEnabled(s.name) ? t().success('[enabled]') : t().warning('[disabled]');
           const src = s.source === 'claude' ? ' [claude]' : '';
-          console.log(`  ${t().entityName(s.name)} v${s.version}${src}${s.description ? ' - ' + s.description : ''}`);
+          console.log(`  ${t().entityName(s.name)} ${status} v${s.version}${src}${s.description ? ' - ' + s.description : ''}`);
         }
       }
-      console.log(t().textDim('\nSubcommands: create <name> | validate <path> | fix <path> | fix-smart <path> | reload'));
+      console.log(t().textDim('\nSubcommands: enable <name> | disable <name> | create <name> | validate <path> | fix <path> | fix-smart <path> | reload'));
       return false;
     }
 
     case 'plugins': {
+      const { NativeManager } = await import('../config/native.js');
+      const plugSub = args[0];
+      if (plugSub === 'enable' || plugSub === 'disable') {
+        const name = args[1];
+        if (!name) {
+          console.log(t().textDim(`Usage: /plugins ${plugSub} <name>`));
+          return false;
+        }
+        const native = new NativeManager();
+        const msg = plugSub === 'enable' ? native.enable(name) : native.disable(name);
+        console.log(plugSub === 'enable' ? t().success(msg) : t().warning(msg));
+        return false;
+      }
       const allPlugins = agent.skills.list();
       const plugins = allPlugins.filter(s => s.source === 'plugins');
       if (plugins.length === 0) {
@@ -1672,9 +1724,12 @@ async function handleSlashCommand(
       } else {
         console.log(t().heading(`Plugins (${plugins.length}):`));
         for (const s of plugins) {
-          console.log(`  ${t().entityName(s.name)} v${s.version}${s.description ? ' - ' + s.description : ''}`);
+          const native = new NativeManager();
+          const status = native.isEnabled(s.name) ? t().success('[enabled]') : t().warning('[disabled]');
+          console.log(`  ${t().entityName(s.name)} ${status} v${s.version}${s.description ? ' - ' + s.description : ''}`);
         }
       }
+      console.log(t().textDim('  Subcommands: enable <name> | disable <name>'));
       return false;
     }
 
