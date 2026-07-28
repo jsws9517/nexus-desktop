@@ -1067,6 +1067,73 @@ export function registerConfigCommand(program: Command): void {
       }
     });
 
+  // ── Marketplace subcommands ───────────────────────────────────────────
+  const marketplaceCmd = nativeCmd.command('marketplace').description('Manage plugin marketplaces (add, list, remove, update)');
+
+  marketplaceCmd
+    .command('add <source>')
+    .description('Register a plugin marketplace (e.g., mattpocock/skills)')
+    .action(async (source: string) => {
+      const native = new NativeManager();
+      try {
+        const result = await native.marketplaceAdd(source);
+        console.log(t.success(result));
+      } catch (err) {
+        console.log(t.error(err instanceof Error ? err.message : String(err)));
+      }
+    });
+
+  marketplaceCmd
+    .command('list')
+    .description('List registered marketplaces and their plugins')
+    .action(() => {
+      const native = new NativeManager();
+      const mps = native.marketplaceList();
+      if (mps.length === 0) {
+        console.log(t.textDim('No marketplaces registered.'));
+        console.log(t.textDim('  Add one: nexus config native marketplace add owner/repo'));
+        return;
+      }
+      for (const mp of mps) {
+        console.log(t.heading(`\nMarketplace: ${mp.name}`));
+        console.log(`  ${t.textDim('Source:')} ${mp.source}`);
+        console.log(`  ${t.textDim('Plugins:')}`);
+        for (const p of mp.plugins) {
+          const tag = p.category ? ` (${p.category})` : '';
+          console.log(`    ${t.entityName(p.name)}${t.textDim(tag)}`);
+          console.log(`      ${p.description.slice(0, 80)}`);
+          console.log(`      ${t.textDim('Install:')} nexus config native install ${p.name}@${mp.name}`);
+        }
+      }
+      console.log();
+    });
+
+  marketplaceCmd
+    .command('remove <name>')
+    .description('Remove a registered marketplace by name')
+    .action((name: string) => {
+      const native = new NativeManager();
+      try {
+        const result = native.marketplaceRemove(name);
+        console.log(t.success(result));
+      } catch (err) {
+        console.log(t.error(err instanceof Error ? err.message : String(err)));
+      }
+    });
+
+  marketplaceCmd
+    .command('update <name>')
+    .description('Re-fetch marketplace plugin listings')
+    .action(async (name: string) => {
+      const native = new NativeManager();
+      try {
+        const result = await native.marketplaceUpdate(name);
+        console.log(t.success(result));
+      } catch (err) {
+        console.log(t.error(err instanceof Error ? err.message : String(err)));
+      }
+    });
+
   // Web UI (starts config management web UI, use config acp for ACP settings)
   const webCmd = configCmd.command('web').description('Web UI (start) & web-related settings');
 

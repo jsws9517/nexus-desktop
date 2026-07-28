@@ -470,6 +470,11 @@ export class ConfigManager {
     this.save();
   }
 
+  setRegisteredMarketplaces(list: Array<{ name: string; source: string; plugins: Array<{ name: string; description: string; source: string; category?: string; version?: string }> }>): void {
+    this.config.registeredMarketplaces = list;
+    this.save();
+  }
+
   getModelContextLimit(model?: string): number {
     const modelName = model || this.getProvider().model;
     // 1. Check model-context.json (auto-learned limits)

@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { get } from 'https';
 import { execSync } from 'child_process';
 import { ConfigManager } from './index.js';
 
@@ -43,45 +42,70 @@ export interface SearchResult {
   installHint: string;
 }
 
-const REPO_BASE = 'https://raw.githubusercontent.com/mattpocock/skills/main/skills';
-
-/** HTTP GET helper for fetching remote content */
-function fetchUrl(url: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    get(url, (res) => {
-      if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
-      let data = '';
-      res.on('data', (c) => (data += c));
-      res.on('end', () => resolve(data));
-    }).on('error', () => resolve(null));
-  });
+export interface MarketplacePlugin {
+  name: string;
+  description: string;
+  /** relative path from repo root (e.g. "./skills/engineering/diagnosing-bugs") */
+  source: string;
+  category?: string;
+  version?: string;
 }
 
-/** Community skill manifest — shared between CATALOG entries and CURATED_PACKAGES */
-const COMMUNITY_SKILLS: Array<{ name: string; desc: string; longDesc: string; category: string; extra: string[] }> = [
-  { name: 'diagnosing-bugs',           desc: 'Diagnosis loop for hard bugs and performance regressions',                          longDesc: 'Six-phase debugging workflow: build feedback loop, reproduce + minimise, 3+ hypotheses, instrument, fix + regression test, cleanup.', category: 'engineering',  extra: [] },
-  { name: 'code-review',               desc: 'Two-axis code review (standards + spec) via parallel sub-agents',                     longDesc: 'Reviews changes since a fixed point along Standards (coding conventions + smell baseline) and Spec (issue/PRD fidelity) axes in parallel.', category: 'engineering',  extra: [] },
-  { name: 'tdd',                       desc: 'Red-green-refactor test-driven development loop',                                     longDesc: 'TDD discipline: write failing test first, minimal implementation, refactor. Covers seams, anti-patterns, and vertical slicing.', category: 'engineering',  extra: ['tests.md'] },
-  { name: 'research',                  desc: 'Web search with background agent and structured output',                              longDesc: 'Spawns a parallel sub-agent to research a topic via web search, then synthesises findings into a structured report.', category: 'engineering',  extra: [] },
-  { name: 'resolving-merge-conflicts', desc: 'Resolve git merge conflicts systematically',                                         longDesc: 'Step-by-step merge conflict resolution: understand each conflict, evaluate options, apply resolution, verify build.', category: 'engineering',  extra: [] },
-  { name: 'grill-me',                  desc: 'A relentless interview to sharpen a plan or design',                                  longDesc: 'Thin router skill that delegates to /grilling for deep decision-tree stress-testing of plans, designs, and ideas.', category: 'productivity', extra: [] },
-  { name: 'grilling',                  desc: 'Grill the user relentlessly about a plan, decision, or idea',                         longDesc: 'Interviews the user one question at a time, walking down each branch of the decision tree, looking up facts via tools and asking decisions.', category: 'productivity', extra: [] },
-  { name: 'handoff',                   desc: 'Prepare a comprehensive handoff document for another agent',                          longDesc: 'Explores the codebase and produces a structured handoff document covering architecture, conventions, current state, and context.', category: 'productivity', extra: [] },
-  { name: 'writing-great-skills',      desc: 'Write great agent skills using the Predictability paradigm',                          longDesc: 'Reference for building skills: Invocation (model/user-invoked), Information Hierarchy, Steering (branches, leading words, completion criteria), Pruning.', category: 'productivity', extra: ['GLOSSARY.md'] },
-  { name: 'codebase-design',           desc: 'Design codebase architecture before implementation',                                  longDesc: 'DEEPEN framework: Define requirements, Explore current state, Propose architecture, Evaluate trade-offs, Note ADRs. Includes DEEPENING.md and DESIGN-IT-TWICE.md.', category: 'engineering',  extra: ['DEEPENING.md', 'DESIGN-IT-TWICE.md'] },
-  { name: 'domain-modeling',           desc: 'Model domain concepts before writing code',                                          longDesc: 'Domain-driven design workflow: define ubiquitous language, identify bounded contexts, model aggregates and entities, capture as ADRs. Includes CONTEXT-FORMAT.md and ADR-FORMAT.md.', category: 'engineering',  extra: ['CONTEXT-FORMAT.md', 'ADR-FORMAT.md'] },
-];
+export interface RegisteredMarketplace {
+  /** short slug used in install command: install <name>@<marketplace> */
+  name: string;
+  /** source specifier: "owner/repo" | git URL | local path | remote URL */
+  source: string;
+  plugins: MarketplacePlugin[];
+}
 
-/** Install a community skill by fetching its files from GitHub */
-async function installCommunitySkill(skill: typeof COMMUNITY_SKILLS[number]): Promise<void> {
-  const dir = join(PLUGIN_DIR, skill.name);
-  mkdirSync(dir, { recursive: true });
-  const body = await fetchUrl(`${REPO_BASE}/${skill.category}/${skill.name}/SKILL.md`);
-  if (body) writeFileSync(join(dir, 'SKILL.md'), body, 'utf-8');
-  for (const file of skill.extra) {
-    const content = await fetchUrl(`${REPO_BASE}/${skill.category}/${skill.name}/${file}`);
-    if (content) writeFileSync(join(dir, file), content, 'utf-8');
-  }
+/** Fetch a remote URL's text content using the global fetch */
+async function fetchRemoteText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch { return null; }
+}
+
+/** Parse owner/repo shorthand into GitHub raw base URL */
+function ghRawBase(owner: string, repo: string): string {
+  return `https://raw.githubusercontent.com/${owner}/${repo}/main`;
+}
+
+/** Fetch marketplace.json from a GitHub repo (.claude-plugin/marketplace.json) */
+async function fetchMarketplaceFromRepo(source: string): Promise<RegisteredMarketplace | null> {
+  // Support owner/repo shorthand
+  const match = source.match(/^([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+?)(?:\.git)?$/);
+  if (!match) return null; // only owner/repo format for now
+  const [, owner, repo] = match;
+  const rawBase = ghRawBase(owner, repo);
+  const jsonText = await fetchRemoteText(`${rawBase}/.claude-plugin/marketplace.json`);
+  if (!jsonText) return null;
+  try {
+    const data = JSON.parse(jsonText) as {
+      name?: string;
+      plugins?: Array<{
+        name: string;
+        description: string;
+        source: string;
+        category?: string;
+        version?: string;
+      }>;
+    };
+    if (!data.name || !data.plugins) return null;
+    return {
+      name: data.name,
+      source,
+      plugins: data.plugins.map(p => ({
+        name: p.name,
+        description: p.description || 'Claude Code plugin',
+        source: p.source,
+        category: p.category,
+        version: p.version || '1.0.0',
+      })),
+    };
+  } catch { return null; }
 }
 
 const CATALOG: Record<string, PackageInfo> = {
@@ -322,16 +346,6 @@ const CATALOG: Record<string, PackageInfo> = {
     },
   },
 
-  // ── Community skills (mattpocock/skills) ─────────────────────────────────
-  ...Object.fromEntries(COMMUNITY_SKILLS.map((s) => [s.name, {
-    name: s.name,
-    description: s.desc,
-    longDescription: s.longDesc,
-    type: 'plugin' as const,
-    version: '1.0.0',
-    homepage: `https://github.com/mattpocock/skills/tree/main/skills/${s.category}/${s.name}`,
-    async install() { await installCommunitySkill(s); },
-  }])),
 };
 
 /** Known plugin repositories to enumerate individual plugins from */
@@ -366,7 +380,6 @@ const CURATED_PACKAGES: SearchResult[] = [
   { name: 'git-flow', description: 'Streamlined Git workflow', version: '1.0.0', source: 'curated', url: '', pkgType: 'plugin', installHint: 'nexus config native install git-flow' },
   { name: 'test-runner', description: 'Auto-discover and run tests', version: '1.0.0', source: 'curated', url: '', pkgType: 'plugin', installHint: 'nexus config native install test-runner' },
   { name: 'deploy-check', description: 'Pre-deployment checklist', version: '1.0.0', source: 'curated', url: '', pkgType: 'plugin', installHint: 'nexus config native install deploy-check' },
-  ...COMMUNITY_SKILLS.map((s) => ({ name: s.name, description: s.desc, version: '1.0.0' as const, source: 'curated' as const, url: `https://github.com/mattpocock/skills/tree/main/skills/${s.category}/${s.name}`, pkgType: 'plugin' as const, installHint: `nexus config native install ${s.name}` })),
 ];
 
 export class NativeManager {
@@ -388,7 +401,236 @@ export class NativeManager {
     return Object.keys(CATALOG);
   }
 
+  // ── Marketplace management ─────────────────────────────────────────────────
+
+  getMarketplaces(): RegisteredMarketplace[] {
+    try { return this.config.get().registeredMarketplaces || []; }
+    catch { return []; }
+  }
+
+  async marketplaceAdd(source: string): Promise<string> {
+    // Check if already registered
+    const existing = this.getMarketplaces();
+    const shorthand = source.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '');
+    if (existing.some(m => m.source === shorthand || m.source === source)) {
+      throw new Error(`Marketplace "${shorthand}" is already registered.`);
+    }
+
+    const marketplace = await fetchMarketplaceFromRepo(shorthand);
+    if (!marketplace) {
+      throw new Error(
+        `Could not fetch marketplace from "${shorthand}".\n` +
+        `  Ensure the repo exists and has .claude-plugin/marketplace.json at root.`
+      );
+    }
+
+    existing.push(marketplace);
+    this.config.setRegisteredMarketplaces(existing);
+
+    const pluginLines = marketplace.plugins.map(p =>
+      `    ${p.name}${p.category ? ' (' + p.category + ')' : ''} — ${p.description.slice(0, 60)}`
+    ).join('\n');
+
+    return `Marketplace "${marketplace.name}" registered from ${shorthand}.\n` +
+      `  ${marketplace.plugins.length} plugin(s) available:\n${pluginLines}\n\n` +
+      `  Install with: nexus config native install <name>@${marketplace.name}`;
+  }
+
+  marketplaceList(): RegisteredMarketplace[] {
+    return this.getMarketplaces();
+  }
+
+  marketplaceRemove(name: string): string {
+    const list = this.getMarketplaces();
+    const idx = list.findIndex(m => m.name === name);
+    if (idx === -1) {
+      throw new Error(`Marketplace "${name}" not found. Registered: ${list.map(m => m.name).join(', ') || '(none)'}`);
+    }
+    const removed = list.splice(idx, 1)[0]!;
+    this.config.setRegisteredMarketplaces(list);
+    return `Marketplace "${removed.name}" (${removed.source}) removed.`;
+  }
+
+  async marketplaceUpdate(name: string): Promise<string> {
+    const list = this.getMarketplaces();
+    const existing = list.find(m => m.name === name);
+    if (!existing) {
+      throw new Error(`Marketplace "${name}" not found. Registered: ${list.map(m => m.name).join(', ') || '(none)'}`);
+    }
+
+    const marketplace = await fetchMarketplaceFromRepo(existing.source);
+    if (!marketplace) {
+      throw new Error(`Failed to re-fetch marketplace "${name}" from ${existing.source}.`);
+    }
+
+    existing.plugins = marketplace.plugins;
+    this.config.setRegisteredMarketplaces(list);
+
+    return `Marketplace "${name}" updated — ${marketplace.plugins.length} plugin(s) available.`;
+  }
+
+  /** Get all available plugins from registered marketplaces */
+  getMarketplacePlugins(): Array<{ name: string; description: string; marketplace: string; category?: string }> {
+    const results: Array<{ name: string; description: string; marketplace: string; category?: string }> = [];
+    for (const mp of this.getMarketplaces()) {
+      for (const p of mp.plugins) {
+        results.push({ name: p.name, description: p.description, marketplace: mp.name, category: p.category });
+      }
+    }
+    return results;
+  }
+
+  /** Install a plugin from a registered marketplace */
+  private async installFromMarketplace(pluginName: string, mpName: string): Promise<string> {
+    const marketplaces = this.getMarketplaces();
+    const mp = marketplaces.find(m => m.name === mpName);
+    if (!mp) {
+      throw new Error(`Marketplace "${mpName}" not found. Run \`nexus config native marketplace add <repo>\` first.`);
+    }
+
+    const plugin = mp.plugins.find(p => p.name === pluginName);
+    if (!plugin) {
+      // Not found in explicit list — try to fetch as a sub-skill from the repo
+      // (common pattern: marketplace exposes one meta-plugin, real skills are under skills/)
+      const ghMatch2 = mp.source.match(/^([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+?)(?:\.git)?$/);
+      if (ghMatch2) {
+        const [, o2, r2] = ghMatch2;
+        // Try common patterns: skills/<name>/SKILL.md, skills/<category>/<name>/SKILL.md
+        const skillBody = await fetchRemoteText(`${ghRawBase(o2, r2)}/skills/${pluginName}/SKILL.md`);
+        if (skillBody) {
+          const dir = join(PLUGIN_DIR, pluginName);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, 'SKILL.md'), skillBody, 'utf-8');
+          this.trackInstalled(pluginName);
+          return `Plugin "${pluginName}@${mpName}" installed.\n  Source: ${mp.source}/skills/${pluginName}\n  Fetched: SKILL.md\n  Restart the agent to activate.`;
+        }
+        // Try skills/<category>/<pluginName>/SKILL.md by listing categories
+        const treeRes = await fetch(
+          `https://api.github.com/repos/${o2}/${r2}/git/trees/main?recursive=1`,
+          { headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'nexus-coder' }, signal: AbortSignal.timeout(8000) }
+        );
+        if (treeRes.ok) {
+          const tree = await treeRes.json() as { tree: Array<{ path: string }> };
+          const matchPath = tree.tree.find((t: { path: string }) =>
+            new RegExp(`^skills/[^/]+/${pluginName}/SKILL\\.md$`, 'i').test(t.path)
+          );
+          if (matchPath) {
+            const body = await fetchRemoteText(`${ghRawBase(o2, r2)}/${matchPath.path}`);
+            if (body) {
+              const dir = join(PLUGIN_DIR, pluginName);
+              mkdirSync(dir, { recursive: true });
+              writeFileSync(join(dir, 'SKILL.md'), body, 'utf-8');
+              this.trackInstalled(pluginName);
+              return `Plugin "${pluginName}@${mpName}" installed.\n  Source: ${mp.source}/${matchPath.path}\n  Fetched: SKILL.md\n  Restart the agent to activate.`;
+            }
+          }
+        }
+      }
+      const available = mp.plugins.map(p => p.name).join(', ');
+      throw new Error(`Plugin "${pluginName}" not found in marketplace "${mpName}". Available: ${available}`);
+    }
+
+    // Resolve the plugin source path to raw GitHub URLs
+    const ghMatch = mp.source.match(/^([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+?)(?:\.git)?$/);
+    if (!ghMatch) {
+      throw new Error(`Marketplace source "${mp.source}" is not a GitHub repo. Only GitHub repos are supported for install.`);
+    }
+    const [, owner, repo] = ghMatch;
+    const rawBase = ghRawBase(owner, repo);
+    const srcBase = plugin.source.replace(/^\.\//, ''); // strip leading ./
+
+    // Fetch SKILL.md at plugin source root
+    const rootSkUrl = `${rawBase}/${srcBase}/SKILL.md`;
+    const rootBody = await fetchRemoteText(rootSkUrl);
+
+    if (rootBody) {
+      // Plugin has its own SKILL.md — install as single plugin
+      const dir = join(PLUGIN_DIR, pluginName);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'SKILL.md'), rootBody, 'utf-8');
+      this.trackInstalled(pluginName);
+      return `Plugin "${pluginName}@${mpName}" installed.\n  Source: ${mp.source}/${srcBase}\n  Fetched: SKILL.md\n  Restart the agent to activate.`;
+    }
+
+    // No root SKILL.md — use Git Trees API to list all files recursively in one call
+    const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`;
+    const treeRes = await fetch(treeUrl, {
+      headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'nexus-coder' },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!treeRes.ok) {
+      const dir = join(PLUGIN_DIR, pluginName);
+      mkdirSync(dir, { recursive: true });
+      this.trackInstalled(pluginName);
+      return `Plugin "${pluginName}@${mpName}" registered (no SKILL.md found).\n  Source: ${mp.source}\n  Restart the agent to activate.`;
+    }
+
+    const tree = await treeRes.json() as { tree: Array<{ path: string; type: string }> };
+    const skPaths = tree.tree.filter(t =>
+      t.type === 'blob' &&
+      /^skills\/[^/]+\/[^/]+\/SKILL\.md$/i.test(t.path)
+    );
+
+    if (skPaths.length === 0) {
+      const dir = join(PLUGIN_DIR, pluginName);
+      mkdirSync(dir, { recursive: true });
+      this.trackInstalled(pluginName);
+      return `Plugin "${pluginName}@${mpName}" installed (no skills found).\n  Source: ${mp.source}`;
+    }
+
+    // Fetch all SKILL.md files in parallel
+    const results = await Promise.allSettled(skPaths.map(async (entry) => {
+      const body = await fetchRemoteText(`${rawBase}/${entry.path}`);
+      if (!body) return null;
+      const parts = entry.path.split('/');
+      const skillName = parts[parts.length - 2]!; // .../<skill-name>/SKILL.md
+      const category = parts[parts.length - 3]!; // skills/<category>/
+      const skillDir = join(PLUGIN_DIR, skillName);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), body, 'utf-8');
+      // Fetch extra files in parallel
+      const extras = ['tests.md', 'GLOSSARY.md', 'DEEPENING.md', 'DESIGN-IT-TWICE.md', 'CONTEXT-FORMAT.md', 'ADR-FORMAT.md'];
+      await Promise.allSettled(extras.map(async (extra) => {
+        const prefix = entry.path.replace(/\/SKILL\.md$/i, '');
+        const content = await fetchRemoteText(`${rawBase}/${prefix}/${extra}`);
+        if (content) writeFileSync(join(skillDir, extra), content, 'utf-8');
+      }));
+      this.trackInstalled(skillName);
+      return skillName;
+    }));
+
+    const installedSkills: string[] = [];
+    let failedCount = 0;
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value !== null) installedSkills.push(r.value);
+      else failedCount++;
+    }
+
+    return `Plugin "${pluginName}@${mpName}" installed.\n` +
+      `  Source: ${mp.source}\n` +
+      `  Unpacked ${installedSkills.length} skill(s)` + (failedCount > 0 ? ` (${failedCount} failed)` : '') + ` into ~/.nexus/native/plugins/\n` +
+      `  Restart the agent to activate.`;
+  }
+
+  /** Record installation in config, deduplicated */
+  private trackInstalled(name: string): void {
+    const installed = this.getInstalledList();
+    if (!installed.includes(name)) {
+      installed.push(name);
+      this.saveInstalledList(installed);
+    }
+  }
+
   async install(name: string, params?: Record<string, string>): Promise<string> {
+    // Support <name>@<marketplace> syntax for marketplace plugins
+    const atIdx = name.lastIndexOf('@');
+    if (atIdx > 0 && atIdx < name.length - 1) {
+      const pluginName = name.slice(0, atIdx);
+      const mpName = name.slice(atIdx + 1);
+      return this.installFromMarketplace(pluginName, mpName);
+    }
+
     const pkg = CATALOG[name];
     if (!pkg) {
       throw new Error(
@@ -480,7 +722,27 @@ export class NativeManager {
       errors.push(`plugins: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // 4. Curated fallback — only if no external results found
+    // 4. Registered marketplaces — match marketplace plugins against query
+    {
+      const lower = query.toLowerCase();
+      for (const mp of this.getMarketplaces()) {
+        for (const p of mp.plugins) {
+          if (p.name.includes(lower) || p.description.toLowerCase().includes(lower)) {
+            results.push({
+              name: p.name,
+              description: p.description.slice(0, 120),
+              version: p.version || '1.0.0',
+              source: 'curated',
+              url: `https://github.com/${mp.source}/tree/main/${p.source.replace(/^\.\//, '')}`,
+              pkgType: 'plugin',
+              installHint: `nexus config native install ${p.name}@${mp.name}`,
+            });
+          }
+        }
+      }
+    }
+
+    // 5. Curated fallback — only if no external results found
     if (results.length === 0) {
       const lower = query.toLowerCase();
       for (const pkg of CURATED_PACKAGES) {

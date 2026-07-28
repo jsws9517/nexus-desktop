@@ -123,6 +123,17 @@ export const ConfigSchema = z.object({
   promptName: z.string().optional(),
   modelContextLimits: z.record(z.number()).optional(),
   nativeInstalled: z.array(z.string()).optional(),
+  registeredMarketplaces: z.array(z.object({
+    name: z.string(),
+    source: z.string(),
+    plugins: z.array(z.object({
+      name: z.string(),
+      description: z.string(),
+      source: z.string(),
+      category: z.string().optional(),
+      version: z.string().optional(),
+    })),
+  })).optional(),
   language: z.enum(['en', 'zh-CN']).optional(),
   activeVisionProvider: z.string().optional(),
   visionProviders: z.record(VisionProviderConfigSchema).optional(),
