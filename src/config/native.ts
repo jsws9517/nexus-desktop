@@ -981,7 +981,7 @@ export class NativeManager {
     this.config.setNativeInstalled([...new Set(list)]);
   }
 
-  private getDisabledList(): string[] {
+  getDisabledList(): string[] {
     try {
       return this.config.get().nativeDisabled || [];
     } catch {
@@ -994,14 +994,11 @@ export class NativeManager {
   }
 
   isEnabled(name: string): boolean {
-    return this.getInstalledList().includes(name) && !this.getDisabledList().includes(name);
+    return !this.getDisabledList().includes(name);
   }
 
   enable(name: string): string {
     const disabled = this.getDisabledList();
-    if (!this.getInstalledList().includes(name)) {
-      return `"${name}" is not installed. Install it first: nexus config native install ${name}`;
-    }
     if (!disabled.includes(name)) {
       return `"${name}" is already enabled.`;
     }
@@ -1011,9 +1008,6 @@ export class NativeManager {
 
   disable(name: string): string {
     const disabled = this.getDisabledList();
-    if (!this.getInstalledList().includes(name)) {
-      return `"${name}" is not installed. Install it first: nexus config native install ${name}`;
-    }
     if (disabled.includes(name)) {
       return `"${name}" is already disabled.`;
     }

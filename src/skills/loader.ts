@@ -45,8 +45,7 @@ export async function loadSkills(extraPaths?: string[], disabledPlugins?: Set<st
     const entries = readdirSync(basePath);
 
     for (const entry of entries) {
-      // Skip disabled plugins (only for native plugins dir)
-      if (source === 'plugins' && disabledPlugins?.has(entry)) continue;
+      if (disabledPlugins?.has(entry)) continue;
 
       const fullPath = join(basePath, entry);
       const stat = statSync(fullPath);

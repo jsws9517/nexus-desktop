@@ -1,6 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { ConfigManager } from './index.js';
 import { NativeManager } from './native.js';
@@ -114,6 +115,7 @@ function buildSchema(): SchemaCategory[] {
       label: 'Native Packages',
       fields: [
         { key: 'nativeInstalled', label: 'Installed Packages', type: 'array', itemType: { key: 'item', label: 'Package', type: 'string' } },
+        { key: 'nativeDisabled', label: 'Disabled Packages', type: 'array', itemType: { key: 'item', label: 'Package', type: 'string' } },
       ],
     },
     {
@@ -435,6 +437,44 @@ const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {}
     return;
   }
 
+  if (url === '/api/native/skills' && method === 'GET') {
+    const native = new NativeManager();
+    const disabledSet = new Set(native.getDisabledList());
+    const skills: Array<{ name: string; source: string; enabled: boolean }> = [];
+
+    const scanDirs = [
+      { dir: join(homedir(), '.nexus', 'skills'), source: 'skills' },
+      { dir: join(homedir(), '.nexus', 'native', 'plugins'), source: 'plugins' },
+      { dir: join(homedir(), '.claude', 'skills'), source: 'claude' },
+    ];
+
+    for (const { dir, source } of scanDirs) {
+      if (!existsSync(dir)) continue;
+      const entries = readdirSync(dir);
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          skills.push({
+            name: entry,
+            source,
+            enabled: !disabledSet.has(entry),
+          });
+        }
+      }
+    }
+
+    // Deduplicate by name (first dir wins: skills > plugins > claude)
+    const seen = new Set<string>();
+    const unique = skills.filter(s => {
+      if (seen.has(s.name)) return false;
+      seen.add(s.name);
+      return true;
+    });
+
+    jsonResponse(res, { skills: unique });
+    return;
+  }
+
   jsonResponse(res, { error: 'Not found' }, 404);
 }
 
@@ -565,11 +605,139 @@ function renderTab(id) {
   const main = document.getElementById('main');
   main.innerHTML = '<h2>' + cat.label + '</h2>';
 
-  if (cat.dynamic) {
+  if (cat.id === 'native') {
+    renderNativePanel(main);
+  } else if (cat.dynamic) {
     renderDynamicCategory(main, cat);
   } else {
     renderStaticCategory(main, cat);
   }
+}
+
+function renderNativePanel(main) {
+  // ── Installed packages section ────────────────────────────────────────
+  const installedCard = document.createElement('div');
+  installedCard.className = 'card';
+  installedCard.innerHTML = '<h3>Installed Packages (config)</h3>';
+  const installedDiv = document.createElement('div');
+
+  const nativeInstalled = state.config.nativeInstalled || [];
+  const nativeDisabled = state.config.nativeDisabled || [];
+
+  if (nativeInstalled.length === 0) {
+    installedDiv.innerHTML = '<div class="empty-state">No packages installed.</div>';
+  } else {
+    for (const name of nativeInstalled) {
+      const row = document.createElement('div');
+      row.className = 'array-item';
+      const label = document.createElement('span');
+      label.textContent = name;
+      label.style.cssText = 'flex:1;font-size:13px';
+      const isDisabled = nativeDisabled.includes(name);
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm ' + (isDisabled ? 'btn-primary' : 'btn');
+      btn.textContent = isDisabled ? 'Enable' : 'Disable';
+      btn.onclick = async () => {
+        const ep = isDisabled ? 'enable' : 'disable';
+        await api('/api/native/' + ep + '/' + encodeURIComponent(name), { method: 'POST' });
+        toast(isDisabled ? 'Enabled' : 'Disabled');
+        await loadConfig();
+        renderTab('native');
+      };
+      const badge = document.createElement('span');
+      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;margin-right:8px;font-weight:600';
+      if (isDisabled) { badge.style.background = 'var(--warn)'; badge.style.color = '#000'; badge.textContent = 'disabled'; }
+      else { badge.style.background = 'var(--success)'; badge.style.color = '#000'; badge.textContent = 'enabled'; }
+      row.appendChild(label);
+      row.appendChild(badge);
+      row.appendChild(btn);
+      installedDiv.appendChild(row);
+    }
+  }
+  installedCard.appendChild(installedDiv);
+  main.appendChild(installedCard);
+
+  // ── Skills & plugins from filesystem section ──────────────────────────
+  const skillsCard = document.createElement('div');
+  skillsCard.className = 'card';
+  skillsCard.innerHTML = '<h3>Skills &amp; Plugins (filesystem)</h3>';
+  const skillsDiv = document.createElement('div');
+  skillsDiv.innerHTML = '<div class="loading">Loading...</div>';
+  skillsCard.appendChild(skillsDiv);
+  main.appendChild(skillsCard);
+
+  api('/api/native/skills').then(data => {
+    const skills = data.skills || [];
+    if (skills.length === 0) {
+      skillsDiv.innerHTML = '<div class="empty-state">No skills found on filesystem.</div>';
+      return;
+    }
+    skillsDiv.innerHTML = '';
+    for (const s of skills) {
+      const row = document.createElement('div');
+      row.className = 'array-item';
+      const label = document.createElement('span');
+      label.textContent = s.name;
+      label.style.cssText = 'flex:1;font-size:13px';
+      const srcBadge = document.createElement('span');
+      srcBadge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;margin-right:8px;background:var(--border);color:var(--text-dim)';
+      srcBadge.textContent = s.source;
+      const isDisabled = !s.enabled;
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm ' + (isDisabled ? 'btn-primary' : 'btn');
+      btn.textContent = isDisabled ? 'Enable' : 'Disable';
+      btn.onclick = async () => {
+        const ep = isDisabled ? 'enable' : 'disable';
+        await api('/api/native/' + ep + '/' + encodeURIComponent(s.name), { method: 'POST' });
+        toast(isDisabled ? 'Enabled' : 'Disabled');
+        skillsDiv.innerHTML = '<div class="loading">Loading...</div>';
+        const refresh = await api('/api/native/skills');
+        skillsDiv.innerHTML = '';
+        for (const r of refresh.skills) {
+          const rRow = document.createElement('div');
+          rRow.className = 'array-item';
+          const rLabel = document.createElement('span');
+          rLabel.textContent = r.name;
+          rLabel.style.cssText = 'flex:1;font-size:13px';
+          const rSrc = document.createElement('span');
+          rSrc.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;margin-right:8px;background:var(--border);color:var(--text-dim)';
+          rSrc.textContent = r.source;
+          const rDisabled = !r.enabled;
+          const rBtn = document.createElement('button');
+          rBtn.className = 'btn btn-sm ' + (rDisabled ? 'btn-primary' : 'btn');
+          rBtn.textContent = rDisabled ? 'Enable' : 'Disable';
+          rBtn.onclick = async () => {
+            const rEp = rDisabled ? 'enable' : 'disable';
+            await api('/api/native/' + rEp + '/' + encodeURIComponent(r.name), { method: 'POST' });
+            toast(rDisabled ? 'Enabled' : 'Disabled');
+            renderTab('native');
+          };
+          const rBadge = document.createElement('span');
+          rBadge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;margin-right:8px;font-weight:600';
+          if (rDisabled) { rBadge.style.background = 'var(--warn)'; rBadge.style.color = '#000'; rBadge.textContent = 'disabled'; }
+          else { rBadge.style.background = 'var(--success)'; rBadge.style.color = '#000'; rBadge.textContent = 'enabled'; }
+          rRow.appendChild(rLabel);
+          rRow.appendChild(rSrc);
+          rRow.appendChild(rBadge);
+          rRow.appendChild(rBtn);
+          skillsDiv.appendChild(rRow);
+        }
+        // Also refresh the installed section
+        await loadConfig();
+        const ic = installedCard.querySelector('.array-item');
+        if (ic) { /* re-render would need to swap cards */ }
+      };
+      const badge = document.createElement('span');
+      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;margin-right:8px;font-weight:600';
+      if (isDisabled) { badge.style.background = 'var(--warn)'; badge.style.color = '#000'; badge.textContent = 'disabled'; }
+      else { badge.style.background = 'var(--success)'; badge.style.color = '#000'; badge.textContent = 'enabled'; }
+      row.appendChild(label);
+      row.appendChild(srcBadge);
+      row.appendChild(badge);
+      row.appendChild(btn);
+      skillsDiv.appendChild(row);
+    }
+  });
 }
 
 function renderDynamicCategory(main, cat) {
@@ -936,7 +1104,9 @@ await api('/api/config', { method: 'PUT', body: JSON.stringify({
   qualityGate: state.config.qualityGate || { autoTest: true, autoCommit: false },
   acp: state.config.acp,
   permissions: state.config.permissions || { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [] },
-})});
+  nativeInstalled: state.config.nativeInstalled || [],
+  nativeDisabled: state.config.nativeDisabled || [],
+})));
     toast('Saved');
   } catch { toast('Save failed', 'error'); }
 }
