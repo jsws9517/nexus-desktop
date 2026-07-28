@@ -3,6 +3,31 @@
 ## Key files
 - `src/cli/chat.ts` — all input handling, `_ttyWrite` overrides
 
+# Loop Engineering — Debugging Discipline
+
+## Three-layer architecture
+
+### Layer 1: Static system prompt (always on)
+**File:** `src/agent.ts:608-625` — `[Debugging Discipline]` injected early, before vision/project sections.
+- 3 imperatives: RULE 1 (reproduction first), RULE 2 (3+ hypotheses), RULE 3 (completion criteria)
+- Explicit: "Reading source code is NOT reproduction. Even after the user tells you the project path..."
+
+### Layer 2: Dynamic keyword-triggered injection (preLlmCall hook)
+**File:** `src/agent.ts:763-786` — detected by regex `debugRE` (bug, crash, OOM, leak, 崩溃, 异常, etc.)
+- Injects full 6-step diagnosing-bugs workflow into system prompt before LLM sees the user message
+- Sets `this._debugBlockFileRead = true`
+
+### Layer 3: File-read enforcement (preToolUse hook)
+**File:** `src/agent.ts:795-804` — physically blocks `read_text_file`, `directory_tree`, `list_directory`, `get_file_info`, `glob`, `grep` when `_debugBlockFileRead` is true.
+- Returns `{ verdict: 'deny', reason: '...' }` — forces agent to ask user about reproduction instead of reading source
+- Flag cleared at `chat()` start on next user input
+
+## Do NOT regress
+- The 3 layers are intentional redundancy: prompt + hook + enforcement. Removing any layer weakens the gate.
+- `_debugBlockFileRead` is set in preLlmCall (if debugRE matches), cleared AFTER `runLlmTurn()` returns — i.e., only after the LLM has completed a full response (text without tool calls). The block persists across ALL recursive turns within one user message, and across subsequent user messages that don't contain debug keywords. This prevents the agent from reading files even after the user gives the project path.
+- `debugRE` regex must stay aligned with Chinese and English debug keywords.
+- When adding new file-reading tools, add them to `fileTools` Set in preToolUse.
+
 ## Rules (do not break)
 
 ### Enter/Ctrl+Enter behavior

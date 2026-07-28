@@ -76,6 +76,8 @@ export function showWelcomeScreen(info: WelcomeInfo, mode?: BorderMode): void {
     `  ${t.textDim('•')} ${i18nTr('wn_detail')}`,
     `  ${t.textDim('•')} ${i18nTr('wn_import')}`,
     `  ${t.textDim('•')} ${i18nTr('wn_persist')}`,
+    `  ${t.textDim('•')} ${i18nTr('wn_grill')}`,
+    `  ${t.textDim('•')} ${i18nTr('wn_loop')}`,
   ];
 
   const termWidth = process.stdout.columns ?? 120;

@@ -8,7 +8,9 @@
     "agent": "./dist/src/cli/index.js"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-assets.mjs",
+    "build": "tsc && node scripts/copy-assets.mjs && node scripts/install-community-skills.mjs",
+    "install-skills": "node scripts/install-community-skills.mjs",
+    "postinstall": "node scripts/install-community-skills.mjs",
     "dev": "tsx src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "typecheck": "tsc --noEmit",
@@ -40,7 +42,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "^13.0.1",
     "chalk": "^5.6.2",
     "commander": "^15.0.0",
     "openai": "^6.45.0",

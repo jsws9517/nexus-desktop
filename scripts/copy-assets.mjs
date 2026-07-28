@@ -12,18 +12,10 @@ const assets = [
   { from: 'src/vision/local_vision.py', to: 'dist/src/vision/local_vision.py' },
 ];
 
-let copied = 0;
 for (const { from, to } of assets) {
   const src = resolve(root, from);
   const dst = resolve(root, to);
-  if (!existsSync(src)) {
-    console.warn(`[copy-assets] skip missing: ${from}`);
-    continue;
-  }
+  if (!existsSync(src)) continue;
   mkdirSync(dirname(dst), { recursive: true });
   cpSync(src, dst);
-  copied++;
-  console.log(`[copy-assets] ${from} -> ${to}`);
 }
-
-console.log(`[copy-assets] done (${copied} file(s))`);

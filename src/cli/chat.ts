@@ -22,6 +22,35 @@ const execAsync = promisify(exec);
 const _themeMgr = new ThemeManager();
 function t() { return _themeMgr.token; }
 
+// ---- Visual-width helpers (CJK = 2, ASCII = 1) ----
+
+function visualWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) || 0;
+    if (cp >= 0x4E00 && cp <= 0x9FFF || cp >= 0x3400 && cp <= 0x4DBF || cp >= 0xF900 && cp <= 0xFAFF || cp >= 0xFF01 && cp <= 0xFF60 || cp >= 0xFFE0 && cp <= 0xFFE6) w += 2;
+    else w += 1;
+  }
+  return w;
+}
+
+function visualTruncate(s: string, maxWidth: number): string {
+  let w = 0;
+  let i = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) || 0;
+    const cw = cp >= 0x4E00 && cp <= 0x9FFF || cp >= 0x3400 && cp <= 0x4DBF || cp >= 0xF900 && cp <= 0xFAFF || cp >= 0xFF01 && cp <= 0xFF60 || cp >= 0xFFE0 && cp <= 0xFFE6 ? 2 : 1;
+    if (w + cw > maxWidth) break;
+    w += cw;
+    i++;
+  }
+  return s.slice(0, i);
+}
+
+function visualPadEnd(s: string, targetWidth: number): string {
+  return s + ' '.repeat(Math.max(0, targetWidth - visualWidth(s)));
+}
+
 // ---- Gradient separator line ----
 
 function hexLerp(c1: string, c2: string, t: number): string {
@@ -361,6 +390,54 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
           return;
         }
         // 3) Plain Enter → let readline submit
+        return originalTtyWrite(s, key);
+      }
+
+      // Tab completion for /skill command
+      if (key.name === 'tab') {
+        const line = rl.line;
+        const skillMatch = line.match(/^\/skill (.{0,})$/);
+        if (skillMatch) {
+          const partial = skillMatch[1];
+          const skills = agent.skills.list()
+            .filter(s => s.source !== 'plugins')
+            .map(s => s.name);
+          const matches = skills.filter(s => s.startsWith(partial));
+          if (matches.length === 1) {
+            rl.write(matches[0].slice(partial.length));
+          } else if (matches.length > 1) {
+            // Longest common prefix
+            const prefix = matches.reduce((a, b) => {
+              let i = 0;
+              while (i < a.length && i < b.length && a[i] === b[i]) i++;
+              return a.slice(0, i);
+            });
+            if (prefix.length > partial.length) {
+              rl.write(prefix.slice(partial.length));
+            } else {
+              // Show all matches
+              process.stdout.write('\n');
+              for (const name of matches) {
+                const s = skills.find(s => s === name) || name;
+                process.stdout.write(`  ${t().entityName(name)}\n`);
+              }
+              process.stdout.write(promptLabel() + rl.line);
+            }
+          } else {
+            // No startsWith match → try includes
+            const fuzzy = skills.filter(s => s.includes(partial));
+            if (fuzzy.length > 0) {
+              process.stdout.write('\n');
+              for (const name of fuzzy) {
+                process.stdout.write(`  ${t().entityName(name)}\n`);
+              }
+              process.stdout.write(promptLabel() + rl.line);
+            } else {
+              return originalTtyWrite(s, key);
+            }
+          }
+          return;
+        }
         return originalTtyWrite(s, key);
       }
 
@@ -1043,6 +1120,7 @@ async function handleSlashCommand(
       console.log(`        fix-smart  - ${i18nTr('h_skills_fix_smart')}`);
       console.log(`        reload     - ${i18nTr('h_skills_reload')}`);
       console.log(`  /plugins         - ${i18nTr('h_plugins')}`);
+      console.log(`  /skill <name> [args] - ${i18nTr('h_skill_invoke')}`);
       console.log(`  /btw <info>      - ${i18nTr('h_btw')}`);
       console.log(`  /theme           - ${i18nTr('h_theme')}`);
 
@@ -1912,6 +1990,104 @@ async function handleSlashCommand(
       return false;
     }
 
+    case 'skill': {
+      const skillName = args[0];
+      if (!skillName || skillName === 'list') {
+        const skills = agent.skills.list().filter(s => s.source !== 'plugins');
+        if (skills.length === 0) {
+          console.log(t().textDim('No skills loaded.'));
+        } else {
+          console.log(t().heading(`Skills (${skills.length}):`));
+          console.log(t().textDim('  Tab-complete names in the prompt. Usage: /skill <name> [subcommand] [args...]'));
+          for (const s of skills) {
+            const src = s.source === 'claude' ? t().textDim(' [claude]') : '';
+            const hasCmd = s.handleCommand ? t().success(' cmd') : t().textDim('');
+            console.log(`  ${t().entityName(s.name)} v${s.version}${src}${hasCmd}${s.description ? ' - ' + s.description : ''}`);
+          }
+        }
+        return false;
+      }
+
+      // Find the skill — exact match first, then case-insensitive
+      const allSkills = agent.skills.list().filter(s => s.source !== 'plugins');
+      const skill = allSkills.find(s => s.name === skillName)
+        || allSkills.find(s => s.name.toLowerCase() === skillName.toLowerCase());
+
+      if (!skill) {
+        console.log(t().error(`Skill "${skillName}" not found.`));
+        const close = allSkills.filter(s => s.name.toLowerCase().includes(skillName.toLowerCase())).slice(0, 5);
+        if (close.length > 0) {
+          console.log(t().textDim(`Did you mean: ${close.map(s => t().entityName(s.name)).join(', ')}?`));
+        }
+        return false;
+      }
+
+      const subcommand = args[1] || '';
+      const cmdArgs = args.slice(2);
+
+      if (skill.handleCommand) {
+        try {
+          const result = await skill.handleCommand(subcommand, cmdArgs);
+          console.log(result || t().textDim('(no output)'));
+        } catch (err) {
+          console.log(t().error(`Skill command failed: ${err instanceof Error ? err.message : String(err)}`));
+        }
+        return false;
+      }
+
+      // No handleCommand — try interactive tool invocation
+      if (skill.tools && skill.tools.length > 0) {
+        const toolDef = skill.tools[0];
+        const schema = toolDef.inputSchema as { properties?: Record<string, { type?: string; description?: string }>; required?: string[] };
+        const hasTaskInput = schema?.properties?.task !== undefined;
+        const restArgs = args.slice(1).join(' ').trim();
+
+        let userTask = restArgs;
+
+        if (!userTask) {
+          if (customQuestion) {
+            console.log(t().heading(`${t().entityName(skill.name)}`));
+            if (skill.description) process.stdout.write(t().textDim(skill.description + '\n'));
+            userTask = (await customQuestion(t().prompt('What would you like the skill to do? ')))?.trim();
+            if (!userTask) return false;
+          } else {
+            console.log(t().error('Interactive prompting unavailable in this context.'));
+            console.log(t().textDim(`Usage: /skill ${skill.name} <task description>`));
+            return false;
+          }
+        }
+
+        if (skill.tools.length === 1 && hasTaskInput && userTask) {
+          const result = await agent.skills.callTool(skill.name, { task: userTask });
+          if (!result) { console.log(t().error('Tool returned no result.')); return false; }
+
+          const content = result.content || '';
+          if (content.includes('instructions:') && content.includes('User task:')) {
+            // Skill returned instructions instead of executing — feed to agent
+            console.log(t().textDim('Processing through agent...'));
+            await agent.chat(content);
+          } else {
+            console.log(content);
+          }
+        } else {
+          // Multiple tools or unknown schema — list them
+          console.log(t().heading(`"${skill.name}" provides ${skill.tools.length} tool(s):`));
+          for (const tDef of skill.tools) {
+            console.log(`  ${t().toolCallName(tDef.name)} - ${tDef.description}`);
+          }
+          console.log(t().textDim('Use these tools via the agent (the LLM will call them automatically when needed).'));
+          if (restArgs) {
+            console.log(t().textDim('Attempting invocation with provided args...'));
+            const result = await agent.skills.callTool(skill.name, { task: restArgs });
+            if (result) console.log(result.content);
+          }
+        }
+      } else {
+        console.log(t().textDim(`Skill "${skill.name}" is loaded but has no callable tools or commands.`));
+      }
+      return false;
+    }
+
     default:
       console.log(t().warning(`Unknown command: /${cmd}`));
       return false;
@@ -1952,17 +2128,18 @@ async function doResumeList(
 ): Promise<boolean> {
   const rows: { id: string; name: string; model: string; updatedAt: string; tokens: number }[] = [];
   console.log(t().heading('Sessions:'));
-  console.log(t().textDim('  #   Name                         Model             Updated          Tokens    Session ID'));
-  console.log(t().textDim('  --- ---------------------------- ------------------ ------------------ ------    ------------------------------------'));
+  console.log(t().textDim('  #   ' + visualPadEnd('Name', 28) + ' ' + visualPadEnd('Model', 24) + ' ' + visualPadEnd('Updated', 18) + ' ' + 'Tokens'.padStart(8) + ' Session ID'));
+  console.log(t().textDim('  --- ' + '-'.repeat(28) + ' ' + '-'.repeat(24) + ' ' + '-'.repeat(18) + ' ' + '-'.repeat(8) + ' ' + '-'.repeat(36)));
   for (const s of displaySessions) {
     const tokens = agent.session.getTokenEstimate(s.id, agent.provider);
     const date = new Date(s.updatedAt).toLocaleString();
-    const name = s.name.slice(0, 28).padEnd(28);
-    const model = s.model.slice(0, 18).padEnd(18);
-    const dateStr = date.slice(0, 18).padEnd(18);
-    const current = s.id === currentId ? t().success(' <- current') : '';
-    const warn = tokens > maxTokens ? t().warning(' !') : '';
-    console.log(`  ${String(rows.length + 1).padStart(3)} ${t().entityName(name)} ${model} ${dateStr} ${String(tokens).padStart(6)}${warn}${current}  ${t().textDim(s.id)}`);
+    const name = visualPadEnd(visualTruncate(s.name, 28), 28);
+    const model = visualPadEnd(visualTruncate(s.model, 24), 24);
+    const dateStr = visualPadEnd(visualTruncate(date, 18), 18);
+    const tokenStr = String(tokens).padStart(7);
+    const tokenMarker = tokens > maxTokens ? t().warning('!') : ' ';
+    const currentMarker = s.id === currentId ? t().success('  <- current') : '';
+    console.log(`  ${String(rows.length + 1).padStart(3)} ${t().entityName(name)} ${model} ${dateStr} ${tokenStr}${tokenMarker} ${t().textDim(s.id)}${currentMarker}`);
     rows.push({ id: s.id, name: s.name, model: s.model, updatedAt: date, tokens });
   }
 

@@ -352,6 +352,9 @@ export class Agent {
   /** Track tool error count per (toolName + args hash) to break infinite retry loops */
   private toolErrorCount: Map<string, number> = new Map();
 
+  /** When true, file-reading tools are denied in preToolUse — enforces repro-first rule in debug mode */
+  private _debugBlockFileRead = false;
+
   /** Metrics for observability */
   private metrics: TurnMetrics[] = [];
   private turnStartTime = 0;
@@ -605,6 +608,25 @@ export class Agent {
         }
       }
 
+      // ── Debugging discipline (always on, front-loaded for visibility) ──────
+      systemPrompt +=
+        '\n\n[Debugging Discipline]\n' +
+        'RULES when the user reports an issue (error, crash, OOM, leak, regression, unexpected behavior):\n' +
+        '  RULE 1 — REPRODUCTION FIRST\n' +
+        '    You MUST establish a reliable reproduction BEFORE speculating about the cause.\n' +
+        '    A reproduction is a RUNNABLE test, script, or command that goes RED on the exact symptom.\n' +
+        '    Reading source code is NOT reproduction. Even after the user tells you the project path, do NOT read source files.\n' +
+        '    Your next action after identifying the service MUST be to ask about or build a reproduction, not to read code.\n' +
+        '    The reproduction is a COMMAND you can RUN (e.g. a stress test or curl loop), not a code review.\n' +
+        '    No reproduction = no hypothesis. Refuse to jump to conclusions without one.\n' +
+        '  RULE 2 — 3+ HYPOTHESES\n' +
+        '    Generate at least 3 ranked hypotheses with FALSIFIABLE PREDICTIONS before testing any theory.\n' +
+        '    Format each: "If <X> is the cause, then <changing Y> will make the bug disappear / get worse."\n' +
+        '    Show the ranked list to the user before instrumenting.\n' +
+        '  RULE 3 — COMPLETION CRITERIA\n' +
+        '    Every step in a multi-step process MUST have an explicit, checkable done condition.\n' +
+        '    State it before starting the step. Verify it before declaring the step done.\n';
+
       // Inject vision/OCR capability info so the model knows its own limits and fallback chain
       try {
         const { isVisionCapable } = await import('./vision/capability.js');
@@ -737,16 +759,46 @@ export class Agent {
     this.hooks = {
       ...(userHooks || {}),
       preLlmCall: async (ctx) => {
-        // Inject /btw info into system prompt preamble before LLM sees messages
+        // Inject /btw info before LLM sees messages
         if (this.pendingBtw) {
           this.context.prependToSystem(`[Context: ${this.pendingBtw}]`);
           this.pendingBtw = undefined;
+        }
+        // Detect debug keywords and set file-read block
+        if (ctx.userInput) {
+          const debugRE = /\b(?:bug|crash|OOM|leak|oom|崩溃|溢出|泄漏|死锁|异常|fault|挂掉|down|unresponsive|内存|error|fail|broken|不对|不正常|wrong|incorrect|slow|regression|诊断|debug|调试)\b/i;
+          if (debugRE.test(ctx.userInput) && !ctx.userInput.match(/^(test|describe|it|assert|expect)/i)) {
+            this._debugBlockFileRead = true;
+            this.context.prependToSystem(
+              '\n[Debug Mode — Active]\n' +
+              'You are in DEBUG mode. Follow this workflow strictly:\n' +
+              '  Step 1 — Identify the affected service (ask user if needed). Then build a RUNNABLE reproduction.\n' +
+              '    ⚠ Do NOT read source code — even after the user gives you the project path. Identifying the service is NOT permission to read files.\n' +
+              '    Your next action after getting the path MUST be to ask about or build a reproduction (a command/script to run), not to read source files.\n' +
+              '  Step 2 — Run the repro, minimise to only load-bearing elements.\n' +
+              '  Step 3 — Generate 3+ ranked hypotheses, each with a falsifiable prediction. Show user before proceeding.\n' +
+              '  Step 4 — Instrument one variable at a time. Each probe maps to one prediction.\n' +
+              '  Step 5 — Fix + regression test at a correct seam.\n' +
+              '  Step 6 — Cleanup: remove debug instrumentation, document root cause.\n' +
+              'Start at Step 1. Do NOT skip to code reading.'
+            );
+          }
         }
         await userHooks?.preLlmCall?.(ctx);
       },
       preToolUse: async (ctx) => {
         const check = await sanityCheck(ctx);
         if (check !== 'allow') return check;
+        // Enforce repro-first gate: block file-read tools in debug mode until user responds
+        if (this._debugBlockFileRead && ctx.toolCall?.name) {
+          const fileTools = new Set(['read_text_file', 'directory_tree', 'list_directory', 'get_file_info', 'glob', 'grep']);
+          if (fileTools.has(ctx.toolCall.name)) {
+            return {
+              verdict: 'deny',
+              reason: '⛔ RULE 1 — Reproduction first. You MUST build a runnable reproduction before reading any source files. Ask the user about reproduction first.',
+            };
+          }
+        }
         // In ACP server mode, use configured permission mode
         if (this.isAcpServer) {
           const acpPermMode = this.config.getAcpConfig()?.permissionMode || 'auto';
@@ -812,6 +864,9 @@ export class Agent {
       }
 
       await this.runLlmTurn(showDetail, signal);
+
+      // Clear debug file-read block after LLM has produced its response (end_turn reached)
+      this._debugBlockFileRead = false;
 
       if (signal.aborted) return;
 

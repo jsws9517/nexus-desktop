@@ -9,6 +9,12 @@ export interface AgentContext {
   skillRoot?: string;
 }
 
+/** A single step in a skill's workflow with its completion criterion */
+export interface SkillStep {
+  name: string;
+  done: string;
+}
+
 export interface Skill {
   name: string;
   version: string;
@@ -17,6 +23,8 @@ export interface Skill {
   rootDir?: string;
   /** Source directory type: 'skills' | 'plugins' | 'claude' */
   source?: 'skills' | 'plugins' | 'claude';
+  /** Optional structured steps with completion criteria for multi-step workflows */
+  steps?: SkillStep[];
   init?(ctx: AgentContext): Promise<void>;
   tools?: ToolDefinition[];
   callTool?(name: string, args: Record<string, unknown>): Promise<ToolResult>;

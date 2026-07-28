@@ -2,7 +2,7 @@ import { readdirSync, statSync, existsSync, readFileSync } from 'fs';
 import { join, resolve, isAbsolute } from 'path';
 import { homedir } from 'os';
 import { createRequire } from 'module';
-import { Skill, AgentContext } from './types.js';
+import { Skill, SkillStep, AgentContext } from './types.js';
 import { ToolResult } from '../types.js';
 
 const SKILLS_DIR = join(homedir(), '.nexus', 'skills');
@@ -316,16 +316,34 @@ function tryLoadMdSkill(dirPath: string, name: string, indexData?: { skills?: Ar
     || /mcp__[\w_]+__[\w_]+/.test(body)
     || /https?:\/\/[^\s]+/.test(body);
 
+  // Parse structured steps with completion criteria from frontmatter
+  let steps: SkillStep[] = [];
+  if (metadata.steps) {
+    try {
+      const parsed = JSON.parse(metadata.steps);
+      if (Array.isArray(parsed)) steps = parsed as SkillStep[];
+    } catch { /* silently ignore malformed steps */ }
+  }
+
+  // Build tool description with steps if present
+  let toolDesc = `Invoke the "${skillName}" skill. ${skillDescription}`;
+  if (steps.length > 0) {
+    toolDesc += '\n\nSteps:\n' + steps.map((s, i) =>
+      `  ${i + 1}. ${s.name} — done when: ${s.done}`
+    ).join('\n');
+  }
+
   let agentCtx: AgentContext | undefined;
 
   return {
     name: skillName,
     version: skillVersion,
     description: skillDescription,
+    steps: steps.length > 0 ? steps : undefined,
     rootDir: dirPath,
     tools: [{
       name: skillName,
-      description: `Invoke the "${skillName}" skill. ${skillDescription}`,
+      description: toolDesc,
       inputSchema: {
         type: 'object',
         properties: {
