@@ -8,9 +8,7 @@
     "agent": "./dist/src/cli/index.js"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-assets.mjs && node scripts/install-community-skills.mjs",
-    "install-skills": "node scripts/install-community-skills.mjs",
-    "postinstall": "node scripts/install-community-skills.mjs",
+    "build": "tsc && node scripts/copy-assets.mjs",
     "dev": "tsx src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "typecheck": "tsc --noEmit",

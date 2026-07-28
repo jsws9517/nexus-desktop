@@ -3,6 +3,37 @@
 ## Key files
 - `src/cli/chat.ts` — all input handling, `_ttyWrite` overrides
 
+# Marketplace System
+
+**File:** `src/config/native.ts` — `CATALOG` (MCP servers only), `DEFAULT_MARKETPLACES`, `NativeManager`
+
+All plugins (skills) come from **registered marketplaces**, not inline code. Two defaults auto-register on first use:
+- `claude-code-plugins` (`anthropics/claude-plugins-official`) — 4 official plugins
+- `mattpocock` (`mattpocock/skills`) — community skills (meta-plugin, sub-skills unpacked at install)
+
+## CLI commands
+```
+nexus config native marketplace add <owner/repo>   # register a marketplace source
+nexus config native marketplace list                 # show registered marketplaces + their plugins
+nexus config native marketplace remove <name>        # remove a marketplace
+nexus config native marketplace update <name>        # re-fetch marketplace.json
+
+nexus config native install <name>                    # CATALOG → marketplace fallback
+nexus config native install <name>@<marketplace>      # exact marketplace plugin
+```
+
+## How install resolution works
+1. `install <name>` — checks CATALOG first (MCP/LSP servers). Not found? Searches all registered marketplaces for the plugin name (exact match), then sub-skill patterns (`plugins/<name>/SKILL.md`, `skills/<name>/SKILL.md`, etc.), then broad tree scan via GitHub API.
+2. `install <name>@<marketplace>` — looks up the exact marketplace, finds the plugin, fetches its SKILL.md.
+3. For meta-plugins (like `mattpocock-skills@mattpocock` which has no root SKILL.md): uses Git Trees API to discover `skills/*/*/SKILL.md` recursively and unpacks each as an individual plugin directory.
+
+## Key design decisions
+- `CATALOG` only contains MCP servers (require npm install) and LSP packages (need generated scripts). No SKILL.md strings are shipped inline.
+- `fetchMarketplaceFromRepo()` fetches `.claude-plugin/marketplace.json` from the remote repo (Claude Code format).
+- Plugin `source` can be a simple relative path (`./plugins/code-review`) or a complex object (`{ source: 'url', url: '...', sha: '...' }`). Only simple paths are auto-installed.
+- `KNOWN_PLUGIN_REPOS` and `searchPluginRepos`/`fetchRepoPlugins` were removed — replaced by marketplace discovery.
+- `install-community-skills.mjs` was removed — marketplace handles this at runtime via `install <name>@<marketplace>`.
+
 # Loop Engineering — Debugging Discipline
 
 ## Three-layer architecture
