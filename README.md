@@ -449,6 +449,65 @@ paddle-ocr.exe --image doc.png --show-boxes              # With confidence
 paddle-ocr.exe --version                                 # Version info
 ```
 
+## Speech / Audio
+
+The agent supports both **Speech-to-Text (STT)** and **Text-to-Speech (TTS)** through a unified `speechProviders` configuration. Each provider has a `category` field (`stt` or `tts`) that selects the role.
+
+### STT — Speech-to-Text (transcribe_audio)
+
+Transcribe audio files (meeting recordings, voice messages, lectures) into text using the `transcribe_audio` tool.
+
+```bash
+# Configure an STT provider (Aliyun DashScope ASR)
+nexus config speech set asr-qwen \
+  -k $API_KEY_ALIYUN \
+  -u https://dashscope.aliyuncs.com/compatible-mode/v1 \
+  -m qwen3-asr-flash \
+  -c stt
+
+# Or using SiliconFlow (TeleSpeechASR)
+nexus config speech set asr-tel \
+  -k $API_KEY_SILICON \
+  -u https://api.siliconflow.cn/v1 \
+  -m TeleAI/TeleSpeechASR \
+  -c stt
+
+# List configured providers
+nexus config speech list
+
+# Set active STT provider
+nexus config speech switch asr-qwen
+```
+
+### TTS — Text-to-Speech (synthesize_speech)
+
+Generate spoken audio from text using the `synthesize_speech` tool. Supports OpenAI-compatible TTS APIs and local providers.
+
+```bash
+# Configure a cloud TTS provider (OpenAI-compatible)
+nexus config speech set openai-tts \
+  -k $API_KEY_OPENAI \
+  -u https://api.openai.com/v1 \
+  -m tts-1 \
+  -c tts \
+  --voice alloy
+
+# Configure local Kokoro TTS (no API key required)
+nexus config speech set kokoro \
+  -k dummy \
+  -u http://localhost:8181/v1 \
+  -m kokoro \
+  -c tts \
+  --voice af_sky
+
+# Set active TTS provider
+nexus config speech switch-tts kokoro
+```
+
+### Supported Audio Formats
+
+`transcribe_audio` accepts: `wav`, `mp3`, `m4a`, `ogg`, `flac`, `webm`, `aac`, `wma`.
+
 ## ACP Protocol
 
 Nexus implements the **Agent-to-Agent Communication Protocol (ACP)** — a JSON-RPC 2.0 transport over stdin/stdout. It is used by cc-connect (a relay bridge for Feishu, WeChat, Telegram, etc.) to forward user messages to the agent and stream responses back.
