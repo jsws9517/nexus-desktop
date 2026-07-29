@@ -172,8 +172,15 @@ async function tryOcrProviders(
         // $VAR / env:VAR → plaintext → mem:encrypted, or convention env vars.
         // Decrypt mem: layer to get the actual API key.
         let apiKey = provider.apiKey || '';
-        while (apiKey.startsWith('mem:') || apiKey.startsWith('enc:')) {
-          apiKey = decryptApiKey(apiKey);
+        if (provider.baseUrl && /(127\.0\.0\.1|localhost)/i.test(provider.baseUrl)) {
+          // localhost provider — no apiKey decryption needed
+        } else {
+          for (let i = 0; i < 20; i++) {
+            if (!apiKey.startsWith('mem:') && !apiKey.startsWith('enc:')) break;
+            const prev = apiKey;
+            apiKey = decryptApiKey(apiKey);
+            if (apiKey === prev) break;
+          }
         }
         if (!apiKey) continue;
         const baseUrl = provider.baseUrl || '';

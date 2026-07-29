@@ -20,6 +20,7 @@ const NATIVE_DIR = join(homedir(), '.nexus', 'native');
 const MCP_DIR = join(NATIVE_DIR, 'mcp');
 const PLUGIN_DIR = join(NATIVE_DIR, 'plugins');
 const DATA_DIR = join(NATIVE_DIR, 'data');
+const MARKETPLACES_FILE = join(NATIVE_DIR, 'marketplaces.json');
 
 export interface PackageInfo {
   name: string;
@@ -108,6 +109,14 @@ async function fetchMarketplaceFromRepo(source: string): Promise<RegisteredMarke
   } catch { return null; }
 }
 
+/** On Windows, npx must be wrapped with cmd /c for MCP stdio transport to work */
+function mcpNpx(args: string[]): { command: string; args: string[] } {
+  if (process.platform === 'win32') {
+    return { command: 'cmd', args: ['/c', 'npx', ...args] };
+  }
+  return { command: 'npx', args };
+}
+
 const CATALOG: Record<string, PackageInfo> = {
   // ═══════════════════════════════════════════
   // MCP Servers
@@ -125,11 +134,8 @@ const CATALOG: Record<string, PackageInfo> = {
     async install(params) {
       const allowedDir = params.dir || process.cwd();
       const config = new ConfigManager();
-      config.addMcpServer('filesystem', {
-        command: 'npx',
-        args: ['-y', '@anthropic/mcp-server-filesystem', allowedDir],
-        autoStart: true,
-      });
+      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-filesystem', allowedDir]);
+      config.addMcpServer('filesystem', { command, args, autoStart: true });
     },
   },
   github: {
@@ -146,12 +152,8 @@ const CATALOG: Record<string, PackageInfo> = {
       const config = new ConfigManager();
       const env: Record<string, string> = {};
       if (params.token) env.GITHUB_TOKEN = params.token;
-      config.addMcpServer('github', {
-        command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-github'],
-        env,
-        autoStart: true,
-      });
+      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-github']);
+      config.addMcpServer('github', { command, args, env, autoStart: true });
     },
   },
   puppeteer: {
@@ -163,11 +165,8 @@ const CATALOG: Record<string, PackageInfo> = {
     homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer',
     async install() {
       const config = new ConfigManager();
-      config.addMcpServer('puppeteer', {
-        command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-puppeteer'],
-        autoStart: true,
-      });
+      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-puppeteer']);
+      config.addMcpServer('puppeteer', { command, args, autoStart: true });
     },
   },
   'sequential-thinking': {
@@ -179,11 +178,8 @@ const CATALOG: Record<string, PackageInfo> = {
     homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sequential-thinking',
     async install() {
       const config = new ConfigManager();
-      config.addMcpServer('sequential-thinking', {
-        command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
-        autoStart: true,
-      });
+      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-sequential-thinking']);
+      config.addMcpServer('sequential-thinking', { command, args, autoStart: true });
     },
   },
   sqlite: {
@@ -200,11 +196,8 @@ const CATALOG: Record<string, PackageInfo> = {
       mkdirSync(DATA_DIR, { recursive: true });
       const dbPath = params.db || join(DATA_DIR, 'default.db');
       const config = new ConfigManager();
-      config.addMcpServer('sqlite', {
-        command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-sqlite', dbPath],
-        autoStart: true,
-      });
+      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-sqlite', dbPath]);
+      config.addMcpServer('sqlite', { command, args, autoStart: true });
     },
   },
   memory: {
@@ -214,13 +207,45 @@ const CATALOG: Record<string, PackageInfo> = {
     type: 'mcp',
     version: '1.0.0',
     homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/memory',
-    async install() {
+     async install() {
+       const config = new ConfigManager();
+       const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-memory']);
+       config.addMcpServer('memory', { command, args, autoStart: true, env: { MEMORY_FILE_PATH: join(DATA_DIR, 'memory.jsonl') } });
+     },
+  },
+
+  git: {
+    name: 'git',
+    description: 'Git repository operations (log, diff, status, blame, branches)',
+    longDescription: 'Full Git integration: view commit history, diffs, file status, blame annotations, branch management, and more.',
+    type: 'mcp',
+    version: '1.0.0',
+    homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/git',
+    options: [
+      { flag: '--repository', label: 'Path to git repository (default: current working dir)', default: process.cwd() },
+    ],
+    async install(params) {
+      const repo = params.repository || process.cwd();
       const config = new ConfigManager();
-      config.addMcpServer('memory', {
-        command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-memory', '--file', join(DATA_DIR, 'memory.json')],
-        autoStart: true,
-      });
+      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-git', '--repository', repo]);
+      config.addMcpServer('git', { command, args, autoStart: true });
+    },
+  },
+  postgres: {
+    name: 'postgres',
+    description: 'PostgreSQL database querying and schema management',
+    longDescription: 'Query, explore, and manage PostgreSQL databases. Supports SQL queries, schema inspection, table listing, and more.',
+    type: 'mcp',
+    version: '1.0.0',
+    homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/postgres',
+    options: [
+      { flag: '--conn', label: 'PostgreSQL connection string (e.g. postgresql://user:pass@localhost/mydb)' },
+    ],
+    async install(params) {
+      const config = new ConfigManager();
+      const connStr = params.conn || 'postgresql://localhost/postgres';
+      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-postgres', connStr]);
+      config.addMcpServer('postgres', { command, args, autoStart: true });
     },
   },
 
@@ -294,7 +319,7 @@ const CATALOG: Record<string, PackageInfo> = {
       }), 'utf-8');
       try { execSync('npm install --loglevel=error', { cwd: dir, stdio: 'pipe', timeout: 120000 }); }
       catch (err) { throw new Error(`npm install failed: ${err instanceof Error ? err.message : String(err)}`); }
-      new ConfigManager().addMcpServer('ts-server', { command: 'node', args: [join(dir, 'server.mjs')], autoStart: true });
+      new ConfigManager().addMcpServer('typescript-language-server', { command: 'node', args: [join(dir, 'server.mjs')], autoStart: true });
     },
   },
 
@@ -303,6 +328,9 @@ const CATALOG: Record<string, PackageInfo> = {
 /**
  * Default marketplaces auto-registered on first use.
  * Metadata is static (no network fetch needed for listing).
+ *
+ * modelcontextprotocol is a virtual marketplace — its entries resolve to the
+ * built-in CATALOG (npm-based MCP/LSP servers), not GitHub SKILL.md files.
  */
 const DEFAULT_MARKETPLACES: RegisteredMarketplace[] = [
   {
@@ -322,6 +350,22 @@ const DEFAULT_MARKETPLACES: RegisteredMarketplace[] = [
       { name: 'mattpocock-skills', description: 'Matt Pocock\'s agent skills for real engineering — grilling, design, debugging, and more', source: './', category: 'engineering', version: '1.0.0' },
     ],
   },
+  {
+    name: 'modelcontextprotocol',
+    source: 'modelcontextprotocol/servers',
+    plugins: [
+      { name: 'filesystem', description: 'Advanced filesystem operations (batch read, search, watch)', source: '', category: 'mcp', version: '1.0.0' },
+      { name: 'github', description: 'GitHub API integration (PR, Issues, Repos, Search)', source: '', category: 'mcp', version: '1.0.0' },
+      { name: 'puppeteer', description: 'Browser automation (screenshot, scrape, interact)', source: '', category: 'mcp', version: '1.0.0' },
+      { name: 'sequential-thinking', description: 'Structured multi-step reasoning', source: '', category: 'mcp', version: '1.0.0' },
+      { name: 'sqlite', description: 'SQLite database querying and management', source: '', category: 'mcp', version: '1.0.0' },
+      { name: 'memory', description: 'Knowledge graph memory with entities and relations', source: '', category: 'mcp', version: '1.0.0' },
+      { name: 'pyright', description: 'Python LSP — diagnostics, hover, format (Microsoft Pyright)', source: '', category: 'lsp', version: '1.0.0' },
+      { name: 'typescript-language-server', description: 'TypeScript/JavaScript LSP — diagnostics, hover, format', source: '', category: 'lsp', version: '1.0.0' },
+      { name: 'git', description: 'Git repository operations (log, diff, status, blame, branches)', source: '', category: 'mcp', version: '1.0.0' },
+      { name: 'postgres', description: 'PostgreSQL database querying and schema management', source: '', category: 'mcp', version: '1.0.0' },
+    ],
+  },
 ];
 
 /** Built-in curated packages for search fallback */
@@ -339,6 +383,43 @@ const CURATED_PACKAGES: SearchResult[] = [
   { name: 'test-runner', description: 'Auto-discover and run tests', version: '1.0.0', source: 'curated', url: '', pkgType: 'plugin', installHint: 'nexus config native install test-runner' },
   { name: 'deploy-check', description: 'Pre-deployment checklist', version: '1.0.0', source: 'curated', url: '', pkgType: 'plugin', installHint: 'nexus config native install deploy-check' },
 ];
+
+/**
+ * Per-market default-enabled lists.
+ * Items NOT in a market's list are auto-disabled upon install.
+ */
+const MARKETPLACE_DEFAULT_ENABLED: Record<string, string[]> = {
+  'claude-code-plugins': [
+    'git-flow',
+    'test-runner',
+    'deploy-check',
+  ],
+  'mattpocock': [
+    'diagnosing-bugs',
+    'code-review',
+    'tdd',
+    'research',
+    'resolving-merge-conflicts',
+    'grill-me',
+    'grilling',
+    'handoff',
+    'writing-great-skills',
+    'codebase-design',
+    'domain-modeling',
+  ],
+  'modelcontextprotocol': [
+    'filesystem',
+    'github',
+    'puppeteer',
+    'sequential-thinking',
+    'sqlite',
+    'memory',
+    'pyright',
+    'typescript-language-server',
+    'git',
+    'postgres',
+  ],
+};
 
 export class NativeManager {
   private config: ConfigManager;
@@ -361,17 +442,44 @@ export class NativeManager {
 
   // ── Marketplace management ─────────────────────────────────────────────────
 
-  getMarketplaces(): RegisteredMarketplace[] {
+  /** Load persisted marketplaces from ~/.nexus/native/marketplaces.json */
+  private loadMarketplaces(): RegisteredMarketplace[] {
     try {
-      const config = this.config.get();
-      if (!config.registeredMarketplaces || config.registeredMarketplaces.length === 0) {
-        // First use — auto-register default marketplaces so they appear in list/search/install
-        this.config.setRegisteredMarketplaces(DEFAULT_MARKETPLACES);
-        return DEFAULT_MARKETPLACES;
-      }
-      return config.registeredMarketplaces;
+      if (!existsSync(MARKETPLACES_FILE)) return [];
+      const raw = readFileSync(MARKETPLACES_FILE, 'utf-8');
+      return JSON.parse(raw);
+    } catch { return []; }
+  }
+
+  /** Persist marketplaces to ~/.nexus/native/marketplaces.json */
+  private saveMarketplaces(list: RegisteredMarketplace[]): void {
+    mkdirSync(NATIVE_DIR, { recursive: true });
+    writeFileSync(MARKETPLACES_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  }
+
+  getMarketplaces(): RegisteredMarketplace[] {
+    const persisted = this.loadMarketplaces();
+    if (persisted.length === 0) {
+      // First use — auto-register default marketplaces
+      this.saveMarketplaces(DEFAULT_MARKETPLACES);
+      return DEFAULT_MARKETPLACES;
     }
-    catch { return []; }
+    // Merge any new plugins from DEFAULT_MARKETPLACES into persisted data
+    // (covers newly added entries like git/postgres without requiring re-registration)
+    let changed = false;
+    for (const def of DEFAULT_MARKETPLACES) {
+      const existing = persisted.find(m => m.name === def.name);
+      if (existing) {
+        for (const plugin of def.plugins) {
+          if (!existing.plugins.some(p => p.name === plugin.name)) {
+            existing.plugins.push(plugin);
+            changed = true;
+          }
+        }
+      }
+    }
+    if (changed) this.saveMarketplaces(persisted);
+    return persisted;
   }
 
   async marketplaceAdd(source: string): Promise<string> {
@@ -391,7 +499,7 @@ export class NativeManager {
     }
 
     existing.push(marketplace);
-    this.config.setRegisteredMarketplaces(existing);
+    this.saveMarketplaces(existing);
 
     const pluginLines = marketplace.plugins.map(p =>
       `    ${p.name}${p.category ? ' (' + p.category + ')' : ''} — ${p.description.slice(0, 60)}`
@@ -413,7 +521,7 @@ export class NativeManager {
       throw new Error(`Marketplace "${name}" not found. Registered: ${list.map(m => m.name).join(', ') || '(none)'}`);
     }
     const removed = list.splice(idx, 1)[0]!;
-    this.config.setRegisteredMarketplaces(list);
+    this.saveMarketplaces(list);
     return `Marketplace "${removed.name}" (${removed.source}) removed.`;
   }
 
@@ -430,7 +538,7 @@ export class NativeManager {
     }
 
     existing.plugins = marketplace.plugins;
-    this.config.setRegisteredMarketplaces(list);
+    this.saveMarketplaces(list);
 
     return `Marketplace "${name}" updated — ${marketplace.plugins.length} plugin(s) available.`;
   }
@@ -454,6 +562,12 @@ export class NativeManager {
       throw new Error(`Marketplace "${mpName}" not found. Run \`nexus config native marketplace add <repo>\` first.`);
     }
 
+    // Virtual marketplace entries (modelcontextprotocol) resolve to CATALOG.
+    // Check BEFORE plugin lookup so stale marketplaces.json doesn't block install.
+    if (CATALOG[pluginName]) {
+      return this.installFromCatalog(pluginName, CATALOG[pluginName]!);
+    }
+
     const plugin = mp.plugins.find(p => p.name === pluginName);
     if (!plugin) {
       // Not found in explicit list — try to fetch as a sub-skill from the repo
@@ -473,7 +587,7 @@ export class NativeManager {
             const dir = join(PLUGIN_DIR, pluginName);
             mkdirSync(dir, { recursive: true });
             writeFileSync(join(dir, 'SKILL.md'), body, 'utf-8');
-            this.trackInstalled(pluginName);
+            this.trackInstalled(pluginName); this.autoDisableIfNotDefault(pluginName, mpName);
             return `Plugin "${pluginName}@${mpName}" installed.\n  Fetched: ${pattern}\n  Restart the agent to activate.`;
           }
         }
@@ -492,7 +606,7 @@ export class NativeManager {
               const dir = join(PLUGIN_DIR, pluginName);
               mkdirSync(dir, { recursive: true });
               writeFileSync(join(dir, 'SKILL.md'), body, 'utf-8');
-              this.trackInstalled(pluginName);
+              this.trackInstalled(pluginName); this.autoDisableIfNotDefault(pluginName, mpName);
               return `Plugin "${pluginName}@${mpName}" installed.\n  Source: ${mp.source}/${matchPath.path}\n  Fetched: SKILL.md\n  Restart the agent to activate.`;
             }
           }
@@ -520,7 +634,7 @@ export class NativeManager {
       const dir = join(PLUGIN_DIR, pluginName);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'SKILL.md'), rootBody, 'utf-8');
-      this.trackInstalled(pluginName);
+      this.trackInstalled(pluginName); this.autoDisableIfNotDefault(pluginName, mpName);
       return `Plugin "${pluginName}@${mpName}" installed.\n  Source: ${mp.source}/${srcBase}\n  Fetched: SKILL.md\n  Restart the agent to activate.`;
     }
 
@@ -534,7 +648,7 @@ export class NativeManager {
     if (!treeRes.ok) {
       const dir = join(PLUGIN_DIR, pluginName);
       mkdirSync(dir, { recursive: true });
-      this.trackInstalled(pluginName);
+      this.trackInstalled(pluginName); this.autoDisableIfNotDefault(pluginName, mpName);
       return `Plugin "${pluginName}@${mpName}" registered (no SKILL.md found).\n  Source: ${mp.source}\n  Restart the agent to activate.`;
     }
 
@@ -547,7 +661,7 @@ export class NativeManager {
     if (skPaths.length === 0) {
       const dir = join(PLUGIN_DIR, pluginName);
       mkdirSync(dir, { recursive: true });
-      this.trackInstalled(pluginName);
+      this.trackInstalled(pluginName); this.autoDisableIfNotDefault(pluginName, mpName);
       return `Plugin "${pluginName}@${mpName}" installed (no skills found).\n  Source: ${mp.source}`;
     }
 
@@ -575,13 +689,41 @@ export class NativeManager {
     const installedSkills: string[] = [];
     let failedCount = 0;
     for (const r of results) {
-      if (r.status === 'fulfilled' && r.value !== null) installedSkills.push(r.value);
+      if (r.status === 'fulfilled' && r.value !== null) {
+        installedSkills.push(r.value);
+        this.autoDisableIfNotDefault(r.value, mpName);
+      }
       else failedCount++;
     }
 
     return `Plugin "${pluginName}@${mpName}" installed.\n` +
       `  Source: ${mp.source}\n` +
       `  Unpacked ${installedSkills.length} skill(s)` + (failedCount > 0 ? ` (${failedCount} failed)` : '') + ` into ~/.nexus/native/plugins/\n` +
+      `  Restart the agent to activate.`;
+  }
+
+  /** Install a built-in CATALOG entry (MCP/LSP server) */
+  private async installFromCatalog(name: string, pkg: PackageInfo, params?: Record<string, string>): Promise<string> {
+    if (this.isInstalled(name)) {
+      throw new Error(`Package "${name}" is already installed.`);
+    }
+    mkdirSync(NATIVE_DIR, { recursive: true });
+    await pkg.install(params || {});
+    // pkg.install() created its own ConfigManager and saved mcpServers.
+    // Reload the outer config to pick those up before we save the installed list
+    // (otherwise outer save would overwrite and lose the mcpServers).
+    const raw = JSON.parse(readFileSync(join(homedir(), '.nexus', 'config.json'), 'utf-8'));
+    const cfg = this.config.get();
+    if (raw.mcpServers) {
+      cfg.mcpServers = raw.mcpServers;
+    }
+    const installed = this.getInstalledList();
+    installed.push(name);
+    this.saveInstalledList(installed);
+    const label = pkg.type === 'mcp' ? 'MCP Server' : 'Plugin';
+    const mcpAdded = pkg.type === 'mcp' && cfg.mcpServers?.[name];
+    return `${label} "${name}" installed.\n` +
+      (mcpAdded ? `  Config: ~/.nexus/config.json → mcpServers.${name}\n` : '') +
       `  Restart the agent to activate.`;
   }
 
@@ -599,24 +741,55 @@ export class NativeManager {
     }
   }
 
+  /**
+   * Check if an item is in its market's default-enabled list.
+   * If not, add it to nativeDisabled.
+   * Has no effect if the market has no defaultEnabled list (all items stay enabled).
+   */
+  private autoDisableIfNotDefault(name: string, mpName: string): void {
+    const defaultList = MARKETPLACE_DEFAULT_ENABLED[mpName];
+    if (!defaultList) return;
+    if (defaultList.includes(name)) return;
+    const disabled = this.getDisabledList();
+    if (!disabled.includes(name)) {
+      disabled.push(name);
+      this.saveDisabledList(disabled);
+    }
+  }
+
   async install(name: string, params?: Record<string, string>): Promise<string> {
     // Support <name>@<marketplace> syntax for marketplace plugins
     const atIdx = name.lastIndexOf('@');
     if (atIdx > 0 && atIdx < name.length - 1) {
       const pluginName = name.slice(0, atIdx);
       const mpName = name.slice(atIdx + 1);
-      return this.installFromMarketplace(pluginName, mpName);
+      // Virtual marketplaces (modelcontextprotocol) resolve to built-in CATALOG entries
+      // — no SKILL.md to fetch, just install via the catalog's npm-based method.
+      if (CATALOG[pluginName]) {
+        name = pluginName; // drop @market, fall through to CATALOG path below
+      } else {
+        return this.installFromMarketplace(pluginName, mpName);
+      }
     }
 
     const pkg = CATALOG[name];
     if (!pkg) {
       // Fallback: search registered marketplaces for a matching plugin
+      const matches: Array<{ marketplace: string }> = [];
       for (const mp of this.getMarketplaces()) {
         for (const plugin of mp.plugins) {
           if (plugin.name === name) {
-            return this.installFromMarketplace(name, mp.name);
+            matches.push({ marketplace: mp.name });
           }
         }
+      }
+      if (matches.length > 0) {
+        const result = await this.installFromMarketplace(name, matches[0].marketplace);
+        if (matches.length > 1) {
+          const others = matches.slice(1).map(m => `${name}@${m.marketplace}`).join(', ');
+          return result + `\n  ⚠ Also available in: ${others}. Use \`install ${others}\` for the other variant.`;
+        }
+        return result;
       }
       // Also try as a sub-skill in any registered marketplace
       for (const mp of this.getMarketplaces()) {
@@ -700,6 +873,68 @@ export class NativeManager {
 
   isInstalled(name: string): boolean {
     return this.getInstalledList().includes(name);
+  }
+
+  /**
+   * Deploy all default-enabled plugins from all registered marketplaces.
+   * Installs any not yet installed and ensures all are enabled.
+   */
+  async deployDefaults(): Promise<string[]> {
+    const results: string[] = [];
+    for (const [mpName, defaultList] of Object.entries(MARKETPLACE_DEFAULT_ENABLED)) {
+      const mp = this.getMarketplaces().find(m => m.name === mpName);
+      if (!mp) {
+        results.push(`⚠ marketplace "${mpName}" not registered — skipping`);
+        continue;
+      }
+      for (const name of defaultList) {
+        try {
+          if (!this.isInstalled(name)) {
+            await this.installFromMarketplace(name, mpName);
+            results.push(`✓ ${name}@${mpName} installed`);
+          } else if (CATALOG[name]) {
+            // Already installed but might be missing mcpServers config
+            // (prior bug: outer save overwrote inner ConfigManager's mcpServers).
+            // Re-run catalog install to ensure config is present.
+            const cfg = this.config.get();
+            const pkg = CATALOG[name]!;
+            if (pkg.type === 'mcp' && !cfg.mcpServers?.[name]) {
+              await pkg.install({});
+              const raw = JSON.parse(readFileSync(join(homedir(), '.nexus', 'config.json'), 'utf-8'));
+              if (raw.mcpServers?.[name]) {
+                cfg.mcpServers = raw.mcpServers;
+                this.config.save();
+                results.push(`✓ ${name}@${mpName} mcpServers config restored`);
+              } else {
+                results.push(`✗ ${name}@${mpName}: failed to restore mcpServers config`);
+              }
+            } else {
+              results.push(`  ${name}@${mpName} already installed`);
+            }
+          } else {
+            results.push(`  ${name}@${mpName} already installed`);
+          }
+        } catch (err) {
+          results.push(`✗ ${name}@${mpName}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    // Ensure all default items are enabled; disable everything else that's installed
+    const disabled = this.getDisabledList();
+    const allDefaultItems = Object.values(MARKETPLACE_DEFAULT_ENABLED).flat();
+    const allInstalled = this.getInstalledList();
+    const newDisabled = [...new Set([
+      // Keep existing disabled items that aren't defaults
+      ...disabled.filter(d => !allDefaultItems.includes(d)),
+      // Add any installed item that's NOT a default
+      ...allInstalled.filter(n => !allDefaultItems.includes(n) && !disabled.includes(n)),
+    ])];
+    this.saveDisabledList(newDisabled);
+    const cleared = disabled.filter(d => allDefaultItems.includes(d));
+    const added = newDisabled.filter(d => !disabled.includes(d));
+    if (cleared.length > 0) results.push(`✓ ${cleared.length} default item(s) enabled (removed from disabled list)`);
+    if (added.length > 0) results.push(`✓ ${added.length} non-default item(s) disabled`);
+    return results;
   }
 
   /**
@@ -874,9 +1109,10 @@ export class NativeManager {
     const env: Record<string, string> = {};
     if (params?.token) env.TOKEN = params.token;
 
+    const { command, args } = mcpNpx(['-y', pkgName]);
     config.addMcpServer(serverName, {
-      command: 'npx',
-      args: ['-y', pkgName],
+      command,
+      args,
       env,
       autoStart: true,
     });
@@ -918,9 +1154,9 @@ export class NativeManager {
         throw new Error(`Directory already exists: ${targetDir}. Remove it first or use a different name.`);
       }
       try {
-        execSync(`git clone "https://github.com/${parts[0]}/${parts[1]}.git" "${targetDir}"`, {
+        execSync(`git clone --depth 1 "https://github.com/${parts[0]}/${parts[1]}.git" "${targetDir}"`, {
           stdio: 'pipe',
-          timeout: 120000,
+          timeout: 180000,
         });
       } catch (err) {
         throw new Error(`Failed to clone ${repo}: ${err instanceof Error ? err.message : String(err)}`);

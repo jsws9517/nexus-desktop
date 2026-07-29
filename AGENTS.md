@@ -93,6 +93,36 @@ nexus config native install <name>@<marketplace>      # exact marketplace plugin
 - Shift+Enter: terminal-specific, not portable across Windows terminals. Disabled.
 - CJK long-line redraw: `visualWidth()` + `lineWraps()` in `up`/`down` pass-through; cosmetic only, no functional impact.
 
+# Config Web UI (`src/config/web.ts`)
+
+## SPA pitfalls (template literal code-gen)
+The SPA is embedded as a **template literal** inside `buildSpaHtml()`. TypeScript/tsc does NOT syntax-check the
+JavaScript inside template literals. The only validation is at browser runtime.
+
+## Known SPA bugs (fixed)
+1. **Hardcoded OCR type selector** — `renderDynamicCategory` "Add New" form at line ~769 used
+   `enumValues: ['openai-compatible', 'paddleocr']` for ALL dynamic categories (LLM providers, vision providers).
+   Fix: look up `cat.fields.find(f => f.key === 'type')` and use its `enumValues`.
+2. **Orphaned catch block** — leftover corrupted duplicate of `saveDynamicItem()` with no `try` before `catch`.
+3. **`})));` → `}));`** — `saveConfig()` had 1 brace + 3 parens closing the `JSON.stringify(...)` call; correct is
+   2 braces + 2 parens for the API options + stringify.
+
+## Provider CRUD endpoints (server-side, `handleApi` in web.ts)
+- `GET /api/schema` — returns `buildSchema()` categories
+- `PUT /api/config` — saves top-level config fields (skips providers/visionProviders/ocrProviders/mcpServers)
+- `POST /api/config/provider` — validates with `ProviderConfigSchema` (requires type, apiKey, model)
+- `POST /api/config/vision-provider` — validates with `VisionProviderConfigSchema` (requires apiKey, baseUrl, model)
+- `POST /api/config/ocr-provider` — validates with `OcrProviderConfigSchema` (type + conditional fields)
+- `POST /api/config/mcp` — validates with `ServerConfigSchema`
+- `DELETE /api/config/{ep}/{name}` — removes a dynamic item
+- `GET /api/native/skills` — lists filesystem skills + native installed plugins
+
+## Dynamic item mapping (SPA side, `getDynamicItems`)
+- `providers` → `cfg.providers`
+- `vision` → `cfg.visionProviders`
+- `ocr` → `cfg.ocrProviders` + flattens arrays (args, languages) to comma-separated strings
+- `mcp` → `cfg.mcpServers`
+
 ### History (don't regress)
 - **double-fire bug (fixed)**: `exitMultiLine` used `rl.emit('line', fullInput)` which was fine, but the CRLF `\n` without CR-tracker caused a second Enter submission. Fix: CR tracker eats CRLF `\n`.
 - **submit-swallow bug (fixed)**: `exitMultiLine` changed to `rl.line = fullInput` (thought readline would pick it up), but our `_ttyWrite` override replaces readline's Enter processing — `rl.line` is never read. Fix: use `rl.emit('line', fullInput)` + clear `rl.line` for prompt echo.

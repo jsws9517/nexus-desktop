@@ -57,6 +57,15 @@ export const VisionProviderConfigSchema = z.object({
   model: z.string(),
 });
 
+export const SpeechProviderConfigSchema = z.object({
+  apiKey: z.string(),
+  baseUrl: z.string(),
+  model: z.string(),
+  category: z.enum(['stt', 'tts']).default('stt'),
+  voice: z.string().optional(),
+  language: z.string().optional(),
+});
+
 export const OcrProviderConfigSchema = z.object({
   type: z.enum(['openai-compatible', 'paddleocr']),
   apiKey: z.string().optional(),
@@ -111,7 +120,15 @@ export const PERMISSION_PRESETS: Record<string, { allowlist: string[]; descripti
       'create_file', 'append_file', 'create_directory',
       'move_file', 'rename', 'copy_file',
     ],
-    description: '白名单模式：允许所有读写文件工具，无需反复确认',
+    description: 'Read + write: auto-approve all file read/write tools without prompting',
+  },
+  readonly: {
+    allowlist: [
+      'read_file', 'file_read', 'read_text_file', 'read_multiple_files',
+      'read_files', 'search_files', 'grep', 'glob', 'list_files',
+      'list_directory', 'directory_tree', 'get_file_info',
+    ],
+    description: 'Read-only: auto-approve file reading/searching only, never write',
   },
 };
 
@@ -141,6 +158,9 @@ export const ConfigSchema = z.object({
   visionMode: z.enum(['local-first', 'cloud-first', 'local-only', 'cloud-only']).optional(),
   activeOcrProvider: z.string().optional(),
   ocrProviders: z.record(OcrProviderConfigSchema).optional(),
+  activeSpeechProvider: z.string().optional(),
+  activeTtsProvider: z.string().optional(),
+  speechProviders: z.record(SpeechProviderConfigSchema).optional(),
   qualityGate: QualityGateConfigSchema.optional(),
   permissions: PermissionsConfigSchema.optional(),
   /** Cache of model vision capability detection results.
@@ -155,4 +175,5 @@ export const ConfigSchema = z.object({
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
 export type AcpConfig = z.infer<typeof AcpConfigSchema>;
+export type SpeechProviderConfig = z.infer<typeof SpeechProviderConfigSchema>;
 export type Config = z.infer<typeof ConfigSchema>;

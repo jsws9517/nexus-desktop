@@ -983,7 +983,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       return;
     }
 
-    const expandedInput = await expandAtMentions(input, process.cwd());
+    let expandedInput = await expandAtMentions(input, process.cwd());
 
     // Separator line between user and agent messages
     process.stdout.write(renderSepLine() + '\n');
@@ -997,16 +997,13 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       return true;
     }) as typeof process.stdout.write;
 
-    // Inject buffered bash command outputs into session context
+    // Prepend buffered bash command outputs to user input for LLM context
     if (bashOutputBuffer.length > 0) {
       const bufContent = bashOutputBuffer.map(
         b => i18nTf('bash_injection')(b.cmd, b.output)
       ).join('\n\n');
-      const sid = agent.getCurrentSessionId();
-      if (sid) {
-        agent.session.addMessage(sid, { role: 'system', content: i18nTf('bash_section')(bufContent) });
-      }
       bashOutputBuffer = [];
+      expandedInput = `${i18nTf('bash_section')(bufContent)}\n\n${expandedInput}`;
     }
 
     process.stdout.write(t().entityName('agent> ') + '\n');

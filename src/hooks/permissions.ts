@@ -50,6 +50,11 @@ const DEFAULT_PERMISSIONS: ToolPermission[] = [
   { name: 'recall', level: PermissionLevel.Allow },
   { name: 'remember', level: PermissionLevel.Prompt },
   { name: 'remember_project', level: PermissionLevel.Prompt },
+  // Built-in AI tools — Allow (read-only inference, no side effects)
+  { name: 'analyze_image', level: PermissionLevel.Allow },
+  { name: 'ocr_extract', level: PermissionLevel.Allow },
+  { name: 'transcribe_audio', level: PermissionLevel.Allow },
+  { name: 'synthesize_speech', level: PermissionLevel.Allow },
   // Write operations — Prompt
   { name: 'write_file', level: PermissionLevel.Prompt },
   { name: 'file_write', level: PermissionLevel.Prompt },

@@ -238,6 +238,32 @@ const ANALYZE_IMAGE_TOOL_DEF: ToolDefinition = {
   },
 };
 
+const TTS_SYNTHESIZE_TOOL_DEF: ToolDefinition = {
+  name: 'synthesize_speech',
+  description: 'Synthesize text to speech audio using Text-to-Speech (TTS). Use this when the user asks to convert text to speech, generate audio from text, create voice recordings, or produce spoken audio. Returns the path to the generated audio file.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'The text to convert to speech' },
+      voice: { type: 'string', description: 'Optional voice name. If omitted, the configured default voice will be used. Do not guess voice names — use the configured default.' },
+      output: { type: 'string', description: 'Optional output file path for the audio file' },
+    },
+    required: ['text'],
+  },
+};
+
+const STT_TRANSCRIBE_TOOL_DEF: ToolDefinition = {
+  name: 'transcribe_audio',
+  description: 'Transcribe speech from audio files to text using Speech-to-Text (STT). Use this when the user asks to transcribe an audio file, convert speech to text, or when handling voice messages, meeting recordings, interviews, lectures, podcasts, or any audio containing speech.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Path to the audio file (wav, mp3, m4a, ogg, flac, webm, aac, wma)' },
+    },
+    required: ['path'],
+  },
+};
+
 const OCR_EXTRACT_TOOL_DEF: ToolDefinition = {
   name: 'ocr_extract',
   description: '[PREFERRED for text extraction] Extract raw text from images using OCR. Use this INSTEAD of analyze_image when the user asks to read/extract/copy text from: screenshots, scanned documents, photos of text, forms, tables, presentation slides, terminal output screenshots, or any image where the main goal is getting the text content. Returns the exact extracted text characters.',
@@ -686,6 +712,56 @@ export class Agent {
         }
       } catch {
         // If capability detection fails, do not add extra info
+      }
+
+      // Inject speech/audio capability info
+      try {
+        const speechName = (() => {
+          try {
+            const sActive = this.config.getActiveSpeechProvider();
+            const allProviders = this.config.getSpeechProviders();
+            const p = allProviders[sActive];
+            if (sActive && p && (!p.category || p.category === 'stt')) {
+              return p.model ? `${sActive} (${p.model})` : sActive;
+            }
+          } catch {}
+          return null;
+        })();
+        if (speechName) {
+          systemPrompt +=
+            '\n\n[Speech-to-Text Capability]\n' +
+            'Your current model does NOT natively support audio/speech input. To transcribe speech from audio files, ' +
+            'use the transcribe_audio tool. Call it when the user asks to transcribe an audio file, voice message, meeting recording, ' +
+            'lecture, podcast, or any audio containing speech.\n' +
+            '  Active speech provider: ' + speechName + '\n' +
+            '  Supported formats: wav, mp3, m4a, ogg, flac, webm, aac, wma\n' +
+            '  Usage: transcribe_audio with path to the audio file';
+        }
+
+        const ttsInfo = (() => {
+          try {
+            const tActive = this.config.getActiveTtsProvider();
+            const allProviders = this.config.getSpeechProviders();
+            const p = allProviders[tActive];
+            if (tActive && p && p.category === 'tts') {
+              const name = p.model ? `${tActive} (${p.model})` : tActive;
+              const defaultVoice = p.voice || '';
+              return { name, defaultVoice };
+            }
+          } catch {}
+          return null;
+        })();
+        if (ttsInfo) {
+          systemPrompt +=
+            '\n\n[Text-to-Speech Capability]\n' +
+            'To convert text to spoken audio, use the synthesize_speech tool. Call it when the user asks to generate audio from text, ' +
+            'create voice recordings, read text aloud, or produce spoken audio content.\n' +
+            '  Active TTS provider: ' + ttsInfo.name + '\n' +
+            (ttsInfo.defaultVoice ? `  Default voice: "${ttsInfo.defaultVoice}" — use this unless the user requests a different voice\n` : '') +
+            '  Usage: synthesize_speech with "text" (required) and optionally "voice" and "output" path';
+        }
+      } catch {
+        // If provider info fails, skip
       }
 
       // Inject project creation directory guidance
@@ -1181,6 +1257,8 @@ export class Agent {
       REMEMBER_PROJECT_TOOL_DEF,
       ANALYZE_IMAGE_TOOL_DEF,
       OCR_EXTRACT_TOOL_DEF,
+      STT_TRANSCRIBE_TOOL_DEF,
+      TTS_SYNTHESIZE_TOOL_DEF,
       ...getTaskToolDefinitions(),
     ];
 
@@ -1207,7 +1285,7 @@ export class Agent {
       'fetch_url', 'web_search', 'web_fetch',
       'remember', 'recall', 'remember_project',
       'decompose_task', 'query_tasks',
-      'analyze_image', 'ocr_extract',
+      'analyze_image', 'ocr_extract', 'transcribe_audio', 'synthesize_speech',
     ]);
 
     // When the current LLM model supports native vision, exclude ocr_extract
@@ -1663,6 +1741,14 @@ export class Agent {
       return this.handleOcrExtract(safeArgs);
     }
 
+    if (call.name === 'transcribe_audio') {
+      return this.handleSttTranscribe(safeArgs);
+    }
+
+    if (call.name === 'synthesize_speech') {
+      return this.handleTtsSynthesize(safeArgs);
+    }
+
     // 1. Check local skills first
     const skillResult = await this.skills.callTool(call.name, safeArgs);
     if (skillResult) return skillResult;
@@ -1960,8 +2046,7 @@ export class Agent {
       if (entityExists && allTools.some(t => t.name === 'add_observations')) {
         // Append to existing entity
         const addResult = await this.mcp.callTool('add_observations', {
-          name: 'user',
-          observations: [content],
+          observations: [{ entityName: 'user', contents: [content] }],
         });
         if (addResult.isError && addResult.content?.includes('timed out')) {
           return { content: `Memory server timed out. Kill the stuck process: taskkill /f /im uv.exe`, isError: true };
@@ -2136,6 +2221,44 @@ export class Agent {
     }
   }
 
+  private async handleTtsSynthesize(args: Record<string, unknown>): Promise<ToolResult> {
+    const text = String(args.text || '').trim();
+    if (!text) {
+      return { content: 'Error: text to synthesize is required', isError: true };
+    }
+    const outputPath = args.output ? String(args.output).trim() : undefined;
+    const voice = args.voice ? String(args.voice).trim() : undefined;
+    try {
+      const { synthesizeSpeech } = await import('./tts/index.js');
+      const result = await synthesizeSpeech(text, outputPath, voice);
+      return { content: `Audio saved to: ${result.filePath}\nProvider: ${result.provider}${result.model ? ` (${result.model})` : ''}\nFormat: ${result.format}`, isError: false };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: `Speech synthesis failed: ${msg}`, isError: true };
+    }
+  }
+
+  private async handleSttTranscribe(args: Record<string, unknown>): Promise<ToolResult> {
+    const audioPath = String(args.path || args.audio || '').trim();
+    if (!audioPath) {
+      return { content: 'Error: audio file path is required', isError: true };
+    }
+    const absPath = resolve(process.cwd(), audioPath);
+    const authorized = await authorizePath(absPath);
+    if (!authorized) {
+      return { content: `Access denied: "${audioPath}" is not in the allowed path list.`, isError: true };
+    }
+    try {
+      const { transcribeAudio } = await import('./stt/index.js');
+      const result = await transcribeAudio(audioPath);
+      const providerInfo = result.model ? `${result.provider} (${result.model})` : result.provider;
+      return { content: `[Transcription via ${providerInfo}]\n${result.text}`, isError: false };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: `Transcription failed: ${msg}`, isError: true };
+    }
+  }
+
   private async autoConsolidateObservations(entityName: string): Promise<void> {
     try {
       const allTools = this.mcp.getAllTools();
@@ -2154,9 +2277,7 @@ export class Agent {
       // Add a consolidation metadata observation to track auto-summary
       if (allTools.some(t => t.name === 'add_observations')) {
         await this.mcp.callTool('add_observations', {
-          name: entityName,
-          observations: [`[auto-summary] ${obs.length} observations recorded for ${entityName}`],
-          kind: 'metadata',
+          observations: [{ entityName, contents: [`[auto-summary] ${obs.length} observations recorded for ${entityName}`] }],
         });
       }
     } catch {
@@ -2195,8 +2316,7 @@ export class Agent {
 
       if (entityExists && allTools.some(t => t.name === 'add_observations')) {
         await this.mcp.callTool('add_observations', {
-          name,
-          observations,
+          observations: [{ entityName: name, contents: observations }],
         });
       } else {
         await this.mcp.callTool('create_entities', {

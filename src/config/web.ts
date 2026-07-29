@@ -5,7 +5,7 @@ import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { ConfigManager } from './index.js';
 import { NativeManager } from './native.js';
-import { ConfigSchema, ProviderConfigSchema, ServerConfigSchema, VisionProviderConfigSchema, AcpConfigSchema } from './types.js';
+import { ConfigSchema, ProviderConfigSchema, ServerConfigSchema, VisionProviderConfigSchema, SpeechProviderConfigSchema, AcpConfigSchema } from './types.js';
 
 interface SchemaField {
   key: string;
@@ -39,6 +39,8 @@ function buildSchema(): SchemaCategory[] {
 { key: 'visionMode', label: 'Vision Mode', type: 'select', enumValues: ['local-first', 'cloud-first', 'local-only', 'cloud-only'] },
 { key: 'activeVisionProvider', label: 'Active Vision Provider', type: 'select', enumValues: [] },
 { key: 'activeOcrProvider', label: 'Active OCR Provider', type: 'select', enumValues: [] },
+{ key: 'activeSpeechProvider', label: 'Active STT Provider', type: 'select', enumValues: [] },
+{ key: 'activeTtsProvider', label: 'Active TTS Provider', type: 'select', enumValues: [] },
 { key: 'qualityGate.autoTest', label: 'Quality Gate: Auto-Test', type: 'boolean' },
         { key: 'qualityGate.autoCommit', label: 'Quality Gate: Auto-Commit', type: 'boolean' },
       ],
@@ -83,6 +85,20 @@ function buildSchema(): SchemaCategory[] {
       ],
     },
     {
+      id: 'speech',
+      label: 'Speech Providers',
+      dynamic: true,
+      fields: [
+        { key: 'name', label: 'Name', type: 'string' },
+        { key: 'category', label: 'Category', type: 'select', enumValues: ['stt', 'tts'] },
+        { key: 'apiKey', label: 'API Key', type: 'password' },
+        { key: 'baseUrl', label: 'Base URL', type: 'string' },
+        { key: 'model', label: 'Model', type: 'string' },
+        { key: 'voice', label: 'Voice (TTS only)', type: 'string' },
+        { key: 'language', label: 'Language (TTS only)', type: 'string' },
+      ],
+    },
+    {
       id: 'mcp',
       label: 'MCP Servers',
       dynamic: true,
@@ -91,6 +107,7 @@ function buildSchema(): SchemaCategory[] {
         { key: 'command', label: 'Command', type: 'string' },
         { key: 'args', label: 'Arguments', type: 'string' },
         { key: 'autoStart', label: 'Auto Start', type: 'boolean' },
+        { key: 'env', label: 'Environment Variables (JSON)', type: 'string' },
       ],
     },
     {
@@ -158,6 +175,12 @@ if (visionProviders[key]?.apiKey) visionProviders[key].apiKey = maskKey(String(v
       if (ocrProviders[key]?.apiKey) ocrProviders[key].apiKey = maskKey(String(ocrProviders[key].apiKey));
     }
   }
+        const speechProviders = copy.speechProviders as Record<string, Record<string, unknown>> | undefined;
+        if (speechProviders) {
+          for (const key of Object.keys(speechProviders)) {
+            if (speechProviders[key]?.apiKey) speechProviders[key].apiKey = maskKey(String(speechProviders[key].apiKey));
+          }
+        }
   return copy;
 }
 
@@ -238,6 +261,8 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: string, metho
     const providerNames = Object.keys((cfg.providers as Record<string, unknown>) || {});
     const visionNames = Object.keys((cfg.visionProviders as Record<string, unknown>) || {});
 const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {});
+const sttNames = Object.keys((cfg.speechProviders as Record<string, unknown>) || {}).filter(k => (cfg.speechProviders as any)[k]?.category !== 'tts');
+const ttsNames = Object.keys((cfg.speechProviders as Record<string, unknown>) || {}).filter(k => (cfg.speechProviders as any)[k]?.category === 'tts');
     for (const cat of schema) {
       if (cat.id === 'general') {
         const ap = cat.fields.find((f) => f.key === 'activeProvider');
@@ -246,6 +271,10 @@ const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {}
         if (avp) avp.enumValues = visionNames;
         const aop = cat.fields.find((f) => f.key === 'activeOcrProvider');
         if (aop) aop.enumValues = ocrNames;
+        const astp = cat.fields.find((f) => f.key === 'activeSpeechProvider');
+        if (astp) astp.enumValues = sttNames;
+        const attp = cat.fields.find((f) => f.key === 'activeTtsProvider');
+        if (attp) attp.enumValues = ttsNames;
       }
     }
     return jsonResponse(res, { categories: schema });
@@ -262,7 +291,7 @@ const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {}
         const updates = JSON.parse(body) as Record<string, unknown>;
         const cfg = config.get() as Record<string, unknown>;
         for (const [key, value] of Object.entries(updates)) {
-          if (key === 'providers' || key === 'visionProviders' || key === 'ocrProviders' || key === 'mcpServers') continue;
+          if (key === 'providers' || key === 'visionProviders' || key === 'ocrProviders' || key === 'speechProviders' || key === 'mcpServers') continue;
           cfg[key] = value;
         }
         config.save();
@@ -377,11 +406,69 @@ const ocrNames = Object.keys((cfg.ocrProviders as Record<string, unknown>) || {}
     return;
   }
 
+  // ── Speech Provider CRUD ──────────────────────────────
+
+  if (url === '/api/config/speech-providers' && method === 'GET') {
+    const config = new ConfigManager();
+    const activeStt = config.getActiveSpeechProvider();
+    const activeTts = config.getActiveTtsProvider();
+    const providers = config.getSpeechProviders();
+    jsonResponse(res, { activeStt, activeTts, providers });
+    return;
+  }
+
+  if (url === '/api/config/speech-provider' && method === 'POST') {
+    readBody(req).then((body) => {
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        const { name, ...cfg } = parsed;
+        const validated = SpeechProviderConfigSchema.parse(cfg);
+        config.setSpeechProvider(String(name), validated);
+        jsonResponse(res, { ok: true });
+      } catch (err) {
+        jsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    });
+    return;
+  }
+
+  if (url.startsWith('/api/config/speech-provider/') && method === 'DELETE') {
+    const name = decodeURIComponent(url.slice('/api/config/speech-provider/'.length));
+    config.removeSpeechProvider(name);
+    jsonResponse(res, { ok: true });
+    return;
+  }
+
+  if (url === '/api/config/speech-switch' && method === 'POST') {
+    readBody(req).then((body) => {
+      try {
+        const { name, category } = JSON.parse(body) as { name: string; category: string };
+        if (category === 'tts') {
+          config.setActiveTtsProvider(name);
+        } else {
+          config.setActiveSpeechProvider(name);
+        }
+        jsonResponse(res, { ok: true });
+      } catch (err) {
+        jsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    });
+    return;
+  }
+
   if (url === '/api/config/mcp-server' && method === 'POST') {
     readBody(req).then((body) => {
       try {
         const parsed = JSON.parse(body) as Record<string, unknown>;
         const { name, ...srvConfig } = parsed;
+        // UI sends args as string; convert to array for schema validation
+        if (typeof srvConfig.args === 'string') {
+          srvConfig.args = (srvConfig.args as string).split(',').map(s => s.trim()).filter(Boolean);
+        }
+        // UI sends env as JSON string; parse to object
+        if (typeof srvConfig.env === 'string' && srvConfig.env.trim()) {
+          try { srvConfig.env = JSON.parse(srvConfig.env as string); } catch { /* leave as string, will fail validation */ }
+        }
         const validated = ServerConfigSchema.parse(srvConfig);
         config.addMcpServer(String(name), validated);
         jsonResponse(res, { ok: true });
@@ -764,33 +851,63 @@ function renderDynamicCategory(main, cat) {
   }
   let newName = '';
   let newType = '';
-  const nameField = renderField({ key: 'name', label: 'Name', type: 'string', required: true }, '', (v) => { newName = v; });
-  newForm.appendChild(nameField);
-  const typeField = renderField({ key: 'type', label: 'Type', type: 'select', enumValues: ['openai-compatible', 'paddleocr'] }, '', (v) => {
-    newType = v;
-    newData.type = v;
-    // Rebuild the dynamic fields
-    const existing = newForm.querySelectorAll('.ocr-dynamic-field');
-    existing.forEach(el => el.remove());
-    const dynFields = ocrFieldsFor(v).filter(f => f.key !== 'name' && f.key !== 'type');
-    for (const f of dynFields) {
-      newData[f.key] = f.type === 'boolean' ? false : f.type === 'number' ? 0 : '';
-      const el = renderField(f, newData[f.key], (val) => { newData[f.key] = val; });
-      el.className = (el.className || '') + ' ocr-dynamic-field';
-      newForm.insertBefore(el, addBtn);
-    }
-  });
-  newForm.appendChild(typeField);
-  // No dynamic fields until type is selected
   const addBtn = document.createElement('button');
   addBtn.className = 'btn btn-primary';
   addBtn.textContent = 'Add ' + cat.label.slice(0, -1);
+  const nameField = renderField({ key: 'name', label: 'Name', type: 'string', required: true }, '', (v) => { newName = v; });
+  newForm.appendChild(nameField);
+  const typeSchemaField = cat.fields.find(f => f.key === 'type');
+  if (typeSchemaField) {
+    const enumVals = typeSchemaField.enumValues || [];
+    const defaultType = enumVals[0] || '';
+    newType = defaultType;
+    newData.type = defaultType;
+    if (cat.id === 'ocr' && defaultType) {
+      const dynFields = ocrFieldsFor(defaultType).filter(f => f.key !== 'name' && f.key !== 'type');
+      for (const f of dynFields) {
+        newData[f.key] = f.type === 'boolean' ? false : f.type === 'number' ? 0 : '';
+      }
+    }
+    const typeField = renderField({ key: 'type', label: 'Type', type: 'select', enumValues: enumVals }, defaultType, (v) => {
+      newType = v;
+      newData.type = v;
+      if (cat.id === 'ocr') {
+        const existing = newForm.querySelectorAll('.ocr-dynamic-field');
+        existing.forEach(el => el.remove());
+        const dynFields = ocrFieldsFor(v).filter(f => f.key !== 'name' && f.key !== 'type');
+        for (const f of dynFields) {
+          newData[f.key] = f.type === 'boolean' ? false : f.type === 'number' ? 0 : '';
+          const el = renderField(f, newData[f.key], (val) => { newData[f.key] = val; });
+          el.className = (el.className || '') + ' ocr-dynamic-field';
+          newForm.insertBefore(el, addBtn);
+        }
+      }
+    });
+    newForm.appendChild(typeField);
+    newForm.appendChild(addBtn);
+    if (cat.id === 'ocr' && defaultType) {
+      const dynFields = ocrFieldsFor(defaultType).filter(f => f.key !== 'name' && f.key !== 'type');
+      for (const f of dynFields) {
+        const el = renderField(f, newData[f.key], (val) => { newData[f.key] = val; });
+        el.className = (el.className || '') + ' ocr-dynamic-field';
+        newForm.insertBefore(el, addBtn);
+      }
+    }
+  }
+  if (!typeSchemaField) {
+    // No type dropdown — render all non-name fields (MCP: command, args, autoStart)
+    for (const field of cat.fields) {
+      if (field.key === 'name') continue;
+      const el = renderField(field, newData[field.key], (val) => { newData[field.key] = val; });
+      newForm.appendChild(el);
+    }
+    newForm.appendChild(addBtn);
+  }
   addBtn.onclick = () => {
     if (!newName) { toast('Name is required', 'error'); return; }
-    if (!newType) { toast('Type is required', 'error'); return; }
+    if (typeSchemaField && !newType) { toast('Type is required', 'error'); return; }
     saveNewDynamicItem(cat.id, newName, newData);
   };
-  newForm.appendChild(addBtn);
   addCard.appendChild(newForm);
   container.appendChild(addCard);
 
@@ -1048,7 +1165,17 @@ if (catId === 'ocr') {
   }
   return out;
 }
-if (catId === 'mcp') return cfg.mcpServers || {};
+if (catId === 'mcp') {
+  const raw = cfg.mcpServers || {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    out[k] = { ...v };
+    if (Array.isArray(out[k].args)) out[k].args = out[k].args.join(', ');
+    if (out[k].env && typeof out[k].env === 'object') out[k].env = JSON.stringify(out[k].env, null, 2);
+  }
+  return out;
+}
+if (catId === 'speech') return cfg.speechProviders || {};
   return {};
 }
 
@@ -1068,39 +1195,56 @@ function setNestedValue(obj, key, val) {
 
 async function saveConfig() {
   try {
-await api('/api/config', { method: 'PUT', body: JSON.stringify({
-  language: state.config.language,
-  promptName: state.config.promptName,
-  activeProvider: state.config.activeProvider,
-  visionMode: state.config.visionMode,
-  activeVisionProvider: state.config.activeVisionProvider,
-  activeOcrProvider: state.config.activeOcrProvider,
-  qualityGate: state.config.qualityGate || { autoTest: true, autoCommit: false },
-  acp: state.config.acp,
-  permissions: state.config.permissions || { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [] },
-  nativeInstalled: state.config.nativeInstalled || [],
-  nativeDisabled: state.config.nativeDisabled || [],
-})));
+    const res = await fetch(API + '/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_TOKEN },
+      body: JSON.stringify({
+        language: state.config.language,
+        promptName: state.config.promptName,
+        activeProvider: state.config.activeProvider,
+        visionMode: state.config.visionMode,
+        activeVisionProvider: state.config.activeVisionProvider,
+        activeOcrProvider: state.config.activeOcrProvider,
+        activeSpeechProvider: state.config.activeSpeechProvider,
+        activeTtsProvider: state.config.activeTtsProvider,
+        qualityGate: state.config.qualityGate || { autoTest: true, autoCommit: false },
+        acp: state.config.acp,
+        permissions: state.config.permissions || { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [] },
+        nativeInstalled: state.config.nativeInstalled || [],
+        nativeDisabled: state.config.nativeDisabled || [],
+      }),
+    });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Save failed'); }
     toast('Saved');
   } catch { toast('Save failed', 'error'); }
 }
 
 async function saveDynamicItem(catId, name, data) {
-  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', mcp: 'mcp-server' };
+  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', speech: 'speech-provider', mcp: 'mcp-server' };
   const ep = map[catId];
   if (!ep) return;
   try {
-    await api('/api/config/' + ep, { method: 'POST', body: JSON.stringify({ name, ...data }) });
+    const res = await fetch(API + '/api/config/' + ep, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_TOKEN },
+      body: JSON.stringify({ name, ...data }),
+    });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Save failed'); }
     toast('Saved');
   } catch { toast('Save failed', 'error'); }
 }
 
 async function saveNewDynamicItem(catId, name, data) {
-  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', mcp: 'mcp-server' };
+  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', speech: 'speech-provider', mcp: 'mcp-server' };
   const ep = map[catId];
   if (!ep) return;
   try {
-    await api('/api/config/' + ep, { method: 'POST', body: JSON.stringify({ name, ...data }) });
+    const res = await fetch(API + '/api/config/' + ep, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_TOKEN },
+      body: JSON.stringify({ name, ...data }),
+    });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Add failed'); }
     toast('Added');
     await loadConfig();
     renderTab(catId);
@@ -1109,7 +1253,7 @@ async function saveNewDynamicItem(catId, name, data) {
 
 async function deleteItem(catId, name) {
   if (!confirm('Remove "' + name + '"?')) return;
-  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', mcp: 'mcp-server' };
+  const map = { providers: 'provider', vision: 'vision-provider', ocr: 'ocr-provider', speech: 'speech-provider', mcp: 'mcp-server' };
   const ep = map[catId];
   if (!ep) return;
   try {

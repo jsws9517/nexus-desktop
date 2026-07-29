@@ -287,6 +287,71 @@ export class ConfigManager {
     }
   }
 
+  // ── Speech Providers ───────────────────────────────────────────────────
+
+  getSpeechProviders(): Record<string, any> {
+    return (this.config.speechProviders || {}) as any;
+  }
+
+  getActiveSpeechProvider(): string {
+    return this.config.activeSpeechProvider || '';
+  }
+
+  setActiveSpeechProvider(name: string): void {
+    this.config.activeSpeechProvider = name;
+    this.save();
+  }
+
+  getActiveTtsProvider(): string {
+    return this.config.activeTtsProvider || '';
+  }
+
+  setActiveTtsProvider(name: string): void {
+    this.config.activeTtsProvider = name;
+    this.save();
+  }
+
+  getSpeechProvider(name?: string): any {
+    const key = name || this.getActiveSpeechProvider();
+    const providers = this.getSpeechProviders();
+    const provider = providers[key];
+    if (!provider) {
+      throw new Error(`Speech provider "${key}" not found`);
+    }
+    if (provider.apiKey) {
+      const resolved = resolveApiKey(provider.apiKey, 'custom', key);
+      return { ...provider, apiKey: resolved.apiKey };
+    }
+    return { ...provider };
+  }
+
+  setSpeechProvider(name: string, config: { apiKey: string; baseUrl: string; model: string; category?: string; voice?: string; language?: string }): void {
+    if (!this.config.speechProviders) {
+      this.config.speechProviders = {};
+    }
+    const entry: any = { ...config };
+    if (entry.apiKey) {
+      entry.apiKey = atRestEncrypt(entry.apiKey);
+    }
+    this.config.speechProviders[name] = entry;
+    this.save();
+  }
+
+  removeSpeechProvider(name: string): void {
+    if (this.config.speechProviders) {
+      delete this.config.speechProviders[name];
+      if (this.config.activeSpeechProvider === name) {
+        const remaining = Object.keys(this.config.speechProviders);
+        this.config.activeSpeechProvider = remaining[0] || '';
+      }
+      if (this.config.activeTtsProvider === name) {
+        const remaining = Object.keys(this.config.speechProviders);
+        this.config.activeTtsProvider = remaining[0] || '';
+      }
+      this.save();
+    }
+  }
+
   removeProvider(name: string): void {
     if (!this.config.providers || !this.config.providers[name]) {
       throw new Error(`Provider "${name}" not found`);

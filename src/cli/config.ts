@@ -573,6 +573,117 @@ export function registerConfigCommand(program: Command): void {
       for (const p of blacklist) console.log(`    ${p}`);
     });
 
+  // ── Speech Config ──────────────────────────────────────────────────
+
+  const speechCmd = configCmd.command('speech').description('Speech provider management for speech-to-text (STT) and text-to-speech (TTS)');
+
+  speechCmd
+    .command('list')
+    .description('List configured speech providers (* = active)')
+    .action(() => {
+      const config = new ConfigManager();
+      const active = config.getActiveSpeechProvider();
+      const providers = config.getSpeechProviders();
+      console.log(t.heading('Speech Providers:'));
+      if (Object.keys(providers).length === 0) {
+        console.log(t.textDim('  No speech providers configured.'));
+        console.log(t.textDim('  Use "nexus config speech set <name>" to add one.'));
+        return;
+      }
+      for (const [name, p] of Object.entries(providers)) {
+        const marker = name === active ? t.success('*') : ' ';
+        const cat = p.category || 'stt';
+        console.log(`  ${marker} ${name} [${cat}] (${p.model || 'no model'})`);
+        if (p.baseUrl) console.log(`    ${t.textDim(p.baseUrl)}`);
+      }
+    });
+
+  speechCmd
+    .command('set <name>')
+    .description(`Configure a speech provider for STT or TTS.\n` +
+      `  \n` +
+      `    nexus config speech set <name> -k <key> -u <url> -m <model> -c stt\n` +
+      `    nexus config speech set <name> -k <key> -u <url> -m <model> -c tts [--voice <voice>]`)
+    .option('-k, --apiKey <key>', 'API key (plaintext or $ENV_VAR)')
+    .option('-u, --baseUrl <url>', 'API endpoint URL')
+    .option('-m, --model <model>', 'Model name (e.g. qwen3-asr-flash, kokoro, tts-1)')
+    .option('-c, --category <category>', 'Provider category: stt (speech-to-text) or tts (text-to-speech)')
+    .option('--voice <voice>', 'Default voice for TTS (e.g. af_sky, alloy, Cherry)')
+    .option('--language <language>', 'Language hint for TTS (e.g. English, zh-CN)')
+    .action((name: string, options: { apiKey?: string; baseUrl?: string; model?: string; category?: string; voice?: string; language?: string }) => {
+      if (!options.apiKey) {
+        console.log(t.error('API key is required. Use -k <key>.'));
+        return;
+      }
+      if (!options.baseUrl) {
+        console.log(t.error('Base URL is required. Use -u <url>.'));
+        return;
+      }
+      if (!options.model) {
+        console.log(t.error('Model name is required. Use -m <model>.'));
+        return;
+      }
+      if (!options.category) {
+        console.log(t.error('Category is required. Use -c stt or -c tts.'));
+        return;
+      }
+      const config = new ConfigManager();
+      config.setSpeechProvider(name, {
+        apiKey: options.apiKey,
+        baseUrl: options.baseUrl,
+        model: options.model,
+        category: options.category,
+        voice: options.voice,
+        language: options.language,
+      });
+      if (options.category === 'tts') {
+        config.setActiveTtsProvider(name);
+      } else {
+        config.setActiveSpeechProvider(name);
+      }
+      console.log(t.success(`Speech provider "${name}" (${options.category}) configured and set as active.`));
+    });
+
+  speechCmd
+    .command('switch <name>')
+    .description('Switch the active speech provider')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      try {
+        config.setActiveSpeechProvider(name);
+        console.log(t.success(`Active speech provider: ${name}`));
+      } catch (err) {
+        console.log(t.error(`Failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  speechCmd
+    .command('switch-tts <name>')
+    .description('Switch the active TTS provider')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      try {
+        config.setActiveTtsProvider(name);
+        console.log(t.success(`Active TTS provider: ${name}`));
+      } catch (err) {
+        console.log(t.error(`Failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  speechCmd
+    .command('remove <name>')
+    .description('Remove a speech provider')
+    .action((name: string) => {
+      const config = new ConfigManager();
+      const providers = config.getSpeechProviders();
+      if (!providers[name]) {
+        console.log(t.error(`Speech provider "${name}" not found.`));
+        return;
+      }
+      config.removeSpeechProvider(name);
+      console.log(t.success(`Removed speech provider: ${name}`));
+    });
+
   const mcpCmd = configCmd.command('mcp').description('MCP server management');
 
   mcpCmd
@@ -1077,6 +1188,24 @@ export function registerConfigCommand(program: Command): void {
       console.log(t.warning(native.disable(name)));
     });
 
+  nativeCmd
+    .command('install-nano')
+    .description('Deploy all default-enabled plugins from registered marketplaces')
+    .action(async () => {
+      const native = new NativeManager();
+      try {
+        const results = await native.deployDefaults();
+        for (const r of results) {
+          if (r.startsWith('✓')) console.log(t.success(r));
+          else if (r.startsWith('✗')) console.log(t.error(r));
+          else if (r.startsWith('⚠')) console.log(t.warning(r));
+          else console.log(t.textDim(r));
+        }
+      } catch (err) {
+        console.log(t.error(err instanceof Error ? err.message : String(err)));
+      }
+    });
+
   // ── Marketplace subcommands ───────────────────────────────────────────
   const marketplaceCmd = nativeCmd.command('marketplace').description('Manage plugin marketplaces (add, list, remove, update)');
 
@@ -1257,9 +1386,10 @@ export function registerConfigCommand(program: Command): void {
     });
 
   permCmd
-    .command('preset <name>')
-    .description('Apply a built-in preset to the allowlist. Currently: edit')
-    .action((name: string) => {
+    .command('preset [name]')
+    .description('Apply a built-in preset to the allowlist. Defaults to "edit" if not specified')
+    .action((name?: string) => {
+      name = name || 'edit';
       const preset = PERMISSION_PRESETS[name];
       if (!preset) {
         console.log(t.error(`Unknown preset: "${name}". Available: ${Object.keys(PERMISSION_PRESETS).join(', ') || '(none)'}`));
