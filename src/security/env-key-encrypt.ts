@@ -69,8 +69,9 @@ function getOrCreateStorageKey(): Buffer {
           { stdio: 'ignore', timeout: 5000 },
         );
       }
-    } catch {
+    } catch (e) {
       // ACL hardening is best-effort on Windows; failure does not block startup.
+      process.stderr.write(`[nexus] Warning: could not secure storage key file via icacls. Other local users may read it.\n  Caused by: ${e instanceof Error ? e.message : String(e)}\n`);
     }
   }
   return key;
@@ -121,6 +122,10 @@ let _execSync: any;
 const _require = typeof require !== 'undefined' ? require : createRequire(import.meta.url);
 function getWindowsUserEnv(name: string): string | undefined {
   if (process.platform !== 'win32') return undefined;
+  // Only allow valid Windows environment-variable names: [a-zA-Z_][a-zA-Z0-9_]*.
+  // Anything else (spaces, quotes, semicolons, backticks, $, etc.) would break
+  // out of the PowerShell -Command string and execute arbitrary PowerShell code.
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) return undefined;
   try {
     if (!_execSync) _execSync = _require('child_process').execSync;
     const val = _execSync(

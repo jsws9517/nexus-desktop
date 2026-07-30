@@ -4,6 +4,21 @@ import { ToolDefinition, ToolResult } from '../types.js';
 import { BUILTIN_TOOLS } from './builtin-tools.js';
 import { ServerConfig } from '../config/types.js';
 
+// Keys whose values are replaced with <redacted> in error dumps to prevent
+// accidental leakage of secrets (tokens, passwords, API keys) to the LLM.
+const SENSITIVE_ARG_KEYS = /^(?:password|passwd|secret|token|api[_-]?key|key|auth|credential|private[_-]?key|access[_-]?key|session[_-]?id|connection[_-]?string|wallet|mnemonic|seed)$/i;
+function redactSensitive(obj: unknown): unknown {
+  if (typeof obj !== 'object' || obj === null) return obj;
+  if (Array.isArray(obj)) return obj.map(redactSensitive);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    out[k] = SENSITIVE_ARG_KEYS.test(k)
+      ? '<redacted>'
+      : (typeof v === 'object' && v !== null ? redactSensitive(v) : v);
+  }
+  return out;
+}
+
 interface ServerConnection {
   name: string;
   client: Client;
@@ -195,8 +210,8 @@ export class ClientManager {
             try { await conn.client.close(); } catch { /* ignore */ }
             this.connections.delete(conn.name);
           }
-          const argsDump = JSON.stringify(safeArgs).slice(0, 500);
-          const schemaDump = JSON.stringify(schema).slice(0, 500);
+          const argsDump = JSON.stringify(redactSensitive(safeArgs)).slice(0, 500);
+          const schemaDump = JSON.stringify(redactSensitive(schema)).slice(0, 500);
           return { content: `MCP tool "${name}" failed: ${errMsg}\nArgs: ${argsDump}\nSchema: ${schemaDump}`, isError: true };
         }
         const content = (result.content as Array<{ type: string; text?: string }>)

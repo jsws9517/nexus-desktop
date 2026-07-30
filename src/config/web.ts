@@ -1264,7 +1264,11 @@ async function deleteItem(catId, name) {
   } catch { toast('Remove failed', 'error'); }
 }
 
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML.replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/\`/g, '&#96;');
+}
 
 (async () => {
   try {
