@@ -3,6 +3,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ToolDefinition, ToolResult } from '../types.js';
 import { BUILTIN_TOOLS } from './builtin-tools.js';
 import { ServerConfig } from '../config/types.js';
+import { resolveEnvValue } from '../security/env-key-encrypt.js';
 
 // Keys whose values are replaced with <redacted> in error dumps to prevent
 // accidental leakage of secrets (tokens, passwords, API keys) to the LLM.
@@ -108,7 +109,8 @@ export class ClientManager {
     if (config.env) {
       for (const [k, v] of Object.entries(config.env)) {
         if (!ClientManager.BLOCKED_ENV_KEYS.has(k.toUpperCase())) {
-          safeEnv[k] = v as string;
+          // Resolve enc: encrypted blobs and $VAR/env:VAR references
+          safeEnv[k] = resolveEnvValue(v as string);
         }
       }
     }

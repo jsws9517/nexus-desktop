@@ -243,6 +243,26 @@ export function resolveApiKey(configKey: string | undefined, providerType: strin
   return { apiKey: '', encrypted: false };
 }
 
+/**
+ * Resolve a config value that may be an encrypted blob (enc:...),
+ * an env-var reference ($VAR or env:VAR), or a plaintext literal.
+ * Used by MCP server env resolution (and anywhere else that needs
+ * a general-purpose value resolver with the same semantics).
+ */
+export function resolveEnvValue(value: string): string {
+  if (!value) return value;
+  if (value.startsWith('enc:')) {
+    const decrypted = atRestDecrypt(value);
+    // atRestDecrypt returns the input unchanged if it can't decrypt
+    if (decrypted !== value) return decrypted;
+  }
+  if (value.startsWith('$') || value.startsWith('env:')) {
+    const resolved = resolveFromEnvVar(value);
+    if (resolved) return resolved;
+  }
+  return value;
+}
+
 export function decryptApiKey(encrypted: string): string {
   if (!encrypted || !encrypted.includes(':')) return encrypted;
   if (encrypted.startsWith('mem:')) {

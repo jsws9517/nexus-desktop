@@ -93,6 +93,17 @@ export class ConfigManager {
         }
       }
     }
+    if (this.config?.mcpServers) {
+      for (const srv of Object.values(this.config.mcpServers)) {
+        if (!srv?.env) continue;
+        for (const [k, v] of Object.entries(srv.env)) {
+          if (v && !v.startsWith('enc:') && !v.startsWith('$') && !v.startsWith('env:')) {
+            srv.env[k] = atRestEncrypt(v);
+            changed = true;
+          }
+        }
+      }
+    }
     return changed;
   }
 
@@ -501,6 +512,16 @@ export class ConfigManager {
     // executable (no shell metacharacters, no inline/sh compound commands).
     if (!isSafeMcpCommand(command, args)) {
       throw new Error(`Refusing to add MCP server "${name}": launch command "${command}" is not a safe, simple executable.`);
+    }
+    // Encrypt plaintext env values before persisting
+    if ((server as Record<string, unknown>).env) {
+      const env = (server as Record<string, unknown>).env as Record<string, string>;
+      for (const k of Object.keys(env)) {
+        const v = env[k];
+        if (v && !v.startsWith('enc:') && !v.startsWith('$') && !v.startsWith('env:')) {
+          env[k] = atRestEncrypt(v);
+        }
+      }
     }
     this.config.mcpServers = this.config.mcpServers || {};
     (this.config.mcpServers as Record<string, unknown>)[name] = server;
