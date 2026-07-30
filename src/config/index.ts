@@ -97,7 +97,8 @@ export class ConfigManager {
       for (const srv of Object.values(this.config.mcpServers)) {
         if (!srv?.env) continue;
         for (const [k, v] of Object.entries(srv.env)) {
-          if (v && !v.startsWith('enc:') && !v.startsWith('$') && !v.startsWith('env:')) {
+          // Only auto-encrypt env vars whose name contains "KEY" (e.g. API_KEY, SECRET_KEY)
+          if (v && k.toUpperCase().includes('KEY') && !v.startsWith('enc:') && !v.startsWith('$') && !v.startsWith('env:')) {
             srv.env[k] = atRestEncrypt(v);
             changed = true;
           }
@@ -513,12 +514,12 @@ export class ConfigManager {
     if (!isSafeMcpCommand(command, args)) {
       throw new Error(`Refusing to add MCP server "${name}": launch command "${command}" is not a safe, simple executable.`);
     }
-    // Encrypt plaintext env values before persisting
+    // Encrypt plaintext env values (only KEY-containing names) before persisting
     if ((server as Record<string, unknown>).env) {
       const env = (server as Record<string, unknown>).env as Record<string, string>;
       for (const k of Object.keys(env)) {
         const v = env[k];
-        if (v && !v.startsWith('enc:') && !v.startsWith('$') && !v.startsWith('env:')) {
+        if (v && k.toUpperCase().includes('KEY') && !v.startsWith('enc:') && !v.startsWith('$') && !v.startsWith('env:')) {
           env[k] = atRestEncrypt(v);
         }
       }
