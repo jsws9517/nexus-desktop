@@ -466,8 +466,12 @@ const ttsNames = Object.keys((cfg.speechProviders as Record<string, unknown>) ||
           srvConfig.args = (srvConfig.args as string).split(',').map(s => s.trim()).filter(Boolean);
         }
         // UI sends env as JSON string; parse to object
-        if (typeof srvConfig.env === 'string' && srvConfig.env.trim()) {
-          try { srvConfig.env = JSON.parse(srvConfig.env as string); } catch { /* leave as string, will fail validation */ }
+        if (typeof srvConfig.env === 'string') {
+          if (srvConfig.env.trim()) {
+            try { srvConfig.env = JSON.parse(srvConfig.env as string); } catch { /* leave as string, will fail validation */ }
+          } else {
+            delete srvConfig.env;
+          }
         }
         const validated = ServerConfigSchema.parse(srvConfig);
         config.addMcpServer(String(name), validated);
@@ -847,7 +851,7 @@ function renderDynamicCategory(main, cat) {
   const newData = {};
   for (const field of cat.fields) {
     if (field.key === 'name') continue;
-    newData[field.key] = field.type === 'boolean' ? false : field.type === 'number' ? 0 : '';
+    newData[field.key] = field.type === 'boolean' ? false : field.type === 'number' ? 0 : field.key === 'env' ? '{}' : '';
   }
   let newName = '';
   let newType = '';
