@@ -79,6 +79,8 @@ function getOrCreateStorageKey(): Buffer {
 
 export function atRestEncrypt(plaintext: string): string {
   if (!plaintext) return plaintext;
+  // Already encrypted — idempotent.
+  if (plaintext.startsWith('enc:')) return plaintext;
   // A value shaped like an env-var reference ($VAR or env:VAR) is only stored
   // in plaintext when the referenced variable is actually set. This prevents a
   // user from accidentally persisting a real secret as "env:..." and writing it

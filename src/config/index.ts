@@ -62,13 +62,38 @@ export class ConfigManager {
     const isFirstRun = !existsSync(CONFIG_PATH);
     this.config = this.load();
 
+    // Auto-encrypt plaintext API keys that were manually placed in config.json
+    // (e.g. direct file edits). This keeps on-disk keys consistent with the
+    // encryption policy even when bypassing the CLI/Web UI.
+    if (this.autoEncryptPlaintextKeys()) {
+      this.save();
+    }
+
     // Auto-import from Claude Code on first run
     if (isFirstRun && hasClaudeConfig() && !hasBeenAutoImported()) {
       importFromClaude(this, true);
       markAutoImported();
       // Reload after import
       this.config = this.load();
+      if (this.autoEncryptPlaintextKeys()) {
+        this.save();
+      }
     }
+  }
+
+  private autoEncryptPlaintextKeys(): boolean {
+    let changed = false;
+    if (this.config?.providers) {
+      for (const key of Object.keys(this.config.providers)) {
+        const p = this.config.providers[key]!;
+        const ak = p.apiKey;
+        if (ak && !ak.startsWith('enc:') && !ak.startsWith('$') && !ak.startsWith('env:')) {
+          p.apiKey = atRestEncrypt(ak);
+          changed = true;
+        }
+      }
+    }
+    return changed;
   }
 
   private load(): Config {
