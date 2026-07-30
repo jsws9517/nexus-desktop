@@ -63,7 +63,17 @@ function isGranted(absPath: string): boolean {
   const entries = loadAuthorizations();
   const valid = entries.filter(e => e.expiresAt === null || e.expiresAt > now);
   if (valid.length !== entries.length) saveAuthorizations(entries);
+  // Windows reserved device names (CON, NUL, COM1-9, LPT1-9, etc.) should never
+  // be authorized — they don't represent real files and blocking them prevents
+  // path-confusion attacks.
+  if (isWindowsDevicePath(normalized)) return false;
   return valid.some(e => normalized.startsWith(normalize(e.path).toLowerCase()));
+}
+
+const WINDOWS_DEVICE_RE = /^(?:[a-z]:[\\/])?(?:con|nul|prn|aux|com[1-9]|lpt[1-9])(?:[\\/.]|$)/;
+
+function isWindowsDevicePath(p: string): boolean {
+  return WINDOWS_DEVICE_RE.test(p);
 }
 
 async function promptUser(path: string): Promise<boolean> {

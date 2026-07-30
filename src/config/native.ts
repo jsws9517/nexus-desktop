@@ -282,7 +282,7 @@ const CATALOG: Record<string, PackageInfo> = {
         langId: 'python',
         languageLabel: 'Python',
       }), 'utf-8');
-      try { execSync('npm install --loglevel=error', { cwd: dir, stdio: 'pipe', timeout: 120000 }); }
+      try { execSync('npm install --ignore-scripts --loglevel=error', { cwd: dir, stdio: 'pipe', timeout: 120000 }); }
       catch (err) { throw new Error(`npm install failed: ${err instanceof Error ? err.message : String(err)}`); }
       new ConfigManager().addMcpServer('pyright', { command: 'node', args: [join(dir, 'server.mjs')], autoStart: true });
     },
@@ -317,7 +317,7 @@ const CATALOG: Record<string, PackageInfo> = {
         langId: 'typescript',
         languageLabel: 'TypeScript/JavaScript',
       }), 'utf-8');
-      try { execSync('npm install --loglevel=error', { cwd: dir, stdio: 'pipe', timeout: 120000 }); }
+      try { execSync('npm install --ignore-scripts --loglevel=error', { cwd: dir, stdio: 'pipe', timeout: 120000 }); }
       catch (err) { throw new Error(`npm install failed: ${err instanceof Error ? err.message : String(err)}`); }
       new ConfigManager().addMcpServer('typescript-language-server', { command: 'node', args: [join(dir, 'server.mjs')], autoStart: true });
     },
@@ -712,10 +712,15 @@ export class NativeManager {
     // pkg.install() created its own ConfigManager and saved mcpServers.
     // Reload the outer config to pick those up before we save the installed list
     // (otherwise outer save would overwrite and lose the mcpServers).
-    const raw = JSON.parse(readFileSync(join(homedir(), '.nexus', 'config.json'), 'utf-8'));
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(readFileSync(join(homedir(), '.nexus', 'config.json'), 'utf-8'));
+    } catch {
+      raw = {};
+    }
     const cfg = this.config.get();
     if (raw.mcpServers) {
-      cfg.mcpServers = raw.mcpServers;
+      cfg.mcpServers = raw.mcpServers as any;
     }
     const installed = this.getInstalledList();
     installed.push(name);

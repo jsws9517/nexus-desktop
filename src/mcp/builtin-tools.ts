@@ -84,6 +84,13 @@ function normalizeIP(ip: string): string | null {
       return [(num >>> 24) & 0xff, (num >>> 16) & 0xff, (num >>> 8) & 0xff, num & 0xff].join('.');
     }
   }
+  // Octal IP like 0177.0.0.1 (each octet is octal, separated by dots)
+  if (/^0[0-7]+(\.[0-7]+){3}$/.test(ip)) {
+    const octets = ip.split('.').map(s => parseInt(s, 8));
+    if (octets.every(o => !isNaN(o) && o >= 0 && o <= 255)) {
+      return octets.join('.');
+    }
+  }
   return null;
 }
 

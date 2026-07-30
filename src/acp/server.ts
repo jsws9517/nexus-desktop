@@ -1,5 +1,5 @@
 import { createInterface } from 'readline';
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { readFileSync } from 'fs';
 import { Agent } from '../agent.js';
 import { getTurnDeadlineMs, getHeartbeatIntervalMs } from '../llm/timeout-config.js';
@@ -296,7 +296,9 @@ export class AcpServer {
       return { authenticated: true, message: 'auth not required' };
     }
     const token = String(params?.authToken || '');
-    if (token === this.authToken) {
+    const tokenBuf = Buffer.from(token);
+    const authBuf = Buffer.from(this.authToken);
+    if (tokenBuf.length === authBuf.length && timingSafeEqual(tokenBuf, authBuf)) {
       this.authenticated = true;
       return { authenticated: true };
     }

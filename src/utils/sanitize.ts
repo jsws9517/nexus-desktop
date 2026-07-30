@@ -61,7 +61,7 @@ export function redactPaths(input: string): string {
   // list below covers the common sensitive Unix roots; anything matching a
   // known root (or any Windows drive) is redacted so secrets/paths never leak
   // into model context or user-facing output.
-  const SENSITIVE_ROOTS = /^(?:tmp|dev|proc|sys|etc|var|usr|Users|home|root|opt|srv|mnt|media|data|secret|secrets|private|net|run|credentials)\b/i;
+  const SENSITIVE_ROOTS = /^(?:tmp|dev|proc|sys|etc|var|usr|Users|home|root|opt|srv|mnt|media|data|secret|secrets|private|net|run|credentials|app|config|cache|log|spool|share|local|bin|sbin|lib|lib64|include|backup|archive|export|exchange|volumes|vol|sw|stage|staging)\b/i;
   out = out.replace(/(?:[A-Za-z]:[\\/][^\s"'`,;|]+)|(?:[\\/][^\s"'`,;|]*)/g, (m) =>
     SENSITIVE_ROOTS.test(m) || /^[A-Za-z]:[\\/]/i.test(m) ? '<path>' : m,
   );

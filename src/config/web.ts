@@ -345,7 +345,7 @@ const ttsNames = Object.keys((cfg.speechProviders as Record<string, unknown>) ||
   }
 
   if (url.startsWith('/api/config/vision-provider/') && method === 'DELETE') {
-    const name = url.slice('/api/config/vision-provider/'.length);
+    const name = decodeURIComponent(url.slice('/api/config/vision-provider/'.length));
     config.removeVisionProvider(name);
     jsonResponse(res, { ok: true });
     return;
@@ -480,7 +480,7 @@ const ttsNames = Object.keys((cfg.speechProviders as Record<string, unknown>) ||
   }
 
   if (url.startsWith('/api/config/mcp-server/') && method === 'DELETE') {
-    const name = url.slice('/api/config/mcp-server/'.length);
+    const name = decodeURIComponent(url.slice('/api/config/mcp-server/'.length));
     config.removeMcpServer(name);
     jsonResponse(res, { ok: true });
     return;
