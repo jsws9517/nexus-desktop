@@ -445,6 +445,65 @@ paddle-ocr.exe --image doc.png --show-boxes              # 含置信度
 paddle-ocr.exe --version                                 # 版本信息
 ```
 
+## 语音 / 音频
+
+智能体支持**语音转文字（STT）**和**文字转语音（TTS）**，通过统一的 `speechProviders` 配置管理。每个提供商通过 `category` 字段（`stt` 或 `tts`）指定角色。
+
+### STT — 语音转文字（transcribe_audio）
+
+使用 `transcribe_audio` 工具将音频文件（会议录音、语音消息、讲座）转写为文字。
+
+```bash
+# 配置 STT 提供商（阿里云 DashScope ASR）
+nexus config speech set asr-qwen \
+  -k $API_KEY_ALIYUN \
+  -u https://dashscope.aliyuncs.com/compatible-mode/v1 \
+  -m qwen3-asr-flash \
+  -c stt
+
+# 或使用 SiliconFlow（TeleSpeechASR）
+nexus config speech set asr-tel \
+  -k $API_KEY_SILICON \
+  -u https://api.siliconflow.cn/v1 \
+  -m TeleAI/TeleSpeechASR \
+  -c stt
+
+# 列出已配置的提供商
+nexus config speech list
+
+# 设置活跃 STT 提供商
+nexus config speech switch asr-qwen
+```
+
+### TTS — 文字转语音（synthesize_speech）
+
+使用 `synthesize_speech` 工具将文字转为语音。支持 OpenAI 兼容的 TTS API 和本地提供商。
+
+```bash
+# 配置云端 TTS 提供商（OpenAI 兼容）
+nexus config speech set openai-tts \
+  -k $API_KEY_OPENAI \
+  -u https://api.openai.com/v1 \
+  -m tts-1 \
+  -c tts \
+  --voice alloy
+
+# 配置本地 Kokoro TTS（无需 API 密钥）
+nexus config speech set kokoro \
+  -k dummy \
+  -u http://localhost:8181/v1 \
+  -m kokoro \
+  -c tts \
+  --voice af_sky
+
+# 设置活跃 TTS 提供商
+nexus config speech switch-tts kokoro
+```
+
+### 支持的音频格式
+
+`transcribe_audio` 接受：`wav`、`mp3`、`m4a`、`ogg`、`flac`、`webm`、`aac`、`wma`。
+
 ## ACP 协议
 
 Nexus 实现了 **智能体间通信协议（ACP）**——一种基于 stdin/stdout 的 JSON-RPC 2.0 传输协议。cc-connect（飞书、微信、Telegram 等平台的中继桥接器）使用该协议将用户消息转发给智能体，并流式返回响应。
