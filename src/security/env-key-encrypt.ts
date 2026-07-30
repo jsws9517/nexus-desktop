@@ -216,9 +216,26 @@ export function resolveApiKey(configKey: string | undefined, providerType: strin
     );
   }
 
-  // 3) Fall back to raw config value (encrypted in transit)
+  // 3) Fall back to raw config value (plaintext or encrypted at rest)
   if (configKey && configKey.length > 0 && !configKey.startsWith('$') && !configKey.startsWith('env:')) {
-    return { apiKey: ephemeralEncrypt(configKey), encrypted: true };
+    let resolved = configKey;
+    if (configKey.startsWith('enc:')) {
+      // at-rest encrypted blob — decrypt it. config.load() may have caught a
+      // storage-key mismatch and left the raw enc: string in place, which step 3
+      // would otherwise treat as a plaintext key and send to the API as-is.
+      try {
+        const decrypted = atRestDecrypt(configKey);
+        if (decrypted === configKey) throw new Error('decryption returned the raw encrypted blob');
+        resolved = decrypted;
+      } catch (e) {
+        throw new Error(
+          `Cannot decrypt provider API key: ${e instanceof Error ? e.message : String(e)}\n` +
+          `The .storage-key file (~/.nexus/.storage-key) may have changed or been deleted.\n` +
+          `Re-add the provider API key to re-encrypt it with the current storage key.`
+        );
+      }
+    }
+    return { apiKey: ephemeralEncrypt(resolved), encrypted: true };
   }
 
   return { apiKey: '', encrypted: false };
