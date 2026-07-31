@@ -89,9 +89,7 @@ export function redactGeoData(content: string): string {
     return cache.get(val)!;
   };
 
-  // Each regex captures the key+separator in group 1; the full match includes
-  // the trailing numeric value. Replacement keeps the prefix and swaps the
-  // value for a stable geo-NNNN placeholder.
+  // Pass 1 — standard JSON / YAML / .env patterns
   const patterns: RegExp[] = [
     /("(?:latitude|longitude)"\s*:\s*)-?[\d.]+/gi,
     /("(?:lat|lng|lon)"\s*:\s*)-?[\d.]+/gi,
@@ -106,6 +104,44 @@ export function redactGeoData(content: string): string {
       return p + nextId(match.slice(p.length));
     });
   }
+
+  // Pass 2 — CSV files: detect coordinate column headers then redact values
+  // in the same columns of subsequent data rows.
+  const lines = result.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const cells = lines[i].split(',');
+    // Heuristic: a line is a CSV header if it contains at least one cell with
+    // 经度 or 纬度 (possibly with prefix like 栅格中心经度) and has ≥ 3 cells.
+    const coordCols: number[] = [];
+    for (let j = 0; j < cells.length; j++) {
+      const cell = cells[j].trim();
+      if (/(?:.*)?(?:经度|纬度|longitude|latitude)\b/i.test(cell)) {
+        coordCols.push(j);
+      }
+    }
+    if (coordCols.length === 0 || cells.length < 3) continue;
+
+    // Redact values at the identified columns in subsequent data rows
+    // (stop at the next non-data line — one that has no numeric tokens).
+    for (let k = i + 1; k < lines.length; k++) {
+      const dataCells = lines[k].split(',');
+      if (dataCells.length <= Math.max(...coordCols)) break;
+      // Skip lines that don't look like CSV data (no numbers)
+      if (!/\d/.test(lines[k])) break;
+      let changed = false;
+      for (const ci of coordCols) {
+        const raw = dataCells[ci].trim();
+        if (raw && /^-?[\d.]+$/.test(raw)) {
+          dataCells[ci] = nextId(raw);
+          changed = true;
+        }
+      }
+      if (changed) lines[k] = dataCells.join(',');
+    }
+    break; // Only process the first header line found
+  }
+  result = lines.join('\n');
+
   return result;
 }
 

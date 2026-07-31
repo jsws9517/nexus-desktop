@@ -134,10 +134,9 @@ The following findings were identified as intentional design trade-offs.
 Do NOT fix without explicit user confirmation — each would alter observable behavior.
 
 | ID | Risk | Issue | Why it's a compromise |
-|---|---|---|---|
+|---|---|---|---|---|
 | M4 | Medium | ACP `tool/call` doesn't require a session | Protocol may be designed for stateless tool invocation; forcing session breaks existing clients |
 | M5 | Medium | Web UI prints API token to stderr on startup | Convenience for user copy-paste; could be masked or shown only once as alternative |
 | M6 | Medium | ACP `/authenticate` has no rate limiting | Adding rate limiting may cause legitimate retries to fail; requires careful window/threshold tuning |
-| M7 | Medium | `read_multiple_files` accepts unbounded `paths` array | Truncation would break legitimate bulk reads; need a reasonable upper bound (e.g. 100) |
 | L1 | Low | Error messages distinguish "not found" from "access denied" | Attackers can probe file existence; unification would break scripts/tools depending on the distinction |
 | L5 | Low | API token embedded in served HTML SPA source | Required for SPA to authenticate API calls; cannot remove |
