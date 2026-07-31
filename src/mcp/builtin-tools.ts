@@ -8,7 +8,7 @@ import { isIP } from 'net';
 import { BuiltinTool } from './types.js';
 import { ToolResult } from '../types.js';
 import { authorizePath } from '../security/path-authorizer.js';
-import { sanitizeContent, redactPaths, redactGeoData } from '../utils/sanitize.js';
+import { sanitizeContent, redactPaths, redactGeoData, redactSensitiveData } from '../utils/sanitize.js';
 import { translateCommand } from './cmd-alias.js';
 
 const execAsync = promisify(exec);
@@ -164,18 +164,19 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       }
       try {
         const content = readFileSync(path, 'utf-8');
+        const redact = (s: string) => redactSensitiveData(redactGeoData(s));
         const head = args.head ? parseInt(String(args.head), 10) : 0;
         if (head > 0) {
           const lines = content.split('\n').slice(0, head).join('\n');
           const skipped = content.split('\n').length - head;
-          return { content: redactGeoData(skipped > 0 ? `${lines}\n... (${skipped} more lines)` : lines) };
+          return { content: redact(skipped > 0 ? `${lines}\n... (${skipped} more lines)` : lines) };
         }
         // Enforce a 100KB max to prevent context overflow; if larger, return head-100
         if (content.length > 100 * 1024) {
           const truncated = content.slice(0, 100 * 1024);
-          return { content: redactGeoData(`${truncated}\n... (content truncated at 100KB, use head=N to read specific lines)`) };
+          return { content: redact(`${truncated}\n... (content truncated at 100KB, use head=N to read specific lines)`) };
         }
-        return { content: redactGeoData(content) };
+        return { content: redact(content) };
       } catch (err) {
         return { content: `Error reading file: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
@@ -208,7 +209,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
           if (content.length > MAX_FILE_CONTENT_BYTES) {
             content = content.slice(0, MAX_FILE_CONTENT_BYTES) + '\n... (file truncated at 100KB)';
           }
-          content = redactGeoData(content);
+          content = redactSensitiveData(redactGeoData(content));
           results.push(`\n--- ${resolved} ---\n${content}`);
           totalSize += content.length;
         } catch (err) {

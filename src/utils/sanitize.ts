@@ -108,3 +108,34 @@ export function redactGeoData(content: string): string {
   }
   return result;
 }
+
+/**
+ * Obfuscate sensitive field values (passwords, tokens, keys, credentials) in
+ * file content by replacing the value with ***REDACTED***. Matches common
+ * JSON, YAML, .env, and Chinese config formats.
+ */
+export function redactSensitiveData(content: string): string {
+  if (!content) return content;
+
+  const eng = '(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|private[_-]?key|access[_-]?key|auth[_-]?token|credential|credentials|connection[_-]?string|ssh[_-]?key|jwt|refresh[_-]?token|client[_-]?secret|consumer[_-]?secret|session[_-]?id|authorization|wallet|mnemonic|seed[_-]?phrase|passphrase|certificate|encryption[_-]?key|master[_-]?key|consumer[_-]?key|consumer_key)';
+  const chn = '(?:密码|口令|密钥|秘钥|令牌|凭证|账号|账户|私钥)';
+
+  const patterns: Array<[RegExp, string]> = [
+    // JSON quoted value: "field": "secret123" → "field": "***REDACTED***"
+    [new RegExp(`("(?:${eng}|${chn})"\\s*:\\s*)"[^"]*"`, 'gi'), '$1***REDACTED***'],
+    // JSON unquoted value: "field": 12345 → "field": ***REDACTED***
+    [new RegExp(`("(?:${eng}|${chn})"\\s*:\\s*)[^,\\s}\\]]+`, 'gi'), '$1***REDACTED***'],
+    // Chinese plain: 密码: value  or  密钥：value
+    [new RegExp(`((?:${chn})\\s*[:：]\\s*)[^\\n]+`, 'gi'), '$1***REDACTED***'],
+    // Env-var style (case-insensitive): PASSWORD=abc  or  API_KEY=xyz
+    [new RegExp(`\\b(${eng})\\s*=\\s*[^\\n\\s]+`, 'gi'), '$1=***REDACTED***'],
+    // Chinese env: 密码=abc
+    [new RegExp(`(${chn})\\s*=\\s*[^\\n\\s]+`, 'gi'), '$1=***REDACTED***'],
+  ];
+
+  let result = content;
+  for (const [re, replacement] of patterns) {
+    result = result.replace(re, replacement);
+  }
+  return result;
+}
