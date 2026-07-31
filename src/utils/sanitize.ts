@@ -115,7 +115,7 @@ export function redactGeoData(content: string): string {
     const coordCols: number[] = [];
     for (let j = 0; j < cells.length; j++) {
       const cell = cells[j].trim();
-      if (/(?:.*)?(?:经度|纬度|longitude|latitude)\b/i.test(cell)) {
+      if (/(?:经度|纬度|longitude|latitude)/i.test(cell)) {
         coordCols.push(j);
       }
     }
