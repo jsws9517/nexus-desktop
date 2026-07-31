@@ -8,10 +8,13 @@ import { isIP } from 'net';
 import { BuiltinTool } from './types.js';
 import { ToolResult } from '../types.js';
 import { authorizePath } from '../security/path-authorizer.js';
-import { sanitizeContent, redactPaths } from '../utils/sanitize.js';
+import { sanitizeContent, redactPaths, redactGeoData } from '../utils/sanitize.js';
 import { translateCommand } from './cmd-alias.js';
 
 const execAsync = promisify(exec);
+
+const MAX_READ_PATHS = 100;
+const MAX_FILE_CONTENT_BYTES = 100 * 1024;
 
 /**
  * Resolve relative paths (~, ., ..) to absolute OS paths.
@@ -165,14 +168,14 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         if (head > 0) {
           const lines = content.split('\n').slice(0, head).join('\n');
           const skipped = content.split('\n').length - head;
-          return { content: skipped > 0 ? `${lines}\n... (${skipped} more lines)` : lines };
+          return { content: redactGeoData(skipped > 0 ? `${lines}\n... (${skipped} more lines)` : lines) };
         }
         // Enforce a 100KB max to prevent context overflow; if larger, return head-100
         if (content.length > 100 * 1024) {
           const truncated = content.slice(0, 100 * 1024);
-          return { content: `${truncated}\n... (content truncated at 100KB, use head=N to read specific lines)` };
+          return { content: redactGeoData(`${truncated}\n... (content truncated at 100KB, use head=N to read specific lines)`) };
         }
-        return { content };
+        return { content: redactGeoData(content) };
       } catch (err) {
         return { content: `Error reading file: ${redactPaths(err instanceof Error ? err.message : String(err))}`, isError: true };
       }
@@ -190,15 +193,24 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     },
     async execute(args): Promise<ToolResult> {
       const paths = (args.paths as string[]) || [];
+      if (paths.length > MAX_READ_PATHS) {
+        return { content: `Too many files: ${paths.length} (max ${MAX_READ_PATHS})`, isError: true };
+      }
       const results: string[] = [];
+      let totalSize = 0;
       for (const p of paths) {
         const resolved = resolveRelativePath(p);
         if (!existsSync(resolved)) { results.push(`\n--- ${resolved}: NOT FOUND ---`); continue; }
         const authorized = await authorizePath(resolved);
         if (!authorized) { results.push(`\n--- ${resolved}: ACCESS DENIED ---`); continue; }
         try {
-          const content = readFileSync(resolved, 'utf-8');
+          let content = readFileSync(resolved, 'utf-8');
+          if (content.length > MAX_FILE_CONTENT_BYTES) {
+            content = content.slice(0, MAX_FILE_CONTENT_BYTES) + '\n... (file truncated at 100KB)';
+          }
+          content = redactGeoData(content);
           results.push(`\n--- ${resolved} ---\n${content}`);
+          totalSize += content.length;
         } catch (err) {
           results.push(`\n--- ${redactPaths(resolved)}: ${redactPaths(err instanceof Error ? err.message : String(err))} ---`);
         }

@@ -27,6 +27,7 @@ import { getTaskToolDefinitions, executeTaskTool } from './task/task-tools.js';
 import { ProjectContext } from './context/index.js';
 
 import { analyzeImage, isImageFile } from './vision/index.js';
+import { isVisionCapable } from './vision/capability.js';
 import { authorizePath } from './security/path-authorizer.js';
 import { sanitizeContent, neutralizeInstructions } from './utils/sanitize.js';
 import type { FileOutput } from './types.js';
@@ -1290,7 +1291,6 @@ export class Agent {
 
     // When the current LLM model supports native vision, exclude ocr_extract
     // to avoid unnecessary tool calls — the model can read text directly from images.
-    const { isVisionCapable } = await import('./vision/capability.js');
     const providerName = this.config.getActiveProvider();
     const model = this.provider.model;
     const providerConfig = (() => {
@@ -1563,6 +1563,11 @@ export class Agent {
         const errKey = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`;
         const failCount = (this.toolErrorCount.get(errKey) || 0) + 1;
         this.toolErrorCount.set(errKey, failCount);
+        // Evict oldest entries to prevent unbounded growth
+        if (this.toolErrorCount.size > 200) {
+          const keys = [...this.toolErrorCount.keys()].slice(0, 100);
+          for (const k of keys) this.toolErrorCount.delete(k);
+        }
       }
 
       const toolMsg: Message = {

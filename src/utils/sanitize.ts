@@ -67,3 +67,44 @@ export function redactPaths(input: string): string {
   );
   return out;
 }
+
+/**
+ * Replace geographic coordinates (latitude, longitude) in file content with
+ * stable per-call UUID-style placeholders. Each unique coordinate value gets
+ * a deterministic placeholder (geo-0001, geo-0002, …) so the LLM can still
+ * reason about location identity without seeing real coordinates.
+ *
+ * Matches both English and Chinese key names in JSON, YAML, and plain-text
+ * formats.
+ */
+export function redactGeoData(content: string): string {
+  if (!content) return content;
+
+  const cache = new Map<string, string>();
+  let counter = 0;
+  const nextId = (val: string): string => {
+    if (!cache.has(val)) {
+      cache.set(val, `geo-${String(++counter).padStart(4, '0')}`);
+    }
+    return cache.get(val)!;
+  };
+
+  // Each regex captures the key+separator in group 1; the full match includes
+  // the trailing numeric value. Replacement keeps the prefix and swaps the
+  // value for a stable geo-NNNN placeholder.
+  const patterns: RegExp[] = [
+    /("(?:latitude|longitude)"\s*:\s*)-?[\d.]+/gi,
+    /("(?:lat|lng|lon)"\s*:\s*)-?[\d.]+/gi,
+    /([纬度经度][：:])\s*-?[\d.]+/gi,
+    /((?:latitude|longitude|lat|lng|lon)=)-?[\d.]+/gi,
+  ];
+
+  let result = content;
+  for (const re of patterns) {
+    result = result.replace(re, (match, prefix) => {
+      const p = prefix as string;
+      return p + nextId(match.slice(p.length));
+    });
+  }
+  return result;
+}

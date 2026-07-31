@@ -371,8 +371,9 @@ export class DAGScheduler {
   private findDownstream(graph: TaskGraph, nodeId: string): Set<string> {
     const visited = new Set<string>();
     const queue = [nodeId];
-    while (queue.length > 0) {
-      const current = queue.shift()!;
+    let head = 0;
+    while (head < queue.length) {
+      const current = queue[head++];
       for (const node of graph.nodes) {
         if (node.dependencies.includes(current) && !visited.has(node.id)) {
           visited.add(node.id);

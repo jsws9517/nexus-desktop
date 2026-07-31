@@ -148,10 +148,11 @@ export class ContextManager {
     const prev = this.messages[i - 1];
     if (prev.role === 'assistant' && prev.toolCalls && prev.toolCalls.length > 0) {
       // Check if any of its tool responses are in the right partition
-      const right = this.messages.slice(i);
       const toolCallIds = new Set(prev.toolCalls.map((tc) => tc.id));
-      const hasOrphanedTools = right.some(m => m.role === 'tool' && m.toolCallId && toolCallIds.has(m.toolCallId));
-      if (hasOrphanedTools) return false;
+      for (let j = i; j < this.messages.length; j++) {
+        const m = this.messages[j];
+        if (m.role === 'tool' && m.toolCallId && toolCallIds.has(m.toolCallId)) return false;
+      }
     }
 
     // The message at i (first of right partition) must not be a tool message

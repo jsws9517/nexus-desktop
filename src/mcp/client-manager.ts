@@ -86,6 +86,7 @@ function normalizeArgs(raw: Record<string, unknown>, schema: object): Record<str
 export class ClientManager {
   private connections: Map<string, ServerConnection> = new Map();
   private builtinTools = BUILTIN_TOOLS;
+  private _cachedTools: ToolDefinition[] | null = null;
   /** Default working directory for builtin exec_command (e.g. active project dir). */
   workDir?: string;
   /** Parent Agent, set by Agent.init() for tools that need agent context. */
@@ -134,6 +135,7 @@ export class ClientManager {
     }
 
     this.connections.set(name, { name, client, transport, tools, schemas });
+    this.invalidateToolsCache();
   }
 
   async connectAll(servers: Record<string, ServerConfig>): Promise<void> {
@@ -148,7 +150,12 @@ export class ClientManager {
     }
   }
 
+  private invalidateToolsCache(): void {
+    this._cachedTools = null;
+  }
+
   getAllTools(): ToolDefinition[] {
+    if (this._cachedTools) return this._cachedTools;
     const seen = new Set<string>();
     const result: ToolDefinition[] = [];
     // Builtin tools first (higher priority)
@@ -164,6 +171,7 @@ export class ClientManager {
         result.push({ name: t.name, description: t.description || '', inputSchema: t.inputSchema as object, server: conn.name });
       }
     }
+    this._cachedTools = result;
     return result;
   }
 
@@ -211,6 +219,7 @@ export class ClientManager {
           if (errMsg.includes('timed out')) {
             try { await conn.client.close(); } catch { /* ignore */ }
             this.connections.delete(conn.name);
+            this.invalidateToolsCache();
           }
           const argsDump = JSON.stringify(redactSensitive(safeArgs)).slice(0, 500);
           const schemaDump = JSON.stringify(redactSensitive(schema)).slice(0, 500);
@@ -235,6 +244,7 @@ export class ClientManager {
   }
 
   async disconnect(name?: string): Promise<void> {
+    this.invalidateToolsCache();
     if (name) {
       const conn = this.connections.get(name);
       if (conn) {
