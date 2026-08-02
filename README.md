@@ -21,6 +21,7 @@ A powerful TypeScript CLI agent connecting multiple LLM providers, MCP tools, fi
 - **Task DAG Engine**: Decompose requests into 3-5 sub-tasks, execute with dependency resolution, support `new` (greenfield) and `modify` (edit existing) modes with automatic git snapshot & rollback safety
 - **Temp File Cleanup**: Post-task finalization removes probe/scratch/cache files and collects deliverables into a sandboxed output directory
 - **Permission Whitelist**: Pre-approve tools (`/bypass`), path-scoped exec auto-approval (`safePaths`), and an `edit` preset so vibe-coding sessions run without per-tool prompts. `/go` temporarily enables the whitelist during plan execution and restores it afterward
+- **Data Redaction**: Built-in sanitization on file reads — geographic coordinates fuzzed with a random offset (preserving numeric shape for downstream processing), credential fields (passwords/tokens/keys/账号) masked, sensitive paths hidden in errors; API keys encrypted at rest with AES-256-GCM or resolved via `$VAR`/`env:VAR` references so no plaintext secrets land in context or disk
 
 ## Installation
 
@@ -559,10 +560,16 @@ The ACP server emits a **heartbeat** every `heartbeatMs` during a turn. If cc-co
 - **i18n Bilingual Support**: English and Chinese language support with `/lang` command, bilingual welcome screen and help output
 - **Single-key Permission Prompts**: Compact permission prompts with auto-submit (`y`/`a`/`n` without Enter), improving vibe-coding flow
 - **MCP Tool Whitelist**: Pre-approve MCP tools via `/bypass` command, with web UI permissions panel for visual management
+- **Data Redaction**: `read_text_file` / `read_multiple_files` auto-redact sensitive content — lat/lng coordinates fuzzed by a random offset (~1km, numeric shape preserved so generated debug/processing code keeps working), credential fields (password/token/key/账号/私钥) masked to `***REDACTED***`; `read_multiple_files` capped at 100 paths and 100KB per file to prevent context overflow
+- **API Key Encryption**: Plaintext provider and MCP keys in `config.json` auto-encrypted to `enc:` AES-256-GCM blobs on startup; MCP server `env` values support `enc:` blobs and `$VAR` / `env:VAR` references (only KEY-named env variables are auto-encrypted), keeping on-disk secrets opaque even when bypassing the CLI/Web UI
 
 ### Bugfixes
 
-- **Security Hardening**: Fixed 14 vulnerabilities across 12 files — tightened path pre-auth, unified command-safety and permission gating, scoped path grants to avoid process-wide accumulation
+- **Security Hardening**: Fixed 22+ issues across the audit pass —
+  - **Auth & ACP**: constant-time token comparison, MCP error dumps redact credentials
+  - **Command & path safety**: block all interpreters/shells and network-exfil tools, `--ignore-scripts` on catalog npm installs, path grants scoped per-request to avoid process-wide accumulation, symlink-escape guard, Windows device path (CON/NUL) blocking
+  - **Web UI**: `decodeURIComponent` on DELETE handlers, XSS escaping, removed unauthenticated bootstrap endpoint, API-key masking in config display
+  - **File tools**: `read_multiple_files` limits (100 paths / 100KB), JSON.parse try/catch, expanded sensitive-path redaction
 - **ESM Require Crash**: Fixed ESM import crash in permissions module and PageUp recall injecting plan blocks
 - **Permission Prompt Fixes**: Fixed duplicated key echo, single-key prompt hang/duplicate, and y/N prompt not accepting input
 - **Tool-call Display**: Fixed fragile `\r` in-place update, capped preview width, put `agent>` prompt on its own line
