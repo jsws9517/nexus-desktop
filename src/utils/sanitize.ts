@@ -69,70 +69,83 @@ export function redactPaths(input: string): string {
 }
 
 /**
- * Replace geographic coordinates (latitude, longitude) in file content with
- * stable per-call UUID-style placeholders. Each unique coordinate value gets
- * a deterministic placeholder (geo-0001, geo-0002, …) so the LLM can still
- * reason about location identity without seeing real coordinates.
+ * Fuzz geographic coordinates (latitude, longitude) in file content by adding
+ * a small random offset — preserving the numeric shape so downstream code that
+ * parses or processes these columns (float casts, dtype inference, distance
+ * math) keeps working, while the exact real coordinates are not exposed.
  *
- * Matches both English and Chinese key names in JSON, YAML, and plain-text
+ * Offsets are generated once per call (≈ ±0.01°, ~±1km) and differ between
+ * lat and lng. The same original value within a call maps to the same shifted
+ * value, so location identity / relative structure is preserved. Output keeps
+ * the original decimal precision and is clamped to valid coordinate ranges.
+ *
+ * Matches both English and Chinese key names in JSON, YAML, CSV, and plain-text
  * formats.
  */
 export function redactGeoData(content: string): string {
   if (!content) return content;
 
-  const cache = new Map<string, string>();
-  let counter = 0;
-  const nextId = (val: string): string => {
-    if (!cache.has(val)) {
-      cache.set(val, `geo-${String(++counter).padStart(4, '0')}`);
-    }
-    return cache.get(val)!;
+  // Per-call random offsets, ~±0.01° (~1km). Different for lat vs lng.
+  const latOffset = (Math.random() - 0.5) * 0.02;
+  const lngOffset = (Math.random() - 0.5) * 0.02;
+
+  const shift = (val: string, offset: number): string => {
+    const num = Number(val);
+    if (!isFinite(num)) return val;
+    const decimals = (val.split('.')[1] || '').length;
+    const shifted = Math.max(-180, Math.min(180, num + offset));
+    return String(Number(shifted.toFixed(decimals)));
   };
 
-  // Pass 1 — standard JSON / YAML / .env patterns
-  const patterns: RegExp[] = [
-    /("(?:latitude|longitude)"\s*:\s*)-?[\d.]+/gi,
-    /("(?:lat|lng|lon)"\s*:\s*)-?[\d.]+/gi,
-    /([纬度经度][：:])\s*-?[\d.]+/gi,
-    /((?:latitude|longitude|lat|lng|lon)=)-?[\d.]+/gi,
+  // Pass 1 — JSON / YAML / .env patterns. Each entry: [regex, offset].
+  // Group 1 captures the key+separator; the trailing number is the coordinate.
+  const patterns: Array<[RegExp, number]> = [
+    [/("latitude"\s*:\s*)-?[\d.]+/gi, latOffset],
+    [/("longitude"\s*:\s*)-?[\d.]+/gi, lngOffset],
+    [/("lat"\s*:\s*)-?[\d.]+/gi, latOffset],
+    [/("lng"\s*:\s*)-?[\d.]+/gi, lngOffset],
+    [/("lon"\s*:\s*)-?[\d.]+/gi, lngOffset],
+    [/([纬][：:])\s*-?[\d.]+/gi, latOffset],
+    [/([经][：:])\s*-?[\d.]+/gi, lngOffset],
+    [/((?:latitude|lat)=)-?[\d.]+/gi, latOffset],
+    [/((?:longitude|lng|lon)=)-?[\d.]+/gi, lngOffset],
   ];
 
   let result = content;
-  for (const re of patterns) {
+  for (const [re, offset] of patterns) {
     result = result.replace(re, (match, prefix) => {
       const p = prefix as string;
-      return p + nextId(match.slice(p.length));
+      return p + shift(match.slice(p.length), offset);
     });
   }
 
-  // Pass 2 — CSV files: detect coordinate column headers then redact values
-  // in the same columns of subsequent data rows.
+  // Pass 2 — CSV files: detect coordinate column headers then fuzz values in
+  // the same columns of subsequent data rows. Headers distinguish lat (纬) vs
+  // lng (经) columns so each gets its own offset.
   const lines = result.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const cells = lines[i].split(',');
-    // Heuristic: a line is a CSV header if it contains at least one cell with
-    // 经度 or 纬度 (possibly with prefix like 栅格中心经度) and has ≥ 3 cells.
-    const coordCols: number[] = [];
+    // A line is a CSV header if it has ≥ 3 cells and contains coordinate terms
+    // (possibly with prefix like 栅格中心经度).
+    const coordCols: Array<{ col: number; offset: number }> = [];
     for (let j = 0; j < cells.length; j++) {
       const cell = cells[j].trim();
-      if (/(?:经度|纬度|longitude|latitude)/i.test(cell)) {
-        coordCols.push(j);
-      }
+      if (/经度|longitude/i.test(cell)) coordCols.push({ col: j, offset: lngOffset });
+      else if (/纬度|latitude/i.test(cell)) coordCols.push({ col: j, offset: latOffset });
     }
     if (coordCols.length === 0 || cells.length < 3) continue;
 
-    // Redact values at the identified columns in subsequent data rows
-    // (stop at the next non-data line — one that has no numeric tokens).
+    // Fuzz values at the identified columns in subsequent data rows.
     for (let k = i + 1; k < lines.length; k++) {
       const dataCells = lines[k].split(',');
-      if (dataCells.length <= Math.max(...coordCols)) break;
+      if (dataCells.length <= Math.max(...coordCols.map(c => c.col))) break;
       // Skip lines that don't look like CSV data (no numbers)
       if (!/\d/.test(lines[k])) break;
       let changed = false;
-      for (const ci of coordCols) {
-        const raw = dataCells[ci].trim();
+      for (const { col, offset } of coordCols) {
+        const raw = dataCells[col].trim();
         if (raw && /^-?[\d.]+$/.test(raw)) {
-          dataCells[ci] = nextId(raw);
+          dataCells[col] = shift(raw, offset);
           changed = true;
         }
       }
