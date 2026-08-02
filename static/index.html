@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; script-src 'self'" />
+  <title>Nexus Desktop</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="toolbar">
+      <div class="toolbar-left">
+        <button id="btn-open-folder" class="btn ghost" title="Open project folder">📁 打开项目</button>
+        <span id="cwd-label" class="cwd" title="Current project directory"></span>
+      </div>
+      <div class="toolbar-right">
+        <label class="field-label">Provider</label>
+        <select id="provider-select"></select>
+        <button id="btn-settings" class="btn ghost" title="Settings">⚙️ 设置</button>
+        <span id="busy-indicator" class="busy hidden">●</span>
+      </div>
+    </header>
+
+    <div id="layout">
+      <aside id="sidebar">
+        <div class="sidebar-head">
+          <span class="sidebar-title">会话</span>
+          <button id="btn-new-session" class="btn primary small" title="New session">＋ 新建</button>
+        </div>
+        <ul id="session-list"></ul>
+      </aside>
+
+      <main id="chat-panel">
+        <div id="messages"></div>
+        <div id="input-area">
+          <textarea id="input" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
+          <div class="input-actions">
+            <span id="input-status"></span>
+            <button id="btn-send" class="btn primary">发送</button>
+            <button id="btn-stop" class="btn danger hidden">停止</button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Permission modal -->
+  <div id="perm-overlay" class="overlay hidden">
+    <div class="modal">
+      <h3>权限确认</h3>
+      <pre id="perm-question"></pre>
+      <div class="modal-actions">
+        <button id="perm-deny" class="btn danger">拒绝</button>
+        <button id="perm-allow" class="btn primary">允许</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-overlay" class="overlay hidden">
+    <div class="modal settings">
+      <div class="modal-head">
+        <h3>设置</h3>
+        <button id="settings-close" class="btn ghost small">✕</button>
+      </div>
+      <div id="settings-body"></div>
+      <div class="modal-actions">
+        <span id="settings-msg"></span>
+        <button id="settings-save" class="btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="../renderer/renderer.js"></script>
+</body>
+</html>

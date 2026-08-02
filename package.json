@@ -1,0 +1,81 @@
+{
+  "name": "nexus-desktop",
+  "version": "0.1.0",
+  "description": "NexusAgent desktop app - reuses the nexus CLI core (dist/src)",
+  "type": "module",
+  "main": "dist/main/index.js",
+  "bin": {
+    "nexus-desktop": "dist/launcher.js"
+  },
+  "scripts": {
+    "build": "node scripts/copy-core.mjs && tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "node scripts/copy-core.mjs && tsc -p tsconfig.json --noEmit",
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "icon": "electron scripts/make-icon.cjs && electron scripts/export-preview.cjs",
+    "test:chat": "node scripts/chat-test.mjs",
+    "pack:npm": "node scripts/pack-npm.mjs",
+    "pack": "npm run build && npm pack",
+    "dist:win": "npm run build && electron-builder --win nsis"
+  },
+  "keywords": [
+    "nexus",
+    "llm",
+    "agent",
+    "desktop",
+    "electron"
+  ],
+  "files": [
+    "dist/",
+    "vendor/",
+    "package.json"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.11.1",
+    "chalk": "^5.6.2",
+    "commander": "^15.0.0",
+    "openai": "^6.45.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^6.0.3"
+  },
+  "build": {
+    "appId": "com.nexus.nexusagent",
+    "productName": "nexus",
+    "asar": false,
+    "publish": null,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "vendor/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "nexus"
+    }
+  }
+}
