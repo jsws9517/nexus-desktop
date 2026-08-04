@@ -534,6 +534,21 @@ async function startNewSession(): Promise<void> {
   await refreshSessions();
 }
 
+async function startOrResumeLatestSession(): Promise<void> {
+  const sessions = await window.nexusDesktop.listSessions();
+  const latest = sessions[0];
+  if (latest) {
+    const msgs = await window.nexusDesktop.getMessages(latest.id);
+    if (msgs.length === 0) {
+      // The most recent historical session is still empty (no messages/tokens).
+      // Continue it instead of creating another empty session on every launch.
+      await resumeSession(latest.id);
+      return;
+    }
+  }
+  await startNewSession();
+}
+
 // ---------- MCP per-session toggle ----------
 // Prefs shape: { [sessionId]: { __master?: boolean, [serverName]: boolean } }
 const mcpPrefs: Record<string, Record<string, boolean>> = loadMcpPrefs();
@@ -941,7 +956,7 @@ window.nexusDesktop.onLog((log) => {
     refreshProviderSelect();
     cwdLabel.textContent = status.cwd || '未选择项目';
     cwdLabel.title = status.cwd;
-    await startNewSession();
+    await startOrResumeLatestSession();
     await refreshSessions();
   } catch (err) {
     addSystem(`启动失败: ${err instanceof Error ? err.message : String(err)}`);
