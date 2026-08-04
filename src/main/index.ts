@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { WorkerHost } from './worker-host.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -149,7 +150,21 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getProviders', call('getProviders'));
   ipcMain.handle('nexus:getStatus', call('getStatus'));
   ipcMain.handle('nexus:getPermissions', call('getPermissions'));
-  ipcMain.handle('nexus:getLanguage', call('getLanguage'));
+  // Read language straight from config.json instead of routing through the
+  // worker: getLanguage is only used to pick the UI language, and the worker is
+  // gated behind readyPromise (init can take 10-20s). Waiting would leave the
+  // static (zh-CN) HTML on screen until core init finishes, flashing Chinese
+  // before switching to the configured language.
+  ipcMain.handle('nexus:getLanguage', async (): Promise<string> => {
+    try {
+      const cfgPath = join(homedir(), '.nexus', 'config.json');
+      if (!existsSync(cfgPath)) return 'en';
+      const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')) as { language?: string };
+      return typeof cfg.language === 'string' ? cfg.language : 'en';
+    } catch {
+      return 'en';
+    }
+  });
   ipcMain.handle('nexus:reloadConfig', call('reloadConfig'));
   ipcMain.handle('nexus:getSpeechVisionConfig', call('getSpeechVisionConfig'));
   ipcMain.handle('nexus:setActiveSpeechProvider', call('setActiveSpeechProvider'));
