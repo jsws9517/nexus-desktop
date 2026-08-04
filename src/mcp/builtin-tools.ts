@@ -17,6 +17,16 @@ const MAX_READ_PATHS = 100;
 const MAX_FILE_CONTENT_BYTES = 100 * 1024;
 
 /**
+ * Detect binary content by scanning the first 8KB for NUL bytes.
+ * Guards read_text_file/read_multiple_files from dumping binary garbage
+ * into the LLM context; returns a clear error instead.
+ */
+function looksBinary(content: string): boolean {
+  const sample = content.slice(0, 8192);
+  return sample.includes('\u0000');
+}
+
+/**
  * Resolve relative paths (~, ., ..) to absolute OS paths.
  * Lets the LLM pass paths like ~/dir/file, ../file, ./file without
  * needing to resolve them to absolute paths first.
@@ -164,6 +174,9 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       }
       try {
         const content = readFileSync(path, 'utf-8');
+        if (looksBinary(content)) {
+          return { content: `Binary file detected: ${path}. Reading it as text would produce garbage; use a different approach to inspect this file.`, isError: true };
+        }
         const redact = (s: string) => redactSensitiveData(redactGeoData(s));
         const head = args.head ? parseInt(String(args.head), 10) : 0;
         if (head > 0) {
@@ -206,6 +219,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
         if (!authorized) { results.push(`\n--- ${resolved}: ACCESS DENIED ---`); continue; }
         try {
           let content = readFileSync(resolved, 'utf-8');
+          if (looksBinary(content)) { results.push(`\n--- ${resolved}: BINARY FILE (skipped) ---`); continue; }
           if (content.length > MAX_FILE_CONTENT_BYTES) {
             content = content.slice(0, MAX_FILE_CONTENT_BYTES) + '\n... (file truncated at 100KB)';
           }
