@@ -15,6 +15,7 @@ const api = {
   getStatus: () => ipcRenderer.invoke('nexus:getStatus'),
   getPermissions: () => ipcRenderer.invoke('nexus:getPermissions'),
   getLanguage: () => ipcRenderer.invoke('nexus:getLanguage'),
+  reloadConfig: () => ipcRenderer.invoke('nexus:reloadConfig'),
   getSpeechVisionConfig: () => ipcRenderer.invoke('nexus:getSpeechVisionConfig'),
   setActiveSpeechProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveSpeechProvider', { name }),
   setActiveTtsProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveTtsProvider', { name }),
@@ -48,6 +49,9 @@ const api = {
   },
   onLog: (cb: (log: { level: string; message: string }) => void) => {
     ipcRenderer.on('nexus:log', (_e, log) => cb(log));
+  },
+  onConfigWindowClosed: (cb: () => void) => {
+    ipcRenderer.on('nexus:configWindowClosed', () => cb());
   },
 };
 

@@ -87,6 +87,9 @@ async function openConfigWindow(): Promise<void> {
       const server = configServer;
       configServer = null;
       void server?.close().catch(() => {});
+      // The config Web UI may have written to ~/.nexus/config.json (language,
+      // providers, etc.). Have the renderer reload core config + re-apply i18n.
+      send('nexus:configWindowClosed', {});
     });
   } catch (err) {
     console.error('Failed to open config web UI:', err);
@@ -147,6 +150,7 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getStatus', call('getStatus'));
   ipcMain.handle('nexus:getPermissions', call('getPermissions'));
   ipcMain.handle('nexus:getLanguage', call('getLanguage'));
+  ipcMain.handle('nexus:reloadConfig', call('reloadConfig'));
   ipcMain.handle('nexus:getSpeechVisionConfig', call('getSpeechVisionConfig'));
   ipcMain.handle('nexus:setActiveSpeechProvider', call('setActiveSpeechProvider'));
   ipcMain.handle('nexus:setActiveTtsProvider', call('setActiveTtsProvider'));

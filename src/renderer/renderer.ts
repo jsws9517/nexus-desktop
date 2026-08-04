@@ -97,6 +97,7 @@ declare global {
       getStatus(): Promise<StatusInfo>;
       getPermissions(): Promise<PermissionsInfo>;
       getLanguage(): Promise<string>;
+      reloadConfig(): Promise<{ ok: boolean }>;
       getSpeechVisionConfig(): Promise<SpeechVisionConfig>;
       setActiveSpeechProvider(name: string): Promise<unknown>;
       setActiveTtsProvider(name: string): Promise<unknown>;
@@ -119,6 +120,7 @@ declare global {
       onEvent(cb: (event: AgentEvent) => void): void;
       onPermission(cb: (req: { id: string; question: string }) => void): void;
       onLog(cb: (log: { level: string; message: string }) => void): void;
+      onConfigWindowClosed(cb: () => void): void;
     };
   }
 }
@@ -1469,6 +1471,20 @@ window.nexusDesktop.onEvent(handleEvent);
 window.nexusDesktop.onPermission(showPermission);
 window.nexusDesktop.onLog((log) => {
   if (log.level === 'error') inputStatus.textContent = `⚠️ ${log.message}`;
+});
+
+// When the full config Web UI closes it may have rewritten config.json
+// (language, providers, MCP, ...). Reload the core config so the long-lived
+// in-memory copy matches disk, then re-apply i18n / sidebar state.
+window.nexusDesktop.onConfigWindowClosed(async () => {
+  await window.nexusDesktop.reloadConfig();
+  await loadLanguage();
+  await refreshSidebarSession();
+  const provs = await window.nexusDesktop.getProviders();
+  if (provs.length > 0) {
+    providers = provs;
+    refreshProviderSelect();
+  }
 });
 
 // ---------- boot ----------

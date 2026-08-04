@@ -280,6 +280,17 @@ export class AgentService {
     return this.agent?.config?.getLanguage?.() ?? 'en';
   }
 
+  /**
+   * Re-read config.json into the agent's in-memory ConfigManager. Called after
+   * the config Web UI writes to disk so the long-lived copy (used by every
+   * config getter/setter) does not go stale or clobber disk on the next save.
+   */
+  reloadConfig(): { ok: boolean } {
+    if (!this.agent?.config) return { ok: false };
+    this.agent.config.reload?.();
+    return { ok: true };
+  }
+
   /** Speech (STT/TTS) + vision provider config with masked keys and active selection. */
   getSpeechVisionConfig(): Record<string, unknown> {
     if (!this.agent?.config) return {};

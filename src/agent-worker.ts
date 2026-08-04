@@ -17,6 +17,7 @@ type WorkerRequest =
   | { id: number; method: 'getStatus' }
   | { id: number; method: 'getPermissions' }
   | { id: number; method: 'getLanguage' }
+  | { id: number; method: 'reloadConfig' }
   | { id: number; method: 'getSpeechVisionConfig' }
   | { id: number; method: 'setActiveSpeechProvider'; params: { name: string } }
   | { id: number; method: 'setActiveTtsProvider'; params: { name: string } }
@@ -141,6 +142,9 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         break;
       case 'getLanguage':
         respond(req.id, service.getLanguage());
+        break;
+      case 'reloadConfig':
+        respond(req.id, service.reloadConfig());
         break;
       case 'getSpeechVisionConfig':
         respond(req.id, service.getSpeechVisionConfig());
