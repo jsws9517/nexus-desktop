@@ -757,6 +757,7 @@ async function loadMcpServersList(): Promise<void> {
         }
         await refreshMcpStatus();
         await loadMcpServersList();
+        void refreshSidebarSession();
       });
       const name = document.createElement('span');
       name.className = 'mcp-server-name';
@@ -806,6 +807,7 @@ mcpToggle.addEventListener('change', async () => {
     mcpToggle.disabled = false;
   }
   await refreshMcpStatus();
+  void refreshSidebarSession();
 });
 document.addEventListener('click', (e) => {
   if (mcpPopoverOpen() && !mcpBoxEl.contains(e.target as Node)) setMcpPopover(false);
