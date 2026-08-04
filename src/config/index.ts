@@ -167,6 +167,16 @@ export class ConfigManager {
     return this.config;
   }
 
+  /**
+   * Re-read config.json from disk into the SAME instance, preserving object
+   * identity for all subsystems holding a reference to it. Used by the desktop
+   * app after the config Web UI writes to disk (e.g. language changes) so the
+   * long-lived in-memory copy does not go stale (or clobber disk on next save).
+   */
+  reload(): void {
+    this.config = this.load();
+  }
+
   getLanguage(): string {
     return this.config.language || 'en';
   }
