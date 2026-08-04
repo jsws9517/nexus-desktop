@@ -32,7 +32,7 @@ Thumbs.db
 .github/
 
 # Runtime data
-.nexus/knowledge/
+.nexus/
 data/
 results/
 

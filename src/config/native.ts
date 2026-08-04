@@ -117,6 +117,29 @@ function mcpNpx(args: string[]): { command: string; args: string[] } {
   return { command: 'npx', args };
 }
 
+/**
+ * Native npm deployment: install the pinned package into ~/.nexus/native/<dir>/
+ * and return a direct `node <local entry>` command — no runtime `npx -y` fetch,
+ * no supply-chain drift. Mirrors the pyright/ts-server install pattern.
+ */
+function nativeNpmServer(dirName: string, deps: Record<string, string>, entry: string, extraArgs: string[] = []): { command: string; args: string[] } {
+  const dir = join(NATIVE_DIR, dirName);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: `nexus-${dirName}-server`,
+    version: '1.0.0',
+    private: true,
+    dependencies: deps,
+  }, null, 2), 'utf-8');
+  try {
+    execSync('npm install --ignore-scripts --save-exact --loglevel=error', { cwd: dir, stdio: 'pipe', timeout: 180000 });
+  }
+  catch (err) {
+    throw new Error(`npm install failed for native server "${dirName}": ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { command: 'node', args: [join(dir, ...entry.split('/')), ...extraArgs] };
+}
+
 const CATALOG: Record<string, PackageInfo> = {
   // ═══════════════════════════════════════════
   // MCP Servers
@@ -141,32 +164,33 @@ const CATALOG: Record<string, PackageInfo> = {
   github: {
     name: 'github',
     description: 'GitHub API integration (PR, Issues, Repos, Search)',
-    longDescription: 'Full GitHub API integration: create/manage pull requests, issues, repositories, search code, manage workflows, and more.',
+    longDescription: 'Full GitHub API integration: create/manage pull requests, issues, repositories, search code, manage workflows, and more. Uses the official github/github-mcp-server binary (read-only toolset when GITHUB_READ_ONLY=1).',
     type: 'mcp',
     version: '1.0.0',
-    homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/github',
+    homepage: 'https://github.com/github/github-mcp-server',
     options: [
-      { flag: '--token', label: 'GitHub Personal Access Token (or set GITHUB_TOKEN env var)' },
+      { flag: '--token', label: 'GitHub Personal Access Token (or set GITHUB_PAT env var)' },
     ],
     async install(params) {
-      const config = new ConfigManager();
-      const env: Record<string, string> = {};
-      if (params.token) env.GITHUB_TOKEN = params.token;
-      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-github']);
-      config.addMcpServer('github', { command, args, env, autoStart: true });
+      const exe = join(NATIVE_DIR, 'github-mcp-server', 'github-mcp-server.exe');
+      if (!existsSync(exe)) {
+        throw new Error(`github-mcp-server.exe not found at ~/.nexus/native/github-mcp-server/. Download the Windows build from https://github.com/github/github-mcp-server/releases`);
+      }
+      const env: Record<string, string> = { GITHUB_READ_ONLY: '1' };
+      if (params.token) env.GITHUB_PERSONAL_ACCESS_TOKEN = params.token;
+      new ConfigManager().addMcpServer('github', { command: exe, args: ['stdio'], env, autoStart: true });
     },
   },
   puppeteer: {
     name: 'puppeteer',
     description: 'Browser automation (screenshot, scrape, interact)',
-    longDescription: 'Headless Chrome browser automation: take screenshots, scrape dynamic content, fill forms, generate PDFs from web pages.',
+    longDescription: 'Headless browser automation (Playwright): take screenshots, scrape dynamic content, fill forms, generate PDFs from web pages. Native npm deployment of @playwright/mcp.',
     type: 'mcp',
     version: '1.0.0',
-    homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer',
+    homepage: 'https://github.com/microsoft/playwright-mcp',
     async install() {
-      const config = new ConfigManager();
-      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-puppeteer']);
-      config.addMcpServer('puppeteer', { command, args, autoStart: true });
+      const { command, args } = nativeNpmServer('puppeteer', { '@playwright/mcp': '0.0.78' }, 'node_modules/@playwright/mcp/cli.js', ['--headless']);
+      new ConfigManager().addMcpServer('puppeteer', { command, args, autoStart: true });
     },
   },
   'sequential-thinking': {
@@ -185,19 +209,18 @@ const CATALOG: Record<string, PackageInfo> = {
   sqlite: {
     name: 'sqlite',
     description: 'SQLite database querying and management',
-    longDescription: 'Query, create, and manage SQLite databases directly. Supports DDL, DML, transactions, and schema inspection.',
+    longDescription: 'Query, create, and manage SQLite databases directly. Supports DDL, DML, transactions, and schema inspection. Native npm deployment of mcp-server-sqlite.',
     type: 'mcp',
     version: '1.0.0',
-    homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite',
+    homepage: 'https://github.com/madnh/mcp-server-sqlite',
     options: [
       { flag: '--db', label: 'Database file path (default: ~/.nexus/native/data/default.db)', default: join(DATA_DIR, 'default.db') },
     ],
     async install(params) {
       mkdirSync(DATA_DIR, { recursive: true });
       const dbPath = params.db || join(DATA_DIR, 'default.db');
-      const config = new ConfigManager();
-      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-sqlite', dbPath]);
-      config.addMcpServer('sqlite', { command, args, autoStart: true });
+      const { command, args } = nativeNpmServer('sqlite', { 'mcp-server-sqlite': '0.0.2' }, 'node_modules/mcp-server-sqlite/dist/cli.js', [dbPath]);
+      new ConfigManager().addMcpServer('sqlite', { command, args, autoStart: true });
     },
   },
   memory: {
@@ -217,35 +240,33 @@ const CATALOG: Record<string, PackageInfo> = {
   git: {
     name: 'git',
     description: 'Git repository operations (log, diff, status, blame, branches)',
-    longDescription: 'Full Git integration: view commit history, diffs, file status, blame annotations, branch management, and more.',
+    longDescription: 'Full Git integration: view commit history, diffs, file status, blame annotations, branch management, and more. Native npm deployment of git-mcp (SDK + zod only, no lifecycle scripts).',
     type: 'mcp',
     version: '1.0.0',
-    homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/git',
+    homepage: 'https://github.com/onmyway133/git-mcp',
     options: [
       { flag: '--repository', label: 'Path to git repository (default: current working dir)', default: process.cwd() },
     ],
     async install(params) {
       const repo = params.repository || process.cwd();
-      const config = new ConfigManager();
-      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-git', '--repository', repo]);
-      config.addMcpServer('git', { command, args, autoStart: true });
+      const { command, args } = nativeNpmServer('git-mcp', { 'git-mcp': '1.0.0' }, 'node_modules/git-mcp/dist/index.js', ['--repository', repo]);
+      new ConfigManager().addMcpServer('git', { command, args, autoStart: true });
     },
   },
   postgres: {
     name: 'postgres',
     description: 'PostgreSQL database querying and schema management',
-    longDescription: 'Query, explore, and manage PostgreSQL databases. Supports SQL queries, schema inspection, table listing, and more.',
+    longDescription: 'Query, explore, and manage PostgreSQL databases. Supports SQL queries, schema inspection, table listing, and more. Native npm deployment of @abiswas97/postgres-mcp.',
     type: 'mcp',
     version: '1.0.0',
-    homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/postgres',
+    homepage: 'https://github.com/abiswas97/postgres-mcp',
     options: [
       { flag: '--conn', label: 'PostgreSQL connection string (e.g. postgresql://user:pass@localhost/mydb)' },
     ],
     async install(params) {
-      const config = new ConfigManager();
       const connStr = params.conn || 'postgresql://localhost/postgres';
-      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-postgres', connStr]);
-      config.addMcpServer('postgres', { command, args, autoStart: true });
+      const { command, args } = nativeNpmServer('postgres', { '@abiswas97/postgres-mcp': '2.0.0' }, 'node_modules/@abiswas97/postgres-mcp/dist/index.js');
+      new ConfigManager().addMcpServer('postgres', { command, args, env: { DATABASE_URL: connStr }, autoStart: true });
     },
   },
 

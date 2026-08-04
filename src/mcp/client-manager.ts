@@ -87,6 +87,8 @@ export class ClientManager {
   private connections: Map<string, ServerConnection> = new Map();
   private builtinTools = BUILTIN_TOOLS;
   private _cachedTools: ToolDefinition[] | null = null;
+  private errors = new Map<string, string>();
+  private stderrTails = new Map<string, string>();
   /** Default working directory for builtin exec_command (e.g. active project dir). */
   workDir?: string;
   /** Parent Agent, set by Agent.init() for tools that need agent context. */
@@ -122,7 +124,22 @@ export class ClientManager {
       stderr: 'pipe',
     });
 
-    await client.connect(transport);
+    let stderrBuf = '';
+    try {
+      transport.stderr?.on('data', (chunk: Buffer) => {
+        stderrBuf = (stderrBuf + chunk.toString()).slice(-4000);
+      });
+      await client.connect(transport);
+    } catch (err) {
+      this.errors.set(name, err instanceof Error ? err.message : String(err));
+      this.stderrTails.set(name, stderrBuf);
+      try {
+        await transport.close();
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    }
 
     // Fetch tools from the server
     const toolsResult = await client.listTools();
@@ -135,7 +152,17 @@ export class ClientManager {
     }
 
     this.connections.set(name, { name, client, transport, tools, schemas });
+    this.errors.delete(name);
+    this.stderrTails.delete(name);
     this.invalidateToolsCache();
+  }
+
+  getServerErrors(): { name: string; error: string; stderr: string }[] {
+    return Array.from(this.errors.entries()).map(([name, error]) => ({
+      name,
+      error,
+      stderr: this.stderrTails.get(name) ?? '',
+    }));
   }
 
   async connectAll(servers: Record<string, ServerConfig>): Promise<void> {
