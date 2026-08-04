@@ -1,7 +1,7 @@
 import readline from 'node:readline';
 import { writeFileSync, appendFileSync } from 'node:fs';
 import { AgentService } from './agent-service.js';
-import type { AgentEvent } from '../vendor/core/src/types.js';
+import type { AgentEvent } from './agent-service.js';
 
 type WorkerRequest =
   | { id: number; method: 'init'; params?: { cwd?: string } }
@@ -20,6 +20,10 @@ type WorkerRequest =
   | { id: number; method: 'saveProvider'; params: { name: string; fields: Record<string, unknown> } }
   | { id: number; method: 'setCwd'; params: { cwd: string } }
   | { id: number; method: 'resolvePermission'; params: { id: string; answer: string } }
+  | { id: number; method: 'setMcpEnabled'; params: { enabled: boolean } }
+  | { id: number; method: 'getMcpStatus' }
+  | { id: number; method: 'getMcpServers' }
+  | { id: number; method: 'setMcpServer'; params: { name: string; enabled: boolean } }
   | { id: number; method: 'shutdown' };
 
 /** JSON-RPC transport. stdio (dev/system node) or parentPort (Electron utilityProcess). */
@@ -142,6 +146,18 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         tracePerm(`resolvePermission id=${req.params.id} answer=${req.params.answer}`);
         await service.resolvePermission(req.params.id, req.params.answer);
         respond(req.id);
+        break;
+      case 'setMcpEnabled':
+        respond(req.id, await service.setMcpEnabled(req.params.enabled));
+        break;
+      case 'getMcpStatus':
+        respond(req.id, service.getMcpStatus());
+        break;
+      case 'getMcpServers':
+        respond(req.id, service.getMcpServers());
+        break;
+      case 'setMcpServer':
+        respond(req.id, await service.setMcpServer(req.params.name, req.params.enabled));
         break;
       case 'shutdown':
         await service.shutdown();

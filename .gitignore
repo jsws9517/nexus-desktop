@@ -1,0 +1,9 @@
+# Build artifacts (regenerated on `npm run build`)
+dist/
+build/
+release/
+node_modules/
+*.tgz
+
+# Synced core copy (copy-core.mjs regenerates from repo dist/src)
+vendor/core/

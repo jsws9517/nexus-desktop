@@ -56,7 +56,12 @@ declare global {
       openConfigWeb(): Promise<{ ok: boolean; port?: number; error?: string }>;
       setCwd(cwd: string): Promise<unknown>;
       openFolder(): Promise<{ canceled: boolean; path?: string }>;
+      openFile(): Promise<{ canceled: boolean; path?: string }>;
       respondPermission(id: string, answer: string): Promise<unknown>;
+      setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
+      getMcpStatus(): Promise<{ enabled: boolean; servers: Array<Record<string, unknown>> }>;
+      getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }>>;
+      setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       onEvent(cb: (event: AgentEvent) => void): void;
       onPermission(cb: (req: { id: string; question: string }) => void): void;
       onLog(cb: (log: { level: string; message: string }) => void): void;
@@ -76,12 +81,21 @@ const providerSelect = $('#provider-select') as HTMLSelectElement;
 const cwdLabel = $('#cwd-label');
 const busyIndicator = $('#busy-indicator');
 const inputStatus = $('#input-status');
+const attachmentsEl = $('#attachments');
+const attachBtn = $('#btn-attach');
+const mcpToggle = $('#mcp-toggle input') as HTMLInputElement;
+const mcpStatusEl = $('#mcp-status');
+const mcpBoxEl = $('#mcp-box');
+const mcpServersBtn = $('#mcp-servers-btn');
+const mcpPopoverEl = $('#mcp-popover');
+const mcpServersEl = $('#mcp-servers');
 
 // ---------- state ----------
 let currentSessionId = '';
 let busy = false;
 let running = false;
 const pendingQueue: string[] = [];
+let attachments: string[] = [];
 let providers: ProviderInfo[] = [];
 let status: StatusInfo = { cwd: '', busy: false, provider: '', model: '' };
 
@@ -350,7 +364,91 @@ function scrollToBottom(): void {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+// ---------- attachments ----------
+function basename(p: string): string {
+  return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p;
+}
+
+function renderAttachments(): void {
+  attachmentsEl.innerHTML = '';
+  attachmentsEl.classList.toggle('hidden', attachments.length === 0);
+  for (const p of attachments) {
+    const chip = document.createElement('span');
+    chip.className = 'attach-chip';
+    chip.textContent = basename(p);
+    chip.title = p;
+    const rm = document.createElement('button');
+    rm.className = 'chip-remove';
+    rm.textContent = '✕';
+    rm.addEventListener('click', () => {
+      attachments = attachments.filter((x) => x !== p);
+      renderAttachments();
+    });
+    chip.appendChild(rm);
+    attachmentsEl.appendChild(chip);
+  }
+}
+
+function attachFiles(paths: string[]): void {
+  for (const p of paths) {
+    if (p && !attachments.includes(p)) attachments.push(p);
+  }
+  renderAttachments();
+}
+
 // ---------- sessions ----------
+// Electron renderers don't implement window.prompt/confirm; provide modal ones.
+function confirmDialog(msg: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const overlay = $('#confirm-overlay') as HTMLElement;
+    const msgEl = $('#confirm-msg') as HTMLElement;
+    msgEl.textContent = msg;
+    overlay.classList.remove('hidden');
+    const cleanup = (val: boolean) => {
+      overlay.classList.add('hidden');
+      overlay.querySelectorAll('button').forEach((b) => b.replaceWith(b.cloneNode(true)));
+      resolve(val);
+    };
+    const ok = overlay.querySelector('#confirm-ok') as HTMLElement;
+    const cancel = overlay.querySelector('#confirm-cancel') as HTMLElement;
+    ok.addEventListener('click', () => cleanup(true));
+    cancel.addEventListener('click', () => cleanup(false));
+  });
+}
+
+function promptDialog(title: string, initial: string): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    const overlay = $('#rename-overlay') as HTMLElement;
+    const h3 = overlay.querySelector('h3') as HTMLElement;
+    const input = $('#rename-input') as HTMLInputElement;
+    h3.textContent = title;
+    input.value = initial;
+    overlay.classList.remove('hidden');
+    input.focus();
+    input.select();
+    const cleanup = (val: string | null) => {
+      overlay.classList.add('hidden');
+      overlay.removeEventListener('click', onOverlay);
+      overlay.querySelectorAll('button').forEach((b) => b.replaceWith(b.cloneNode(true)));
+      resolve(val);
+    };
+    const ok = overlay.querySelector('#rename-ok') as HTMLElement;
+    const cancel = overlay.querySelector('#rename-cancel') as HTMLElement;
+    const onOk = () => cleanup(input.value.trim() || null);
+    const onCancel = () => cleanup(null);
+    const onOverlay = (ev: MouseEvent) => {
+      if (ev.target === overlay) onCancel();
+    };
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') onOk();
+      else if (ev.key === 'Escape') onCancel();
+    });
+    overlay.addEventListener('click', onOverlay);
+  });
+}
+
 async function refreshSessions(activeId?: string): Promise<void> {
   const sessions = await window.nexusDesktop.listSessions();
   sessionListEl.innerHTML = '';
@@ -370,7 +468,7 @@ async function refreshSessions(activeId?: string): Promise<void> {
     renameBtn.textContent = '重命名';
     renameBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const newName = prompt('会话名称:', s.name);
+      const newName = await promptDialog('重命名会话', s.name);
       if (newName) {
         await window.nexusDesktop.renameSession(s.id, newName);
         await refreshSessions();
@@ -381,8 +479,11 @@ async function refreshSessions(activeId?: string): Promise<void> {
     delBtn.style.color = 'var(--danger)';
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm(`删除会话 "${s.name}"?`)) return;
+      const ok = await confirmDialog(`删除会话 "${s.name}"?`);
+      if (!ok) return;
       await window.nexusDesktop.deleteSession(s.id);
+      delete mcpPrefs[s.id];
+      saveMcpPrefs();
       if (currentSessionId === s.id) {
         currentSessionId = '';
         messagesEl.innerHTML = '';
@@ -417,6 +518,7 @@ async function resumeSession(id: string): Promise<void> {
     }
   }
   addSystem('已恢复会话');
+  await applyMcpPref(currentSessionId);
   await refreshSessions(id);
 }
 
@@ -428,8 +530,157 @@ async function startNewSession(): Promise<void> {
   curThinking = null;
   currentSessionId = await window.nexusDesktop.startSession();
   addSystem('新会话已创建。发送消息开始对话。');
+  await applyMcpPref(currentSessionId);
   await refreshSessions();
 }
+
+// ---------- MCP per-session toggle ----------
+// Prefs shape: { [sessionId]: { __master?: boolean, [serverName]: boolean } }
+const mcpPrefs: Record<string, Record<string, boolean>> = loadMcpPrefs();
+function loadMcpPrefs(): Record<string, Record<string, boolean>> {
+  try {
+    return JSON.parse(localStorage.getItem('nexus.mcpPrefs') ?? '{}') as Record<
+      string,
+      Record<string, boolean>
+    >;
+  } catch {
+    return {};
+  }
+}
+function saveMcpPrefs(): void {
+  try {
+    localStorage.setItem('nexus.mcpPrefs', JSON.stringify(mcpPrefs));
+  } catch {}
+}
+function sessionPrefs(sessionId: string): Record<string, boolean> {
+  if (!mcpPrefs[sessionId]) mcpPrefs[sessionId] = { __master: true };
+  return mcpPrefs[sessionId];
+}
+async function applyMcpPref(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  const prefs = sessionPrefs(sessionId);
+  const master = prefs.__master ?? true;
+  mcpToggle.checked = master;
+  mcpToggle.disabled = true;
+  try {
+    if (!master) {
+      await window.nexusDesktop.setMcpEnabled(false);
+    } else {
+      await applyServerPrefs(prefs);
+    }
+  } catch {
+    mcpStatusEl.textContent = '✗';
+  } finally {
+    mcpToggle.disabled = false;
+  }
+  await refreshMcpStatus();
+  await loadMcpServersList();
+}
+async function applyServerPrefs(prefs: Record<string, boolean>): Promise<void> {
+  const servers = await window.nexusDesktop.getMcpServers();
+  for (const s of servers) {
+    const target = prefs[s.name] ?? s.autoStart;
+    const res = await window.nexusDesktop.setMcpServer(s.name, target);
+    if (res && res.ok === false) addSystem(`⚠️ MCP "${s.name}": ${res.error}`);
+  }
+}
+async function refreshMcpStatus(): Promise<void> {
+  try {
+    const s = await window.nexusDesktop.getMcpStatus();
+    mcpStatusEl.textContent = s.enabled ? `${s.servers.length} 台` : '关闭';
+    const label = $('#mcp-toggle');
+    label.classList.toggle('on', s.enabled);
+    label.classList.toggle('off', !s.enabled);
+  } catch {}
+}
+function mcpPopoverOpen(): boolean {
+  return !mcpPopoverEl.classList.contains('hidden');
+}
+function setMcpPopover(open: boolean): void {
+  mcpPopoverEl.classList.toggle('hidden', !open);
+  mcpServersBtn.textContent = open ? '▴' : '▾';
+}
+async function loadMcpServersList(): Promise<void> {
+  try {
+    const servers = await window.nexusDesktop.getMcpServers();
+    const prefs = currentSessionId ? sessionPrefs(currentSessionId) : {};
+    if (servers.length === 0) {
+      mcpServersEl.innerHTML = '<div class="mcp-empty">未配置 MCP 服务器</div>';
+      return;
+    }
+    mcpServersEl.innerHTML = '';
+    for (const s of servers) {
+      const row = document.createElement('label');
+      row.className = 'mcp-server-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = prefs[s.name] ?? s.autoStart;
+      cb.addEventListener('change', async () => {
+        prefs[s.name] = cb.checked;
+        saveMcpPrefs();
+        const res = await window.nexusDesktop.setMcpServer(s.name, cb.checked);
+        if (res && res.ok === false) {
+          addSystem(`⚠️ MCP "${s.name}": ${res.error}`);
+          cb.checked = !cb.checked;
+        }
+        await refreshMcpStatus();
+        await loadMcpServersList();
+      });
+      const name = document.createElement('span');
+      name.className = 'mcp-server-name';
+      name.textContent = s.name;
+      const meta = document.createElement('span');
+      meta.className = 'mcp-server-meta';
+      if (s.connected) {
+        meta.textContent = `${s.toolCount} 工具`;
+      } else if (s.error) {
+        meta.textContent = '失败';
+        meta.style.color = 'var(--danger)';
+        meta.title = `${s.error}${s.stderr ? `\n${s.stderr}` : ''}`;
+      } else {
+        meta.textContent = '未连接';
+      }
+      row.appendChild(cb);
+      row.appendChild(name);
+      row.appendChild(meta);
+      mcpServersEl.appendChild(row);
+    }
+  } catch {
+    mcpServersEl.innerHTML = '<div class="mcp-loading">加载失败</div>';
+  }
+}
+mcpServersBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setMcpPopover(!mcpPopoverOpen());
+  if (mcpPopoverOpen()) void loadMcpServersList();
+});
+mcpToggle.addEventListener('change', async () => {
+  const enabled = mcpToggle.checked;
+  const prefs = sessionPrefs(currentSessionId);
+  prefs.__master = enabled;
+  saveMcpPrefs();
+  mcpToggle.disabled = true;
+  try {
+    if (enabled) {
+      await applyServerPrefs(prefs);
+      setMcpPopover(true); // unfold the server list when enabling
+      await loadMcpServersList();
+    } else {
+      await window.nexusDesktop.setMcpEnabled(false);
+    }
+  } catch (err) {
+    addSystem(`⚠️ MCP 切换失败: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    mcpToggle.disabled = false;
+  }
+  await refreshMcpStatus();
+});
+document.addEventListener('click', (e) => {
+  if (mcpPopoverOpen() && !mcpBoxEl.contains(e.target as Node)) setMcpPopover(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && mcpPopoverOpen()) setMcpPopover(false);
+});
 
 // ---------- send ----------
 // Serial scheduler: while a chat is in flight (`running`), further messages are
@@ -475,8 +726,23 @@ function drain(): void {
 }
 
 async function sendMessage(): Promise<void> {
-  enqueue(inputEl.value.trim());
+  const text = inputEl.value.trim();
+  if (!text && attachments.length === 0) return;
+  const attrs = attachments;
+  attachments = [];
+  renderAttachments();
+  const composed = attrs.map((p) => `@${p}`).concat(text ? [text] : []).join('\n');
+  enqueue(composed);
 }
+
+attachBtn.addEventListener('click', async () => {
+  try {
+    const res = await window.nexusDesktop.openFile();
+    if (!res.canceled && res.path) attachFiles([res.path]);
+  } catch (err) {
+    inputStatus.textContent = `⚠️ 附件失败: ${err instanceof Error ? err.message : String(err)}`;
+  }
+});
 
 // ---------- permission modal ----------
 let pendingPermissionId: string | null = null;

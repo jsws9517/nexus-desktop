@@ -234,6 +234,98 @@ body {
   gap: 8px;
   flex-shrink: 0;
 }
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 3px 8px;
+  font-size: 12px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 11px;
+}
+.chip-remove:hover { color: var(--danger); }
+.composer {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.composer #input { flex: 1; }
+.btn.icon { flex-shrink: 0; padding: 0 12px; font-size: 16px; }
+.mcp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  padding: 0 10px;
+}
+.mcp-toggle input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+.mcp-toggle:hover { color: var(--text); }
+.mcp-toggle.on { color: var(--ok); }
+.mcp-toggle.off { color: var(--danger); }
+#mcp-status { font-size: 11px; white-space: nowrap; }
+.mcp-box { position: relative; flex-shrink: 0; display: inline-flex; align-items: center; }
+.mcp-caret {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 4px 2px;
+}
+.mcp-caret:hover { color: var(--text); }
+.mcp-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 260px;
+  max-height: min(320px, 60vh);
+  overflow-y: auto;
+  background: var(--bg-elevated, #1c1c24);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  z-index: 50;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+}
+.mcp-popover-title { font-size: 12px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
+.mcp-server-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+.mcp-server-row:hover { background: rgba(255, 255, 255, 0.05); }
+.mcp-server-row input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+.mcp-server-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-server-meta { font-size: 11px; color: var(--text-dim); }
+.mcp-empty { font-size: 12px; color: var(--text-dim); padding: 6px; }
+.mcp-loading { font-size: 12px; color: var(--text-dim); padding: 6px; }
 #input {
   background: var(--bg-input);
   color: var(--text);
@@ -273,7 +365,20 @@ body {
   flex-direction: column;
   gap: 14px;
 }
+.modal.small { width: 340px; }
 .modal h3 { font-size: 15px; }
+.modal-input {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.modal-input:focus { border-color: var(--accent); outline: none; }
 #perm-question { white-space: pre-wrap; font-family: inherit; font-size: 13px; color: var(--text); background: var(--code-bg); border-radius: 8px; padding: 12px; max-height: 220px; overflow-y: auto; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }

@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
 import { app, utilityProcess } from 'electron';
 import type { UtilityProcess } from 'electron';
-import type { AgentEvent } from '../../vendor/core/src/types.js';
+import type { AgentEvent } from '../agent-service.js';
 
 const DIAG = 'C:/Users/pgw/AppData/Local/Temp/opencode/worker-host.log';
 const diag = (s: string): void => {

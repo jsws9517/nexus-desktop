@@ -1,4 +1,5 @@
-import type { AgentEvent } from '../vendor/core/src/types.js';
+/** Loose event shape forwarded from the core to the UI bridge. */
+export type AgentEvent = { type: string } & Record<string, unknown>;
 
 /**
  * Headless bridge around the nexus CLI Agent.
@@ -35,6 +36,7 @@ function maskKey(value: unknown): string {
 export class AgentService {
   private agent: any = null;
   private initialized = false;
+  private mcpEnabled = true;
   private pendingPermissions = new Map<string, (answer: string) => void>();
   private nextPermissionId = 1;
 
@@ -62,9 +64,12 @@ export class AgentService {
     const { Agent } = await import('../vendor/core/src/agent.js');
     this.agent = new Agent();
 
-    // Route permission prompts to the UI (CLI sets this same global).
-    (globalThis as Record<string, unknown>).__nexusPermissionPrompter = (question: string) =>
-      this.askPermission(question);
+    // Route ALL permission prompts to the UI — both the MCP/tool prompt and the
+    // path authorization (read_text_file etc.) use this single bridge. The CLI
+    // wires the same via setPermissionPrompter; without it the path prompter
+    // falls back to a dead stdin readline inside the worker and instantly denies.
+    const { setPermissionPrompter } = await import('../vendor/core/src/security/path-authorizer.js');
+    setPermissionPrompter((question: string) => this.askPermission(question));
 
     this.agent.onEvent = (event: AgentEvent) => this.onEvent?.(event);
     this.agent.onPermissionRequest = async (
@@ -104,6 +109,98 @@ export class AgentService {
 
   abort(): void {
     this.agent?.abort?.();
+  }
+
+  /**
+   * Per-session MCP switch. Disabling disconnects the MCP servers so their
+   * tools leave the toolset for subsequent turns; enabling reconnects them.
+   */
+  async setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }> {
+    if (!this.agent) return { ok: false, error: 'Agent not initialized' };
+    if (enabled === this.mcpEnabled) return { ok: true };
+    try {
+      if (enabled) {
+        const cfg = this.agent.config.get();
+        await this.agent.mcp.connectAll(cfg.mcpServers ?? {});
+      } else {
+        await this.agent.mcp.disconnect();
+      }
+      this.mcpEnabled = enabled;
+      this.onLog?.('info', `MCP ${enabled ? 'enabled' : 'disabled'}`);
+      return { ok: true };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.onLog?.('warn', `MCP toggle failed: ${msg}`);
+      return { ok: false, error: msg };
+    }
+  }
+
+  getMcpStatus(): { enabled: boolean; servers: Array<Record<string, unknown>> } {
+    const servers = (this.agent?.mcp?.listConnections?.() ?? []).map((c: Record<string, unknown>) => ({
+      name: c.name,
+      toolCount: c.toolCount,
+      status: c.status,
+    }));
+    return {
+      enabled: servers.length > 0,
+      servers,
+    };
+  }
+
+  /**
+   * Registered MCP servers from config, with live connection state.
+   */
+  getMcpServers(): Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }> {
+    if (!this.agent) return [];
+    const cfg = this.agent.config.get();
+    const connectedMap = new Map<string, Record<string, unknown>>(
+      (this.agent.mcp.listConnections?.() ?? []).map((c: Record<string, unknown>) => [
+        c.name as string,
+        c,
+      ]),
+    );
+    const errors = new Map<string, Record<string, unknown>>(
+      (this.agent.mcp.getServerErrors?.() ?? []).map((c: Record<string, unknown>) => [
+        c.name as string,
+        c,
+      ]),
+    );
+    return Object.entries(cfg.mcpServers ?? {}).map(([name, s]: [string, any]) => ({
+      name,
+      autoStart: s.autoStart !== false,
+      connected: connectedMap.has(name),
+      toolCount: Number(connectedMap.get(name)?.toolCount ?? 0),
+      error: errors.get(name)?.error as string | undefined,
+      stderr: errors.get(name)?.stderr as string | undefined,
+    }));
+  }
+
+  /**
+   * Toggle a single MCP server. Idempotent: connects only when disconnected,
+   * disconnects only when connected.
+   */
+  async setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {
+    if (!this.agent) return { ok: false, error: 'Agent not initialized' };
+    try {
+      const connected = (this.agent.mcp.listConnections?.() ?? []).some(
+        (c: Record<string, unknown>) => c.name === name,
+      );
+      if (enabled && !connected) {
+        const cfg = this.agent.config.get();
+        const srv = cfg.mcpServers?.[name];
+        if (!srv) return { ok: false, error: `MCP server "${name}" not configured` };
+        await this.agent.mcp.connectServer(name, srv);
+        this.onLog?.('info', `MCP server "${name}" connected (${srv.command})`);
+      } else if (!enabled && connected) {
+        await this.agent.mcp.disconnect(name);
+        this.onLog?.('info', `MCP server "${name}" disconnected`);
+      }
+      return { ok: true };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.onLog?.('warn', `MCP server "${name}" toggle failed: ${msg}`);
+      return { ok: false, error: msg };
+    }
   }
 
   async startSession(name?: string, sessionId?: string): Promise<string> {
@@ -212,9 +309,18 @@ export class AgentService {
     return new Promise<string>((resolve) => {
       const id = String(this.nextPermissionId++);
       this.pendingPermissions.set(id, resolve);
-      this.onPermission?.({ id, question });
+      this.onPermission?.({ id, question: cleanQuestion(question) });
     });
   }
+}
+
+/** Strip ANSI color codes + trailing CLI option hint ("[y] once [a] always [n] deny") from core prompt text. */
+function cleanQuestion(raw: string): string {
+  const noAnsi = raw.replace(/\u001b\[[0-9;]*m/g, '');
+  const trimmed = noAnsi.replace(/\s+/g, ' ').trim();
+  return trimmed
+    .replace(/\s*\[\s*y\s*\]\s*once\s*\[\s*a\s*\]\s*always\s*\[\s*n\s*\]\s*deny\s*$/i, '')
+    .trim();
 }
 
 function redactConfig(cfg: Record<string, any>): Record<string, unknown> {

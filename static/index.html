@@ -33,7 +33,22 @@
       <main id="chat-panel">
         <div id="messages"></div>
         <div id="input-area">
-          <textarea id="input" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
+          <div id="attachments" class="attachments hidden"></div>
+          <div class="composer">
+            <button id="btn-attach" class="btn ghost icon" title="添加附件">📎</button>
+            <div id="mcp-box" class="mcp-box">
+              <label id="mcp-toggle" class="mcp-toggle" title="主开关：启用/禁用全部 MCP 工具">
+                <input type="checkbox" checked />
+                <span id="mcp-status">MCP</span>
+              </label>
+              <button id="mcp-servers-btn" class="mcp-caret" title="选择 MCP 服务器工具">▾</button>
+              <div id="mcp-popover" class="mcp-popover hidden">
+                <div class="mcp-popover-title">MCP 服务器工具（当前会话）</div>
+                <div id="mcp-servers"></div>
+              </div>
+            </div>
+            <textarea id="input" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
+          </div>
           <div class="input-actions">
             <span id="input-status"></span>
             <button id="btn-send" class="btn primary">发送</button>
@@ -67,6 +82,30 @@
       <div class="modal-actions">
         <span id="settings-msg"></span>
         <button id="settings-save" class="btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm modal -->
+  <div id="confirm-overlay" class="overlay hidden">
+    <div class="modal small">
+      <h3>确认</h3>
+      <p id="confirm-msg"></p>
+      <div class="modal-actions">
+        <button id="confirm-cancel" class="btn ghost">取消</button>
+        <button id="confirm-ok" class="btn primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rename modal -->
+  <div id="rename-overlay" class="overlay hidden">
+    <div class="modal small">
+      <h3>重命名会话</h3>
+      <input id="rename-input" class="modal-input" placeholder="会话名称" />
+      <div class="modal-actions">
+        <button id="rename-cancel" class="btn ghost">取消</button>
+        <button id="rename-ok" class="btn primary">确定</button>
       </div>
     </div>
   </div>

@@ -150,11 +150,24 @@ function registerIpc(): void {
   ipcMain.handle('nexus:saveProvider', call('saveProvider'));
   ipcMain.handle('nexus:setCwd', call('setCwd'));
   ipcMain.handle('nexus:respondPermission', call('resolvePermission'));
+  ipcMain.handle('nexus:setMcpEnabled', call('setMcpEnabled'));
+  ipcMain.handle('nexus:getMcpStatus', call('getMcpStatus'));
+  ipcMain.handle('nexus:getMcpServers', call('getMcpServers'));
+  ipcMain.handle('nexus:setMcpServer', call('setMcpServer'));
 
   ipcMain.handle('nexus:openFolder', async (): Promise<{ canceled: boolean; path?: string }> => {
     const result = await dialog.showOpenDialog(win!, {
       properties: ['openDirectory', 'createDirectory'],
       title: 'Open project folder',
+    });
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+    return { canceled: false, path: result.filePaths[0] };
+  });
+
+  ipcMain.handle('nexus:openFile', async (): Promise<{ canceled: boolean; path?: string }> => {
+    const result = await dialog.showOpenDialog(win!, {
+      properties: ['openFile', 'multiSelections'],
+      title: '添加附件',
     });
     if (result.canceled || result.filePaths.length === 0) return { canceled: true };
     return { canceled: false, path: result.filePaths[0] };

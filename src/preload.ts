@@ -19,9 +19,15 @@ const api = {
     ipcRenderer.invoke('nexus:saveProvider', { name, fields }),
   setCwd: (cwd: string) => ipcRenderer.invoke('nexus:setCwd', { cwd }),
   openFolder: () => ipcRenderer.invoke('nexus:openFolder'),
+  openFile: () => ipcRenderer.invoke('nexus:openFile'),
   openConfigWeb: () => ipcRenderer.invoke('nexus:openConfigWeb'),
   respondPermission: (id: string, answer: string) =>
     ipcRenderer.invoke('nexus:respondPermission', { id, answer }),
+  setMcpEnabled: (enabled: boolean) => ipcRenderer.invoke('nexus:setMcpEnabled', { enabled }),
+  getMcpStatus: () => ipcRenderer.invoke('nexus:getMcpStatus'),
+  getMcpServers: () => ipcRenderer.invoke('nexus:getMcpServers'),
+  setMcpServer: (name: string, enabled: boolean) =>
+    ipcRenderer.invoke('nexus:setMcpServer', { name, enabled }),
 
   onEvent: (cb: (event: unknown) => void) => {
     ipcRenderer.on('nexus:event', (_e, event) => cb(event));
