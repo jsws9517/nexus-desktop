@@ -269,6 +269,13 @@ export class AgentService {
     return this.agent?.provider?.model ?? '';
   }
 
+  getPermissions(): { mode: string; allowlist: string[]; safePaths: string[]; mcpAllowlist: string[] } {
+    if (!this.agent?.config?.getPermissions) {
+      return { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [] };
+    }
+    return this.agent.config.getPermissions();
+  }
+
   getConfig(): Record<string, unknown> {
     if (!this.agent) return {};
     const cfg = this.agent.config.get();

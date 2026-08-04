@@ -145,6 +145,7 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getConfig', call('getConfig'));
   ipcMain.handle('nexus:getProviders', call('getProviders'));
   ipcMain.handle('nexus:getStatus', call('getStatus'));
+  ipcMain.handle('nexus:getPermissions', call('getPermissions'));
   ipcMain.handle('nexus:switchProvider', call('switchProvider'));
   ipcMain.handle('nexus:switchModel', call('switchModel'));
   ipcMain.handle('nexus:saveProvider', call('saveProvider'));

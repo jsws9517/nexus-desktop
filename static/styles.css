@@ -407,3 +407,62 @@ body {
 }
 .row-grid input:focus, .provider-row input:focus { border-color: var(--accent); }
 #settings-msg { color: var(--ok); font-size: 12px; margin-right: auto; }
+
+/* ---- Right sidebar: session info + task progress ---- */
+#right-sidebar {
+  width: 260px;
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 12px;
+  gap: 12px;
+}
+.rside-section { display: flex; flex-direction: column; gap: 8px; }
+.rside-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+.rside-divider { border: 0; border-top: 1px solid var(--border); margin: 2px 0; }
+
+.info-grid { display: flex; flex-direction: column; gap: 7px; }
+.info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.info-label { font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
+.info-value {
+  font-size: 12px;
+  color: var(--text);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: break-all;
+}
+
+#task-list { display: flex; flex-direction: column; gap: 8px; }
+.task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 9px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.task-badge { font-size: 13px; line-height: 1.3; flex-shrink: 0; }
+.task-badge.running { color: var(--accent); }
+.task-badge.completed { color: var(--ok); }
+.task-badge.failed { color: var(--danger); }
+.task-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.task-title {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+}
+.task-meta { font-size: 11px; }
+.task-meta.running { color: var(--accent); }
+.task-meta.completed { color: var(--ok); }
+.task-meta.failed { color: var(--danger); }
+.task-empty { font-size: 12px; color: var(--text-dim); padding: 6px 2px; }

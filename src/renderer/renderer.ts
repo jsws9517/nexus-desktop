@@ -24,6 +24,19 @@ interface StatusInfo {
   model: string;
 }
 
+interface PermissionsInfo {
+  mode: string;
+  allowlist: string[];
+  safePaths: string[];
+  mcpAllowlist: string[];
+}
+
+interface McpServerStatus {
+  name: string;
+  toolCount: number;
+  status: string;
+}
+
 type AgentEvent =
   | { type: 'session_start'; sessionId: string }
   | { type: 'turn_start'; turn: number }
@@ -35,7 +48,10 @@ type AgentEvent =
   | { type: 'file_ready'; path: string; mimeType: string; name: string }
   | { type: 'state_delta'; contextTokens: number; turn: number }
   | { type: 'turn_end'; stopReason: string; usage?: { inputTokens: number; outputTokens: number } }
-  | { type: 'session_end' };
+  | { type: 'session_end' }
+  | { type: 'task_started'; taskId: string; description: string; role: string }
+  | { type: 'task_completed'; taskId: string }
+  | { type: 'task_failed'; taskId: string; error: string };
 
 declare global {
   interface Window {
@@ -50,6 +66,7 @@ declare global {
       getConfig(): Promise<Record<string, unknown>>;
       getProviders(): Promise<ProviderInfo[]>;
       getStatus(): Promise<StatusInfo>;
+      getPermissions(): Promise<PermissionsInfo>;
       switchProvider(name: string): Promise<unknown>;
       switchModel(modelId: string): Promise<unknown>;
       saveProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
@@ -59,7 +76,7 @@ declare global {
       openFile(): Promise<{ canceled: boolean; path?: string }>;
       respondPermission(id: string, answer: string): Promise<unknown>;
       setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
-      getMcpStatus(): Promise<{ enabled: boolean; servers: Array<Record<string, unknown>> }>;
+      getMcpStatus(): Promise<{ enabled: boolean; servers: McpServerStatus[] }>;
       getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }>>;
       setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       onEvent(cb: (event: AgentEvent) => void): void;
@@ -90,6 +107,13 @@ const mcpServersBtn = $('#mcp-servers-btn');
 const mcpPopoverEl = $('#mcp-popover');
 const mcpServersEl = $('#mcp-servers');
 
+const rsideProvider = $('#rside-provider');
+const rsideModel = $('#rside-model');
+const rsidePerm = $('#rside-perm');
+const rsideMcp = $('#rside-mcp');
+const taskListEl = $('#task-list');
+const taskEmptyEl = $('#task-empty');
+
 // ---------- state ----------
 let currentSessionId = '';
 let busy = false;
@@ -98,6 +122,16 @@ const pendingQueue: string[] = [];
 let attachments: string[] = [];
 let providers: ProviderInfo[] = [];
 let status: StatusInfo = { cwd: '', busy: false, provider: '', model: '' };
+
+// Task lifecycle state (task_started / task_completed / task_failed events)
+interface TaskItem {
+  id: string;
+  description: string;
+  role: string;
+  status: 'running' | 'completed' | 'failed';
+  error?: string;
+}
+const tasks = new Map<string, TaskItem>();
 
 // per-turn DOM handles
 let curAssistant: { bubble: HTMLElement; stream: HTMLElement; buffer: string } | null = null;
@@ -284,8 +318,18 @@ function handleEvent(event: AgentEvent): void {
   switch (event.type) {
     case 'session_start':
       currentSessionId = event.sessionId;
+      tasks.clear();
+      renderTasks();
+      void refreshSidebarSession();
       break;
     case 'turn_start':
+      tasks.clear();
+      renderTasks();
+      break;
+    case 'task_started':
+    case 'task_completed':
+    case 'task_failed':
+      handleTaskEvent(event);
       break;
     case 'text':
       if (event.text) {
@@ -520,6 +564,7 @@ async function resumeSession(id: string): Promise<void> {
   addSystem('已恢复会话');
   await applyMcpPref(currentSessionId);
   await refreshSessions(id);
+  await refreshSidebarSession();
 }
 
 async function startNewSession(): Promise<void> {
@@ -532,6 +577,7 @@ async function startNewSession(): Promise<void> {
   addSystem('新会话已创建。发送消息开始对话。');
   await applyMcpPref(currentSessionId);
   await refreshSessions();
+  await refreshSidebarSession();
 }
 
 async function startOrResumeLatestSession(): Promise<void> {
@@ -547,6 +593,77 @@ async function startOrResumeLatestSession(): Promise<void> {
     }
   }
   await startNewSession();
+}
+
+// ---------- right sidebar: session info + task progress ----------
+function permLabel(mode: string): string {
+  return mode === 'auto' ? 'auto（自动放行）' : mode === 'prompt' ? 'prompt（每次询问）' : mode || '—';
+}
+
+async function refreshSidebarSession(): Promise<void> {
+  const [st, perms, mcp] = await Promise.all([
+    window.nexusDesktop.getStatus(),
+    window.nexusDesktop.getPermissions(),
+    window.nexusDesktop.getMcpStatus(),
+  ]);
+  status = st;
+  rsideProvider.textContent = st.provider || '—';
+  rsideModel.textContent = st.model || '—';
+  rsidePerm.textContent = permLabel(perms.mode);
+  const connected = mcp.servers.filter((s) => s.status !== 'disconnected');
+  rsideMcp.textContent = connected.length > 0
+    ? connected.map((s) => `${s.name}(${s.toolCount})`).join('、')
+    : '无';
+  rsideMcp.title = connected.length > 0 ? connected.map((s) => s.name).join('\n') : '';
+}
+
+function renderTasks(): void {
+  const items = [...tasks.values()];
+  const hasTasks = items.length > 0;
+  taskEmptyEl.classList.toggle('hidden', hasTasks);
+  taskListEl.innerHTML = '';
+  if (!hasTasks) return;
+  for (const t of items) {
+    const li = document.createElement('div');
+    li.className = 'task-item';
+    const badge = document.createElement('span');
+    badge.className = `task-badge ${t.status}`;
+    badge.textContent = t.status === 'running' ? '⏳' : t.status === 'completed' ? '✓' : '✗';
+    const body = document.createElement('div');
+    body.className = 'task-body';
+    const title = document.createElement('div');
+    title.className = 'task-title';
+    title.textContent = t.description || t.id;
+    title.title = t.description || '';
+    const meta = document.createElement('div');
+    meta.className = `task-meta ${t.status}`;
+    meta.textContent = t.status === 'running'
+      ? `进行中 · ${t.role}`
+      : t.status === 'completed'
+        ? '已完成'
+        : `失败：${t.error ?? ''}`;
+    body.appendChild(title);
+    body.appendChild(meta);
+    li.appendChild(badge);
+    li.appendChild(body);
+    taskListEl.appendChild(li);
+  }
+}
+
+function handleTaskEvent(event: Extract<AgentEvent, { type: `task_${string}` }>): void {
+  if (event.type === 'task_started') {
+    tasks.set(event.taskId, { id: event.taskId, description: event.description, role: event.role, status: 'running' });
+  } else if (event.type === 'task_completed') {
+    const t = tasks.get(event.taskId);
+    if (t) t.status = 'completed';
+  } else if (event.type === 'task_failed') {
+    const t = tasks.get(event.taskId);
+    if (t) {
+      t.status = 'failed';
+      t.error = event.error;
+    }
+  }
+  renderTasks();
 }
 
 // ---------- MCP per-session toggle ----------
@@ -911,6 +1028,7 @@ providerSelect.addEventListener('change', async () => {
   status = await window.nexusDesktop.getStatus();
   addSystem(`已切换到 Provider: ${name}（${status.model}）`);
   await refreshSessions();
+  await refreshSidebarSession();
 });
 
 $('#btn-open-folder').addEventListener('click', async () => {
@@ -958,6 +1076,7 @@ window.nexusDesktop.onLog((log) => {
     cwdLabel.title = status.cwd;
     await startOrResumeLatestSession();
     await refreshSessions();
+    await refreshSidebarSession();
   } catch (err) {
     addSystem(`启动失败: ${err instanceof Error ? err.message : String(err)}`);
   }

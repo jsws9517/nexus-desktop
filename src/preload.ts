@@ -13,6 +13,7 @@ const api = {
   getConfig: () => ipcRenderer.invoke('nexus:getConfig'),
   getProviders: () => ipcRenderer.invoke('nexus:getProviders'),
   getStatus: () => ipcRenderer.invoke('nexus:getStatus'),
+  getPermissions: () => ipcRenderer.invoke('nexus:getPermissions'),
   switchProvider: (name: string) => ipcRenderer.invoke('nexus:switchProvider', { name }),
   switchModel: (modelId: string) => ipcRenderer.invoke('nexus:switchModel', { modelId }),
   saveProvider: (name: string, fields: Record<string, unknown>) =>

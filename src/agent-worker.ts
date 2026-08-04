@@ -15,6 +15,7 @@ type WorkerRequest =
   | { id: number; method: 'getConfig' }
   | { id: number; method: 'getProviders' }
   | { id: number; method: 'getStatus' }
+  | { id: number; method: 'getPermissions' }
   | { id: number; method: 'switchProvider'; params: { name: string } }
   | { id: number; method: 'switchModel'; params: { modelId: string } }
   | { id: number; method: 'saveProvider'; params: { name: string; fields: Record<string, unknown> } }
@@ -126,6 +127,9 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
           provider: service.getActiveProvider(),
           model: service.getActiveModel(),
         });
+        break;
+      case 'getPermissions':
+        respond(req.id, service.getPermissions());
         break;
       case 'switchProvider':
         await service.switchProvider(req.params.name);
