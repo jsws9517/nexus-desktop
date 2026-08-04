@@ -1420,7 +1420,8 @@ function genLspServerScript(opts: LspServerOpts): string {
   const binJson = JSON.stringify(binary);
   const argsJson = JSON.stringify(binaryArgs);
   const langIdJson = JSON.stringify(langId);
-  const labelJson = JSON.stringify(languageLabel).replace(/"/g, '\\"');
+  const labelJson = JSON.stringify(languageLabel);
+  const labelEsc = labelJson.replace(/"/g, '\\"');
 
   return [
     '#!/usr/bin/env node',
@@ -1439,7 +1440,7 @@ function genLspServerScript(opts: LspServerOpts): string {
     `console.error("[${prefix}] " + (available ? "ready: " + binPath : "NOT available"));`,
     ``,
     `const TOOLS = [`,
-    `  { name: "${prefix}_status", description: "MUST CALL FIRST. Shows ${labelJson} language server status. Do NOT use exec_command to search.", inputSchema: { type: "object", properties: {} } },`,
+    `  { name: "${prefix}_status", description: "MUST CALL FIRST. Shows ${labelEsc} language server status. Do NOT use exec_command to search.", inputSchema: { type: "object", properties: {} } },`,
     `  { name: "${prefix}_diagnostics", description: "Get code diagnostics for a file. Call ${prefix}_status first.", inputSchema: { type: "object", properties: { file_path: { type: "string", description: "Absolute path to the file" } }, required: ["file_path"] } },`,
     `  { name: "${prefix}_hover", description: "Get type/hover info at a position. Call ${prefix}_status first.", inputSchema: { type: "object", properties: { file_path: { type: "string", description: "Absolute path to the file" }, line: { type: "number", description: "Zero-based line" }, character: { type: "number", description: "Zero-based character offset" } }, required: ["file_path", "line", "character"] } },`,
     `  { name: "${prefix}_format", description: "Format a file. Call ${prefix}_status first.", inputSchema: { type: "object", properties: { file_path: { type: "string", description: "Absolute path to the file" } }, required: ["file_path"] } },`,
