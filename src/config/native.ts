@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
@@ -140,6 +140,48 @@ function nativeNpmServer(dirName: string, deps: Record<string, string>, entry: s
   return { command: 'node', args: [join(dir, ...entry.split('/')), ...extraArgs] };
 }
 
+/** GitHub MCP server release asset suffix for the current platform/arch. */
+function githubAssetSuffix(): string {
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'ia32' ? 'i386' : 'x86_64';
+  if (process.platform === 'win32') return `Windows_${arch}.zip`;
+  if (process.platform === 'darwin') return `Darwin_${arch}.tar.gz`;
+  return `Linux_${arch}.tar.gz`;
+}
+
+/** Download a remote file to a local path. */
+async function downloadFile(url: string, dest: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} ${res.statusText}`);
+  writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+}
+
+/** Extract a .zip (Windows) or .tar.gz (macOS/Linux) archive into destDir. */
+function extractArchive(archive: string, destDir: string): void {
+  mkdirSync(destDir, { recursive: true });
+  if (process.platform === 'win32') {
+    execSync(
+      `powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '${archive}' -DestinationPath '${destDir}' -Force"`,
+      { stdio: 'pipe', timeout: 120000 }
+    );
+  } else {
+    execSync(`tar -xzf "${archive}" -C "${destDir}"`, { stdio: 'pipe', timeout: 120000 });
+  }
+}
+
+/** Recursively locate a file by name under a directory (release binaries nest in platform folders). */
+function findFileRecursive(dir: string, fileName: string): string | null {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = findFileRecursive(full, fileName);
+      if (found) return found;
+    } else if (entry.name === fileName) {
+      return full;
+    }
+  }
+  return null;
+}
+
 const CATALOG: Record<string, PackageInfo> = {
   // ═══════════════════════════════════════════
   // MCP Servers
@@ -172,9 +214,40 @@ const CATALOG: Record<string, PackageInfo> = {
       { flag: '--token', label: 'GitHub Personal Access Token (or set GITHUB_PAT env var)' },
     ],
     async install(params) {
-      const exe = join(NATIVE_DIR, 'github-mcp-server', 'github-mcp-server.exe');
+      const dir = join(NATIVE_DIR, 'github-mcp-server');
+      const exe = join(dir, 'github-mcp-server.exe');
       if (!existsSync(exe)) {
-        throw new Error(`github-mcp-server.exe not found at ~/.nexus/native/github-mcp-server/. Download the Windows build from https://github.com/github/github-mcp-server/releases`);
+        // Auto-download the official binary from GitHub releases if missing.
+        const assetSuffix = githubAssetSuffix();
+        process.stderr.write(`[github] resolving latest release (asset: ${assetSuffix})...\n`);
+        const relRes = await fetch(
+          'https://api.github.com/repos/github/github-mcp-server/releases/latest',
+          { headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'nexus-coder' }, signal: AbortSignal.timeout(15000) }
+        );
+        if (!relRes.ok) {
+          throw new Error(`Failed to resolve latest github-mcp-server release (HTTP ${relRes.status}). Download manually from https://github.com/github/github-mcp-server/releases and place github-mcp-server.exe at ~/.nexus/native/github-mcp-server/`);
+        }
+        const rel = await relRes.json() as { tag_name?: string; assets?: Array<{ name?: string; browser_download_url?: string }> };
+        const asset = rel.assets?.find(a => a.name && a.name.includes(assetSuffix));
+        if (!asset?.browser_download_url) {
+          throw new Error(`No "${assetSuffix}" asset found for release ${rel.tag_name ?? 'latest'}. Download manually from https://github.com/github/github-mcp-server/releases and place github-mcp-server.exe at ~/.nexus/native/github-mcp-server/`);
+        }
+        mkdirSync(dir, { recursive: true });
+        const archivePath = join(dir, asset.name!);
+        process.stderr.write(`[github] downloading ${rel.tag_name} (${asset.name})...\n`);
+        await downloadFile(asset.browser_download_url, archivePath);
+        process.stderr.write('[github] extracting...\n');
+        extractArchive(archivePath, dir);
+        rmSync(archivePath, { force: true });
+        const found = findFileRecursive(dir, 'github-mcp-server.exe');
+        if (!found) {
+          throw new Error(`github-mcp-server.exe not found after extraction. Download manually from https://github.com/github/github-mcp-server/releases and place it at ~/.nexus/native/github-mcp-server/`);
+        }
+        if (found !== exe) {
+          rmSync(exe, { force: true });
+          renameSync(found, exe);
+        }
+        process.stderr.write('[github] binary ready.\n');
       }
       const env: Record<string, string> = { GITHUB_READ_ONLY: '1' };
       if (params.token) env.GITHUB_PERSONAL_ACCESS_TOKEN = params.token;

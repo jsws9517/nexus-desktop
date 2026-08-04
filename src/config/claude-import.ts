@@ -17,10 +17,13 @@ const IMPORT_FLAG = join(homedir(), '.nexus', '.claude-imported');
  */
 export function isSafeMcpCommand(command: string, args: unknown): boolean {
   if (!command) return false;
-  // Reject anything that is not a single, simple executable token: no shell
-  // metacharacters, no whitespace (which would indicate an inline/sh compound
-  // command), and no path separators that could point outside the package bin.
-  if (/[\s&|;`$()<>'"\\/]/.test(command)) return false;
+  // Reject shell metacharacters, whitespace, and control characters that would
+  // let a launch command become an inline shell compound (e.g. `bash -c '...'`).
+  // Path separators (Windows `\` and POSIX `/`) and a drive prefix (C:) ARE
+  // allowed — a fixed absolute path to a simple executable (e.g. a downloaded
+  // native binary like github-mcp-server.exe) is a single command, not a shell
+  // pipeline, and cannot carry an injected command on its own.
+  if (/[\s&|;`$()<>'"\n\r]/.test(command)) return false;
   const argList = Array.isArray(args) ? args.map(String) : [];
   for (const a of argList) {
     // Allow simple tokens (flags, package names, ports) but reject whitespace
