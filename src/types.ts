@@ -56,4 +56,7 @@ export type AgentEvent =
   | { type: 'file_ready'; path: string; mimeType: string; name: string }
   | { type: 'state_delta'; contextTokens: number; turn: number }
   | { type: 'turn_end'; stopReason: string; usage?: TurnUsage }
-  | { type: 'session_end' };
+  | { type: 'session_end' }
+  | { type: 'task_started'; taskId: string; description: string; role: string }
+  | { type: 'task_completed'; taskId: string }
+  | { type: 'task_failed'; taskId: string; error: string };

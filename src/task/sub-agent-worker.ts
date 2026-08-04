@@ -1,5 +1,6 @@
 import { Agent } from '../agent.js';
 import { TaskNode, SubTaskResult, SubAgentRole, GraphMode } from './types.js';
+import { AgentEvent } from '../types.js';
 import { getSubAgentRole } from './sub-agent-roles.js';
 
 export class SubAgentWorker {
@@ -133,13 +134,22 @@ export class SubAgentWorker {
       : '';
     let prompt = sections.join('\n\n') + '\n\n' + rolePrefix + task.description;
 
-    await child.chat(prompt);
+    const emitTask = (event: AgentEvent) => this.parentAgent.onEvent?.(event);
 
-    await child.shutdown();
+    emitTask({ type: 'task_started', taskId: task.id, description: task.description, role });
 
-    return {
-      taskId: task.id,
-      output: outputChunks.join(''),
-    };
+    try {
+      await child.chat(prompt);
+      await child.shutdown();
+      emitTask({ type: 'task_completed', taskId: task.id });
+      return {
+        taskId: task.id,
+        output: outputChunks.join(''),
+      };
+    } catch (err) {
+      emitTask({ type: 'task_failed', taskId: task.id, error: err instanceof Error ? err.message : String(err) });
+      await child.shutdown().catch(() => {});
+      throw err;
+    }
   }
 }
