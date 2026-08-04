@@ -1420,7 +1420,7 @@ function genLspServerScript(opts: LspServerOpts): string {
   const binJson = JSON.stringify(binary);
   const argsJson = JSON.stringify(binaryArgs);
   const langIdJson = JSON.stringify(langId);
-  const labelJson = JSON.stringify(languageLabel);
+  const labelJson = JSON.stringify(languageLabel).replace(/"/g, '\\"');
 
   return [
     '#!/usr/bin/env node',
