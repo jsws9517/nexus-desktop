@@ -276,6 +276,94 @@ export class AgentService {
     return this.agent.config.getPermissions();
   }
 
+  getLanguage(): string {
+    return this.agent?.config?.getLanguage?.() ?? 'en';
+  }
+
+  /** Speech (STT/TTS) + vision provider config with masked keys and active selection. */
+  getSpeechVisionConfig(): Record<string, unknown> {
+    if (!this.agent?.config) return {};
+    const cfg = this.agent.config;
+    const speech: Array<Record<string, unknown>> = Object.entries(
+      (cfg.getSpeechProviders?.() ?? {}) as Record<string, any>,
+    ).map(([name, p]) => ({
+      name,
+      category: p.category ?? 'stt',
+      model: p.model ?? '',
+      baseUrl: p.baseUrl ?? '',
+      voice: p.voice ?? '',
+      hasKey: typeof p.apiKey === 'string' && p.apiKey.length > 0,
+    }));
+    const vision: Array<Record<string, unknown>> = Object.entries(
+      (cfg.getVisionProviders?.() ?? {}) as Record<string, any>,
+    ).map(([name, p]) => ({
+      name,
+      model: p.model ?? '',
+      baseUrl: p.baseUrl ?? '',
+      hasKey: typeof p.apiKey === 'string' && p.apiKey.length > 0,
+    }));
+    return {
+      activeSpeech: cfg.getActiveSpeechProvider?.() ?? '',
+      activeTts: cfg.getActiveTtsProvider?.() ?? '',
+      activeVision: cfg.getActiveVisionProvider?.() ?? 'glm-4v',
+      speechProviders: speech,
+      visionProviders: vision,
+    };
+  }
+
+  setActiveSpeechProvider(name: string): void {
+    if (!this.agent?.config) throw new Error('Agent not initialized');
+    this.agent.config.setActiveSpeechProvider(name);
+  }
+
+  setActiveTtsProvider(name: string): void {
+    if (!this.agent?.config) throw new Error('Agent not initialized');
+    this.agent.config.setActiveTtsProvider(name);
+  }
+
+  setActiveVisionProvider(name: string): void {
+    if (!this.agent?.config) throw new Error('Agent not initialized');
+    this.agent.config.setActiveVisionProvider(name);
+  }
+
+  saveSpeechProvider(name: string, fields: { apiKey?: string; model?: string; baseUrl?: string; category?: string; voice?: string }): void {
+    if (!this.agent?.config) throw new Error('Agent not initialized');
+    const existing = (this.agent.config.getSpeechProviders?.()?.[name] ?? {}) as Record<string, unknown>;
+    const next: Record<string, unknown> = {
+      apiKey: existing.apiKey ?? '',
+      baseUrl: fields.baseUrl !== undefined ? fields.baseUrl : existing.baseUrl ?? '',
+      model: fields.model !== undefined && fields.model !== '' ? fields.model : existing.model ?? '',
+      category: fields.category ?? existing.category ?? 'stt',
+      voice: fields.voice ?? existing.voice ?? '',
+    };
+    if (fields.apiKey && fields.apiKey !== KEY_MASK) {
+      next.apiKey = fields.apiKey;
+    }
+    this.agent.config.setSpeechProvider(name, next as any);
+  }
+
+  saveVisionProvider(name: string, fields: { apiKey?: string; model?: string; baseUrl?: string }): void {
+    if (!this.agent?.config) throw new Error('Agent not initialized');
+    const existing = (this.agent.config.getVisionProviders?.()?.[name] ?? {}) as Record<string, unknown>;
+    const next: Record<string, unknown> = {
+      apiKey: existing.apiKey ?? '',
+      baseUrl: fields.baseUrl !== undefined ? fields.baseUrl : existing.baseUrl ?? '',
+      model: fields.model !== undefined && fields.model !== '' ? fields.model : existing.model ?? '',
+    };
+    if (fields.apiKey && fields.apiKey !== KEY_MASK) {
+      next.apiKey = fields.apiKey;
+    }
+    this.agent.config.setVisionProvider(name, next as any);
+  }
+
+  /** Cumulative token estimate for a session, from persisted messages via the core's own estimator. */
+  getSessionStats(sessionId: string): { tokenEstimate: number; messageCount: number } {
+    if (!this.agent?.session) return { tokenEstimate: 0, messageCount: 0 };
+    const messages = this.agent.session.getMessages(sessionId);
+    const estimate = this.agent.session.getTokenEstimate(sessionId, this.agent.provider);
+    return { tokenEstimate: estimate, messageCount: messages.length };
+  }
+
   getConfig(): Record<string, unknown> {
     if (!this.agent) return {};
     const cfg = this.agent.config.get();

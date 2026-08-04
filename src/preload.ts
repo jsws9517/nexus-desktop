@@ -14,6 +14,16 @@ const api = {
   getProviders: () => ipcRenderer.invoke('nexus:getProviders'),
   getStatus: () => ipcRenderer.invoke('nexus:getStatus'),
   getPermissions: () => ipcRenderer.invoke('nexus:getPermissions'),
+  getLanguage: () => ipcRenderer.invoke('nexus:getLanguage'),
+  getSpeechVisionConfig: () => ipcRenderer.invoke('nexus:getSpeechVisionConfig'),
+  setActiveSpeechProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveSpeechProvider', { name }),
+  setActiveTtsProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveTtsProvider', { name }),
+  setActiveVisionProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveVisionProvider', { name }),
+  saveSpeechProvider: (name: string, fields: Record<string, unknown>) =>
+    ipcRenderer.invoke('nexus:saveSpeechProvider', { name, fields }),
+  saveVisionProvider: (name: string, fields: Record<string, unknown>) =>
+    ipcRenderer.invoke('nexus:saveVisionProvider', { name, fields }),
+  getSessionStats: (sessionId: string) => ipcRenderer.invoke('nexus:getSessionStats', { sessionId }),
   switchProvider: (name: string) => ipcRenderer.invoke('nexus:switchProvider', { name }),
   switchModel: (modelId: string) => ipcRenderer.invoke('nexus:switchModel', { modelId }),
   saveProvider: (name: string, fields: Record<string, unknown>) =>

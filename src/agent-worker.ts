@@ -16,6 +16,14 @@ type WorkerRequest =
   | { id: number; method: 'getProviders' }
   | { id: number; method: 'getStatus' }
   | { id: number; method: 'getPermissions' }
+  | { id: number; method: 'getLanguage' }
+  | { id: number; method: 'getSpeechVisionConfig' }
+  | { id: number; method: 'setActiveSpeechProvider'; params: { name: string } }
+  | { id: number; method: 'setActiveTtsProvider'; params: { name: string } }
+  | { id: number; method: 'setActiveVisionProvider'; params: { name: string } }
+  | { id: number; method: 'saveSpeechProvider'; params: { name: string; fields: Record<string, unknown> } }
+  | { id: number; method: 'saveVisionProvider'; params: { name: string; fields: Record<string, unknown> } }
+  | { id: number; method: 'getSessionStats'; params: { sessionId: string } }
   | { id: number; method: 'switchProvider'; params: { name: string } }
   | { id: number; method: 'switchModel'; params: { modelId: string } }
   | { id: number; method: 'saveProvider'; params: { name: string; fields: Record<string, unknown> } }
@@ -130,6 +138,35 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         break;
       case 'getPermissions':
         respond(req.id, service.getPermissions());
+        break;
+      case 'getLanguage':
+        respond(req.id, service.getLanguage());
+        break;
+      case 'getSpeechVisionConfig':
+        respond(req.id, service.getSpeechVisionConfig());
+        break;
+      case 'setActiveSpeechProvider':
+        service.setActiveSpeechProvider(req.params.name);
+        respond(req.id);
+        break;
+      case 'setActiveTtsProvider':
+        service.setActiveTtsProvider(req.params.name);
+        respond(req.id);
+        break;
+      case 'setActiveVisionProvider':
+        service.setActiveVisionProvider(req.params.name);
+        respond(req.id);
+        break;
+      case 'saveSpeechProvider':
+        service.saveSpeechProvider(req.params.name, req.params.fields);
+        respond(req.id);
+        break;
+      case 'saveVisionProvider':
+        service.saveVisionProvider(req.params.name, req.params.fields);
+        respond(req.id);
+        break;
+      case 'getSessionStats':
+        respond(req.id, service.getSessionStats(req.params.sessionId));
         break;
       case 'switchProvider':
         await service.switchProvider(req.params.name);

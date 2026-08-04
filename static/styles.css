@@ -382,8 +382,19 @@ body {
 #perm-question { white-space: pre-wrap; font-family: inherit; font-size: 13px; color: var(--text); background: var(--code-bg); border-radius: 8px; padding: 12px; max-height: 220px; overflow-y: auto; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }
-.modal.settings { width: 620px; }
+.modal.settings { width: 660px; max-width: 92vw; max-height: 86vh; }
 #settings-body { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 6px;
+  padding: 6px 2px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.active-tag { font-size: 11px; }
 .provider-row {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -397,6 +408,15 @@ body {
 .row-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .row-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
 .row-grid input, .provider-row input {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 13px;
+  outline: none;
+}
+.row-grid select {
   background: var(--bg-input);
   color: var(--text);
   border: 1px solid var(--border);
@@ -426,6 +446,7 @@ body {
 
 .info-grid { display: flex; flex-direction: column; gap: 7px; }
 .info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.info-row-top { align-items: flex-start; }
 .info-label { font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
 .info-value {
   font-size: 12px;
@@ -435,6 +456,26 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   word-break: break-all;
+  min-width: 0;
+}
+.info-value-multiline { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; white-space: normal; }
+.mcp-line {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  max-width: 100%;
+}
+.mcp-line-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.mcp-line-count {
+  color: var(--text-dim);
+  font-size: 11px;
+  flex-shrink: 0;
 }
 
 #task-list { display: flex; flex-direction: column; gap: 8px; }

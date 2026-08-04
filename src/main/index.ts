@@ -146,6 +146,14 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getProviders', call('getProviders'));
   ipcMain.handle('nexus:getStatus', call('getStatus'));
   ipcMain.handle('nexus:getPermissions', call('getPermissions'));
+  ipcMain.handle('nexus:getLanguage', call('getLanguage'));
+  ipcMain.handle('nexus:getSpeechVisionConfig', call('getSpeechVisionConfig'));
+  ipcMain.handle('nexus:setActiveSpeechProvider', call('setActiveSpeechProvider'));
+  ipcMain.handle('nexus:setActiveTtsProvider', call('setActiveTtsProvider'));
+  ipcMain.handle('nexus:setActiveVisionProvider', call('setActiveVisionProvider'));
+  ipcMain.handle('nexus:saveSpeechProvider', call('saveSpeechProvider'));
+  ipcMain.handle('nexus:saveVisionProvider', call('saveVisionProvider'));
+  ipcMain.handle('nexus:getSessionStats', call('getSessionStats'));
   ipcMain.handle('nexus:switchProvider', call('switchProvider'));
   ipcMain.handle('nexus:switchModel', call('switchModel'));
   ipcMain.handle('nexus:saveProvider', call('saveProvider'));

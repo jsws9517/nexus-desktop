@@ -10,13 +10,13 @@
   <div id="app">
     <header id="toolbar">
       <div class="toolbar-left">
-        <button id="btn-open-folder" class="btn ghost" title="Open project folder">📁 打开项目</button>
+        <button id="btn-open-folder" class="btn ghost" title="Open project folder" data-i18n="openProject">📁 打开项目</button>
         <span id="cwd-label" class="cwd" title="Current project directory"></span>
       </div>
       <div class="toolbar-right">
         <label class="field-label">Provider</label>
         <select id="provider-select"></select>
-        <button id="btn-settings" class="btn ghost" title="Settings">⚙️ 设置</button>
+        <button id="btn-settings" class="btn ghost" title="Settings" data-i18n="settings">⚙️ 设置</button>
         <span id="busy-indicator" class="busy hidden">●</span>
       </div>
     </header>
@@ -24,8 +24,8 @@
     <div id="layout">
       <aside id="sidebar">
         <div class="sidebar-head">
-          <span class="sidebar-title">会话</span>
-          <button id="btn-new-session" class="btn primary small" title="New session">＋ 新建</button>
+          <span class="sidebar-title" data-i18n="sessions">会话</span>
+          <button id="btn-new-session" class="btn primary small" title="New session" data-i18n="newSession">＋ 新建</button>
         </div>
         <ul id="session-list"></ul>
       </aside>
@@ -35,43 +35,46 @@
         <div id="input-area">
           <div id="attachments" class="attachments hidden"></div>
           <div class="composer">
-            <button id="btn-attach" class="btn ghost icon" title="添加附件">📎</button>
+            <button id="btn-attach" class="btn ghost icon" data-i18n-title="attachTitle" data-i18n="attach">📎</button>
             <div id="mcp-box" class="mcp-box">
-              <label id="mcp-toggle" class="mcp-toggle" title="主开关：启用/禁用全部 MCP 工具">
+              <label id="mcp-toggle" class="mcp-toggle" data-i18n-title="mcpMasterTitle">
                 <input type="checkbox" checked />
                 <span id="mcp-status">MCP</span>
               </label>
-              <button id="mcp-servers-btn" class="mcp-caret" title="选择 MCP 服务器工具">▾</button>
+              <button id="mcp-servers-btn" class="mcp-caret" data-i18n-title="mcpPickTitle">▾</button>
               <div id="mcp-popover" class="mcp-popover hidden">
-                <div class="mcp-popover-title">MCP 服务器工具（当前会话）</div>
+                <div class="mcp-popover-title" data-i18n="mcpPopoverTitle">MCP 服务器工具（当前会话）</div>
                 <div id="mcp-servers"></div>
               </div>
             </div>
-            <textarea id="input" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
+            <textarea id="input" rows="2" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
           </div>
           <div class="input-actions">
             <span id="input-status"></span>
-            <button id="btn-send" class="btn primary">发送</button>
-            <button id="btn-stop" class="btn danger hidden">停止</button>
+            <button id="btn-send" class="btn primary" data-i18n="send">发送</button>
+            <button id="btn-stop" class="btn danger hidden" data-i18n="stop">停止</button>
           </div>
         </div>
       </main>
 
       <aside id="right-sidebar">
         <div class="rside-section">
-          <div class="rside-title">会话信息</div>
+          <div class="rside-title" data-i18n="sessionInfo">会话信息</div>
           <div class="info-grid">
             <div class="info-row"><span class="info-label">Provider</span><span class="info-value" id="rside-provider">—</span></div>
             <div class="info-row"><span class="info-label">Model</span><span class="info-value" id="rside-model">—</span></div>
-            <div class="info-row"><span class="info-label">权限模式</span><span class="info-value" id="rside-perm">—</span></div>
-            <div class="info-row"><span class="info-label">活跃 MCP</span><span class="info-value" id="rside-mcp">—</span></div>
+            <div class="info-row"><span class="info-label" data-i18n="permMode">权限模式</span><span class="info-value" id="rside-perm">—</span></div>
+            <div class="info-row"><span class="info-label" data-i18n="tokenUsage">Token 用量</span><span class="info-value" id="rside-token">—</span></div>
+            <div class="info-row"><span class="info-label" data-i18n="speechModel">语音模型</span><span class="info-value" id="rside-speech">—</span></div>
+            <div class="info-row"><span class="info-label" data-i18n="visionModel">视觉模型</span><span class="info-value" id="rside-vision">—</span></div>
+            <div class="info-row info-row-top"><span class="info-label" data-i18n="activeMcp">活跃 MCP</span><span class="info-value info-value-multiline" id="rside-mcp">—</span></div>
           </div>
         </div>
         <div class="rside-divider"></div>
         <div class="rside-section">
-          <div class="rside-title">任务进展</div>
+          <div class="rside-title" data-i18n="taskProgress">任务进展</div>
           <div id="task-list"></div>
-          <div id="task-empty" class="task-empty hidden">暂无任务</div>
+          <div id="task-empty" class="task-empty hidden" data-i18n="noTasks">暂无任务</div>
         </div>
       </aside>
     </div>
@@ -80,11 +83,11 @@
   <!-- Permission modal -->
   <div id="perm-overlay" class="overlay hidden">
     <div class="modal">
-      <h3>权限确认</h3>
+      <h3 data-i18n="permRequired">权限确认</h3>
       <pre id="perm-question"></pre>
       <div class="modal-actions">
-        <button id="perm-deny" class="btn danger">拒绝</button>
-        <button id="perm-allow" class="btn primary">允许</button>
+        <button id="perm-deny" class="btn danger" data-i18n="deny">拒绝</button>
+        <button id="perm-allow" class="btn primary" data-i18n="allow">允许</button>
       </div>
     </div>
   </div>
@@ -93,13 +96,14 @@
   <div id="settings-overlay" class="overlay hidden">
     <div class="modal settings">
       <div class="modal-head">
-        <h3>设置</h3>
+        <h3 data-i18n="settings">设置</h3>
         <button id="settings-close" class="btn ghost small">✕</button>
       </div>
       <div id="settings-body"></div>
       <div class="modal-actions">
         <span id="settings-msg"></span>
-        <button id="settings-save" class="btn primary">保存</button>
+        <button id="settings-web" class="btn ghost" data-i18n="advancedConfig">打开完整配置</button>
+        <button id="settings-save" class="btn primary" data-i18n="save">保存</button>
       </div>
     </div>
   </div>
@@ -107,11 +111,11 @@
   <!-- Confirm modal -->
   <div id="confirm-overlay" class="overlay hidden">
     <div class="modal small">
-      <h3>确认</h3>
+      <h3 data-i18n="confirm">确认</h3>
       <p id="confirm-msg"></p>
       <div class="modal-actions">
-        <button id="confirm-cancel" class="btn ghost">取消</button>
-        <button id="confirm-ok" class="btn primary">确定</button>
+        <button id="confirm-cancel" class="btn ghost" data-i18n="cancel">取消</button>
+        <button id="confirm-ok" class="btn primary" data-i18n="ok">确定</button>
       </div>
     </div>
   </div>
@@ -119,11 +123,11 @@
   <!-- Rename modal -->
   <div id="rename-overlay" class="overlay hidden">
     <div class="modal small">
-      <h3>重命名会话</h3>
-      <input id="rename-input" class="modal-input" placeholder="会话名称" />
+      <h3 data-i18n="renameSession">重命名会话</h3>
+      <input id="rename-input" class="modal-input" data-i18n-placeholder="sessionNamePh" placeholder="会话名称" />
       <div class="modal-actions">
-        <button id="rename-cancel" class="btn ghost">取消</button>
-        <button id="rename-ok" class="btn primary">确定</button>
+        <button id="rename-cancel" class="btn ghost" data-i18n="cancel">取消</button>
+        <button id="rename-ok" class="btn primary" data-i18n="ok">确定</button>
       </div>
     </div>
   </div>

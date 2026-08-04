@@ -37,6 +37,35 @@ interface McpServerStatus {
   status: string;
 }
 
+interface SpeechProviderSettings {
+  name: string;
+  category: string;
+  model: string;
+  baseUrl: string;
+  voice?: string;
+  hasKey: boolean;
+}
+
+interface VisionProviderSettings {
+  name: string;
+  model: string;
+  baseUrl: string;
+  hasKey: boolean;
+}
+
+interface SpeechVisionConfig {
+  activeSpeech: string;
+  activeTts: string;
+  activeVision: string;
+  speechProviders: SpeechProviderSettings[];
+  visionProviders: VisionProviderSettings[];
+}
+
+interface SessionStats {
+  tokenEstimate: number;
+  messageCount: number;
+}
+
 type AgentEvent =
   | { type: 'session_start'; sessionId: string }
   | { type: 'turn_start'; turn: number }
@@ -67,6 +96,14 @@ declare global {
       getProviders(): Promise<ProviderInfo[]>;
       getStatus(): Promise<StatusInfo>;
       getPermissions(): Promise<PermissionsInfo>;
+      getLanguage(): Promise<string>;
+      getSpeechVisionConfig(): Promise<SpeechVisionConfig>;
+      setActiveSpeechProvider(name: string): Promise<unknown>;
+      setActiveTtsProvider(name: string): Promise<unknown>;
+      setActiveVisionProvider(name: string): Promise<unknown>;
+      saveSpeechProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
+      saveVisionProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
+      getSessionStats(sessionId: string): Promise<SessionStats>;
       switchProvider(name: string): Promise<unknown>;
       switchModel(modelId: string): Promise<unknown>;
       saveProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
@@ -111,6 +148,9 @@ const rsideProvider = $('#rside-provider');
 const rsideModel = $('#rside-model');
 const rsidePerm = $('#rside-perm');
 const rsideMcp = $('#rside-mcp');
+const rsideToken = $('#rside-token');
+const rsideSpeech = $('#rside-speech');
+const rsideVision = $('#rside-vision');
 const taskListEl = $('#task-list');
 const taskEmptyEl = $('#task-empty');
 
@@ -137,6 +177,122 @@ const tasks = new Map<string, TaskItem>();
 let curAssistant: { bubble: HTMLElement; stream: HTMLElement; buffer: string } | null = null;
 let curThinking: { content: HTMLElement; buffer: string } | null = null;
 const toolCards = new Map<number, { card: HTMLElement; resultEl: HTMLElement | null }>();
+
+// ---------- i18n (syncs with core config language) ----------
+type Lang = 'en' | 'zh-CN';
+let uiLang: Lang = 'zh-CN';
+
+const STR: Record<string, { 'zh-CN': string; en: string }> = {
+  openProject: { 'zh-CN': '📁 打开项目', en: '📁 Open Project' },
+  noProject: { 'zh-CN': '未选择项目', en: 'No project selected' },
+  settings: { 'zh-CN': '⚙️ 设置', en: '⚙️ Settings' },
+  sessions: { 'zh-CN': '会话', en: 'Sessions' },
+  newSession: { 'zh-CN': '＋ 新建', en: '＋ New' },
+  attach: { 'zh-CN': '📎', en: '📎' },
+  attachTitle: { 'zh-CN': '添加附件', en: 'Attach files' },
+  mcpMasterTitle: { 'zh-CN': '主开关：启用/禁用全部 MCP 工具', en: 'Master switch: enable/disable all MCP tools' },
+  mcpPickTitle: { 'zh-CN': '选择 MCP 服务器工具', en: 'Select MCP server tools' },
+  mcpPopoverTitle: { 'zh-CN': 'MCP 服务器工具（当前会话）', en: 'MCP server tools (current session)' },
+  inputPlaceholder: { 'zh-CN': '输入消息，Enter 发送，Shift+Enter 换行…', en: 'Type a message, Enter to send…' },
+  send: { 'zh-CN': '发送', en: 'Send' },
+  stop: { 'zh-CN': '停止', en: 'Stop' },
+  sessionInfo: { 'zh-CN': '会话信息', en: 'Session Info' },
+  permMode: { 'zh-CN': '权限模式', en: 'Permission' },
+  activeMcp: { 'zh-CN': '活跃 MCP', en: 'Active MCP' },
+  tokenUsage: { 'zh-CN': 'Token 用量', en: 'Token Usage' },
+  speechModel: { 'zh-CN': '语音模型', en: 'Speech' },
+  visionModel: { 'zh-CN': '视觉模型', en: 'Vision' },
+  none: { 'zh-CN': '无', en: 'None' },
+  toolsCount: { 'zh-CN': '{n} 工具', en: '{n} tools' },
+  mcpDisabled: { 'zh-CN': '关闭', en: 'Disabled' },
+  mcpCount: { 'zh-CN': '{n} 台', en: '{n}' },
+  taskProgress: { 'zh-CN': '任务进展', en: 'Task Progress' },
+  noTasks: { 'zh-CN': '暂无任务', en: 'No tasks' },
+  running: { 'zh-CN': '进行中 · {role}', en: 'Running · {role}' },
+  completed: { 'zh-CN': '已完成', en: 'Completed' },
+  failed: { 'zh-CN': '失败：{error}', en: 'Failed: {error}' },
+  thinkingDot: { 'zh-CN': '💭 思考中…', en: '💭 Thinking…' },
+  collapseThinking: { 'zh-CN': '💭 收起思考', en: '💭 Collapse' },
+  thought: { 'zh-CN': '💭 思考', en: '💭 Thought' },
+  noMcpServers: { 'zh-CN': '未配置 MCP 服务器', en: 'No MCP servers configured' },
+  mcpLoadFailed: { 'zh-CN': '加载失败', en: 'Failed to load' },
+  mcpFailed: { 'zh-CN': '失败', en: 'Failed' },
+  mcpNotConnected: { 'zh-CN': '未连接', en: 'Not connected' },
+  sessionCreated: { 'zh-CN': '新会话已创建。发送消息开始对话。', en: 'New session created. Send a message to start.' },
+  sessionRestored: { 'zh-CN': '已恢复会话', en: 'Session restored' },
+  noProviderConfigured: { 'zh-CN': '未配置 Provider。点击右上角 ⚙️ 设置填写 API Key。', en: 'No provider configured. Click ⚙️ Settings to add an API key.' },
+  startFailed: { 'zh-CN': '启动失败: ', en: 'Failed to start: ' },
+  error: { 'zh-CN': '⚠️ 错误: ', en: '⚠️ Error: ' },
+  attachFailed: { 'zh-CN': '⚠️ 附件失败: ', en: '⚠️ Attach failed: ' },
+  runningEllipsis: { 'zh-CN': '运行中…', en: 'Running…' },
+  queued: { 'zh-CN': '⏳ 排队：{n} 条待发…', en: '⏳ Queued: {n} pending…' },
+  rename: { 'zh-CN': '重命名', en: 'Rename' },
+  delete: { 'zh-CN': '删除', en: 'Delete' },
+  renameSession: { 'zh-CN': '重命名会话', en: 'Rename Session' },
+  sessionNamePh: { 'zh-CN': '会话名称', en: 'Session name' },
+  deleteConfirm: { 'zh-CN': '删除会话 "{name}"?', en: 'Delete session "{name}"?' },
+  confirm: { 'zh-CN': '确认', en: 'Confirm' },
+  cancel: { 'zh-CN': '取消', en: 'Cancel' },
+  ok: { 'zh-CN': '确定', en: 'OK' },
+  permRequired: { 'zh-CN': '权限确认', en: 'Permission Required' },
+  allow: { 'zh-CN': '允许', en: 'Allow' },
+  deny: { 'zh-CN': '拒绝', en: 'Deny' },
+  saved: { 'zh-CN': '已保存', en: 'Saved' },
+  save: { 'zh-CN': '保存', en: 'Save' },
+  apiKey: { 'zh-CN': 'API Key', en: 'API Key' },
+  model: { 'zh-CN': '模型', en: 'Model' },
+  baseUrlOptional: { 'zh-CN': 'Base URL（可选）', en: 'Base URL (optional)' },
+  type: { 'zh-CN': '类型', en: 'Type' },
+  apiKeyKeep: { 'zh-CN': '••••••••••••（留空保持不变）', en: '•••••••••••• (leave blank to keep)' },
+  apiKeyEnter: { 'zh-CN': '输入 API Key', en: 'Enter API Key' },
+  activeNow: { 'zh-CN': '● 当前', en: '● Active' },
+  switchedProvider: { 'zh-CN': '已切换到 Provider: {name}（{model}）', en: 'Switched to Provider: {name} ({model})' },
+  projectDir: { 'zh-CN': '📁 项目目录: {cwd}', en: '📁 Project directory: {cwd}' },
+  advancedConfig: { 'zh-CN': '打开完整配置', en: 'Open full config' },
+  speechSection: { 'zh-CN': '语音模型 Speech', en: 'Speech Models' },
+  visionSection: { 'zh-CN': '视觉模型 Vision', en: 'Vision Models' },
+  sttLabel: { 'zh-CN': '语音识别 STT', en: 'Speech-to-Text (STT)' },
+  ttsLabel: { 'zh-CN': '语音合成 TTS', en: 'Text-to-Speech (TTS)' },
+  visionLabel: { 'zh-CN': '视觉分析', en: 'Vision Analysis' },
+  active: { 'zh-CN': '当前激活', en: 'Active' },
+  tokenEstimated: { 'zh-CN': '{n}（估算）', en: '{n} (est.)' },
+  tokenMsgHint: { 'zh-CN': '约 {n} 条消息', en: '~{n} messages' },
+  languageLabel: { 'zh-CN': '界面语言', en: 'Language' },
+};
+
+function t(key: string, vars?: Record<string, string | number>): string {
+  const entry = STR[key]?.[uiLang] ?? STR[key]?.['zh-CN'] ?? key;
+  if (!vars) return entry;
+  return entry.replace(/\{(\w+)\}/g, (_m, k) => (vars[k] !== undefined ? String(vars[k]) : ''));
+}
+
+function fmtNum(n: number): string {
+  return n.toLocaleString(uiLang === 'zh-CN' ? 'zh-CN' : 'en-US');
+}
+
+function applyI18n(): void {
+  document.documentElement.lang = uiLang;
+  document.title = 'Nexus Desktop';
+  document.querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => {
+    el.textContent = t(el.dataset.i18n!);
+  });
+  document.querySelectorAll<HTMLElement>('[data-i18n-title]').forEach((el) => {
+    el.title = t(el.dataset.i18nTitle!);
+  });
+  document.querySelectorAll<HTMLInputElement>('[data-i18n-placeholder]').forEach((el) => {
+    el.placeholder = t(el.dataset.i18nPlaceholder!);
+  });
+}
+
+async function loadLanguage(): Promise<void> {
+  try {
+    const lang = await window.nexusDesktop.getLanguage();
+    uiLang = lang === 'en' ? 'en' : 'zh-CN';
+  } catch {
+    uiLang = 'zh-CN';
+  }
+  applyI18n();
+}
 
 // ---------- markdown-ish rendering ----------
 function esc(s: string): string {
@@ -270,7 +426,7 @@ function ensureThinking(): { content: HTMLElement; buffer: string } {
     wrap.className = 'thinking';
     const toggle = document.createElement('button');
     toggle.className = 'thinking-toggle';
-    toggle.textContent = '💭 思考中…';
+    toggle.textContent = t('thinkingDot');
     const content = document.createElement('div');
     content.className = 'thinking-content hidden';
     content.style.whiteSpace = 'pre-wrap';
@@ -279,7 +435,7 @@ function ensureThinking(): { content: HTMLElement; buffer: string } {
     messagesEl.appendChild(wrap);
     toggle.addEventListener('click', () => {
       content.classList.toggle('hidden');
-      toggle.textContent = content.classList.contains('hidden') ? '💭 思考中…' : '💭 收起思考';
+      toggle.textContent = content.classList.contains('hidden') ? t('thinkingDot') : t('collapseThinking');
     });
     curThinking = { content, buffer: '' };
   }
@@ -321,6 +477,7 @@ function handleEvent(event: AgentEvent): void {
       tasks.clear();
       renderTasks();
       void refreshSidebarSession();
+      void refreshSessionStats();
       break;
     case 'turn_start':
       tasks.clear();
@@ -380,12 +537,13 @@ function handleEvent(event: AgentEvent): void {
         curAssistant.stream.innerHTML = renderBlocks(curAssistant.buffer);
       }
       if (curThinking) {
-        const t = curThinking;
-        t.content.textContent = t.buffer;
-        const toggle = t.content.parentElement?.querySelector('.thinking-toggle');
-        if (toggle) toggle.textContent = '💭 思考';
+        const t2 = curThinking;
+        t2.content.textContent = t2.buffer;
+        const toggle = t2.content.parentElement?.querySelector('.thinking-toggle');
+        if (toggle) toggle.textContent = t('thought');
       }
       setBusy(false);
+      void refreshSessionStats();
       break;
     }
     case 'session_end':
@@ -400,7 +558,7 @@ function setBusy(value: boolean): void {
   busyIndicator.classList.toggle('hidden', !value);
   sendBtn.classList.toggle('hidden', value);
   stopBtn.classList.toggle('hidden', !value);
-  if (value) inputStatus.textContent = '运行中…';
+  if (value) inputStatus.textContent = t('runningEllipsis');
   else inputStatus.textContent = '';
 }
 
@@ -509,21 +667,21 @@ async function refreshSessions(activeId?: string): Promise<void> {
     const actions = document.createElement('div');
     actions.className = 'session-actions';
     const renameBtn = document.createElement('button');
-    renameBtn.textContent = '重命名';
+    renameBtn.textContent = t('rename');
     renameBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const newName = await promptDialog('重命名会话', s.name);
+      const newName = await promptDialog(t('renameSession'), s.name);
       if (newName) {
         await window.nexusDesktop.renameSession(s.id, newName);
         await refreshSessions();
       }
     });
     const delBtn = document.createElement('button');
-    delBtn.textContent = '删除';
+    delBtn.textContent = t('delete');
     delBtn.style.color = 'var(--danger)';
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const ok = await confirmDialog(`删除会话 "${s.name}"?`);
+      const ok = await confirmDialog(t('deleteConfirm', { name: s.name }));
       if (!ok) return;
       await window.nexusDesktop.deleteSession(s.id);
       delete mcpPrefs[s.id];
@@ -561,10 +719,11 @@ async function resumeSession(id: string): Promise<void> {
       curAssistant = null;
     }
   }
-  addSystem('已恢复会话');
+  addSystem(t('sessionRestored'));
   await applyMcpPref(currentSessionId);
   await refreshSessions(id);
   await refreshSidebarSession();
+  await refreshSessionStats();
 }
 
 async function startNewSession(): Promise<void> {
@@ -574,10 +733,11 @@ async function startNewSession(): Promise<void> {
   curAssistant = null;
   curThinking = null;
   currentSessionId = await window.nexusDesktop.startSession();
-  addSystem('新会话已创建。发送消息开始对话。');
+  addSystem(t('sessionCreated'));
   await applyMcpPref(currentSessionId);
   await refreshSessions();
   await refreshSidebarSession();
+  await refreshSessionStats();
 }
 
 async function startOrResumeLatestSession(): Promise<void> {
@@ -597,7 +757,9 @@ async function startOrResumeLatestSession(): Promise<void> {
 
 // ---------- right sidebar: session info + task progress ----------
 function permLabel(mode: string): string {
-  return mode === 'auto' ? 'auto（自动放行）' : mode === 'prompt' ? 'prompt（每次询问）' : mode || '—';
+  if (mode === 'auto') return uiLang === 'zh-CN' ? 'auto（自动放行）' : 'auto (auto-approve)';
+  if (mode === 'prompt') return uiLang === 'zh-CN' ? 'prompt（每次询问）' : 'prompt (ask each time)';
+  return mode || '—';
 }
 
 async function refreshSidebarSession(): Promise<void> {
@@ -611,10 +773,62 @@ async function refreshSidebarSession(): Promise<void> {
   rsideModel.textContent = st.model || '—';
   rsidePerm.textContent = permLabel(perms.mode);
   const connected = mcp.servers.filter((s) => s.status !== 'disconnected');
-  rsideMcp.textContent = connected.length > 0
-    ? connected.map((s) => `${s.name}(${s.toolCount})`).join('、')
-    : '无';
-  rsideMcp.title = connected.length > 0 ? connected.map((s) => s.name).join('\n') : '';
+  rsideMcp.innerHTML = '';
+  if (connected.length === 0) {
+    rsideMcp.textContent = t('none');
+  } else {
+    for (const s of connected) {
+      const row = document.createElement('div');
+      row.className = 'mcp-line';
+      const nm = document.createElement('span');
+      nm.className = 'mcp-line-name';
+      nm.textContent = s.name;
+      nm.title = s.name;
+      const cnt = document.createElement('span');
+      cnt.className = 'mcp-line-count';
+      cnt.textContent = t('toolsCount', { n: s.toolCount });
+      row.appendChild(nm);
+      row.appendChild(cnt);
+      rsideMcp.appendChild(row);
+    }
+  }
+  await refreshSidebarModels();
+}
+
+let svConfig: SpeechVisionConfig = {
+  activeSpeech: '',
+  activeTts: '',
+  activeVision: '',
+  speechProviders: [],
+  visionProviders: [],
+};
+
+async function refreshSidebarModels(): Promise<void> {
+  try {
+    svConfig = await window.nexusDesktop.getSpeechVisionConfig();
+  } catch {
+    svConfig = { activeSpeech: '', activeTts: '', activeVision: '', speechProviders: [], visionProviders: [] };
+  }
+  const sp = svConfig.speechProviders.find((p) => p.name === svConfig.activeSpeech);
+  const tts = svConfig.speechProviders.find((p) => p.name === svConfig.activeTts);
+  const vp = svConfig.visionProviders.find((p) => p.name === svConfig.activeVision);
+  rsideSpeech.textContent = sp
+    ? `${sp.name} · ${sp.model}`
+    : `${tts ? tts.name : ''}${tts ? ' · ' + tts.model : ''}` || t('none');
+  rsideSpeech.title = [sp && sp.category === 'stt' ? `STT: ${sp.name} (${sp.model})` : '', tts ? `TTS: ${tts.name} (${tts.model})` : ''].filter(Boolean).join('\n');
+  rsideVision.textContent = vp ? `${vp.name} · ${vp.model}` : t('none');
+  rsideVision.title = vp ? `${vp.name} (${vp.model})` : '';
+}
+
+async function refreshSessionStats(): Promise<void> {
+  if (!currentSessionId) return;
+  try {
+    const stats = await window.nexusDesktop.getSessionStats(currentSessionId);
+    rsideToken.textContent = t('tokenEstimated', { n: fmtNum(stats.tokenEstimate) });
+    rsideToken.title = t('tokenMsgHint', { n: stats.messageCount });
+  } catch {
+    rsideToken.textContent = '—';
+  }
 }
 
 function renderTasks(): void {
@@ -623,25 +837,25 @@ function renderTasks(): void {
   taskEmptyEl.classList.toggle('hidden', hasTasks);
   taskListEl.innerHTML = '';
   if (!hasTasks) return;
-  for (const t of items) {
+  for (const item of items) {
     const li = document.createElement('div');
     li.className = 'task-item';
     const badge = document.createElement('span');
-    badge.className = `task-badge ${t.status}`;
-    badge.textContent = t.status === 'running' ? '⏳' : t.status === 'completed' ? '✓' : '✗';
+    badge.className = `task-badge ${item.status}`;
+    badge.textContent = item.status === 'running' ? '⏳' : item.status === 'completed' ? '✓' : '✗';
     const body = document.createElement('div');
     body.className = 'task-body';
     const title = document.createElement('div');
     title.className = 'task-title';
-    title.textContent = t.description || t.id;
-    title.title = t.description || '';
+    title.textContent = item.description || item.id;
+    title.title = item.description || '';
     const meta = document.createElement('div');
-    meta.className = `task-meta ${t.status}`;
-    meta.textContent = t.status === 'running'
-      ? `进行中 · ${t.role}`
-      : t.status === 'completed'
-        ? '已完成'
-        : `失败：${t.error ?? ''}`;
+    meta.className = `task-meta ${item.status}`;
+    meta.textContent = item.status === 'running'
+      ? t('running', { role: item.role })
+      : item.status === 'completed'
+        ? t('completed')
+        : t('failed', { error: item.error ?? '' });
     body.appendChild(title);
     body.appendChild(meta);
     li.appendChild(badge);
@@ -719,7 +933,7 @@ async function applyServerPrefs(prefs: Record<string, boolean>): Promise<void> {
 async function refreshMcpStatus(): Promise<void> {
   try {
     const s = await window.nexusDesktop.getMcpStatus();
-    mcpStatusEl.textContent = s.enabled ? `${s.servers.length} 台` : '关闭';
+    mcpStatusEl.textContent = s.enabled ? t('mcpCount', { n: s.servers.length }) : t('mcpDisabled');
     const label = $('#mcp-toggle');
     label.classList.toggle('on', s.enabled);
     label.classList.toggle('off', !s.enabled);
@@ -737,7 +951,7 @@ async function loadMcpServersList(): Promise<void> {
     const servers = await window.nexusDesktop.getMcpServers();
     const prefs = currentSessionId ? sessionPrefs(currentSessionId) : {};
     if (servers.length === 0) {
-      mcpServersEl.innerHTML = '<div class="mcp-empty">未配置 MCP 服务器</div>';
+      mcpServersEl.innerHTML = `<div class="mcp-empty">${t('noMcpServers')}</div>`;
       return;
     }
     mcpServersEl.innerHTML = '';
@@ -765,13 +979,13 @@ async function loadMcpServersList(): Promise<void> {
       const meta = document.createElement('span');
       meta.className = 'mcp-server-meta';
       if (s.connected) {
-        meta.textContent = `${s.toolCount} 工具`;
+        meta.textContent = t('toolsCount', { n: s.toolCount });
       } else if (s.error) {
-        meta.textContent = '失败';
+        meta.textContent = t('mcpFailed');
         meta.style.color = 'var(--danger)';
         meta.title = `${s.error}${s.stderr ? `\n${s.stderr}` : ''}`;
       } else {
-        meta.textContent = '未连接';
+        meta.textContent = t('mcpNotConnected');
       }
       row.appendChild(cb);
       row.appendChild(name);
@@ -779,7 +993,7 @@ async function loadMcpServersList(): Promise<void> {
       mcpServersEl.appendChild(row);
     }
   } catch {
-    mcpServersEl.innerHTML = '<div class="mcp-loading">加载失败</div>';
+    mcpServersEl.innerHTML = `<div class="mcp-loading">${t('mcpLoadFailed')}</div>`;
   }
 }
 mcpServersBtn.addEventListener('click', (e) => {
@@ -802,7 +1016,7 @@ mcpToggle.addEventListener('change', async () => {
       await window.nexusDesktop.setMcpEnabled(false);
     }
   } catch (err) {
-    addSystem(`⚠️ MCP 切换失败: ${err instanceof Error ? err.message : String(err)}`);
+    addSystem(`⚠️ MCP: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     mcpToggle.disabled = false;
   }
@@ -833,11 +1047,11 @@ function enqueue(text: string): void {
 function drain(): void {
   if (running) {
     setBusy(true);
-    if (pendingQueue.length > 0) inputStatus.textContent = `⏳ 排队：${pendingQueue.length} 条待发…`;
+    if (pendingQueue.length > 0) inputStatus.textContent = t('queued', { n: pendingQueue.length });
     return;
   }
-  const t = pendingQueue.shift();
-  if (t === undefined) {
+  const text = pendingQueue.shift();
+  if (text === undefined) {
     setBusy(false);
     return;
   }
@@ -848,10 +1062,10 @@ function drain(): void {
   toolCards.clear();
   void (async () => {
     try {
-      await window.nexusDesktop.chat(t);
+      await window.nexusDesktop.chat(text);
       await refreshSessions(currentSessionId);
     } catch (err) {
-      addSystem(`⚠️ 错误: ${err instanceof Error ? err.message : String(err)}`);
+      addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
     } finally {
       running = false;
       drain();
@@ -874,7 +1088,7 @@ attachBtn.addEventListener('click', async () => {
     const res = await window.nexusDesktop.openFile();
     if (!res.canceled && res.path) attachFiles([res.path]);
   } catch (err) {
-    inputStatus.textContent = `⚠️ 附件失败: ${err instanceof Error ? err.message : String(err)}`;
+    inputStatus.textContent = `${t('attachFailed')}${err instanceof Error ? err.message : String(err)}`;
   }
 });
 
@@ -915,98 +1129,291 @@ const settingsBody = $('#settings-body');
 const settingsMsg = $('#settings-msg');
 let settingsDirty = false;
 
+function buildProviderRow(p: ProviderInfo): void {
+  const row = document.createElement('div');
+  row.className = 'provider-row';
+  row.dataset.name = p.name;
+  const head = document.createElement('div');
+  head.className = 'row-head';
+  const title = document.createElement('b');
+  title.textContent = `${p.name} (${p.type})`;
+  const active = document.createElement('span');
+  active.style.color = p.name === status.provider ? 'var(--ok)' : 'var(--text-dim)';
+  active.textContent = p.name === status.provider ? t('activeNow') : '';
+  head.appendChild(title);
+  head.appendChild(active);
+  row.appendChild(head);
+
+  const grid = document.createElement('div');
+  grid.className = 'row-grid';
+
+  const apiKeyField = document.createElement('input');
+  apiKeyField.placeholder = p.hasKey ? t('apiKeyKeep') : t('apiKeyEnter');
+  apiKeyField.dataset.field = 'apiKey';
+  const apiKeyLbl = document.createElement('label');
+  apiKeyLbl.textContent = t('apiKey');
+  apiKeyLbl.appendChild(apiKeyField);
+  grid.appendChild(apiKeyLbl);
+
+  const modelField = document.createElement('input');
+  modelField.value = p.model;
+  modelField.dataset.field = 'model';
+  const modelLbl = document.createElement('label');
+  modelLbl.textContent = t('model');
+  modelLbl.appendChild(modelField);
+  grid.appendChild(modelLbl);
+
+  const baseUrlField = document.createElement('input');
+  baseUrlField.value = p.baseUrl ?? '';
+  baseUrlField.placeholder = 'https://api.example.com/v1';
+  baseUrlField.dataset.field = 'baseUrl';
+  const baseUrlLbl = document.createElement('label');
+  baseUrlLbl.textContent = t('baseUrlOptional');
+  baseUrlLbl.appendChild(baseUrlField);
+  grid.appendChild(baseUrlLbl);
+
+  const typeField = document.createElement('input');
+  typeField.value = p.type;
+  typeField.dataset.field = 'type';
+  const typeLbl = document.createElement('label');
+  typeLbl.textContent = t('type');
+  typeLbl.appendChild(typeField);
+  grid.appendChild(typeLbl);
+
+  row.appendChild(grid);
+  grid.querySelectorAll('input').forEach((el) => {
+    el.addEventListener('input', () => {
+      settingsDirty = true;
+      settingsMsg.textContent = '';
+    });
+  });
+  settingsBody.appendChild(row);
+}
+
+interface ModelRowOptions {
+  className: string;
+  dataKind: string;
+  dataRole: string;
+  title: string;
+  providers: Array<{ name: string; model: string; baseUrl: string; hasKey: boolean }>;
+  activeName: string;
+  showCategory?: boolean;
+}
+
+function buildModelRow(opts: ModelRowOptions): void {
+  const row = document.createElement('div');
+  row.className = `provider-row ${opts.className}`;
+  row.dataset.kind = opts.dataKind;
+  row.dataset.role = opts.dataRole;
+
+  const head = document.createElement('div');
+  head.className = 'row-head';
+  const title = document.createElement('b');
+  title.textContent = opts.title;
+  const active = document.createElement('span');
+  active.className = 'active-tag';
+  active.style.color = 'var(--ok)';
+  active.textContent = opts.activeName ? t('activeNow') : '';
+  head.appendChild(title);
+  head.appendChild(active);
+  row.appendChild(head);
+
+  const grid = document.createElement('div');
+  grid.className = 'row-grid';
+
+  const sel = document.createElement('select');
+  sel.dataset.field = 'provider';
+  for (const p of opts.providers) {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = p.name;
+    opt.selected = p.name === opts.activeName;
+    sel.appendChild(opt);
+  }
+  if (opts.providers.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '—';
+    sel.appendChild(opt);
+  }
+  const selLbl = document.createElement('label');
+  selLbl.textContent = t('active');
+  selLbl.appendChild(sel);
+  grid.appendChild(selLbl);
+
+  const current = opts.providers.find((p) => p.name === opts.activeName);
+  const modelField = document.createElement('input');
+  modelField.value = current?.model ?? '';
+  modelField.dataset.field = 'model';
+  const modelLbl = document.createElement('label');
+  modelLbl.textContent = t('model');
+  modelLbl.appendChild(modelField);
+  grid.appendChild(modelLbl);
+
+  const baseUrlField = document.createElement('input');
+  baseUrlField.value = current?.baseUrl ?? '';
+  baseUrlField.placeholder = 'https://api.example.com/v1';
+  baseUrlField.dataset.field = 'baseUrl';
+  const baseUrlLbl = document.createElement('label');
+  baseUrlLbl.textContent = t('baseUrlOptional');
+  baseUrlLbl.appendChild(baseUrlField);
+  grid.appendChild(baseUrlLbl);
+
+  const apiKeyField = document.createElement('input');
+  apiKeyField.placeholder = current?.hasKey ? t('apiKeyKeep') : t('apiKeyEnter');
+  apiKeyField.dataset.field = 'apiKey';
+  const apiKeyLbl = document.createElement('label');
+  apiKeyLbl.textContent = t('apiKey');
+  apiKeyLbl.appendChild(apiKeyField);
+  grid.appendChild(apiKeyLbl);
+
+  if (opts.showCategory) {
+    const catField = document.createElement('input');
+    catField.value = opts.dataRole === 'stt' ? 'stt' : 'tts';
+    catField.dataset.field = 'category';
+    const catLbl = document.createElement('label');
+    catLbl.textContent = t('type');
+    catLbl.appendChild(catField);
+    grid.appendChild(catLbl);
+  }
+
+  row.appendChild(grid);
+
+  const fill = (name: string): void => {
+    const p = opts.providers.find((x) => x.name === name);
+    modelField.value = p?.model ?? '';
+    baseUrlField.value = p?.baseUrl ?? '';
+    apiKeyField.value = '';
+    apiKeyField.placeholder = p?.hasKey ? t('apiKeyKeep') : t('apiKeyEnter');
+    active.textContent = name === opts.activeName ? t('activeNow') : '';
+  };
+  sel.addEventListener('change', () => fill(sel.value));
+  grid.querySelectorAll('input').forEach((el) => {
+    el.addEventListener('input', () => {
+      settingsDirty = true;
+      settingsMsg.textContent = '';
+    });
+  });
+  settingsBody.appendChild(row);
+}
+
 function buildSettings(providersList: ProviderInfo[]): void {
   settingsBody.innerHTML = '';
   for (const p of providersList) {
-    const row = document.createElement('div');
-    row.className = 'provider-row';
-    row.dataset.name = p.name;
-    const head = document.createElement('div');
-    head.className = 'row-head';
-    const title = document.createElement('b');
-    title.textContent = `${p.name} (${p.type})`;
-    const active = document.createElement('span');
-    active.style.color = p.name === status.provider ? 'var(--ok)' : 'var(--text-dim)';
-    active.textContent = p.name === status.provider ? '● 当前' : '';
-    head.appendChild(title);
-    head.appendChild(active);
-    row.appendChild(head);
+    buildProviderRow(p);
+  }
 
-    const grid = document.createElement('div');
-    grid.className = 'row-grid';
-
-    const apiKeyField = document.createElement('input');
-    apiKeyField.placeholder = p.hasKey ? '••••••••••••（留空保持不变）' : '输入 API Key';
-    apiKeyField.dataset.field = 'apiKey';
-    const apiKeyLbl = document.createElement('label');
-    apiKeyLbl.textContent = 'API Key';
-    apiKeyLbl.appendChild(apiKeyField);
-    grid.appendChild(apiKeyLbl);
-
-    const modelField = document.createElement('input');
-    modelField.value = p.model;
-    modelField.dataset.field = 'model';
-    const modelLbl = document.createElement('label');
-    modelLbl.textContent = '模型';
-    modelLbl.appendChild(modelField);
-    grid.appendChild(modelLbl);
-
-    const baseUrlField = document.createElement('input');
-    baseUrlField.value = p.baseUrl ?? '';
-    baseUrlField.placeholder = 'https://api.example.com/v1';
-    baseUrlField.dataset.field = 'baseUrl';
-    const baseUrlLbl = document.createElement('label');
-    baseUrlLbl.textContent = 'Base URL（可选）';
-    baseUrlLbl.appendChild(baseUrlField);
-    grid.appendChild(baseUrlLbl);
-
-    const typeField = document.createElement('input');
-    typeField.value = p.type;
-    typeField.dataset.field = 'type';
-    const typeLbl = document.createElement('label');
-    typeLbl.textContent = '类型';
-    typeLbl.appendChild(typeField);
-    grid.appendChild(typeLbl);
-
-    row.appendChild(grid);
-    grid.querySelectorAll('input').forEach((el) => {
-      el.addEventListener('input', () => {
-        settingsDirty = true;
-        settingsMsg.textContent = '';
-      });
+  const speechTitle = document.createElement('div');
+  speechTitle.className = 'settings-section-title';
+  speechTitle.textContent = t('speechSection');
+  settingsBody.appendChild(speechTitle);
+  const sttProviders = svConfig.speechProviders.filter((p) => p.category === 'stt');
+  const ttsProviders = svConfig.speechProviders.filter((p) => p.category === 'tts');
+  if (sttProviders.length > 0) {
+    buildModelRow({
+      className: 'speech-row',
+      dataKind: 'speech',
+      dataRole: 'stt',
+      title: t('sttLabel'),
+      providers: sttProviders,
+      activeName: svConfig.activeSpeech,
+      showCategory: true,
     });
-    settingsBody.appendChild(row);
+  }
+  if (ttsProviders.length > 0) {
+    buildModelRow({
+      className: 'speech-row',
+      dataKind: 'speech',
+      dataRole: 'tts',
+      title: t('ttsLabel'),
+      providers: ttsProviders,
+      activeName: svConfig.activeTts,
+      showCategory: true,
+    });
+  }
+
+  const visionTitle = document.createElement('div');
+  visionTitle.className = 'settings-section-title';
+  visionTitle.textContent = t('visionSection');
+  settingsBody.appendChild(visionTitle);
+  if (svConfig.visionProviders.length > 0) {
+    buildModelRow({
+      className: 'vision-row',
+      dataKind: 'vision',
+      dataRole: 'vision',
+      title: t('visionLabel'),
+      providers: svConfig.visionProviders,
+      activeName: svConfig.activeVision,
+    });
   }
 }
 
-function openSettings(): void {
-  window.nexusDesktop.openConfigWeb().then((r) => {
-    if (!r.ok) inputStatus.textContent = `⚠️ 设置打开失败：${r.error ?? '未知错误'}`;
-  }).catch((err) => {
-    inputStatus.textContent = `⚠️ 设置打开失败：${err?.message ?? err}`;
-  });
+async function openSettings(): Promise<void> {
+  settingsOverlay.classList.remove('hidden');
+  settingsMsg.textContent = '';
+  try {
+    providers = await window.nexusDesktop.getProviders();
+    svConfig = await window.nexusDesktop.getSpeechVisionConfig();
+    buildSettings(providers);
+  } catch (err) {
+    settingsMsg.textContent = err instanceof Error ? err.message : String(err);
+  }
 }
 
-$('#btn-settings').addEventListener('click', openSettings);
+function makeFieldValues(row: HTMLElement): Record<string, string> {
+  const fields: Record<string, string> = {};
+  row.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-field]').forEach((el) => {
+    fields[el.dataset.field!] = el.value;
+  });
+  return fields;
+}
+
+$('#btn-settings').addEventListener('click', () => void openSettings());
 $('#settings-close').addEventListener('click', () => settingsOverlay.classList.add('hidden'));
 settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
 });
 
+$('#settings-web').addEventListener('click', () => {
+  window.nexusDesktop.openConfigWeb().then((r) => {
+    if (!r.ok) inputStatus.textContent = `⚠️ ${r.error ?? ''}`;
+  }).catch((err) => {
+    inputStatus.textContent = `⚠️ ${err?.message ?? err}`;
+  });
+});
+
 $('#settings-save').addEventListener('click', async () => {
   const rows = settingsBody.querySelectorAll<HTMLElement>('.provider-row');
   for (const row of rows) {
-    const name = row.dataset.name!;
-    const fields: Record<string, string> = {};
-    row.querySelectorAll<HTMLInputElement>('input[data-field]').forEach((input) => {
-      fields[input.dataset.field!] = input.value;
-    });
-    await window.nexusDesktop.saveProvider(name, fields);
+    const kind = row.dataset.kind;
+    if (!kind) {
+      const name = row.dataset.name!;
+      const fields: Record<string, string> = {};
+      row.querySelectorAll<HTMLInputElement>('input[data-field]').forEach((input) => {
+        fields[input.dataset.field!] = input.value;
+      });
+      await window.nexusDesktop.saveProvider(name, fields);
+      continue;
+    }
+    const fields = makeFieldValues(row);
+    const providerName = fields.provider;
+    if (!providerName) continue;
+    const role = row.dataset.role!;
+    if (kind === 'speech') {
+      await window.nexusDesktop.saveSpeechProvider(providerName, fields);
+      if (role === 'stt') await window.nexusDesktop.setActiveSpeechProvider(providerName);
+      else if (role === 'tts') await window.nexusDesktop.setActiveTtsProvider(providerName);
+    } else if (kind === 'vision') {
+      await window.nexusDesktop.saveVisionProvider(providerName, fields);
+      await window.nexusDesktop.setActiveVisionProvider(providerName);
+    }
   }
   providers = await window.nexusDesktop.getProviders();
   status = await window.nexusDesktop.getStatus();
   refreshProviderSelect();
-  settingsMsg.textContent = '已保存';
+  await refreshSidebarModels();
+  await refreshSidebarSession();
+  settingsMsg.textContent = t('saved');
   settingsMsg.style.color = 'var(--ok)';
   settingsDirty = false;
 });
@@ -1028,7 +1435,7 @@ providerSelect.addEventListener('change', async () => {
   if (!name || name === status.provider) return;
   await window.nexusDesktop.switchProvider(name);
   status = await window.nexusDesktop.getStatus();
-  addSystem(`已切换到 Provider: ${name}（${status.model}）`);
+  addSystem(t('switchedProvider', { name, model: status.model }));
   await refreshSessions();
   await refreshSidebarSession();
 });
@@ -1040,7 +1447,7 @@ $('#btn-open-folder').addEventListener('click', async () => {
   status = await window.nexusDesktop.getStatus();
   cwdLabel.textContent = status.cwd;
   cwdLabel.title = status.cwd;
-  addSystem(`📁 项目目录: ${status.cwd}`);
+  addSystem(t('projectDir', { cwd: status.cwd }));
 });
 
 $('#btn-new-session').addEventListener('click', () => void startNewSession());
@@ -1067,19 +1474,20 @@ window.nexusDesktop.onLog((log) => {
 // ---------- boot ----------
 (async function boot(): Promise<void> {
   try {
+    await loadLanguage();
     status = await window.nexusDesktop.getStatus();
     providers = await window.nexusDesktop.getProviders();
     if (providers.length === 0) {
-      addSystem('未配置 Provider。点击右上角 ⚙️ 设置填写 API Key。');
-      openSettings();
+      addSystem(t('noProviderConfigured'));
+      void openSettings();
     }
     refreshProviderSelect();
-    cwdLabel.textContent = status.cwd || '未选择项目';
+    cwdLabel.textContent = status.cwd || t('noProject');
     cwdLabel.title = status.cwd;
     await startOrResumeLatestSession();
     await refreshSessions();
     await refreshSidebarSession();
   } catch (err) {
-    addSystem(`启动失败: ${err instanceof Error ? err.message : String(err)}`);
+    addSystem(`${t('startFailed')}${err instanceof Error ? err.message : String(err)}`);
   }
 })();
