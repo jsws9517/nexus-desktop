@@ -330,7 +330,7 @@ export class AcpServer {
     this.currentSessionId = sessionId;
 
     // Start agent session
-    this.agent.startSession('ACP Session', sessionId).catch(() => {});
+    this.agent.startSession('ACP Session', sessionId, { isAcp: true }).catch(() => {});
 
     return {
       sessionId,
@@ -351,7 +351,7 @@ export class AcpServer {
     this.currentSessionId = sessionId;
 
     // Try to load existing session
-    this.agent.startSession('ACP Session', sessionId).catch(() => {});
+    this.agent.startSession('ACP Session', sessionId, { isAcp: true }).catch(() => {});
 
     return {
       sessionId,
@@ -449,7 +449,7 @@ export class AcpServer {
 
     // Ensure session is started
     if (!this.agent.getCurrentSessionId()) {
-      await this.agent.startSession('ACP Session', sessionId);
+      await this.agent.startSession('ACP Session', sessionId, { isAcp: true });
     }
 
     // Set up output callback for streaming with chunk batching

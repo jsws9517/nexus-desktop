@@ -21,7 +21,7 @@ import { permissionCheckHook, clearSessionApprovalCache } from './hooks/permissi
 import { AuditManager } from './security/audit.js';
 import { resolveApiKey } from './security/env-key-encrypt.js';
 import { ThemeManager } from './theme/manager.js';
-import { ProgressTracker, TaskGraph, DAGScheduler, SubAgentWorker } from './task/index.js';
+import { ProgressTracker, TaskGraph, DAGScheduler, SubAgentWorker, TaskNode } from './task/index.js';
 import { preloadLocalVision } from './vision/local.js';
 import { getTaskToolDefinitions, executeTaskTool } from './task/task-tools.js';
 import { ProjectContext } from './context/index.js';
@@ -329,6 +329,9 @@ export class Agent {
   onFileOutput?: (file: FileOutput) => void;
   /** Suppress tool call console output (used in ACP server mode) */
   suppressToolOutput = false;
+  /** Suppress session-memory writes (used by merged sub-agents so worker task
+   *  summaries do not pollute the parent session's memory) */
+  suppressSessionMemory = false;
   /** ACP permission request callback: await user permission before executing a tool */
   onPermissionRequest?: (toolName: string, toolCallId: string, toolArgs: unknown) => Promise<{ verdict: 'allow' | 'deny' }>;
 
@@ -508,7 +511,7 @@ export class Agent {
     this.context.setProvider(this.provider);
   }
 
-  async startSession(name?: string, sessionId?: string): Promise<string> {
+  async startSession(name?: string, sessionId?: string, metadata?: Record<string, unknown>): Promise<string> {
     if (sessionId) {
       const loaded = this.session.loadSession(sessionId);
       if (loaded) {
@@ -518,7 +521,26 @@ export class Agent {
         const cleanMessages = loaded.messages.map(m =>
           m.role === 'user' ? { ...m, content: stripExpansionSuffix(m.content) } : m,
         );
-        this.context.setMessages(cleanMessages);
+        // Sub-agent (worker) conversations are merged into the parent session for
+        // the transcript, but must NOT be replayed into the parent's LLM context on
+        // resume: they are noisy, token-heavy, and not the parent agent's own turns.
+        // Worker blocks start with a known injected marker and run until the next
+        // normal user message (e.g. the parent's next /plan or /go).
+        const WORKER_MARKERS = ['[Project Directory]', '[Original Request]', '[Prior Task Results]', '[Role:'];
+        const isWorkerPrompt = (m: Message): boolean => {
+          if (m.role !== 'user') return false;
+          const head = m.content.slice(0, 200);
+          return WORKER_MARKERS.some((mk) => head.includes(mk));
+        };
+        let skippingWorker = false;
+        const resumeMessages = cleanMessages.filter((m) => {
+          if (m.role === 'user') {
+            skippingWorker = isWorkerPrompt(m);
+            if (skippingWorker) return false;
+          }
+          return !skippingWorker;
+        });
+        this.context.setMessages(resumeMessages);
         this.injectSessionMemory();
         return sessionId;
       }
@@ -526,7 +548,8 @@ export class Agent {
     const session = this.session.create(
       name || `Session ${new Date().toLocaleString()}`,
       this.config.getActiveProvider(),
-      this.provider.model
+      this.provider.model,
+      metadata
     );
     this.currentSessionId = session.id;
     this.context.clear();
@@ -552,8 +575,15 @@ export class Agent {
       if (options && options.length > 0) {
         text += '\n\n' + options.map((o, i) => `${i + 1}. ${o}`).join('\n');
       }
-      this.onOutput?.(`\n${text}\n`);
-      this.onEvent?.({ type: 'text', text: `\n${text}\n` });
+      // Ask the user the question through a single text channel (onOutput when
+      // set), otherwise onEvent — never both, or dual-wired consumers would
+      // render the prompt twice.
+      const questionText = `\n${text}\n`;
+      if (this.onOutput) {
+        this.onOutput(questionText);
+      } else {
+        this.onEvent?.({ type: 'text', text: questionText });
+      }
     });
   }
 
@@ -1069,13 +1099,14 @@ export class Agent {
     // (/model, /models, /provider, /providers). Everything here is read-only/safe.
     const allowed = new Set([
       'session', 'insight', 'view', 'tools', 'mcp', 'plugins', 'theme', 'new',
+      'plan', 'go', 'tasks',
     ]);
 
     if (!allowed.has(lc)) {
       emit(this.t.warning(`Command "/${cmd}" is not available over a remote channel. ` +
         `cc-connect handles /model, /provider, /help, /memory, /skills, /theme locally; ` +
         `the ACP server handles /models and /providers. ` +
-        `Available here: /session /view /tools /mcp /plugins /theme /new`));
+        `Available here: /session /view /tools /mcp /plugins /theme /new /plan /go /tasks`));
       return true;
     }
 
@@ -1098,7 +1129,7 @@ export class Agent {
           const arg = args[0];
           let sid: string | undefined;
           if (arg && /^\d+$/.test(arg)) {
-            const sessions = this.session.list();
+            const sessions = this.session.list().items;
             sid = sessions[parseInt(arg, 10) - 1]?.id;
           } else {
             sid = arg || this.getCurrentSessionId();
@@ -1169,6 +1200,176 @@ export class Agent {
           return true;
         }
 
+        case 'plan': {
+          const request = args.join(' ');
+          if (!request) {
+            const plan = this.currentPlan;
+            if (!plan) {
+              emit('⚠ No plan to export. Use /plan <request> first.\n');
+              return true;
+            }
+            emit(`Current plan: ${plan.rootRequest} (${plan.nodes.length} tasks)\n`);
+            return true;
+          }
+          emit('Analyzing and generating plan...\n');
+          try {
+            const decomposeResult = await executeTaskTool('decompose_task', { request }, {
+              agent: this,
+              tracker: this.tracker,
+              sessionId: this.getCurrentSessionId(),
+            });
+            if (decomposeResult && !decomposeResult.isError) {
+              try {
+                const graph: { graphId?: string; projectName?: string; nodes?: Array<{ id?: string; description?: string; dependencies?: string[] }> } = JSON.parse(decomposeResult.content);
+                const graphId = graph.graphId;
+                const storedGraph = graphId ? this.tracker.getGraph(graphId) : undefined;
+                if (storedGraph) {
+                  this.currentPlan = storedGraph;
+                } else if (graphId && graph.nodes) {
+                  this.currentPlan = {
+                    id: graphId,
+                    sessionId: this.getCurrentSessionId() || 'unknown',
+                    rootRequest: request,
+                    projectName: graph.projectName,
+                    nodes: graph.nodes.map((n, i) => ({
+                      id: n.id || `t${i + 1}`,
+                      description: n.description || '',
+                      dependencies: n.dependencies || [],
+                      status: 'pending',
+                      retryCount: 0,
+                      maxRetries: 2,
+                      createdAt: Date.now(),
+                      updatedAt: Date.now(),
+                    })),
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                  };
+                }
+              } catch {
+                // Parse failed, continue with LLM plan only
+              }
+            }
+            emit(`\n=== Implementation Plan ===\n\n`);
+            await this.plan(request);
+            const graph = this.currentPlan;
+            this.emitTaskGraph(graph);
+            if (graph?.nodes) {
+              emit(`\nDetected ${graph.nodes.length} subtasks. Use /go to execute.\n`);
+            } else {
+              emit('\nUse /go to start execution.\n');
+            }
+          } catch (err) {
+            emit(`Plan failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          }
+          return true;
+        }
+
+        case 'go': {
+          const redo = args.includes('redo');
+          let plan = this.currentPlan;
+          if (!plan) {
+            const sid = this.getCurrentSessionId();
+            if (sid) {
+              plan = this.tracker.getGraphBySession(sid);
+              if (plan) this.currentPlan = plan;
+            }
+          } else if (!redo) {
+            const hasWork = plan.nodes.some((n) => n.status !== 'completed' && n.status !== 'cancelled');
+            if (!hasWork) {
+              const sid = this.getCurrentSessionId();
+              if (sid) {
+                const sessionGraph = this.tracker.getGraphBySession(sid);
+                if (sessionGraph && sessionGraph.id !== plan.id) {
+                  plan = sessionGraph;
+                  this.currentPlan = sessionGraph;
+                }
+              }
+            }
+          }
+          if (!plan) {
+            emit('⚠ No plan found. Use /plan <request> first.\n');
+            return true;
+          }
+          if (redo) {
+            for (const n of plan.nodes) {
+              n.status = 'pending';
+              n.result = undefined;
+              n.error = undefined;
+              n.retryCount = 0;
+              n.updatedAt = Date.now();
+            }
+            this.tracker.updateGraph(plan);
+            emit(`⚠ Reset ${plan.nodes.length} tasks to pending for redo.\n`);
+          }
+          const completed = plan.nodes.filter((n) => n.status === 'completed').length;
+          const failed = plan.nodes.filter((n) => n.status === 'failed').length;
+          const pending = plan.nodes.filter((n) => n.status === 'pending' || n.status === 'in_progress').length;
+          if (completed > 0) {
+            emit(`Resuming — ${completed} done, ${failed} failed, ${pending} remaining.\n`);
+          }
+          emit('Executing plan...\n');
+          try {
+            const result = await this.executePlan();
+            emit(`✓ ${result}\n`);
+          } catch (err) {
+            emit(`✗ Execution failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          }
+          return true;
+        }
+
+        case 'tasks': {
+          const rawArg = args[0];
+          const taskId = rawArg === '-step' ? args[1] : rawArg;
+          if (taskId) {
+            const sid = this.getCurrentSessionId();
+            if (sid) {
+              const graph = this.tracker.getGraphBySession(sid);
+              if (graph) {
+                const node = graph.nodes.find((n) => n.id === taskId);
+                if (node) {
+                  emit(`Task: ${node.id}\n\n`);
+                  emit(`  Description: ${node.description}\n`);
+                  emit(`  Status: ${node.status}\n`);
+                  emit(`  Dependencies: ${node.dependencies.join(', ') || '(none)'}\n`);
+                  emit(`  Retries: ${node.retryCount}/${node.maxRetries}\n`);
+                  if (node.result) emit(`  Result: ${node.result.slice(0, 500)}${node.result.length > 500 ? '...' : ''}\n`);
+                  if (node.error) emit(`  Error: ${node.error}\n`);
+                  return true;
+                }
+              }
+            }
+          }
+          const graphId = rawArg === '-step' ? '' : (rawArg || '');
+          let graph;
+          if (graphId) {
+            graph = this.tracker.getGraph(graphId);
+          } else {
+            graph = this.currentPlan;
+            if (!graph || graph.nodes.length === 0) {
+              const sid = this.getCurrentSessionId();
+              if (sid) graph = this.tracker.getGraphBySession(sid);
+            }
+          }
+          if (!graph) {
+            emit('No task graph found. Use /plan first.\n');
+            return true;
+          }
+          emit(`Task Graph: ${graph.rootRequest}\n\n`);
+          for (const node of graph.nodes) {
+            const icon = node.status === 'completed' ? '✓'
+              : node.status === 'in_progress' ? '▶'
+                : node.status === 'failed' ? '✗'
+                  : node.status === 'cancelled' ? '−'
+                    : '○';
+            const depInfo = node.dependencies.length > 0 ? ` [depends: ${node.dependencies.join(', ')}]` : '';
+            const resultInfo = node.result ? `\n       result: ${node.result.slice(0, 80)}${node.result.length > 80 ? '...' : ''}` : '';
+            const errInfo = node.error ? `\n       error: ${node.error}` : '';
+            emit(`  ${icon} ${node.id}: ${node.description}${depInfo}${resultInfo}${errInfo}\n`);
+          }
+          emit(`\nGraph ID: ${graph.id}\n`);
+          return true;
+        }
+
         default:
           emit(this.t.warning(`Command "/${cmd}" is not available over a remote channel.`));
           return true;
@@ -1197,6 +1398,7 @@ export class Agent {
   }
 
   private updateSessionMemory(): void {
+    if (this.suppressSessionMemory) return;
     const sessionId = this.currentSessionId;
     if (!sessionId) return;
     const session = this.session.get(sessionId);
@@ -1335,6 +1537,7 @@ export class Agent {
     }
 
     let assistantMessage = '';
+    let assistantThinking = '';
     let pendingToolCalls: ToolCall[] = [];
     // Tracks whether the last direct stdout write ended with a newline, so that
     // tool-call spinner lines always start on a fresh line (otherwise the
@@ -1370,19 +1573,26 @@ export class Agent {
         if (chunk.type === 'text' && chunk.text) {
           const clean = chunk.text.replace(/\uFFFD/g, '');
           assistantMessage += clean;
-          this.onEvent?.({ type: 'text', text: clean });
+          // Emit streamed text through exactly ONE channel: onOutput when set
+          // (CLI/ACP/desktop), otherwise onEvent + local render. Emitting BOTH
+          // made consumers that wire onOutput and onEvent into the same display
+          // (desktop) print every text chunk twice.
           if (this.onOutput) {
             this.onOutput(clean);
             lastWriteEndedNl = clean.endsWith('\n');
-          } else if (showDetail) {
-            this.renderOut(clean);
-            lastWriteEndedNl = clean.endsWith('\n');
           } else {
-            entry.assistantText += clean;
+            this.onEvent?.({ type: 'text', text: clean });
+            if (showDetail) {
+              this.renderOut(clean);
+              lastWriteEndedNl = clean.endsWith('\n');
+            } else {
+              entry.assistantText += clean;
+            }
           }
         }
         if (chunk.type === 'thinking' && chunk.thinking) {
           const clean = chunk.thinking.replace(/\uFFFD/g, '');
+          assistantThinking += clean;
           this.onEvent?.({ type: 'thinking', thinking: clean });
           if (showDetail && !this.onOutput) {
             this.renderOut(chalk.italic(this.t.thinking(clean)));
@@ -1437,7 +1647,7 @@ export class Agent {
           this.renderOut(finalText);
         }
         if (finalText) {
-          const msg: Message = { role: 'assistant', content: finalText };
+          const msg: Message = { role: 'assistant', content: finalText, thinking: assistantThinking || undefined };
           this.context.add(msg);
           this.session.addMessage(this.currentSessionId!, msg);
         }
@@ -1458,6 +1668,7 @@ export class Agent {
         role: 'assistant',
         content: assistantMessage,
         toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
+        thinking: assistantThinking || undefined,
       };
       this.context.add(msg);
       this.session.addMessage(this.currentSessionId!, msg);
@@ -1820,10 +2031,34 @@ export class Agent {
      return this.currentSessionId;
    }
 
+   /**
+    * Point this agent's session persistence at an existing session WITHOUT
+    * loading its messages into this agent's LLM context. Used by sub-agents so
+    * their conversation is persisted into the parent's session (transcript
+    * merge) while keeping their own context fresh.
+    */
+   joinSession(sessionId: string): void {
+     this.currentSessionId = sessionId;
+   }
+
    renameSession(name: string): void {
      if (this.currentSessionId) {
        this.session.rename(this.currentSessionId, name);
      }
+   }
+
+   /**
+    * Delete a session. If it is the active session, clear the agent's current
+    * session state so the next user message lazily starts a fresh session
+    * (chat() auto-creates when currentSessionId is unset). Do NOT auto-create a
+    * replacement here — deleting an old session must not spawn a new one.
+    */
+   deleteSession(id: string): void {
+     if (this.currentSessionId === id) {
+       this.currentSessionId = undefined;
+       this.context.clear();
+     }
+     this.session.delete(id);
    }
 
   async resumeSession(sessionId: string): Promise<{ restored: boolean; compressed: boolean; sessionName: string }> {
@@ -2339,11 +2574,41 @@ export class Agent {
 
   async plan(request: string): Promise<string> {
     this.planMode = true;
-    const response = await this.provider.complete([{
-      role: 'user',
-      content: tf('plan_prompt')(request),
-    }]);
-    return response;
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 180_000);
+    try {
+      let text = '';
+      let lastTick = Date.now();
+      const tickStart = Date.now();
+      const stream = this.provider.chat([{
+        role: 'user',
+        content: tf('plan_prompt')(request),
+      }], undefined, controller.signal);
+      for await (const chunk of stream) {
+        if (chunk.type === 'text' && chunk.text) {
+          text += chunk.text;
+          this.onOutput?.(chunk.text);
+        } else if (chunk.type === 'thinking' && chunk.thinking) {
+          this.onEvent?.({ type: 'thinking', thinking: chunk.thinking });
+          // Progress tick on the plain-text channel for consumers that do not
+          // render thinking events (CLI), so long reasoning is never silent.
+          const now = Date.now();
+          if (now - lastTick >= 30_000) {
+            lastTick = now;
+            this.onOutput?.(`\n⏳ Still working on the plan (${Math.round((now - tickStart) / 1000)}s elapsed)...\n`);
+          }
+        }
+      }
+      return text;
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error('Plan generation timed out after 3 minutes.');
+      }
+      throw err;
+    } finally {
+      clearTimeout(deadline);
+      this.planMode = false;
+    }
   }
 
   async executePlan(): Promise<string> {
@@ -2365,6 +2630,28 @@ export class Agent {
     } finally {
       restored();
     }
+  }
+
+  /**
+   * Emit the full task graph (every node + its current status) as a task_graph
+   * event so UIs can render the complete task list — pending tasks included —
+   * rather than only the task that is currently emitting start/completed events.
+   */
+  emitTaskGraph(graph?: TaskGraph): void {
+    if (!graph?.nodes?.length) return;
+    const roleFor = (n: TaskNode) =>
+      n.agentHint === 'tester' || n.agentHint === 'committer' ? n.agentHint : 'general';
+    this.onEvent?.({
+      type: 'task_graph',
+      graphId: graph.id,
+      tasks: graph.nodes.map((n) => ({
+        id: n.id,
+        description: n.description,
+        role: roleFor(n),
+        status: n.status,
+        error: n.error,
+      })),
+    });
   }
 
   /**

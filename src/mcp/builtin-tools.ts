@@ -9,6 +9,7 @@ import { BuiltinTool } from './types.js';
 import { ToolResult } from '../types.js';
 import { authorizePath } from '../security/path-authorizer.js';
 import { sanitizeContent, redactPaths, redactGeoData, redactSensitiveData } from '../utils/sanitize.js';
+import { decodeCommandOutput } from '../utils/exec-decode.js';
 import { translateCommand } from './cmd-alias.js';
 
 const execAsync = promisify(exec);
@@ -578,20 +579,24 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
       try {
         const actualCmd = process.platform === 'win32' ? translateCommand(command) : command;
         const { stdout, stderr } = await execAsync(actualCmd, {
-          encoding: 'utf-8',
+          // Capture raw bytes so GBK/OEM output from Windows console-less
+          // children can be decoded correctly (see decodeCommandOutput).
+          encoding: 'buffer',
           timeout,
           maxBuffer: 10 * 1024 * 1024,
           cwd: effectiveCwd,
           shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
         });
-        const output = stdout + (stderr ? '\n' + stderr : '');
+        const output =
+          decodeCommandOutput(stdout) +
+          (stderr && stderr.length > 0 ? '\n' + decodeCommandOutput(stderr) : '');
         return { content: output };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const stdout = (err as { stdout?: string }).stdout || '';
-        const stderr = (err as { stderr?: string }).stderr || '';
+        const stdout = (err as { stdout?: Buffer | string }).stdout || '';
+        const stderr = (err as { stderr?: Buffer | string }).stderr || '';
         return {
-          content: `Error: ${redactPaths(message)}\nstdout: ${redactPaths(stdout)}\nstderr: ${redactPaths(stderr)}`,
+          content: `Error: ${redactPaths(message)}\nstdout: ${redactPaths(decodeCommandOutput(stdout as Buffer))}\nstderr: ${redactPaths(decodeCommandOutput(stderr as Buffer))}`,
           isError: true,
         };
       }

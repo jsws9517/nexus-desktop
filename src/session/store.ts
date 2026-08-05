@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS messages (
   content TEXT NOT NULL,
   tool_calls TEXT,
   tool_call_id TEXT,
+  thinking TEXT,
   tokens INTEGER,
   created_at INTEGER NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id)
@@ -37,7 +38,41 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
+
+-- Task progress tables (created by ProgressTracker too). Declared here so
+-- SessionStore.deleteSession can clean them up even when no task ran in this
+-- database before deletion.
+CREATE TABLE IF NOT EXISTS task_graphs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  root_request TEXT NOT NULL,
+  project_name TEXT,
+  nodes TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  graph_id TEXT NOT NULL,
+  task_id TEXT,
+  event_type TEXT NOT NULL,
+  payload TEXT,
+  timestamp INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_events_graph ON task_events(graph_id);
+CREATE INDEX IF NOT EXISTS idx_task_graphs_session ON task_graphs(session_id);
 `;
+
+export interface ListSessionsOptions {
+  /** Max rows to return. When unset, all matching rows are returned. */
+  limit?: number;
+  /** Skip the first N matching rows (for pagination). */
+  offset?: number;
+  /** Include ACP client sessions (internal noise). Defaults to false. */
+  includeAcp?: boolean;
+}
 
 export class SessionStore {
   private db: Database.Database;
@@ -51,6 +86,11 @@ export class SessionStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.exec(INIT_SQL);
+    // Migration for databases created before the `thinking` column existed.
+    const cols = this.db.pragma(`table_info(messages)`) as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'thinking')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN thinking TEXT');
+    }
 
     // Register temp database for cleanup
     if (customDbPath) {
@@ -94,10 +134,30 @@ export class SessionStore {
     return this.rowToSession(row);
   }
 
-  listSessions(): Session[] {
-    const rows = this.db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as
-      Record<string, unknown>[];
-    return rows.map((r) => this.rowToSession(r));
+  listSessions(options: ListSessionsOptions = {}): { items: Session[]; total: number } {
+    const { limit, offset, includeAcp } = options;
+    // ACP client sessions (tagged via metadata.isAcp, or legacy rows named
+    // 'ACP Session') are internal channel noise, not user conversations.
+    // Exclude them from the user-facing list by default.
+    const acpFilter = includeAcp
+      ? ''
+      : "WHERE (COALESCE(json_extract(metadata, '$.isAcp'), 0) != 1 AND name != 'ACP Session')";
+    const count = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM sessions ${acpFilter}`)
+      .get() as { n: number };
+    let sql = `SELECT id, name, provider, model, created_at, updated_at
+               FROM sessions ${acpFilter} ORDER BY updated_at DESC`;
+    const args: unknown[] = [];
+    if (limit !== undefined && limit >= 0) {
+      sql += ' LIMIT ?';
+      args.push(limit);
+      if (offset !== undefined && offset > 0) {
+        sql += ' OFFSET ?';
+        args.push(offset);
+      }
+    }
+    const rows = this.db.prepare(sql).all(...args) as Record<string, unknown>[];
+    return { items: rows.map((r) => this.rowToSession(r)), total: Number(count.n) };
   }
 
   updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'updatedAt' | 'metadata'>>): void {
@@ -126,8 +186,8 @@ export class SessionStore {
 
   addMessage(message: StoredMessage): void {
     const stmt = this.db.prepare(
-      `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, tokens, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, thinking, tokens, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     stmt.run(
       message.sessionId,
@@ -135,6 +195,7 @@ export class SessionStore {
       message.content,
       message.toolCalls || null,
       message.toolCallId || null,
+      message.thinking || null,
       message.tokens || null,
       message.createdAt
     );
@@ -167,6 +228,7 @@ export class SessionStore {
       content: String(row.content),
       toolCalls: row.tool_calls ? String(row.tool_calls) : undefined,
       toolCallId: row.tool_call_id ? String(row.tool_call_id) : undefined,
+      thinking: row.thinking ? String(row.thinking) : undefined,
       tokens: row.tokens ? Number(row.tokens) : undefined,
       createdAt: Number(row.created_at),
     };

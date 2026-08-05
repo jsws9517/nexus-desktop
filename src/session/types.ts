@@ -15,6 +15,7 @@ export interface StoredMessage {
   content: string;
   toolCalls?: string; // JSON
   toolCallId?: string;
+  thinking?: string; // reasoning_content transcript (display only, not LLM context)
   tokens?: number;
   createdAt: number;
 }

@@ -13,7 +13,7 @@ export function registerSessionCommand(program: Command): void {
     .description('List all sessions')
     .action(async () => {
       const manager = new SessionManager();
-      const sessions = manager.list();
+      const sessions = manager.list().items;
       if (sessions.length === 0) {
         console.log(t.textDim('No sessions found.'));
         return;

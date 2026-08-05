@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Message } from '../types.js';
 import { LLMProvider } from '../llm/provider.js';
-import { SessionStore } from './store.js';
+import { SessionStore, ListSessionsOptions } from './store.js';
 import { Session, StoredMessage } from './types.js';
 
 export class SessionManager {
@@ -11,7 +11,7 @@ export class SessionManager {
     this.store = new SessionStore(customDbPath);
   }
 
-  create(name: string, provider: string, model: string): Session {
+  create(name: string, provider: string, model: string, metadata?: Record<string, unknown>): Session {
     const now = Date.now();
     const session: Session = {
       id: randomUUID(),
@@ -20,6 +20,7 @@ export class SessionManager {
       model,
       createdAt: now,
       updatedAt: now,
+      ...(metadata ? { metadata } : {}),
     };
     this.store.createSession(session);
     return session;
@@ -29,8 +30,8 @@ export class SessionManager {
     return this.store.getSession(id);
   }
 
-  list(): Session[] {
-    return this.store.listSessions();
+  list(options?: ListSessionsOptions): { items: Session[]; total: number } {
+    return this.store.listSessions(options);
   }
 
   rename(id: string, name: string): void {
@@ -53,6 +54,7 @@ export class SessionManager {
       content: message.content,
       toolCalls: message.toolCalls ? JSON.stringify(message.toolCalls) : undefined,
       toolCallId: message.toolCallId,
+      thinking: message.thinking,
       tokens,
       createdAt: Date.now(),
     };
@@ -67,6 +69,7 @@ export class SessionManager {
       content: m.content,
       toolCalls: m.toolCalls ? JSON.parse(m.toolCalls) : undefined,
       toolCallId: m.toolCallId,
+      thinking: m.thinking,
     }));
   }
 

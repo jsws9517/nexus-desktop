@@ -3,6 +3,9 @@ export interface Message {
   content: string;
   toolCalls?: ToolCall[];
   toolCallId?: string;
+  /** Model reasoning/reasoning_content captured during streaming. Persisted for
+   *  the session transcript only — never sent back to the LLM as context. */
+  thinking?: string;
 }
 
 export interface ToolCall {
@@ -57,6 +60,17 @@ export type AgentEvent =
   | { type: 'state_delta'; contextTokens: number; turn: number }
   | { type: 'turn_end'; stopReason: string; usage?: TurnUsage }
   | { type: 'session_end' }
+  | {
+      type: 'task_graph';
+      graphId: string;
+      tasks: Array<{
+        id: string;
+        description: string;
+        role: string;
+        status: 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+        error?: string;
+      }>;
+    }
   | { type: 'task_started'; taskId: string; description: string; role: string }
   | { type: 'task_completed'; taskId: string }
   | { type: 'task_failed'; taskId: string; error: string };
