@@ -131,7 +131,8 @@ async function handleDecompose(
   }
 
   try {
-    const response = await ctx.agent.provider.complete([{
+    let response = '';
+    const stream = ctx.agent.provider.chat([{
       role: 'user',
       content: `Decompose the following request into a MINIMAL list of sub-tasks (3-5 tasks max). Provide a short English project name (project_name, used as directory name, e.g. snake-game, blog-api).
 
@@ -155,6 +156,21 @@ Requirements:
 
 Request: ${request}`,
     }]);
+    let lastTick = Date.now();
+    const tickStart = Date.now();
+    for await (const chunk of stream) {
+      if (chunk.type === 'text' && chunk.text) {
+        response += chunk.text;
+        ctx.agent.onOutput?.(chunk.text);
+      } else if (chunk.type === 'thinking' && chunk.thinking) {
+        ctx.agent.onEvent?.({ type: 'thinking', thinking: chunk.thinking });
+        const now = Date.now();
+        if (now - lastTick >= 30_000) {
+          lastTick = now;
+          ctx.agent.onOutput?.(`\n⏳ Still analyzing the request (${Math.round((now - tickStart) / 1000)}s elapsed)...\n`);
+        }
+      }
+    }
 
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
@@ -223,11 +239,25 @@ async function handleSpawnSubagent(
     updatedAt: Date.now(),
   };
 
-  const worker = new SubAgentWorker(ctx.agent);
-  try {
-    const result = await worker.execute(node, undefined, role);
-    node.status = 'completed';
-    node.result = result.output;
+   const worker = new SubAgentWorker(ctx.agent);
+   try {
+     const result = await worker.execute(node, undefined, role);
+
+     // Validate result before marking completed: check that the
+     // sub-agent actually produced meaningful output.  This
+     // prevents "fake completion" where the LLM finishes its
+     // turn without doing any real work.
+     if (result.output.trim().length === 0) {
+       node.status = 'failed';
+       node.error = 'Sub-agent produced no output';
+       return {
+         content: 'Subagent execution failed: no output produced',
+         isError: true,
+       };
+     }
+
+     node.status = 'completed';
+     node.result = result.output;
 
     // After a general implementation task, optionally run the quality gate
     // (auto tester -> auto committer) as a coding-workflow规范流.

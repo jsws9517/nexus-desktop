@@ -53,6 +53,7 @@ export class DAGScheduler {
     // unrelated tools/agents for the rest of the process.
     preAuthorizeRoot(TASK_OUTPUTS_DIR, 'dag');
     const levels = this.topologicalSort(graph);
+    this.emitGraph(graph);
 
     for (const level of levels) {
       await Promise.all(level.map(async (node) => {
@@ -71,13 +72,46 @@ export class DAGScheduler {
             const role = (node.agentHint === 'tester' || node.agentHint === 'committer')
               ? node.agentHint as SubAgentRole
               : 'general';
-            const priorResults = this.collectPriorResults(graph, node);
-            const result = await this.worker.execute(node, projectDir, role, priorResults, graph.rootRequest, graph.mode);
-            node.result = result.output;
-            node.status = 'completed';
-            node.error = undefined;
-            node.retryCount = 0;
-            node.updatedAt = Date.now();
+             const priorResults = this.collectPriorResults(graph, node);
+             const result = await this.worker.execute(node, projectDir, role, priorResults, graph.rootRequest, graph.mode);
+
+             // Validate result before marking completed: check that the
+             // sub-agent actually produced meaningful output and (if
+             // expected) that required files exist on disk.  This
+             // prevents "fake completion" where the LLM finishes its
+             // turn without doing any real work.
+             const hasOutput = result.output.trim().length > 0;
+             const hasExpectedFiles = !node.expectedOutputs || node.expectedOutputs.length === 0 ||
+               node.expectedOutputs.some((fp) => existsSync(fp));
+
+             if (!hasOutput && !hasExpectedFiles) {
+               const missing = node.expectedOutputs
+                 ? node.expectedOutputs.filter((fp) => !existsSync(fp)).join(', ')
+                 : '';
+               const errMsg = missing
+                 ? `Sub-agent produced no output and expected files were not created: ${missing}`
+                 : 'Sub-agent produced no output';
+               node.status = 'failed';
+               node.error = errMsg;
+               node.updatedAt = Date.now();
+               this.tracker.updateGraph(graph);
+               this.tracker.appendEvent({
+                 graphId: graph.id,
+                 taskId: node.id,
+                 eventType: 'task_failed',
+                 payload: errMsg,
+                 timestamp: Date.now(),
+               });
+               this.emitGraph(graph);
+               this.cancelDownstream(graph, node.id);
+               break;
+             }
+
+             node.result = result.output;
+             node.status = 'completed';
+             node.error = undefined;
+             node.retryCount = 0;
+             node.updatedAt = Date.now();
 
             // Quality gate: after a general implementation task, auto-run
             // tester -> committer as a coding规范流 (gated by config).
@@ -92,6 +126,7 @@ export class DAGScheduler {
               eventType: 'task_completed',
               timestamp: Date.now(),
             });
+            this.emitGraph(graph);
             break;
           } catch (err) {
             node.retryCount = attempt + 1;
@@ -185,6 +220,17 @@ export class DAGScheduler {
       eventType: 'task_started',
       timestamp: Date.now(),
     });
+    this.emitGraph(graph);
+  }
+
+  /**
+   * Push the full task graph (all nodes + their current status) to the parent's
+   * UI. This is what lets the sidebar list EVERY task — pending ones included —
+   * instead of only the single task that happens to be emitting start/completed
+   * events at any given moment.
+   */
+  private emitGraph(graph: TaskGraph): void {
+    this.worker.parent.emitTaskGraph?.(graph);
   }
 
   private collectPriorResults(graph: TaskGraph, node: TaskNode): Record<string, string> {
@@ -366,6 +412,7 @@ export class DAGScheduler {
       }
     }
     this.tracker.updateGraph(graph);
+    this.emitGraph(graph);
   }
 
   private findDownstream(graph: TaskGraph, nodeId: string): Set<string> {

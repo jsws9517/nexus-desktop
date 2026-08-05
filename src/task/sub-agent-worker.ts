@@ -2,6 +2,7 @@ import { Agent } from '../agent.js';
 import { TaskNode, SubTaskResult, SubAgentRole, GraphMode } from './types.js';
 import { AgentEvent } from '../types.js';
 import { getSubAgentRole } from './sub-agent-roles.js';
+import { existsSync } from 'fs';
 
 export class SubAgentWorker {
   private authorized = false;
@@ -39,7 +40,19 @@ export class SubAgentWorker {
     const child = new Agent(false);
     child.detailMode = false;
     child.suppressToolOutput = true;
+    child.suppressSessionMemory = true;
     child.maxTurns = roleDef.maxTurns;
+
+    // Merge the sub-agent's conversation into the parent's session so the main
+    // session transcript shows the worker's actual thinking and dialogue (the
+    // child would otherwise create its own separate session that only holds the
+    // user commands of the parent). chat() skips startSession() because
+    // currentSessionId is already set, so every child message is persisted
+    // under the parent session id.
+    const parentSessionId = this.parentAgent.getCurrentSessionId();
+    if (parentSessionId) {
+      child.joinSession(parentSessionId);
+    }
 
     // Inherit the parent's live permission configuration (mode / allowlist /
     // safePaths / mcpAllowlist) so that autonomous runs (e.g. /go, which
@@ -72,9 +85,21 @@ export class SubAgentWorker {
 
     child.onOutput = (text: string) => {
       outputChunks.push(text);
+      // Core streams text through onOutput only (onEvent text is no longer
+      // emitted when onOutput is set), so forward the child's live text to the
+      // parent explicitly to keep sub-agent output visible in the UI.
+      this.parentAgent.onEvent?.({ type: 'text', text });
     };
 
     child.onEvent = (event) => {
+      // Forward only content/progress events to the parent. Agent lifecycle
+      // events (session_start/end, turn_start/end) must NOT bubble: the worker's
+      // per-turn session/turn events would otherwise wipe the parent's task
+      // progress list and flip the UI busy state off mid-execution.
+      if (event.type === 'session_start' || event.type === 'session_end' ||
+          event.type === 'turn_start' || event.type === 'turn_end') {
+        return;
+      }
       this.parentAgent.onEvent?.(event);
       if (event.type === 'tool_call_start') {
         this.onProgress?.(task.id, `tool:${event.name}`);
@@ -141,10 +166,32 @@ export class SubAgentWorker {
     try {
       await child.chat(prompt);
       await child.shutdown();
+      const output = outputChunks.join('');
+
+      // Validate result before marking completed: check that the sub-agent
+      // actually produced meaningful output and (if expected) that required
+      // files exist on disk.  This prevents "fake completion" where the LLM
+      // finishes its turn without doing any real work (e.g. shell blocked by
+      // sandbox, download produced zero bytes, etc.).
+      const hasOutput = output.trim().length > 0;
+      const hasExpectedFiles = !task.expectedOutputs || task.expectedOutputs.length === 0 ||
+        task.expectedOutputs.some((fp) => existsSync(fp));
+
+      if (!hasOutput && !hasExpectedFiles) {
+        const missing = task.expectedOutputs
+          ? task.expectedOutputs.filter((fp) => !existsSync(fp)).join(', ')
+          : '';
+        const errMsg = missing
+          ? `Sub-agent produced no output and expected files were not created: ${missing}`
+          : 'Sub-agent produced no output';
+        emitTask({ type: 'task_failed', taskId: task.id, error: errMsg });
+        throw new Error(errMsg);
+      }
+
       emitTask({ type: 'task_completed', taskId: task.id });
       return {
         taskId: task.id,
-        output: outputChunks.join(''),
+        output,
       };
     } catch (err) {
       emitTask({ type: 'task_failed', taskId: task.id, error: err instanceof Error ? err.message : String(err) });

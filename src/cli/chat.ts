@@ -1,12 +1,12 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { createInterface, emitKeypressEvents } from 'readline';
-import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, statSync, readdirSync, writeFileSync, mkdtempSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { Agent } from '../agent.js';
 import { PERMISSION_PRESETS } from '../config/types.js';
 import { showWelcomeScreen, BorderMode } from './logo.js';
@@ -15,6 +15,7 @@ import { ThemeManager } from '../theme/manager.js';
 import { authorizePath, setPermissionPrompter } from '../security/path-authorizer.js';
 import { isDangerousBash } from '../security/audit.js';
 import { translateCommand } from '../mcp/cmd-alias.js';
+import { decodeCommandOutput } from '../utils/exec-decode.js';
 import { executeTaskTool } from '../task/task-tools.js';
 
 const execAsync = promisify(exec);
@@ -177,6 +178,49 @@ async function expandAtMentions(input: string, cwd: string): Promise<string> {
   return input;
 }
 
+// ---- Clipboard image paste support ----
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg|tiff?|ico)(\b|$)/i;
+const BASE64_IMAGE_RE = /^data:image\/(png|jpe?g|gif|webp);base64,/i;
+
+function detectPastedImage(content: string): { type: 'filepath'; path: string } | { type: 'base64'; data: string; mime: string } | null {
+  const pathMatch = content.match(/([A-Z]:[\\\/][\w\\\/\-\u4e00-\u9fa5]+|\/[\/\w\-\u4e00-\u9fa5]+)\.(png|jpe?g|gif|webp|bmp|svg|tiff?|ico)/i);
+  if (pathMatch) {
+    const filePath = pathMatch[0];
+    if (existsSync(filePath)) return { type: 'filepath', path: filePath };
+  }
+  const b64Match = content.match(/^data:image\/(png|jpe?g|gif|webp);base64,(.+)$/i);
+  if (b64Match) {
+    return { type: 'base64', data: b64Match[2], mime: 'image/' + b64Match[1].toLowerCase() };
+  }
+  return null;
+}
+
+function saveBase64ImageToTemp(data: string, mime: string): string {
+  const ext = mime.split('/')[1];
+  const dir = mkdtempSync(join(tmpdir(), 'nexus-image-'));
+  const filePath = join(dir, `clipboard.${ext}`);
+  const buffer = Buffer.from(data, 'base64');
+  writeFileSync(filePath, buffer);
+  return filePath;
+}
+
+let imagePasteCounter = 0;
+
+function handlePastedImage(content: string): string | null {
+  const detected = detectPastedImage(content);
+  if (!detected) return null;
+  let tempPath: string;
+  if (detected.type === 'base64') {
+    tempPath = saveBase64ImageToTemp(detected.data, detected.mime);
+  } else {
+    tempPath = detected.path;
+  }
+  imagePasteCounter++;
+  process.stdout.write(t().entityName(`[image${imagePasteCounter}: ${tempPath}]`) + '\n');
+  return tempPath;
+}
+
 /**
  * Resolve @paths to their absolute OS paths WITHOUT file-existence check or
  * authorization prompt.  Used by /btw so the LLM receives real paths to
@@ -224,17 +268,20 @@ async function executeBashCommand(cmd: string): Promise<string> {
   try {
     const actualCmd = process.platform === 'win32' ? `chcp 65001 >NUL && ${translateCommand(cmd)}` : cmd;
     const { stdout, stderr } = await execAsync(actualCmd, {
-      encoding: 'utf-8',
+      // Raw bytes so GBK/OEM output from Windows children decodes cleanly
+      // (chcp only fixes console-attached children).
+      encoding: 'buffer',
       timeout: 30000,
       maxBuffer: 10 * 1024 * 1024,
     });
-    const output = stdout + (stderr ? `\n${stderr}` : '');
+    const output =
+      decodeCommandOutput(stdout) + (stderr ? `\n${decodeCommandOutput(stderr)}` : '');
     return output.trim() || '(no output)';
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const stdout = (err as { stdout?: string }).stdout || '';
-    const stderr = (err as { stderr?: string }).stderr || '';
-    return `Error: ${msg}\n${stdout}${stderr}`;
+    const stdout = (err as { stdout?: Buffer | string }).stdout || '';
+    const stderr = (err as { stderr?: Buffer | string }).stderr || '';
+    return `Error: ${msg}\n${decodeCommandOutput(stdout as Buffer)}${decodeCommandOutput(stderr as Buffer)}`;
   }
 }
 
@@ -983,7 +1030,15 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
       return;
     }
 
-    let expandedInput = await expandAtMentions(input, process.cwd());
+    let processedInput = input;
+
+    // Detect pasted images from clipboard and auto-save to temp files
+    const pastedImage = handlePastedImage(input);
+    if (pastedImage) {
+      processedInput = `@${pastedImage}`;
+    }
+
+    let expandedInput = await expandAtMentions(processedInput, process.cwd());
 
     // Separator line between user and agent messages
     process.stdout.write(renderSepLine() + '\n');
@@ -1197,7 +1252,7 @@ async function handleSlashCommand(
       return false;
 
     case 'resume': {
-      const sessions = agent.session.list();
+      const sessions = agent.session.list().items;
       if (sessions.length === 0) {
         console.log(t().textDim('No sessions found.'));
         return false;
@@ -1255,7 +1310,7 @@ async function handleSlashCommand(
     }
 
     case 'delete': {
-      const allSessions = agent.session.list();
+      const allSessions = agent.session.list().items;
       if (allSessions.length === 0) {
         console.log(t().textDim('No sessions found.'));
         return false;
@@ -1344,7 +1399,7 @@ async function handleSlashCommand(
       const arg = args[0];
       let sessionId: string | undefined;
       if (arg && /^\d+$/.test(arg)) {
-        const sessions = agent.session.list();
+        const sessions = agent.session.list().items;
         const idx = parseInt(arg, 10) - 1;
         sessionId = sessions[idx]?.id;
         if (!sessionId) {
@@ -1861,9 +1916,12 @@ async function handleSlashCommand(
         }
 
         // Get detailed plan from LLM
-        const planText = await agent.plan(request);
         console.log(t().heading('\n=== Implementation Plan ===\n'));
-        console.log(planText);
+        await agent.plan(request);
+
+        // Surface the full task list to the UI so pending tasks are visible
+        // even before /go starts executing.
+        (agent as any).emitTaskGraph?.((agent as any).currentPlan);
 
         const storedGraph = (agent as any).currentPlan;
         const proj = storedGraph?.projectName ? ` [project: ${storedGraph.projectName}]` : '';

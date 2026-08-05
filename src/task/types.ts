@@ -15,6 +15,7 @@ export interface TaskNode {
   maxRetries: number;
   createdAt: number;
   updatedAt: number;
+  expectedOutputs?: string[];
 }
 
 export type GraphMode = 'new' | 'modify';
