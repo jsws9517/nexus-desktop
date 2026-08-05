@@ -173,10 +173,11 @@ const L = {
     h_input: 'Input:',
     h_submit: 'Submit (Enter; same in multi-line mode)',
     h_newline: 'Newline (Ctrl+Enter)',
-     h_paste: 'Auto-detected, Enter inserts newline',
-     h_clipboard_image: 'Paste clipboard image (Ctrl+Shift+V)',
+      h_paste: 'Auto-detected, Enter inserts newline',
+      h_clipboard_image: 'Paste clipboard image (Ctrl+Shift+V)',
+      h_pasteimage: 'Read image from clipboard and inject into prompt',
 
-     /* ── Config ── */
+      /* ── Config ── */
     config_lang_list: (cur: string, langs: string) => `Configured language: ${cur}\nAvailable languages:\n${langs}`,
     config_lang_set: (lang: string) => `Language set to: ${lang}`,
     config_lang_invalid: (lang: string) => `Invalid language: ${lang}. Available: en, zh-CN`,
@@ -318,7 +319,8 @@ const L = {
     h_submit: '提交（Enter，多行模式同样）',
     h_newline: '换行（Ctrl+Enter）',
      h_paste: '自动检测，Enter 插入换行',
-     h_clipboard_image: '粘贴剪切板图像（Ctrl+Shift+V）',
+      h_clipboard_image: '粘贴剪切板图像（Ctrl+Shift+V）',
+      h_pasteimage: '读取剪切板图像并注入到提示词',
 
      config_lang_list: (cur: string, langs: string) => `当前语言：${cur}\n可用语言：\n${langs}`,
     config_lang_set: (lang: string) => `语言已设置为：${lang}`,

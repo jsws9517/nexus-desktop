@@ -908,6 +908,9 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
   process.stdin.on('keypress', async (s, key) => {
     if (!key) return;
+    if (process.env.DEBUG?.includes('keypress') || process.env.LLMA_DEBUG) {
+      process.stderr.write(`[keypress] s=${JSON.stringify(s)} key=${JSON.stringify({ name: key.name, ctrl: key.ctrl, shift: key.shift, alt: key.alt, meta: key.meta })}\n`);
+    }
     if (isQuestionMode) return;
 
     // Bracketed paste mode
@@ -1204,7 +1207,8 @@ async function handleSlashCommand(
       console.log(t().heading(i18nTr('h_task')));
       console.log(`  /plan <request>  - ${i18nTr('h_plan')}`);
       console.log(`  /go              - ${i18nTr('h_go')}`);
-      console.log(`  /tasks [-step <id>] - ${i18nTr('h_tasks')}`);
+       console.log(`  /tasks [-step <id>] - ${i18nTr('h_tasks')}`);
+       console.log(t().textDim(`  /pasteimage      - ${i18nTr('h_pasteimage')}`));
 
       console.log(t().heading(i18nTr('h_tools')));
       console.log(`  /tools           - ${i18nTr('h_tools_list')}`);
@@ -2144,6 +2148,28 @@ async function handleSlashCommand(
       console.log(t().warning('Usage: /bypass [auto|off|status]'));
       return false;
     }
+
+    case 'pasteimage':
+    case 'clipimage':
+    case 'pasteimg':
+      if (agent.isBusy()) {
+        console.log(t().warning('Agent is busy, please wait.'));
+        return true;
+      }
+      const clipPath = readClipboardImage();
+      if (clipPath) {
+        imagePasteCounter++;
+        const promptText = t().entityName(`[image${imagePasteCounter}: ${clipPath}]`);
+        const expandedInput = await expandAtMentions(`@${clipPath}`, process.cwd());
+        process.stdout.write('\n');
+        await agent.chat(expandedInput);
+        process.stdout.write(renderSepLine() + '\n');
+        rl.prompt();
+      } else {
+        console.log(t().textDim('No image found on clipboard.'));
+        rl.prompt();
+      }
+      return true;
 
     case 'skill': {
       const skillName = args[0];
