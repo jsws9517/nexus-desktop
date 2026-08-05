@@ -222,6 +222,35 @@ function handlePastedImage(content: string): string | null {
 }
 
 /**
+ * Read an image from the Windows clipboard using PowerShell,
+ * save it to a temp file, and return the file path.
+ * Returns null if the clipboard does not contain an image.
+ */
+function readClipboardImage(): string | null {
+  const psScript = [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    'if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) { exit 1 }',
+    '$img = [System.Windows.Forms.Clipboard]::GetImage()',
+    '$dir = Join-Path $env:TEMP ("nexus-image-" + [guid]::NewGuid().ToString("N"))',
+    'New-Item -ItemType Directory -Path $dir -Force | Out-Null',
+    '$path = Join-Path $dir "clipboard.png"',
+    '$img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)',
+    'Write-Output $path',
+  ].join('; ');
+  try {
+    const result = execSync(`powershell -ExecutionPolicy Bypass -Command ${JSON.stringify(psScript)}`, {
+      encoding: 'utf-8',
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    if (result && existsSync(result)) return result;
+  } catch {
+    // clipboard has no image or PowerShell failed
+  }
+  return null;
+}
+
+/**
  * Resolve @paths to their absolute OS paths WITHOUT file-existence check or
  * authorization prompt.  Used by /btw so the LLM receives real paths to
  * guide its file-search reasoning.
@@ -935,11 +964,26 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
           console.log(`  ${t().textDim('Cmpt:')}  ${last.compactStrategy}`);
         }
       }
-      rl.prompt();
-      return;
-    }
+       rl.prompt();
+       return;
+     }
 
-    if (key.name === 'escape') {
+     // Ctrl+Shift+V: read clipboard image and inject as @filepath
+     if (key.ctrl && key.shift && key.name === 'v') {
+       if (agent.isBusy()) return;
+       const clipPath = readClipboardImage();
+       if (clipPath) {
+         imagePasteCounter++;
+         process.stdout.write(t().entityName(`[image${imagePasteCounter}: ${clipPath}]`) + '\n');
+         rl.write(`@${clipPath}`);
+       } else {
+         console.log(t().textDim('No image found on clipboard.'));
+       }
+       rl.prompt();
+       return;
+     }
+
+     if (key.name === 'escape') {
       if (agent.isBusy()) {
         agent.abort();
         console.log(t().warning('\n[Interrupted]'));
@@ -1199,8 +1243,9 @@ async function handleSlashCommand(
       console.log(t().textDim(`\n${i18nTr('h_input')}:`));
       console.log(t().textDim(`  Enter           - ${i18nTr('h_submit')}`));
       console.log(t().textDim(`  Ctrl+Enter      - ${i18nTr('h_newline')}`));
-      console.log(t().textDim(`  Paste           - ${i18nTr('h_paste')}`));
-      return false;
+       console.log(t().textDim(`  Paste           - ${i18nTr('h_paste')}`));
+       console.log(t().textDim(`  Ctrl+Shift+V    - ${i18nTr('h_clipboard_image')}`));
+       return false;
 
     case 'session': {
       const sessionId = agent.getCurrentSessionId();
