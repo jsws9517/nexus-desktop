@@ -231,9 +231,9 @@ function readClipboardImage(): string | null {
     'Add-Type -AssemblyName System.Windows.Forms',
     'if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) { exit 1 }',
     '$img = [System.Windows.Forms.Clipboard]::GetImage()',
-    '$dir = Join-Path $env:TEMP ("nexus-image-" + [guid]::NewGuid().ToString("N"))',
+    "$dir = Join-Path $env:TEMP ('nexus-image-' + [guid]::NewGuid().ToString('N'))",
     'New-Item -ItemType Directory -Path $dir -Force | Out-Null',
-    '$path = Join-Path $dir "clipboard.png"',
+    "$path = Join-Path $dir 'clipboard.png'",
     '$img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)',
     'Write-Output $path',
   ].join('; ');
