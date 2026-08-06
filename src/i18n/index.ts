@@ -123,7 +123,8 @@ const L = {
     h_session_info: 'Show current session info',
     h_resume: 'Resume a session (-id <n> | -name <str> | -ssid <uuid>)',
     h_delete: 'Delete sessions (-ids <n,n> | -filter <str> | -size <N> | -days <N>)',
-    h_view: 'Browse raw messages for a session',
+    h_view: 'Browse raw stored transcript of a session',
+    h_context: 'Show the live in-memory context the LLM sees',
     h_memory: 'Show persistent memory for this session',
     h_insight: 'Cross-session memory analysis',
     h_rename: 'Rename the current session',
@@ -174,7 +175,7 @@ const L = {
     h_submit: 'Submit (Enter; same in multi-line mode)',
     h_newline: 'Newline (Ctrl+Enter)',
       h_paste: 'Auto-detected, Enter inserts newline',
-      h_clipboard_image: 'Paste clipboard image (Ctrl+Shift+V)',
+      h_clipboard_image: 'Paste clipboard image (Alt+V)',
       h_pasteimage: 'Read image from clipboard and inject into prompt',
 
       /* ── Config ── */
@@ -268,7 +269,8 @@ const L = {
     h_session_info: '显示当前会话信息',
     h_resume: '恢复会话（-id <编号> | -name <名称> | -ssid <UUID>）',
     h_delete: '删除会话（-ids <编号,编号> | -filter <筛选词> | -size <N> | -days <N>）',
-    h_view: '浏览会话的原始消息',
+    h_view: '浏览会话的原始存储记录',
+    h_context: '显示 LLM 实际看到的内存上下文',
     h_memory: '显示此会话的持久记忆',
     h_insight: '跨会话记忆分析',
     h_rename: '重命名当前会话',
@@ -319,7 +321,7 @@ const L = {
     h_submit: '提交（Enter，多行模式同样）',
     h_newline: '换行（Ctrl+Enter）',
      h_paste: '自动检测，Enter 插入换行',
-      h_clipboard_image: '粘贴剪切板图像（Ctrl+Shift+V）',
+      h_clipboard_image: '粘贴剪切板图像（Alt+V）',
       h_pasteimage: '读取剪切板图像并注入到提示词',
 
      config_lang_list: (cur: string, langs: string) => `当前语言：${cur}\n可用语言：\n${langs}`,

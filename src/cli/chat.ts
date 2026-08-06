@@ -206,6 +206,11 @@ function saveBase64ImageToTemp(data: string, mime: string): string {
 }
 
 let imagePasteCounter = 0;
+// Debounce window for Alt+V: readClipboardImage() spawns PowerShell (~500ms)
+// with no feedback, so an impatient second press would double-inject. Any
+// Alt+V within this window of the previous one is ignored.
+const IMAGE_PASTE_DEBOUNCE_MS = 1500;
+let lastImagePasteAt = 0;
 
 function handlePastedImage(content: string): string | null {
   const detected = detectPastedImage(content);
@@ -216,8 +221,13 @@ function handlePastedImage(content: string): string | null {
   } else {
     tempPath = detected.path;
   }
-  imagePasteCounter++;
-  process.stdout.write(t().entityName(`[image${imagePasteCounter}: ${tempPath}]`) + '\n');
+  // If the input already contains an @-mention for this path (injected by
+  // injectClipboardImage() via Alt+V), the [imageN] was already printed —
+  // skip the duplicate to avoid showing [image1] + [image2] for one paste.
+  if (!content.includes(`@${tempPath}`)) {
+    imagePasteCounter++;
+    process.stdout.write(t().entityName(`[image${imagePasteCounter}: ${tempPath}]`) + '\n');
+  }
   return tempPath;
 }
 
@@ -422,8 +432,12 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
 
   // Shared main _ttyWrite: used both for initial setup and after multi-line exit
   function makeMainTtyWrite() {
-    return function (s: string, key: { name?: string; ctrl?: boolean; alt?: boolean; shift?: boolean }) {
+    return function (s: string, key: { name?: string; ctrl?: boolean; alt?: boolean; shift?: boolean; meta?: boolean }) {
       if (!key) return originalTtyWrite(s, key);
+
+      if (process.env.DEBUG?.includes('keypress') || process.env.LLMA_DEBUG) {
+        process.stderr.write(`[ttyWrite-main] s=${JSON.stringify(s)} key=${JSON.stringify({ name: key.name, ctrl: key.ctrl, shift: key.shift, alt: key.alt, meta: key.meta })}\n`);
+      }
 
         // Track CRLF: Windows Enter sends \r\n; ignore the \n when it follows \r
         if (s === '\r') { _charBeforeWasCR = true; _seenCR = true; }
@@ -469,7 +483,7 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         return originalTtyWrite(s, key);
       }
 
-      // Tab completion for /skill command
+       // Tab completion for /skill command
       if (key.name === 'tab') {
         const line = rl.line;
         const skillMatch = line.match(/^\/skill (.{0,})$/);
@@ -515,6 +529,15 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
           return;
         }
         return originalTtyWrite(s, key);
+      }
+
+      // Alt+V (or Ctrl+Shift+V where the terminal forwards it): read clipboard image and inject as @filepath
+      if (isImagePasteKey(key)) {
+        if (process.env.DEBUG?.includes('keypress') || process.env.LLMA_DEBUG) {
+          process.stderr.write(`[ttyWrite] image-paste key detected in main mode\n`);
+        }
+        injectClipboardImage();
+        return;
       }
 
       return originalTtyWrite(s, key);
@@ -599,6 +622,68 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     // without setting key.ctrl. On LF terminals _seenCR is false → no false positive.
     if (s === '\n' && !key.shift && !key.ctrl && !key.alt && _seenCR) return true;
     return false;
+  }
+
+  // ---- Clipboard image paste shortcut detection ----
+  // Key-parsing reality on Windows readline (verified empirically):
+  //  - Alt+V  (\x1bv)      -> { name:'v', meta:true }   RELIABLE
+  //  - Alt+Shift+V (\x1bV) -> { name:'v', meta:true, shift:true } RELIABLE
+  //  - Ctrl+Shift+V (\x16) -> { name:'v', ctrl:true, shift:false } — INDISTINGUISHABLE
+  //    from Ctrl+V, so it must NOT be used (would hijack Ctrl+V paste).
+  //  - Ctrl+Alt+V (\x1b\x16) -> { meta:true, name:undefined } — the letter is lost,
+  //    indistinguishable from other mangled Alt+Ctrl combos.
+  // Windows Terminal binds Ctrl+V / Ctrl+Shift+V to "paste" anyway (image paste is
+  // rendered inline and never reaches the app), so Alt+V is the reliable shortcut.
+  function isImagePasteKey(key: { name?: string; ctrl?: boolean; alt?: boolean; shift?: boolean; meta?: boolean }): boolean {
+    if (key.name === 'v' && key.meta) return true;
+    if (key.ctrl && key.shift && key.name === 'v') return true;
+    return false;
+  }
+
+  /** Read clipboard image and inject "@<path>" into the current input line.
+   *  Returns true if the key was consumed (image found OR "no image" shown). */
+  function injectClipboardImage(): boolean {
+    if (agent.isBusy()) return true;
+    const now = Date.now();
+    if (now - lastImagePasteAt < IMAGE_PASTE_DEBOUNCE_MS) return true;
+    if (process.env.DEBUG?.includes('keypress') || process.env.LLMA_DEBUG) {
+      process.stderr.write(`[clipboard-image] inject requested, isMultiLine=${isMultiLine}\n`);
+    }
+    const clipPath = readClipboardImage();
+    // Set debounce AFTER execSync (~500ms) completes so the window covers
+    // the actual clipboard-read time, not the pre-read check.
+    lastImagePasteAt = Date.now();
+    if (!clipPath) {
+      process.stdout.write(t().textDim('No image found on clipboard.'));
+      rl.prompt();
+      return true;
+    }
+    imagePasteCounter++;
+    // Do NOT print [imageN] here — the @-mention injected below is the
+    // user-visible indicator. Printing both [imageN] and @file would show
+    // two echoes for one Alt+V press.
+    if (isMultiLine) {
+      // Multi-line mode uses its own rendering (readline is bypassed), so
+      // rl.prompt() must NOT be called — it would re-echo the stale rl.line
+      // (the first line saved before entering multi-line). Redraw the whole
+      // multi-line state instead (same pattern as the Ctrl+O redraw).
+      const idx = multiLineBuffer.length - 1;
+      multiLineBuffer[idx] = (multiLineBuffer[idx] || '') + `@${clipPath}`;
+      for (let i = 0; i < multiLineBuffer.length; i++) {
+        if (i === 0) process.stdout.write(promptLabel() + multiLineBuffer[i] + '\n');
+        else process.stdout.write(' '.repeat(INDENT) + multiLineBuffer[i] + '\n');
+      }
+      process.stdout.write(' '.repeat(INDENT));
+    } else {
+      // rl.write() re-enters readline's _ttyWrite; calling it synchronously from
+      // inside the Alt+V _ttyWrite handler corrupts the injected line (only the
+      // tail survives). Defer via nextTick — same pattern as setLine()/PageUp.
+      process.nextTick(() => {
+        rl.write(`@${clipPath}`);
+        rl.prompt();
+      });
+    }
+    return true;
   }
 
   /** Approximate visual width of a string (CJK = 2, ASCII/ANSI = 1). */
@@ -785,6 +870,10 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
     setTtyWrite(function (s: string, key: { name?: string; ctrl?: boolean; meta?: boolean; alt?: boolean; shift?: boolean }) {
       if (!key) return;
 
+      if (process.env.DEBUG?.includes('keypress') || process.env.LLMA_DEBUG) {
+        process.stderr.write(`[ttyWrite-ml] s=${JSON.stringify(s)} key=${JSON.stringify({ name: key.name, ctrl: key.ctrl, shift: key.shift, alt: key.alt, meta: key.meta })}\n`);
+      }
+
       // Track CRLF: Windows Enter sends \r\n; ignore the \n when it follows \r
       if (s === '\r') { _charBeforeWasCR = true; _seenCR = true; }
       else if (_charBeforeWasCR && s === '\n') { _charBeforeWasCR = false; return; }
@@ -861,6 +950,15 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
         const idx = multiLineBuffer.length - 1;
         multiLineBuffer[idx] = (multiLineBuffer[idx] || '') + '  ';
         process.stdout.write('  ');
+        return;
+      }
+
+      // Alt+V (or Ctrl+Shift+V where the terminal forwards it): read clipboard image and inject as @filepath
+      if (isImagePasteKey(key)) {
+        if (process.env.DEBUG?.includes('keypress') || process.env.LLMA_DEBUG) {
+          process.stderr.write(`[ttyWrite] image-paste key detected in multiline mode\n`);
+        }
+        injectClipboardImage();
         return;
       }
 
@@ -971,20 +1069,10 @@ export async function startInteractiveChat(sessionId?: string, enableAcp?: boole
        return;
      }
 
-     // Ctrl+Shift+V: read clipboard image and inject as @filepath
-     if (key.ctrl && key.shift && key.name === 'v') {
-       if (agent.isBusy()) return;
-       const clipPath = readClipboardImage();
-       if (clipPath) {
-         imagePasteCounter++;
-         process.stdout.write(t().entityName(`[image${imagePasteCounter}: ${clipPath}]`) + '\n');
-         rl.write(`@${clipPath}`);
-       } else {
-         console.log(t().textDim('No image found on clipboard.'));
-       }
-       rl.prompt();
-       return;
-     }
+     // Ctrl+Shift+V / Ctrl+Alt+V is handled in the _ttyWrite handlers (single
+     // injection path). This keypress listener must NOT handle it too, otherwise
+     // the same key would inject twice (both the readline-internal _ttyWrite and
+     // this event listener fire for the same keypress).
 
      if (key.name === 'escape') {
       if (agent.isBusy()) {
@@ -1191,6 +1279,7 @@ async function handleSlashCommand(
       console.log(`  /resume          - ${i18nTr('h_resume')}`);
       console.log(`  /delete          - ${i18nTr('h_delete')}`);
       console.log(`  /view [id|#]     - ${i18nTr('h_view')}`);
+      console.log(`  /context         - ${i18nTr('h_context')}`);
       console.log(`  /memory          - ${i18nTr('h_memory')}`);
       console.log(`  /insight         - ${i18nTr('h_insight')}`);
       console.log(`  /rename <name>   - ${i18nTr('h_rename')}`);
@@ -1248,7 +1337,7 @@ async function handleSlashCommand(
       console.log(t().textDim(`  Enter           - ${i18nTr('h_submit')}`));
       console.log(t().textDim(`  Ctrl+Enter      - ${i18nTr('h_newline')}`));
        console.log(t().textDim(`  Paste           - ${i18nTr('h_paste')}`));
-       console.log(t().textDim(`  Ctrl+Shift+V    - ${i18nTr('h_clipboard_image')}`));
+       console.log(t().textDim(`  Alt+V           - ${i18nTr('h_clipboard_image')}`));
        return false;
 
     case 'session': {
@@ -1473,15 +1562,13 @@ async function handleSlashCommand(
         console.log(t().textDim('No messages in this session.'));
         return false;
       }
-      console.log(t().heading(`\nSession: ${sessionId} (${messages.length} messages total)\n`));
-      for (let i = 0; i < messages.length; i++) {
-        const m = messages[i]!;
-        const preview = m.content.slice(0, 120).replace(/\n/g, '\\n');
-        const roleTag = m.role === 'assistant' ? t().entityName(m.role) : t().entityName(m.role);
-        const tokens = m.toolCalls ? ` [${m.toolCalls.length} tool calls]` : '';
-        console.log(`  ${String(i + 1).padStart(3)}. ${roleTag}: ${t().textDim(preview)}${tokens}`);
-      }
-      console.log(t().textDim(`\nTip: Use /resume to switch to a session, then the context will have the full history.\n`));
+      renderMessageList(agent, `Stored Transcript: ${sessionId}`, messages);
+      console.log(t().textDim(`\nTip: /view = raw stored transcript; /context = live LLM context; /resume = load a session.\n`));
+      return false;
+    }
+
+    case 'context': {
+      renderContext(agent);
       return false;
     }
 
@@ -2159,11 +2246,12 @@ async function handleSlashCommand(
       const clipPath = readClipboardImage();
       if (clipPath) {
         imagePasteCounter++;
-        const promptText = t().entityName(`[image${imagePasteCounter}: ${clipPath}]`);
-        const expandedInput = await expandAtMentions(`@${clipPath}`, process.cwd());
-        process.stdout.write('\n');
+        const rest = args.join(' ').trim();
+        const atInput = rest ? `@${clipPath} ${rest}` : `@${clipPath}`;
+        const expandedInput = await expandAtMentions(atInput, process.cwd());
+        process.stdout.write('\n' + t().entityName(`[image${imagePasteCounter}: ${clipPath}]`) + '\n');
         await agent.chat(expandedInput);
-        process.stdout.write(renderSepLine() + '\n');
+        process.stdout.write('\n' + renderSepLine() + '\n');
         rl.prompt();
       } else {
         console.log(t().textDim('No image found on clipboard.'));
@@ -2275,6 +2363,87 @@ async function handleSlashCommand(
   }
 }
 
+/** Role → distinct color/font mapping so messages don't blur together. */
+function roleStyle(role: string): (text: string) => string {
+  switch (role) {
+    case 'system': return (s: string) => t().entityId(s);
+    case 'user': return (s: string) => t().prompt(s);
+    case 'assistant': return (s: string) => t().success(s);
+    case 'tool': return (s: string) => t().toolCallName(s);
+    default: return (s: string) => s;
+  }
+}
+
+/** Shared renderer for a message list with per-role colors and per-message token preview. */
+function renderMessageList(agent: Agent, title: string, msgs: import('../types.js').Message[]): void {
+  if (msgs.length === 0) {
+    console.log(t().textDim(`${title} is empty.`));
+    return;
+  }
+  const countByRole: Record<string, number> = {};
+  for (const m of msgs) countByRole[m.role] = (countByRole[m.role] || 0) + 1;
+
+  console.log(t().heading(`\n${title} (${msgs.length} messages)`));
+  console.log(t().textDim(`  roles: ${Object.entries(countByRole).map(([r, n]) => `${r}=${n}`).join(', ')}`));
+  console.log(t().textDim(`  colors: ${t().entityId('system')} ${t().prompt('user')} ${t().success('assistant')} ${t().toolCallName('tool')}\n`));
+
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]!;
+    const color = roleStyle(m.role);
+    const tokens = agent.provider?.countTokens(m.content) ?? Math.ceil(m.content.length / 4);
+    const preview = m.content.slice(0, 140).replace(/\n/g, '\\n');
+    let suffix = '';
+    if (m.toolCalls && m.toolCalls.length > 0) suffix = ` [${m.toolCalls.length} tool calls]`;
+    if (m.role === 'tool' && m.toolCallId) suffix = ` [→ ${m.toolCallId}]`;
+    console.log(`  ${String(i + 1).padStart(3)}. ${color(m.role)} (${tokens}t): ${color(preview)}${t().textDim(suffix)}`);
+  }
+}
+
+/** Display the live LLM context: assembled system prompt + memory + compaction + current turns.
+ *  `/view` shows the raw stored transcript; `/context` shows what the model actually sees NOW. */
+function renderContext(agent: Agent): void {
+  const msgs = agent.context.getMessages();
+  if (msgs.length === 0) {
+    console.log(t().textDim('Context is empty.'));
+    return;
+  }
+  const totalTokens = agent.context.getTokenCount();
+  const countByRole: Record<string, number> = {};
+  for (const m of msgs) countByRole[m.role] = (countByRole[m.role] || 0) + 1;
+
+  console.log(t().heading(`\nLLM Context (live) — ${msgs.length} messages, ~${totalTokens} tokens`));
+  console.log(t().textDim(`  roles: ${Object.entries(countByRole).map(([r, n]) => `${r}=${n}`).join(', ')}`));
+
+  // Compression state — only /context can reveal this (transcript is never compacted)
+  const meta = agent.context.lastCompactMetadata;
+  if (meta) {
+    console.log(t().warning(`  compacted: ${meta.originalTokens} → ${meta.compactedTokens} tokens (${meta.strategy}, round ${meta.round}), ${meta.preservedMessages} msgs preserved`));
+  }
+
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]!;
+    const tokens = agent.provider?.countTokens(m.content) ?? Math.ceil(m.content.length / 4);
+
+    // System messages here are ASSEMBLED (prompt/memory/restore summary) and never stored in the transcript
+    if (m.role === 'system') {
+      const label = i === 0 ? 'assembled system prompt (not stored)' : 'injected (memory/restore, not stored)';
+      const lines = m.content.split('\n').filter(Boolean);
+      console.log(`  ${String(i + 1).padStart(3)}. ${t().entityId('system')} (${tokens}t, ${label})`);
+      for (const ln of lines.slice(0, 4)) console.log(`        ${t().entityId(ln.slice(0, 120))}`);
+      if (lines.length > 4) console.log(t().textDim(`        … +${lines.length - 4} more lines`));
+      continue;
+    }
+
+    const color = roleStyle(m.role);
+    const preview = m.content.slice(0, 140).replace(/\n/g, '\\n');
+    let suffix = '';
+    if (m.toolCalls && m.toolCalls.length > 0) suffix = ` [${m.toolCalls.length} tool calls]`;
+    if (m.role === 'tool' && m.toolCallId) suffix = ` [→ ${m.toolCallId}]`;
+    console.log(`  ${String(i + 1).padStart(3)}. ${color(m.role)} (${tokens}t): ${color(preview)}${t().textDim(suffix)}`);
+  }
+  console.log(t().textDim(`\nTip: /context = what the LLM sees NOW (system prompt + memory + compression); /view = raw stored transcript; /resume = load a session.\n`));
+}
+
 async function doResume(
   agent: Agent,
   session: { id: string; name: string },
@@ -2293,6 +2462,9 @@ async function doResume(
     } else {
       console.log(t().success(`Session "${result.sessionName}" resumed successfully.`));
     }
+    const ctxMsgs = agent.context.getMessages();
+    const storedCount = agent.session.getMessages(session.id).length;
+    console.log(t().textDim(`  Context: ${ctxMsgs.length} messages (of ${storedCount} stored), ~${agent.context.getTokenCount()} tokens. Run /context to inspect.`));
   } catch (err) {
     console.log(t().error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`));
   }
@@ -2342,6 +2514,9 @@ async function doResumeList(
     } else {
       console.log(t().success(`Session "${result.sessionName}" resumed successfully.`));
     }
+    const ctxMsgs = agent.context.getMessages();
+    const storedCount = agent.session.getMessages(selected.id).length;
+    console.log(t().textDim(`  Context: ${ctxMsgs.length} messages (of ${storedCount} stored), ~${agent.context.getTokenCount()} tokens. Run /context to inspect.`));
   } catch (err) {
     console.log(t().error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`));
   }
