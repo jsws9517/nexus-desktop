@@ -93,6 +93,7 @@ During chat, type:
 - `/skills` - Manage skill plugins (list, reload, create, validate, fix, fix-smart)
 - `/plugins` - List loaded plugins
 - `/btw <info>` - Inject context before the next LLM turn
+- `/pasteimage` - Paste clipboard image and send to agent (alias: `/clipimage`, `/pasteimg`)
 - `/theme` - Show/switch color theme
 - `/flush` - Clear the screen
 - `/bypass [auto|off|status]` - Toggle the permission whitelist (auto = no-prompt edit mode, off = ask before each tool)
@@ -578,6 +579,21 @@ The ACP server emits a **heartbeat** every `heartbeatMs` during a turn. If cc-co
 - **Sub-agent Permissions**: Fixed parent permission mode propagation to sub-agents in worker mode
 - **Session Persistence**: Fixed FOREIGN KEY constraint failed when deleting sessions with task_graphs
 - **ACP Transport**: Fixed message lost random length and JSON-RPC `-32603: Invalid string length`
+
+## Nexus-Desktop Release 彩蛋
+
+## Easter Egg
+
+> 🥚 **Easter Egg**: Nexus Desktop is coming soon — stay tuned!
+> 
+> Nexus Desktop will feature:
+> - 🖥️ Standalone desktop application window
+> - 📋 Clipboard image paste (Alt+V) with visual preview
+> - 🔌 Plugin management GUI
+> - 📊 Session history visual browser
+> - ⚡ One-click launch, no terminal required
+>
+> [![Star History Chart](https://api.star-history.com/svg?repos=ppk1234/nexus&type=Date)](https://star-history.com/#ppk1234/nexus&Date)
 
 ## License
 

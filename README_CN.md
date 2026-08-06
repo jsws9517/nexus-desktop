@@ -13,7 +13,7 @@
 - **内置文件系统工具**：完整文件读写/编辑/移动/复制/删除/目录树——无需外部 MCP 服务器
 - **MCP 工具**：连接外部 MCP 服务器获取专业能力；内置工具优先于 MCP 同名工具；30 秒超时，卡死服务器自动重连
 - **路径授权**：提示/允许/拒绝，支持按会话（`y`）和持久化（`a`）授权，缓存于 `path-auth.json`；提前 `existsSync` 检查避免不存在的文件弹出授权提示
-- **斜杠命令**：`/model`, `/provider`, `/session`, `/resume`, `/memory`, `/insight`, `/tools`, `/skills`, `/config`, `/clear`, `/exit`, `/plan`, `/tasks`, `/btw`, `/theme`
+- **斜杠命令**：`/model`, `/provider`, `/session`, `/resume`, `/memory`, `/insight`, `/tools`, `/skills`, `/config`, `/clear`, `/exit`, `/plan`, `/tasks`, `/btw`, `/pasteimage`, `/theme`
 - **技能/插件**：从 `~/.nexus/skills/` 动态加载，无效技能目录自动生成降级
 - **ACP 协议**：基于 WebSocket 的智能体间通信
 - **差异渲染器**：LLM 响应的彩色内联差异输出
@@ -94,6 +94,7 @@ nexus session delete <id>
 - `/skills` - 管理技能插件（列出、重载、创建、验证、修复、智能修复）
 - `/plugins` - 列出已加载的插件
 - `/btw <信息>` - 在下次 LLM 调用前注入上下文
+- `/pasteimage` - 粘贴剪贴板图片并发送给 agent（别名：`/clipimage`, `/pasteimg`）
 - `/theme` - 显示/切换颜色主题
 - `/flush` - 清除屏幕
 - `/bypass [auto|off|status]` - 切换权限白名单（auto = 免确认编辑模式，off = 每个工具执行前询问）
@@ -574,6 +575,19 @@ ACP 服务器在每个轮次中每隔 `heartbeatMs` 发送一次**心跳**。如
 - **子 agent 权限**：修复工作模式下父权限模式未传递给子 agent
 - **会话持久化**：修复删除含 task_graphs 的会话时 FOREIGN KEY 约束失败
 - **ACP 传输**：修复消息随机长度丢失和 JSON-RPC `-32603: Invalid string length`
+
+## Nexus-Desktop Release 彩蛋
+
+> 🥚 **彩蛋**: Nexus 即将推出桌面版，敬请期待！
+> 
+> Nexus Desktop 将带来：
+> - 🖥️ 独立的桌面应用程序窗口
+> - 📋 剪贴板图片粘贴（Alt+V）可视化预览
+> - 🔌 插件管理图形界面
+> - 📊 会话历史可视化浏览
+> - ⚡ 一键启动，无需终端
+>
+> [![Star History Chart](https://api.star-history.com/svg?repos=ppk1234/nexus&type=Date)](https://star-history.com/#ppk1234/nexus&Date)
 
 ## 许可证
 
