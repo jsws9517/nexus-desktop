@@ -29,6 +29,7 @@ import { ProjectContext } from './context/index.js';
 import { analyzeImage, isImageFile } from './vision/index.js';
 import { isVisionCapable } from './vision/capability.js';
 import { authorizePath } from './security/path-authorizer.js';
+import { resolveRelativePath } from './mcp/builtin-tools.js';
 import { sanitizeContent, neutralizeInstructions } from './utils/sanitize.js';
 import type { FileOutput } from './types.js';
 
@@ -689,6 +690,26 @@ export class Agent {
         '    Every step in a multi-step process MUST have an explicit, checkable done condition.\n' +
         '    State it before starting the step. Verify it before declaring the step done.\n';
 
+      // ── Data directory map (always on) ──────────────────────────────────
+      // Tells the model where its own per-user data / task outputs live so it
+      // starts searches at ~/.nexus instead of guessing paths.
+      const nexusDataDir = join(homedir(), '.nexus');
+      systemPrompt +=
+        '\n\n[Data Directory — Where Your Files Live]\n' +
+        'Your per-user data and all task/sandbox outputs live under the nexus data dir:\n' +
+        '  ' + nexusDataDir + '   (shorthand ~/.nexus — "~" in tool paths resolves to ' + homedir() + ')\n' +
+        '  - Sandbox / task project outputs:  ~/.nexus/tasks/outputs/<project-name>/\n' +
+        '  - Task plans exported via /plan:    ~/.nexus/tasks/project/<project-name>/\n' +
+        '  - Auto-saved long answers:          ~/.nexus/_cache/\n' +
+        '  - TTS audio output:                 ~/.nexus/output/\n' +
+        '  - Knowledge / memory / skills:      ~/.nexus/knowledge/ · ~/.nexus/remember/ · ~/.nexus/skills/\n' +
+        '  - Config, sessions DB:              ~/.nexus/config.json · ~/.nexus/sessions.db\n' +
+        '\nREADING PREVIOUS WORK:\n' +
+        '  When the user asks about a PREVIOUS task or project, FIRST run list_directory on ~/.nexus/tasks/outputs ' +
+        '(then ~/.nexus/tasks/project for exported plans) instead of guessing paths.\n' +
+        '  (Sessions that ran /go carry a [Project Directory] directive pinning the task sandbox — ' +
+        'when present, always operate inside THAT directory.)\n';
+
       // Inject vision/OCR capability info so the model knows its own limits and fallback chain
       try {
         const { isVisionCapable } = await import('./vision/capability.js');
@@ -838,6 +859,33 @@ export class Agent {
 
       this.context.add({ role: 'system', content: systemPrompt });
     }
+
+    // Deterministic project-directory injection for NORMAL chat: when this session
+    // is associated with a task sandbox (set by /go → executePlan), tell the model
+    // the concrete project root so it does NOT guess paths from cwd — a same-named
+    // folder under cwd (e.g. the extensions repo) is often a stale copy. Injected
+    // per-turn (guarded) so it also appears after /go runs in an already-open
+    // session, and re-appears when a session is resumed from the DB.
+    try {
+      const meta = this.currentSessionId ? this.session.get(this.currentSessionId)?.metadata : undefined;
+      const projectDir = typeof meta?.projectDir === 'string' && meta.projectDir ? meta.projectDir : undefined;
+      if (projectDir) {
+        const alreadyInjected = this.context.getMessages().some(
+          (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('[Project Directory]'),
+        );
+        if (!alreadyInjected) {
+          this.context.add({
+            role: 'system',
+            content:
+              '\n\n[Project Directory]\n' + projectDir + '\n' +
+              'The task/project the user is talking about lives in THIS sandbox directory. ' +
+              'ALL reads and writes for this project MUST use absolute paths under this directory. ' +
+              'Do NOT use paths under your working directory (cwd) for this project\'s files, ' +
+              'even if a same-named folder exists there.\n',
+          });
+        }
+      }
+    } catch { /* metadata read failure — skip injection */ }
 
     // Inject memory context before LLM call
     await this.injectMemoryContext();
@@ -2424,7 +2472,7 @@ export class Agent {
     }
     // Authorize the image path — analysis reads the file and may upload it to
     // a cloud vision provider, so arbitrary-file access must be gated.
-    const absImagePath = resolve(process.cwd(), imagePath);
+    const absImagePath = resolveRelativePath(imagePath);
     const authorized = await authorizePath(absImagePath);
     if (!authorized) {
       return { content: `Access denied: "${imagePath}" is not in the allowed path list and access was rejected by user.`, isError: true };
@@ -2444,7 +2492,7 @@ export class Agent {
     if (!imagePath) {
       return { content: 'Error: image path is required', isError: true };
     }
-    const absImagePath = resolve(process.cwd(), imagePath);
+    const absImagePath = resolveRelativePath(imagePath);
     const authorized = await authorizePath(absImagePath);
     if (!authorized) {
       return { content: `Access denied: "${imagePath}" is not in the allowed path list.`, isError: true };
@@ -2483,7 +2531,7 @@ export class Agent {
     if (!audioPath) {
       return { content: 'Error: audio file path is required', isError: true };
     }
-    const absPath = resolve(process.cwd(), audioPath);
+    const absPath = resolveRelativePath(audioPath);
     const authorized = await authorizePath(absPath);
     if (!authorized) {
       return { content: `Access denied: "${audioPath}" is not in the allowed path list.`, isError: true };
@@ -2622,6 +2670,14 @@ export class Agent {
     const restored = this._withAutoWhitelist();
     const worker = new SubAgentWorker(this);
     const scheduler = new DAGScheduler(worker, this.tracker);
+    // Associate this session with the task's project sandbox so later turns in
+    // NORMAL chat get a deterministic [Project Directory] injection (the same
+    // directive the sub-agents receive) instead of guessing paths from cwd — a
+    // same-named folder in cwd is often a stale copy.
+    if (this.currentPlan.projectName && this.currentSessionId) {
+      const projectDir = join(homedir(), '.nexus', 'tasks', 'outputs', this.currentPlan.projectName);
+      this.session.updateMetadata(this.currentSessionId, { projectDir });
+    }
     try {
       await scheduler.execute(this.currentPlan);
       return 'Plan execution completed.';

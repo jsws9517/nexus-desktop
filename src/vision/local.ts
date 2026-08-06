@@ -83,6 +83,16 @@ function startProcess(): void {
   proc.stdout!.on('data', onChildData);
   proc.stderr!.on('data', onChildData);
 
+  // Spawn can fail (python missing / bad LLMA_VISION_PYTHON). Without a
+  // listener the 'error' event is uncaught and crashes the whole process.
+  proc.on('error', (err) => {
+    vlog(`spawn failed: ${err.message}`);
+    loadError = err.message;
+    proc = null;
+    starting = false;
+    modelLoading = false;
+  });
+
   proc.on('exit', (code) => {
     ready = false;
     modelLoading = false;

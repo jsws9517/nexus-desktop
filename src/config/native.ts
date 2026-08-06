@@ -194,12 +194,18 @@ const CATALOG: Record<string, PackageInfo> = {
     version: '1.0.0',
     homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem',
     options: [
-      { flag: '--dir', label: 'Allowed directory (default: current working dir)', default: process.cwd() },
+      { flag: '--dir', label: 'Allowed directory (default: current working dir + ~/.nexus/tasks)' },
     ],
     async install(params) {
-      const allowedDir = params.dir || process.cwd();
+      // The filesystem server is a static sandbox: it only serves paths under the
+      // allowed dirs baked into its args at install time. Default to covering both
+      // the project (cwd) and the data dir (~/.nexus/tasks) so the agent can read
+      // previous task outputs without tripping "outside allowed directories".
+      const allowedDirs = params.dir
+        ? [params.dir]
+        : [process.cwd(), join(homedir(), '.nexus', 'tasks')];
       const config = new ConfigManager();
-      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-filesystem', allowedDir]);
+      const { command, args } = mcpNpx(['-y', '@modelcontextprotocol/server-filesystem', ...allowedDirs]);
       config.addMcpServer('filesystem', { command, args, autoStart: true });
     },
   },

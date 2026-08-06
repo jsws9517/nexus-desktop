@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'crypto';
 import { readFileSync } from 'fs';
 import { Agent } from '../agent.js';
 import { getTurnDeadlineMs, getHeartbeatIntervalMs } from '../llm/timeout-config.js';
+import { setPermissionPrompter } from '../security/path-authorizer.js';
 import type { FileOutput } from '../types.js';
 
 interface JsonRpcRequest {
@@ -55,6 +56,20 @@ export class AcpServer {
         return { verdict: 'deny' as const };
       }
     };
+
+    // Path authorization (builtin file tools outside cwd) must prompt over the
+    // ACP protocol, not fall back to a second readline on process.stdin — that
+    // stdin is this server's JSON-RPC transport, so the fallback would corrupt
+    // the stream or deadlock the turn. Only wire when no prompter is already
+    // set (interactive CLI / desktop worker install theirs via
+    // setPermissionPrompter, which also publishes __nexusPermissionPrompter).
+    const existingPrompter = (globalThis as Record<string, unknown>).__nexusPermissionPrompter;
+    if (!existingPrompter) {
+      setPermissionPrompter(async (question: string) => {
+        const allowed = await this.requestPathPermission(question);
+        return allowed ? 'y' : '';
+      });
+    }
   }
 
   async start(): Promise<void> {
@@ -186,6 +201,33 @@ export class AcpServer {
       return { allow: true };
     }
     return { allow: false };
+  }
+
+  /** Send session/request_permission for a path-authorization question and
+   *  wait for the user's Allow/Deny decision. Used as the ACP-mode prompter so
+   *  out-of-cwd file access asks over the protocol instead of touching stdin. */
+  private async requestPathPermission(question: string): Promise<boolean> {
+    const sessionId = this.currentSessionId || '';
+    const params = {
+      sessionId,
+      toolCall: {
+        toolCallId: `path-auth-${Date.now()}`,
+        title: 'authorize_path',
+        kind: 'authorize_path',
+        rawInput: { prompt: question },
+      },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow' },
+        { optionId: 'deny', name: 'Deny', kind: 'deny' },
+      ],
+    };
+    try {
+      const result = await this.sendServerRequest('session/request_permission', params, 120000) as Record<string, unknown>;
+      const outcome = result?.outcome as Record<string, unknown> | undefined;
+      return outcome?.outcome === 'selected' && outcome?.optionId === 'allow';
+    } catch {
+      return false;
+    }
   }
 
   private async handleMethod(method: string, params: unknown): Promise<unknown> {

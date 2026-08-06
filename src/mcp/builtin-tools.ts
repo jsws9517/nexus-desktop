@@ -32,11 +32,23 @@ function looksBinary(content: string): boolean {
  * Lets the LLM pass paths like ~/dir/file, ../file, ./file without
  * needing to resolve them to absolute paths first.
  */
-function resolveRelativePath(p: string): string {
+export function resolveRelativePath(p: string): string {
   if (!p) return p;
   // ~ → homedir
   if (p.startsWith('~')) {
     return resolve(homedir(), p.slice(1).replace(/^[/\\]/, ''));
+  }
+  // On Windows a POSIX-style leading slash ("/", "/src") is not a real
+  // absolute path — path.resolve maps it to the current drive root (e.g.
+  // "C:\"), which escapes the sandbox and triggers a drive-level permission
+  // prompt. Treat it as project-relative (cwd) instead. UNC paths
+  // ("\\server\share") are real absolutes and must pass through untouched.
+  if (process.platform === 'win32') {
+    const unc = p.startsWith('\\\\') || p.startsWith('//');
+    const rooted = p.startsWith('/') || p.startsWith('\\');
+    if (rooted && !unc) {
+      return join(process.cwd(), p);
+    }
   }
   // Everything else gets resolved relative to CWD (resolve handles absolute as-is)
   return resolve(process.cwd(), p);

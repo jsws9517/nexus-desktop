@@ -46,6 +46,12 @@ export class SessionManager {
     this.store.updateSession(id, { updatedAt: Date.now() });
   }
 
+  /** Merge new fields into a session's metadata (preserving existing keys). */
+  updateMetadata(id: string, metadata: Record<string, unknown>): void {
+    const existing = this.get(id)?.metadata ?? {};
+    this.store.updateSession(id, { metadata: { ...existing, ...metadata } });
+  }
+
   addMessage(sessionId: string, message: Message, tokens?: number): void {
     const stored: StoredMessage = {
       id: 0,
