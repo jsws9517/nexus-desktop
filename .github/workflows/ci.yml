@@ -36,3 +36,5 @@ jobs:
 
       - name: Smoke test
         run: npm run test:smoke
+        env:
+          ANTHROPIC_API_KEY: ci-placeholder-key
