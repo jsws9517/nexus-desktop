@@ -15,6 +15,50 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update package.json version
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.tag }}"
+          # Update version in package.json
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
+          # Update version in package-lock.json (first two occurrences)
+          sed -i "0,/"version": ".*"/s/"version": ".*"/"version": "$VERSION"/" package-lock.json
+          sed -i "0,/"version": ".*"/s/"version": ".*"/"version": "$VERSION"/" package-lock.json
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -z "$PREV_TAG" ]; then
+            # First release, get all commits
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            # Get commits since previous tag
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD)
+          fi
+          
+          # Escape multiline string for GitHub Actions
+          CHANGELOG=$(echo "$CHANGELOG" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+          echo "changelog=$CHANGELOG" >> $GITHUB_OUTPUT
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "chore: release v${{ steps.version.outputs.tag }}" || echo "No changes to commit"
+          git push
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -46,11 +90,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
-      - name: Get version
-        id: version
-        shell: bash
-        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -81,7 +120,8 @@ jobs:
             Electron 43 · TypeScript · Node.js · SQLite · Anthropic SDK · OpenAI SDK · MCP SDK
 
             ### 更新日志
-            See [commit history](https://github.com/jsws9517/nexus-desktop/commits/${{ github.ref_name }}) for details.
+
+            ${{ steps.changelog.outputs.changelog }}
           files: release/nexus Setup ${{ steps.version.outputs.tag }}.exe
           repository: jsws9517/nexus
           token: ${{ secrets.RELEASE_TOKEN }}
