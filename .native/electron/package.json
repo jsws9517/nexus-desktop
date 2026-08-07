@@ -1,0 +1,9 @@
+{
+  "name": "nexus-native-electron",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Better-sqlite3 compiled for the Electron ABI only. The packaged app's afterPack hook copies this .node into the built output, so dev's node_modules copy (system-Node ABI) is never touched.",
+  "dependencies": {
+    "better-sqlite3": "13.0.3"
+  }
+}
