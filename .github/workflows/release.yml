@@ -83,5 +83,5 @@ jobs:
             ### 更新日志
             See [commit history](https://github.com/jsws9517/nexus-desktop/commits/${{ github.ref_name }}) for details.
           files: release/nexus Setup ${{ steps.version.outputs.tag }}.exe
-          repository: jsws9517/nexus-releases
+          repository: jsws9517/nexus
           token: ${{ secrets.RELEASE_TOKEN }}
