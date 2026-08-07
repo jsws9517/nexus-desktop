@@ -40,14 +40,14 @@ rl.on('line', (line) => {
 
 const timeout = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function expect(cond, label) {
-  if (!cond) { ok = false; console.log(`FAIL: ${label}`); }
+async function expect(cond, label, detail) {
+  if (!cond) { ok = false; console.log(`FAIL: ${label}${detail ? ` — ${detail}` : ''}`); }
   else console.log(`PASS: ${label}`);
 }
 
 await timeout(500);
 const init = await req('init');
-await expect(init.ok === true, 'init ok');console.log('cwd =', init.data?.cwd);
+await expect(init.ok === true, 'init ok', init.error);console.log('cwd =', init.data?.cwd);
 
 const status = await req('getStatus');
 await expect(status.ok === true && typeof status.data.provider === 'string', 'getStatus');
