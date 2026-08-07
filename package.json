@@ -1,6 +1,6 @@
 {
   "name": "nexus-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "NexusAgent desktop app - reuses the nexus CLI core (npm package @jsws9517/nexus-core)",
   "type": "module",
   "main": "dist/main/index.js",
