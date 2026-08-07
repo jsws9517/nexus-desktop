@@ -55,9 +55,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: v${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
           body: |
-            ## Nexus Desktop v${{ steps.version.outputs.tag }}
+            ## Nexus Desktop ${{ steps.version.outputs.tag }}
 
             AI Agent 桌面客户端 - 连接本地与云端智能。
 
