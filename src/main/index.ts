@@ -32,6 +32,17 @@ if (!gotLock) {
 let win: BrowserWindow | null = null;
 let worker: WorkerHost | null = null;
 let readyPromise: Promise<void> = Promise.resolve();
+// Phase-1 readiness (Agent constructed): read-only session/config IPC can run
+// while MCP/skills are still connecting in the background (see startWorker()).
+let sessionReadyPromise: Promise<void> = Promise.resolve();
+
+// IPC methods that only need the core's session/config layer and therefore gate
+// on sessionReadyPromise (fast) instead of the full init (slow).
+const EARLY_METHODS = new Set<string>([
+  'listSessions', 'getMessages', 'getConfig', 'getProviders', 'getStatus',
+  'getPermissions', 'getSpeechVisionConfig', 'getSessionStats',
+  'getMcpServers', 'getMcpStatus',
+]);
 
 // Full config Web UI (reuses core's src/config/web.ts). Started on demand and
 // torn down when its BrowserWindow closes so the port is released.
@@ -155,6 +166,23 @@ function startWorker(): void {
     send('nexus:log', { level: 'warn', message: `Core worker exited (code=${code})` });
   };
   worker.start();
+  // Phase 1 (fast): construct the Agent so session list + message reads respond
+  // immediately. Phase 2 (slow): MCP/skills. Read-only IPC gates on phase 1,
+  // mutations on phase 2 — see EARLY_METHODS above.
+  sessionReadyPromise = Promise.race([
+    worker
+      .request('earlyInit')
+      .then(() => {})
+      .catch((err) => {
+        send('nexus:log', { level: 'error', message: `Core early-init failed: ${err.message}` });
+      }),
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        send('nexus:log', { level: 'warn', message: 'Core early-init timed out; continuing without session reads.' });
+        resolve();
+      }, 8000);
+    }),
+  ]);
   // Core init connects MCP/skills and can take 10-20s (or stall on CN-network
   // marketplace/skill fetches). Gate renderer requests on it but NEVER let the
   // gate block the UI forever: resolve on success, on failure, or after a timeout.
@@ -179,7 +207,7 @@ function startWorker(): void {
 function registerIpc(): void {
   const call = (method: string) => async (_e: unknown, params?: Record<string, unknown>) => {
     if (method === 'resolvePermission') logf(`invoke resolvePermission params=${JSON.stringify(params)}`);
-    await readyPromise;
+    await (EARLY_METHODS.has(method) ? sessionReadyPromise : readyPromise);
     try {
       return await worker!.request(method, params);
     } catch (err) {

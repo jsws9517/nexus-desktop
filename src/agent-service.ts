@@ -28,6 +28,16 @@ export interface ProviderInfo {
 
 export const KEY_MASK = '••••••••••••';
 
+/** Worker blocks (sub-agent dispatch) start with these markers. They are skipped
+ *  from display AND from regenerate()'s user index, so the desktop's numbering
+ *  matches the core's. */
+const WORKER_MARKERS = ['[Project Directory]', '[Original Request]', '[Prior Task Results]', '[Role:'];
+function isWorkerPrompt(m: { role?: string; content?: unknown }): boolean {
+  if (m.role !== 'user') return false;
+  const head = String(m.content ?? '').slice(0, 200);
+  return WORKER_MARKERS.some((mk) => head.includes(mk));
+}
+
 function maskKey(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) return '';
   return KEY_MASK;
@@ -52,7 +62,14 @@ export class AgentService {
     return this.agent?.isBusy?.() ?? false;
   }
 
-  async init(cwd?: string): Promise<void> {
+  /**
+   * Phase 1 of startup: construct the Agent and wire the event/callback bridges.
+   * Config/session/provider are ready the moment the constructor returns, so the
+   * session list and message reads can be served while MCP/skills are still
+   * connecting in the background. Read-only methods work after this resolves.
+   */
+  async earlyInit(cwd?: string): Promise<void> {
+    if (this.agent) return;
     if (cwd) {
       try {
         process.chdir(cwd);
@@ -89,7 +106,15 @@ export class AgentService {
       );
       return { verdict: answer.trim().toLowerCase() === 'y' ? 'allow' : 'deny' };
     };
+    this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
+  }
 
+  /**
+   * Phase 2 of startup: full init (MCP connect + skills load). Only chat and
+   * mutation methods gate on this — see EARLY_METHODS in main/index.ts.
+   */
+  async init(cwd?: string): Promise<void> {
+    await this.earlyInit(cwd);
     // `deferMCP`: connect MCP servers in the background so startup is not
     // blocked (config/sessions load immediately). Only MCP-dependent calls wait.
     await this.agent.init({ deferMCP: true });
@@ -134,13 +159,7 @@ export class AgentService {
       throw new Error('Session mismatch: target session is not the active one');
     }
     const { getMessageRows, deleteMessagesFrom } = await import('./session-truncate.js');
-    const WORKER_MARKERS = ['[Project Directory]', '[Original Request]', '[Prior Task Results]', '[Role:'];
-    const isWorkerBlock = (m: { role: string; content: string }) => {
-      if (m.role !== 'user') return false;
-      const head = m.content.slice(0, 200);
-      return WORKER_MARKERS.some((mk) => head.includes(mk));
-    };
-    const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerBlock(r));
+    const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerPrompt(r));
     const target = userRows[userIndex];
     if (!target) throw new Error(`Regenerate: no user message at index ${userIndex}`);
     deleteMessagesFrom(sessionId, target.id);
@@ -253,9 +272,34 @@ export class AgentService {
     return this.agent.session.list(options);
   }
 
-  async getMessages(sessionId: string): Promise<Array<Record<string, unknown>>> {
+  /**
+   * Windowed message reads for a session. Returns `{ items, total, userBefore }`
+   * so the renderer can paginate history (bounded DOM + IPC) while keeping
+   * regenerate()'s user index stable: `userBefore` is the count of user-role
+   * rows before the returned slice, which the renderer adds to its local
+   * counter to reconstruct global user indices.
+   *
+   * - `{ last: N }` — the N newest rows.
+   * - `{ limit, offset }` — an arbitrary window (offset is 0-based over the
+   *   full, oldest→newest row list).
+   */
+  async getMessages(
+    sessionId: string,
+    options?: { last?: number; limit?: number; offset?: number },
+  ): Promise<{ items: Array<Record<string, unknown>>; total: number; userBefore: number }> {
     if (!this.agent) throw new Error('Agent not initialized');
-    return this.agent.session.getMessages(sessionId);
+    const all = this.agent.session.getMessages(sessionId) as Array<Record<string, unknown>>;
+    let slice = all;
+    let offset = 0;
+    if (options?.last !== undefined) {
+      offset = Math.max(0, all.length - options.last);
+      slice = all.slice(offset);
+    } else if (options?.limit !== undefined) {
+      offset = options.offset ?? 0;
+      slice = all.slice(offset, offset + options.limit);
+    }
+    const userBefore = all.slice(0, offset).filter((m) => m.role === 'user' && !isWorkerPrompt(m)).length;
+    return { items: slice, total: all.length, userBefore };
   }
 
   async deleteSession(id: string): Promise<void> {

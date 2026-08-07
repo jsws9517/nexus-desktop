@@ -68,7 +68,13 @@ const sessions2 = await req('listSessions');
 await expect(Array.isArray(sessions2.data?.items) && sessions2.data.items.length > 0, 'session persisted');
 
 const msgs = await req('getMessages', { sessionId: sid.data });
-await expect(Array.isArray(msgs.data), 'getMessages');
+await expect(
+  msgs.data && Array.isArray(msgs.data.items) && typeof msgs.data.total === 'number' && typeof msgs.data.userBefore === 'number',
+  'getMessages',
+);
+
+const msgsLast = await req('getMessages', { sessionId: sid.data, last: 5 });
+await expect(Array.isArray(msgsLast.data?.items) && msgsLast.data.items.length === 0, 'getMessages last');
 
 await req('deleteSession', { id: sid.data });
 

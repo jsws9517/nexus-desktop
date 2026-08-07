@@ -66,6 +66,14 @@ interface SessionStats {
   messageCount: number;
 }
 
+/** A persisted message row returned by getMessages(). Only user/assistant rows
+ *  are rendered for history; `content`/`thinking` may be absent. */
+interface StoredMsg {
+  role: string;
+  content?: string;
+  thinking?: string;
+}
+
 type AgentEvent =
   | { type: 'session_start'; sessionId: string }
   | { type: 'turn_start'; turn: number }
@@ -100,7 +108,10 @@ declare global {
       abort(): Promise<unknown>;
       startSession(name?: string, sessionId?: string): Promise<string>;
       listSessions(options?: { limit?: number; offset?: number }): Promise<{ items: SessionInfo[]; total: number }>;
-      getMessages(sessionId: string): Promise<Array<Record<string, unknown>>>;
+      getMessages(
+        sessionId: string,
+        options?: { last?: number; limit?: number; offset?: number },
+      ): Promise<{ items: StoredMsg[]; total: number; userBefore: number }>;
       deleteSession(id: string): Promise<unknown>;
       renameSession(id: string, name: string): Promise<unknown>;
       getConfig(): Promise<Record<string, unknown>>;
@@ -146,6 +157,7 @@ const messagesEl = $('#messages');
 const inputEl = $('#input') as HTMLTextAreaElement;
 const sendBtn = $('#btn-send');
 const stopBtn = $('#btn-stop');
+const freezeBtn = $('#btn-freeze') as HTMLButtonElement;
 const sessionListEl = $('#session-list');
 const sessionPagerEl = $('#session-pager');
 const pagerPrevEl = $('#pager-prev') as HTMLButtonElement;
@@ -180,6 +192,10 @@ let currentSessionId = '';
 let busy = false;
 let running = false;
 let stopRequested = false;
+// When frozen, auto-scroll is suppressed so the user can review earlier context
+// while a turn is still streaming. New content keeps rendering normally below;
+// only the viewport stays put (safe — no DOM/state is deferred).
+let frozen = false;
 const pendingQueue: string[] = [];
 let attachments: string[] = [];
 let providers: ProviderInfo[] = [];
@@ -210,7 +226,25 @@ const tasks = new Map<string, TaskItem>();
 // per-turn DOM handles
 let curAssistant: { bubble: HTMLElement; stream: HTMLElement; buffer: string } | null = null;
 let curThinking: { content: HTMLElement; buffer: string } | null = null;
-const toolCards = new Map<number, { card: HTMLElement; resultEl: HTMLElement | null }>();
+interface ToolCardRec {
+  card: HTMLElement;
+  resultEl: HTMLElement | null;
+  resultText: string;
+}
+const toolCards = new Map<number, ToolCardRec>();
+
+// ---------- history windowing + cache ----------
+// History is fetched in windows so a long session never renders every message
+// at once. `msgItems` holds the loaded rows (oldest→newest), `msgOffset` is
+// their global start index, and `msgUserBefore` is the count of user-role rows
+// before msgItems[0] — the renderer uses it to rebuild the global regenerate()
+// user index regardless of how much history has been loaded.
+const MSG_WINDOW = 40;
+let msgItems: StoredMsg[] = [];
+let msgOffset = 0;
+let msgTotal = 0;
+let msgUserBefore = 0;
+let msgWindowStart = 0;
 
 // ---------- i18n (syncs with core config language) ----------
 type Lang = 'en' | 'zh-CN';
@@ -264,12 +298,15 @@ const STR: Record<string, { 'zh-CN': string; en: string }> = {
   error: { 'zh-CN': '⚠️ 错误: ', en: '⚠️ Error: ' },
   attachFailed: { 'zh-CN': '⚠️ 附件失败: ', en: '⚠️ Attach failed: ' },
   runningEllipsis: { 'zh-CN': '运行中…', en: 'Running…' },
+  freeze: { 'zh-CN': '❄ 冻结视图', en: '❄ Freeze' },
+  unfreeze: { 'zh-CN': '▶ 恢复视图', en: '▶ Resume' },
   queued: { 'zh-CN': '⏳ 排队：{n} 条待发…', en: '⏳ Queued: {n} pending…' },
   rename: { 'zh-CN': '重命名', en: 'Rename' },
   delete: { 'zh-CN': '删除', en: 'Delete' },
   renameSession: { 'zh-CN': '重命名会话', en: 'Rename Session' },
   pagerPrev: { 'zh-CN': '‹ 上一页', en: '‹ Prev' },
   pagerNext: { 'zh-CN': '下一页 ›', en: 'Next ›' },
+  loadEarlier: { 'zh-CN': '↑ 加载更早的消息', en: '↑ Load earlier messages' },
   pagerInfo: { 'zh-CN': '{page} / {pages} 页（共 {total}）', en: 'Page {page}/{pages} of {total}' },
   sessionNamePh: { 'zh-CN': '会话名称', en: 'Session name' },
   deleteConfirm: { 'zh-CN': '删除会话 "{name}"?', en: 'Delete session "{name}"?' },
@@ -497,15 +534,28 @@ function ensureThinking(): { content: HTMLElement; buffer: string } {
     wrap.appendChild(content);
     messagesEl.appendChild(wrap);
     toggle.addEventListener('click', () => {
-      content.classList.toggle('hidden');
-      toggle.textContent = content.classList.contains('hidden') ? t('thinkingDot') : t('collapseThinking');
+      if (content.classList.contains('hidden')) {
+        // Lazy fill: the buffered thinking text is only written on first expand,
+        // so a collapsed long deep-thinking stream never hydrates the DOM.
+        if (!content.dataset.filled) {
+          content.textContent = curThinking!.buffer;
+          content.dataset.filled = '1';
+        }
+        content.classList.remove('hidden');
+        toggle.textContent = t('collapseThinking');
+      } else {
+        content.classList.add('hidden');
+        toggle.textContent = t('thinkingDot');
+      }
     });
     curThinking = { content, buffer: '' };
   }
   return curThinking;
 }
 
-/** Append a standalone collapsible thinking block (used when restoring history). */
+/** Append a standalone collapsible thinking block (used when restoring history).
+ *  The full text is NOT written to the DOM until the block is first expanded —
+ *  long deep-thinking sessions otherwise hydrate megabytes of hidden content. */
 function addThinkingBlock(text: string): void {
   const wrap = document.createElement('div');
   wrap.className = 'thinking';
@@ -515,11 +565,15 @@ function addThinkingBlock(text: string): void {
   const content = document.createElement('div');
   content.className = 'thinking-content hidden';
   content.style.whiteSpace = 'pre-wrap';
-  content.textContent = text;
   wrap.appendChild(toggle);
   wrap.appendChild(content);
   messagesEl.appendChild(wrap);
+  let filled = false;
   toggle.addEventListener('click', () => {
+    if (!filled) {
+      content.textContent = text;
+      filled = true;
+    }
     content.classList.toggle('hidden');
     toggle.textContent = content.classList.contains('hidden') ? t('thinkingDot') : t('collapseThinking');
   });
@@ -527,17 +581,40 @@ function addThinkingBlock(text: string): void {
 
 function addToolCard(event: Extract<AgentEvent, { type: 'tool_call_start' }>): void {
   const card = document.createElement('div');
-  card.className = 'tool-card';
-  const name = document.createElement('div');
+  card.className = 'tool-card collapsed';
+  const header = document.createElement('button');
+  header.className = 'tool-header';
+  const chevron = document.createElement('span');
+  chevron.className = 'tool-chevron';
+  chevron.textContent = '▸';
+  const name = document.createElement('span');
   name.className = 'tool-name';
   name.textContent = `🔧 ${event.name}`;
+  header.appendChild(chevron);
+  header.appendChild(name);
   const args = document.createElement('div');
-  args.className = 'tool-args';
+  args.className = 'tool-args hidden';
   args.textContent = JSON.stringify(event.args ?? {}, null, 2);
-  card.appendChild(name);
+  // result is built lazily on first expand (see tool_result)
+  card.appendChild(header);
   card.appendChild(args);
   messagesEl.appendChild(card);
-  toolCards.set(event.index, { card, resultEl: null });
+  const rec: ToolCardRec = { card, resultEl: null, resultText: '' };
+  toolCards.set(event.index, rec);
+  header.addEventListener('click', () => {
+    const collapsed = card.classList.toggle('collapsed');
+    chevron.textContent = collapsed ? '▸' : '▾';
+    args.classList.toggle('hidden', collapsed);
+    // hydrate a deferred result the first time the card is expanded
+    if (!collapsed && rec.resultText && (!rec.resultEl || !rec.resultEl.dataset.filled)) {
+      const resultEl = rec.resultEl ?? document.createElement('div');
+      resultEl.className = 'tool-result';
+      resultEl.textContent = rec.resultText;
+      resultEl.dataset.filled = '1';
+      rec.card.appendChild(resultEl);
+      rec.resultEl = resultEl;
+    }
+  });
   scrollToBottom();
 }
 
@@ -605,7 +682,9 @@ function handleEvent(event: AgentEvent): void {
       if (event.thinking) {
         const t = ensureThinking();
         t.buffer += event.thinking;
-        appendTextDelta(t.content, event.thinking);
+        // Only write the DOM when the block is expanded; collapsed thinking is
+        // buffered and filled lazily on first expand.
+        if (!t.content.classList.contains('hidden')) appendTextDelta(t.content, event.thinking);
         scrollToBottom();
       }
       break;
@@ -617,14 +696,21 @@ function handleEvent(event: AgentEvent): void {
     case 'tool_result': {
       const rec = toolCards.get(event.index);
       if (rec) {
-        const resultEl = document.createElement('div');
-        resultEl.className = 'tool-result';
-        resultEl.textContent = event.isError
+        rec.resultText = event.isError
           ? `❌ ${event.content}`
           : event.content.length > 4000
             ? event.content.slice(0, 4000) + '\n… (truncated)'
             : event.content;
         rec.card.classList.toggle('error', !!event.isError);
+        if (rec.card.classList.contains('collapsed')) {
+          // Card still collapsed — defer the DOM write until first expand.
+          scrollToBottom();
+          break;
+        }
+        const resultEl = rec.resultEl ?? document.createElement('div');
+        resultEl.className = 'tool-result';
+        resultEl.textContent = rec.resultText;
+        resultEl.dataset.filled = '1';
         rec.card.appendChild(resultEl);
         rec.resultEl = resultEl;
         scrollToBottom();
@@ -643,7 +729,10 @@ function handleEvent(event: AgentEvent): void {
       }
       if (curThinking) {
         const t2 = curThinking;
+        // Single final write (bounded) — keep `filled` in sync so a later
+        // expand doesn't rewrite.
         t2.content.textContent = t2.buffer;
+        t2.content.dataset.filled = '1';
         const toggle = t2.content.parentElement?.querySelector('.thinking-toggle');
         if (toggle) toggle.textContent = t('thought');
       }
@@ -663,6 +752,10 @@ function setBusy(value: boolean): void {
   busyIndicator.classList.toggle('hidden', !value);
   sendBtn.classList.toggle('hidden', value);
   stopBtn.classList.toggle('hidden', !value);
+  freezeBtn.classList.toggle('hidden', !value);
+  // A turn ending (or being aborted) releases the freeze so the final result
+  // is revealed; a fresh message/session resets it too (see sendMessage).
+  if (!value) setFrozen(false);
   document.querySelectorAll('.regen-btn').forEach((b) => {
     (b as HTMLButtonElement).disabled = value;
   });
@@ -679,6 +772,16 @@ function setBusy(value: boolean): void {
     stopRequested = false;
     (stopBtn as HTMLButtonElement).disabled = false;
   }
+}
+
+/** Toggle the viewport freeze (auto-scroll lock). Safe by design: content keeps
+ *  streaming below, only the scroll position stays put. */
+function setFrozen(value: boolean): void {
+  if (frozen === value) return;
+  frozen = value;
+  freezeBtn.classList.toggle('active', value);
+  freezeBtn.textContent = value ? t('unfreeze') : t('freeze');
+  if (!value) scrollToBottom();
 }
 
 /** Request an interrupt of the current turn. Idempotent; busy is left to the
@@ -703,6 +806,7 @@ function appendTextDelta(el: HTMLElement, delta: string): void {
 }
 
 function scrollToBottom(): void {
+  if (frozen) return;
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
@@ -830,6 +934,7 @@ async function refreshSessions(activeId?: string): Promise<void> {
       await window.nexusDesktop.deleteSession(s.id);
       delete mcpPrefs[s.id];
       saveMcpPrefs();
+      clearMsgCache(s.id);
       if (currentSessionId === s.id) {
         // Deleting the active session must NOT create a new one. Clear the
         // view; the core agent's current session is unset by deleteSession,
@@ -841,6 +946,11 @@ async function refreshSessions(activeId?: string): Promise<void> {
         renderTasks();
         curAssistant = null;
         curThinking = null;
+        msgItems = [];
+        msgOffset = 0;
+        msgTotal = 0;
+        msgUserBefore = 0;
+        msgWindowStart = 0;
         rsideToken.textContent = '—';
         rsideToken.title = '';
       }
@@ -862,29 +972,160 @@ async function refreshSessions(activeId?: string): Promise<void> {
   sessionPagerEl.classList.toggle('hidden', total === 0);
 }
 
-async function resumeSession(id: string): Promise<void> {
-  if (busy) return;
+// ---------- history windowing + cache helpers ----------
+/** Displayable user rows only — worker blocks are skipped everywhere so the
+ *  regenerate() user index matches AgentService (same markers). */
+function countUserRows(rows: StoredMsg[]): number {
+  return rows.filter((r) => r.role === 'user' && !isWorkerBlock(String(r.content ?? ''))).length;
+}
+
+/** Render one persisted message row into the history view. */
+function renderHistoryRow(m: StoredMsg): void {
+  if (m.role === 'user') {
+    addUser(String(m.content ?? ''));
+  } else if (m.role === 'assistant') {
+    if (m.thinking) addThinkingBlock(String(m.thinking));
+    if (m.content) {
+      const asst = ensureAssistant();
+      asst.buffer = String(m.content);
+      asst.stream.innerHTML = renderBlocks(asst.buffer);
+      curAssistant = null;
+    }
+  }
+}
+
+/** Rebuild the visible history window from the loaded rows. `scroll=false`
+ *  preserves the caller's scroll position (used when prepending older rows). */
+function renderMessageWindow(scroll = true): void {
   messagesEl.innerHTML = '';
   toolCards.clear();
   tasks.clear();
   renderTasks();
   curAssistant = null;
   curThinking = null;
-  userMessageSeq = 0;
-  currentSessionId = await window.nexusDesktop.startSession(undefined, id);
-  const msgs = await window.nexusDesktop.getMessages(id);
-  for (const m of msgs) {
-    if (m.role === 'user') addUser(String(m.content));
-    else if (m.role === 'assistant') {
-      if (m.thinking) addThinkingBlock(String(m.thinking));
-      if (m.content) {
-        const asst = ensureAssistant();
-        asst.buffer = String(m.content);
-        asst.stream.innerHTML = renderBlocks(asst.buffer);
-        curAssistant = null;
+  userMessageSeq = msgUserBefore + countUserRows(msgItems.slice(0, msgWindowStart));
+  if (msgWindowStart > 0) {
+    const bar = document.createElement('div');
+    bar.className = 'load-earlier';
+    const btn = document.createElement('button');
+    btn.className = 'btn ghost small';
+    btn.textContent = t('loadEarlier');
+    btn.addEventListener('click', () => void loadEarlier());
+    bar.appendChild(btn);
+    messagesEl.appendChild(bar);
+  }
+  for (let i = msgWindowStart; i < msgItems.length; i++) renderHistoryRow(msgItems[i]);
+  if (scroll) scrollToBottom();
+}
+
+/** Load the previous window of history above the currently visible region. */
+async function loadEarlier(): Promise<void> {
+  if (msgOffset <= 0 || busy) return;
+  const prev = await window.nexusDesktop.getMessages(currentSessionId, {
+    limit: MSG_WINDOW,
+    offset: Math.max(0, msgOffset - MSG_WINDOW),
+  });
+  const distFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop;
+  msgItems = [...prev.items, ...msgItems];
+  msgOffset = Math.max(0, msgOffset - MSG_WINDOW);
+  msgUserBefore = prev.userBefore;
+  msgWindowStart = 0;
+  renderMessageWindow(false);
+  messagesEl.scrollTop = messagesEl.scrollHeight - distFromBottom;
+}
+
+// localStorage cache of the latest loaded history window, so resuming a session
+// paints instantly and reconciles with fresh data in the background.
+const MAX_MSG_CACHE_SESSIONS = 5;
+interface MsgCache {
+  items: StoredMsg[];
+  total: number;
+  userBefore: number;
+  ts: number;
+}
+function msgCacheKey(id: string): string {
+  return `nexus.msgCache.${id}`;
+}
+function loadMsgCache(id: string): MsgCache | null {
+  try {
+    const raw = localStorage.getItem(msgCacheKey(id));
+    if (!raw) return null;
+    const c = JSON.parse(raw) as MsgCache;
+    if (!Array.isArray(c.items) || typeof c.total !== 'number') return null;
+    return c;
+  } catch {
+    return null;
+  }
+}
+function saveMsgCache(id: string, fresh: { items: StoredMsg[]; total: number; userBefore: number }): void {
+  try {
+    localStorage.setItem(
+      msgCacheKey(id),
+      JSON.stringify({ items: fresh.items, total: fresh.total, userBefore: fresh.userBefore, ts: Date.now() }),
+    );
+    // Prune stale entries so the cache never grows unbounded.
+    const keys: Array<{ key: string; ts: number }> = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)!;
+      if (key.startsWith('nexus.msgCache.')) {
+        let ts = 0;
+        try {
+          ts = (JSON.parse(localStorage.getItem(key) ?? '{}') as MsgCache).ts ?? 0;
+        } catch {}
+        keys.push({ key, ts });
       }
     }
+    keys.sort((a, b) => b.ts - a.ts);
+    for (const k of keys.slice(MAX_MSG_CACHE_SESSIONS)) localStorage.removeItem(k.key);
+  } catch {}
+}
+function clearMsgCache(id: string): void {
+  try {
+    localStorage.removeItem(msgCacheKey(id));
+  } catch {}
+}
+function sameTail(a: StoredMsg[], b: StoredMsg[]): boolean {
+  if (a.length !== b.length) return false;
+  const la = a[a.length - 1];
+  const lb = b[b.length - 1];
+  if (!la || !lb) return a.length === b.length;
+  return la.content === lb.content && (la.thinking ?? '') === (lb.thinking ?? '');
+}
+
+function applyMsgWindow(fresh: { items: StoredMsg[]; total: number; userBefore: number }): void {
+  msgItems = fresh.items;
+  msgTotal = fresh.total;
+  msgOffset = fresh.total - fresh.items.length;
+  msgUserBefore = fresh.userBefore;
+  msgWindowStart = 0;
+}
+
+/** Refetch the session's latest window into msgItems + cache (no re-render). */
+async function syncMsgCache(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  try {
+    const fresh = await window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
+    applyMsgWindow(fresh);
+    saveMsgCache(sessionId, fresh);
+  } catch {}
+}
+
+async function resumeSession(id: string): Promise<void> {
+  if (busy) return;
+  currentSessionId = await window.nexusDesktop.startSession(undefined, id);
+  const cached = loadMsgCache(id);
+  if (cached) {
+    // Instant paint from cache while the fresh window is fetched in the background.
+    applyMsgWindow(cached);
+    renderMessageWindow();
   }
+  const fresh = await window.nexusDesktop.getMessages(id, { last: MSG_WINDOW });
+  const changed = !cached || cached.total !== fresh.total || !sameTail(cached.items, fresh.items);
+  if (changed) {
+    applyMsgWindow(fresh);
+    renderMessageWindow();
+  }
+  saveMsgCache(id, fresh);
   addSystem(t('sessionRestored'));
   await applyMcpPref(currentSessionId);
   await refreshSessions(id);
@@ -901,6 +1142,11 @@ async function startNewSession(): Promise<void> {
   curAssistant = null;
   curThinking = null;
   userMessageSeq = 0;
+  msgItems = [];
+  msgOffset = 0;
+  msgTotal = 0;
+  msgUserBefore = 0;
+  msgWindowStart = 0;
   currentSessionId = await window.nexusDesktop.startSession();
   addSystem(t('sessionCreated'));
   await applyMcpPref(currentSessionId);
@@ -916,8 +1162,8 @@ async function startOrResumeLatestSession(): Promise<void> {
   });
   const latest = sessions[0];
   if (latest) {
-    const msgs = await window.nexusDesktop.getMessages(latest.id);
-    if (msgs.length === 0) {
+    const { total } = await window.nexusDesktop.getMessages(latest.id, { last: 1 });
+    if (total === 0) {
       // The most recent historical session is still empty (no messages/tokens).
       // Continue it instead of creating another empty session on every launch.
       await resumeSession(latest.id);
@@ -1259,6 +1505,7 @@ function drain(): void {
     try {
       await window.nexusDesktop.chat(text);
       await refreshSessions(currentSessionId);
+      await syncMsgCache(currentSessionId);
     } catch (err) {
       addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -1271,6 +1518,7 @@ function drain(): void {
 async function sendMessage(): Promise<void> {
   const text = inputEl.value.trim();
   if (!text && attachments.length === 0) return;
+  setFrozen(false);
   const attrs = attachments;
   attachments = [];
   renderAttachments();
@@ -1300,6 +1548,7 @@ async function regenerateAt(wrap: HTMLElement, userIndex: number): Promise<void>
   try {
     await window.nexusDesktop.regenerate(currentSessionId, userIndex);
     await refreshSessions(currentSessionId);
+    await syncMsgCache(currentSessionId);
   } catch (err) {
     addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
   } finally {
@@ -1758,6 +2007,16 @@ pagerNextEl.addEventListener('click', () => {
 });
 sendBtn.addEventListener('click', () => void sendMessage());
 stopBtn.addEventListener('click', () => requestStop());
+freezeBtn.addEventListener('click', () => setFrozen(!frozen));
+
+// Ctrl+. toggles the viewport freeze while a turn is streaming (Ctrl+Space is
+// taken by IMEs, so avoid it).
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === '.') {
+    e.preventDefault();
+    if (busy) setFrozen(!frozen);
+  }
+});
 
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {

@@ -4,13 +4,14 @@ import { AgentService } from './agent-service.js';
 import type { AgentEvent } from './agent-service.js';
 
 type WorkerRequest =
+  | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
   | { id: number; method: 'init'; params?: { cwd?: string } }
   | { id: number; method: 'chat'; params: { input: string } }
   | { id: number; method: 'regenerate'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'abort' }
   | { id: number; method: 'startSession'; params?: { name?: string; sessionId?: string } }
   | { id: number; method: 'listSessions'; params?: { limit?: number; offset?: number } }
-  | { id: number; method: 'getMessages'; params: { sessionId: string } }
+  | { id: number; method: 'getMessages'; params: { sessionId: string; last?: number; limit?: number; offset?: number } }
   | { id: number; method: 'deleteSession'; params: { id: string } }
   | { id: number; method: 'renameSession'; params: { id: string; name: string } }
   | { id: number; method: 'getConfig' }
@@ -63,13 +64,28 @@ service.onEvent = (event: AgentEvent) => send({ type: 'event', event });
 service.onPermission = (req) => { tracePerm(`askPermission id=${req.id}`); send({ type: 'permission', ...req }); };
 service.onLog = (level, message) => send({ type: 'log', level, message });
 
-// The main process un-gates renderer requests after a 20s timeout even when the
+// The main process un-gates renderer requests after a timeout even when the
 // core is still initializing (init can stall on network fetches), so requests
-// can reach the worker while service.init() is still running. Gate every method
-// on the real init promise. Full serialization is NOT an option: abort() must
-// stay able to run concurrently with an in-flight chat().
+// can reach the worker while service.init() is still running.
+//
+// Startup is split into two phases:
+//   earlyInit — constructs the Agent (config/session/provider), fast.
+//   init      — MCP connect + skills load, slow.
+// Read-only session/config methods only need phase 1 and must NOT wait for
+// phase 2; mutations (chat, MCP toggles, ...) wait on the full init promise.
+// Full serialization is NOT an option: abort() must stay able to run
+// concurrently with an in-flight chat().
+let earlyPromise: Promise<void> | null = null;
+let earlyDone = false;
 let initPromise: Promise<void> | null = null;
 let initDone = false;
+
+/** Methods that are safe before MCP/skills finish connecting. */
+const EARLY_METHODS = new Set<string>([
+  'listSessions', 'getMessages', 'getConfig', 'getProviders', 'getStatus',
+  'getPermissions', 'getSpeechVisionConfig', 'getSessionStats',
+  'getMcpServers', 'getMcpStatus',
+]);
 
 function writeDiag(data: unknown): void {
   try {
@@ -95,7 +111,30 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
     req = line as unknown as WorkerRequest;
     if (!req || typeof req.id !== 'number' || typeof req.method !== 'string') return;
   }
-  if (req.method !== 'init' && initPromise !== null && !initDone) {
+  if (req.method === 'earlyInit') {
+    try {
+      const t0 = Date.now();
+      earlyPromise = service.earlyInit(req.params?.cwd);
+      await earlyPromise;
+      earlyDone = true;
+      writeDiag({ early: true, ok: true, ms: Date.now() - t0, cwd: service.getCwd() });
+      respond(req.id, { ok: true, cwd: service.getCwd() });
+    } catch (e) {
+      earlyDone = false;
+      writeDiag({ early: true, ok: false, ms: -1, error: e instanceof Error ? `${e.message}\n${e.stack}` : String(e) });
+      respondError(req.id, e);
+    }
+    return;
+  }
+  if (req.method === 'init' && earlyPromise !== null) {
+    // Serialize init after earlyInit so the two can never double-construct the
+    // Agent (service.init() reuses the Agent built by earlyInit).
+    await earlyPromise.catch(() => {});
+  } else if (EARLY_METHODS.has(req.method) && earlyPromise !== null && !earlyDone) {
+    // Early reads only need the Agent object, not the MCP/skills phase.
+    await earlyPromise.catch(() => {});
+  }
+  if (req.method !== 'init' && !EARLY_METHODS.has(req.method) && initPromise !== null && !initDone) {
     await initPromise.catch(() => {});
   }
   try {
@@ -133,7 +172,7 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         respond(req.id, await service.listSessions(req.params ?? {}));
         break;
       case 'getMessages':
-        respond(req.id, await service.getMessages(req.params.sessionId));
+        respond(req.id, await service.getMessages(req.params.sessionId, req.params));
         break;
       case 'deleteSession':
         await service.deleteSession(req.params.id);

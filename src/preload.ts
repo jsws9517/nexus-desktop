@@ -9,7 +9,8 @@ const api = {
     ipcRenderer.invoke('nexus:startSession', { name, sessionId }),
   listSessions: (options?: { limit?: number; offset?: number }) =>
     ipcRenderer.invoke('nexus:listSessions', options),
-  getMessages: (sessionId: string) => ipcRenderer.invoke('nexus:getMessages', { sessionId }),
+  getMessages: (sessionId: string, options?: { last?: number; limit?: number; offset?: number }) =>
+    ipcRenderer.invoke('nexus:getMessages', { sessionId, ...(options ?? {}) }),
   deleteSession: (id: string) => ipcRenderer.invoke('nexus:deleteSession', { id }),
   renameSession: (id: string, name: string) =>
     ipcRenderer.invoke('nexus:renameSession', { id, name }),
