@@ -128,10 +128,29 @@ export class AgentService {
     this.agent = null;
   }
 
+  /**
+   * Slash commands (e.g. /plan /go /tasks) are intercepted by the core's chat()
+   * and return BEFORE the user message is persisted to the session DB, so the
+   * transcript would otherwise miss them. Persist the raw input ourselves so
+   * history/resume matches what the user actually typed. Persisted BEFORE the
+   * turn so the row lands ahead of any sub-agent worker blocks that /go spawns.
+   */
+  private persistSlashInput(input: string): void {
+    if (!input.trim().startsWith('/')) return;
+    const sid = this.agent?.currentSessionId;
+    if (!sid) return;
+    try {
+      this.agent.session.addMessage(sid, { role: 'user', content: input });
+    } catch (e) {
+      this.onLog?.('warn', `Persist slash input failed: ${(e as Error).message}`);
+    }
+  }
+
   async chat(input: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy()) throw new Error('Agent is busy');
     // chat() resolves pending askUser with the next user input, otherwise runs a turn
+    this.persistSlashInput(input);
     await this.agent.chat(input);
   }
 
@@ -167,7 +186,7 @@ export class AgentService {
     // in the first slot would CREATE a new session named after the id instead
     // of reloading the truncated one from the DB.
     await this.agent.startSession(undefined, sessionId);
-    await this.agent.chat(target.content);
+    await this.chat(target.content);
   }
 
   /**
