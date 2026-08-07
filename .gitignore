@@ -5,6 +5,9 @@ release/
 node_modules/
 *.tgz
 
+# Shadow release repo (separate checkout)
+nexus-releases/
+
 # Electron-ABI native build cache (prepare-electron-native.mjs regenerates).
 # Only artifacts are ignored; .native/electron/package.json is tracked.
 .native/electron/node_modules/
