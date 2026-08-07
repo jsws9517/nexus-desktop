@@ -8,6 +8,7 @@ type WorkerRequest =
   | { id: number; method: 'init'; params?: { cwd?: string } }
   | { id: number; method: 'chat'; params: { input: string } }
   | { id: number; method: 'regenerate'; params: { sessionId: string; userIndex: number } }
+  | { id: number; method: 'withdraw'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'abort' }
   | { id: number; method: 'startSession'; params?: { name?: string; sessionId?: string } }
   | { id: number; method: 'listSessions'; params?: { limit?: number; offset?: number } }
@@ -160,6 +161,9 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
       case 'regenerate':
         await service.regenerate(req.params.sessionId, req.params.userIndex);
         respond(req.id);
+        break;
+      case 'withdraw':
+        respond(req.id, await service.withdraw(req.params.sessionId, req.params.userIndex));
         break;
       case 'abort':
         service.abort();

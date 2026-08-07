@@ -171,6 +171,29 @@ export class AgentService {
   }
 
   /**
+   * Withdraw a past user message: delete it and everything after it from the
+   * session, then reload the agent's LLM context from the truncated DB — WITHOUT
+   * re-running. Returns the withdrawn prompt text so the UI can paste it back
+   * into the input box for the user to fix and resubmit. Mirrors regenerate()
+   * minus the chat() re-run.
+   */
+  async withdraw(sessionId: string, userIndex: number): Promise<string> {
+    if (!this.agent) throw new Error('Agent not initialized');
+    if (this.agent.isBusy())
+      throw new Error('Agent is busy; wait for the current turn to finish');
+    if (this.agent.currentSessionId !== sessionId) {
+      throw new Error('Session mismatch: target session is not the active one');
+    }
+    const { getMessageRows, deleteMessagesFrom } = await import('./session-truncate.js');
+    const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerPrompt(r));
+    const target = userRows[userIndex];
+    if (!target) throw new Error(`Withdraw: no user message at index ${userIndex}`);
+    deleteMessagesFrom(sessionId, target.id);
+    await this.agent.startSession(undefined, sessionId);
+    return target.content;
+  }
+
+  /**
    * Per-session MCP switch. Disabling disconnects the MCP servers so their
    * tools leave the toolset for subsequent turns; enabling reconnects them.
    */

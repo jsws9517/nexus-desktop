@@ -15,6 +15,25 @@
   --bubble-assist: #26272b;
 }
 
+/* Warm low-blue theme (eye comfort). Activates when the app sets
+   <html data-theme="warm">. */
+html[data-theme='warm'] {
+  --bg: #26211b;
+  --bg-panel: #2d2822;
+  --bg-sidebar: #332d26;
+  --bg-input: #3a332b;
+  --border: #4a4136;
+  --text: #e9dfc9;
+  --text-dim: #b3a68c;
+  --accent: #e0a458;
+  --accent-dim: #9c6f33;
+  --ok: #7fb069;
+  --danger: #d98a6a;
+  --code-bg: #1f1b16;
+  --bubble-user: #4a3a26;
+  --bubble-assist: #332d26;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body { height: 100%; }
@@ -43,7 +62,8 @@ body {
 .cwd { color: var(--text-dim); font-size: 12px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .field-label { font-size: 12px; color: var(--text-dim); }
 #provider-select,
-#model-select {
+#model-select,
+#theme-select {
   background: var(--bg-input);
   color: var(--text);
   border: 1px solid var(--border);
@@ -52,6 +72,7 @@ body {
   font-size: 13px;
   max-width: 220px;
 }
+#theme-select { max-width: 110px; }
 #model-select:disabled {
   opacity: 0.6;
 }
@@ -180,8 +201,10 @@ body {
   cursor: pointer;
   transition: opacity 0.15s, color 0.15s;
 }
+.user-actions { display: flex; gap: 4px; align-items: center; }
 .msg.user:hover .regen-btn { opacity: 1; }
 .regen-btn:hover { color: var(--accent); }
+.undo-btn:hover { color: var(--ok); }
 .regen-btn[disabled] { opacity: 0.4; cursor: default; }
 
 .msg .bubble {
@@ -298,6 +321,8 @@ body {
 .tool-name { color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-args { color: var(--text-dim); margin-top: 4px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: hidden; }
 .tool-result { margin-top: 6px; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 6px; }
+.tool-card.collapsed .tool-args,
+.tool-card.collapsed .tool-result { display: none; }
 .tool-card.error { border-left-color: var(--danger); }
 
 /* file chip */

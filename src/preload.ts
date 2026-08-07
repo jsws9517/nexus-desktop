@@ -4,6 +4,8 @@ const api = {
   chat: (input: string) => ipcRenderer.invoke('nexus:chat', { input }),
   regenerate: (sessionId: string, userIndex: number) =>
     ipcRenderer.invoke('nexus:regenerate', { sessionId, userIndex }),
+  withdraw: (sessionId: string, userIndex: number) =>
+    ipcRenderer.invoke('nexus:withdraw', { sessionId, userIndex }),
   abort: () => ipcRenderer.invoke('nexus:abort'),
   startSession: (name?: string, sessionId?: string) =>
     ipcRenderer.invoke('nexus:startSession', { name, sessionId }),

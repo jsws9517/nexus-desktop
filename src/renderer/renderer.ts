@@ -136,6 +136,7 @@ declare global {
       openFolder(): Promise<{ canceled: boolean; path?: string }>;
       openFile(): Promise<{ canceled: boolean; path?: string }>;
       regenerate(sessionId: string, userIndex: number): Promise<unknown>;
+      withdraw(sessionId: string, userIndex: number): Promise<string>;
       respondPermission(id: string, answer: string): Promise<unknown>;
       setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       getMcpStatus(): Promise<{ enabled: boolean; servers: McpServerStatus[] }>;
@@ -165,6 +166,7 @@ const pagerNextEl = $('#pager-next') as HTMLButtonElement;
 const pagerInfoEl = $('#pager-info');
 const providerSelect = $('#provider-select') as HTMLSelectElement;
 const modelSelect = $('#model-select') as HTMLSelectElement;
+const themeSelect = $('#theme-select') as HTMLSelectElement;
 const cwdLabel = $('#cwd-label');
 const busyIndicator = $('#busy-indicator');
 const inputStatus = $('#input-status');
@@ -307,6 +309,18 @@ const STR: Record<string, { 'zh-CN': string; en: string }> = {
   pagerPrev: { 'zh-CN': '‹ 上一页', en: '‹ Prev' },
   pagerNext: { 'zh-CN': '下一页 ›', en: 'Next ›' },
   loadEarlier: { 'zh-CN': '↑ 加载更早的消息', en: '↑ Load earlier messages' },
+  undo: { 'zh-CN': '撤回', en: 'Undo' },
+  undoHint: {
+    'zh-CN': '撤回该消息及其后的上下文，并把原文贴回输入框修改',
+    en: 'Withdraw this message and everything after it, then edit & resubmit',
+  },
+  undoAsk: {
+    'zh-CN': '撤回该消息及其后的上下文？原文会贴回输入框供你修改。',
+    en: 'Withdraw this message and everything after it? The text will be put back in the input box for editing.',
+  },
+  themeLabel: { 'zh-CN': '主题', en: 'Theme' },
+  themeDark: { 'zh-CN': '深色', en: 'Dark' },
+  themeWarm: { 'zh-CN': '暖色护眼', en: 'Warm' },
   pagerInfo: { 'zh-CN': '{page} / {pages} 页（共 {total}）', en: 'Page {page}/{pages} of {total}' },
   sessionNamePh: { 'zh-CN': '会话名称', en: 'Session name' },
   deleteConfirm: { 'zh-CN': '删除会话 "{name}"?', en: 'Delete session "{name}"?' },
@@ -374,6 +388,30 @@ async function loadLanguage(): Promise<void> {
   }
   applyI18n();
 }
+
+// ---------- theme ----------
+const THEME_KEY = 'nexus.theme';
+type ThemeName = 'dark' | 'warm';
+
+function applyTheme(theme: ThemeName): void {
+  document.documentElement.dataset.theme = theme === 'warm' ? 'warm' : 'dark';
+  themeSelect.value = theme;
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {}
+}
+
+function loadTheme(): void {
+  let theme: ThemeName = 'dark';
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === 'warm') theme = 'warm';
+  } catch {}
+  applyTheme(theme);
+}
+themeSelect.addEventListener('change', () => {
+  applyTheme(themeSelect.value === 'warm' ? 'warm' : 'dark');
+});
 
 // ---------- markdown-ish rendering ----------
 function esc(s: string): string {
@@ -493,12 +531,21 @@ function addUser(text: string): void {
   bubble.className = 'bubble';
   bubble.textContent = text;
   wrap.appendChild(bubble);
+  const actions = document.createElement('div');
+  actions.className = 'user-actions';
+  const undoBtn = document.createElement('button');
+  undoBtn.className = 'btn ghost small regen-btn undo-btn';
+  undoBtn.textContent = t('undo');
+  undoBtn.title = t('undoHint');
+  undoBtn.addEventListener('click', () => void undoAt(wrap, userIndex));
   const regenBtn = document.createElement('button');
   regenBtn.className = 'btn ghost small regen-btn';
   regenBtn.textContent = t('regenerate');
   regenBtn.title = text;
   regenBtn.addEventListener('click', () => void regenerateAt(wrap, userIndex));
-  wrap.appendChild(regenBtn);
+  actions.appendChild(undoBtn);
+  actions.appendChild(regenBtn);
+  wrap.appendChild(actions);
   messagesEl.appendChild(wrap);
   scrollToBottom();
 }
@@ -605,6 +652,7 @@ function addToolCard(event: Extract<AgentEvent, { type: 'tool_call_start' }>): v
     const collapsed = card.classList.toggle('collapsed');
     chevron.textContent = collapsed ? '▸' : '▾';
     args.classList.toggle('hidden', collapsed);
+    if (rec.resultEl) rec.resultEl.classList.toggle('hidden', collapsed);
     // hydrate a deferred result the first time the card is expanded
     if (!collapsed && rec.resultText && (!rec.resultEl || !rec.resultEl.dataset.filled)) {
       const resultEl = rec.resultEl ?? document.createElement('div');
@@ -991,7 +1039,45 @@ function renderHistoryRow(m: StoredMsg): void {
       asst.stream.innerHTML = renderBlocks(asst.buffer);
       curAssistant = null;
     }
+  } else if (m.role === 'tool' && m.content) {
+    addToolResultBlock(String(m.content));
   }
+}
+
+/** Collapsed tool-result card for restored history rows (name isn't persisted
+ *  on tool rows, so label them generically). Content hydrates on first expand. */
+function addToolResultBlock(content: string): void {
+  const card = document.createElement('div');
+  card.className = 'tool-card collapsed';
+  const header = document.createElement('button');
+  header.className = 'tool-header';
+  const chevron = document.createElement('span');
+  chevron.className = 'tool-chevron';
+  chevron.textContent = '▸';
+  const name = document.createElement('span');
+  name.className = 'tool-name';
+  name.textContent = '🔧 tool result';
+  header.appendChild(chevron);
+  header.appendChild(name);
+  const result = document.createElement('div');
+  result.className = 'tool-result hidden';
+  card.appendChild(header);
+  card.appendChild(result);
+  messagesEl.appendChild(card);
+  let filled = false;
+  header.addEventListener('click', () => {
+    const collapsed = card.classList.toggle('collapsed');
+    chevron.textContent = collapsed ? '▸' : '▾';
+    if (!collapsed) {
+      if (!filled) {
+        result.textContent = content;
+        filled = true;
+      }
+      result.classList.remove('hidden');
+    } else {
+      result.classList.add('hidden');
+    }
+  });
 }
 
 /** Rebuild the visible history window from the loaded rows. `scroll=false`
@@ -1004,7 +1090,9 @@ function renderMessageWindow(scroll = true): void {
   curAssistant = null;
   curThinking = null;
   userMessageSeq = msgUserBefore + countUserRows(msgItems.slice(0, msgWindowStart));
-  if (msgWindowStart > 0) {
+  // Show the "load earlier" button whenever there are unloaded older rows
+  // (msgOffset > 0), regardless of where the current window starts.
+  if (msgOffset > 0) {
     const bar = document.createElement('div');
     bar.className = 'load-earlier';
     const btn = document.createElement('button');
@@ -1524,6 +1612,28 @@ async function sendMessage(): Promise<void> {
   renderAttachments();
   const composed = attrs.map((p) => `@${p}`).concat(text ? [text] : []).join('\n');
   enqueue(composed);
+}
+
+/** Undo a past user message: delete it and everything after it from the core
+ *  context (no re-run), then paste the original prompt back into the input box
+ *  so the user can fix typos/homophones and resubmit manually. */
+async function undoAt(wrap: HTMLElement, userIndex: number): Promise<void> {
+  if (busy) return;
+  const ok = await confirmDialog(t('undoAsk'));
+  if (!ok) return;
+  try {
+    const text = await window.nexusDesktop.withdraw(currentSessionId, userIndex);
+    // Rebuild the history window from the truncated DB so the regenerate/undo
+    // user indices and message ordering stay consistent.
+    await syncMsgCache(currentSessionId);
+    renderMessageWindow();
+    inputEl.value = text;
+    inputEl.focus();
+    await refreshSessions(currentSessionId);
+    await refreshSessionStats();
+  } catch (err) {
+    addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** Re-run the assistant turn that follows a past user message. Pure desktop:
@@ -2054,6 +2164,7 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
 // ---------- boot ----------
 (async function boot(): Promise<void> {
   try {
+    loadTheme();
     await loadLanguage();
     status = await window.nexusDesktop.getStatus();
     providers = await window.nexusDesktop.getProviders();

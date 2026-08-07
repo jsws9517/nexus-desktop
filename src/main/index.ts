@@ -218,6 +218,7 @@ function registerIpc(): void {
 
   ipcMain.handle('nexus:chat', call('chat'));
   ipcMain.handle('nexus:regenerate', call('regenerate'));
+  ipcMain.handle('nexus:withdraw', call('withdraw'));
   ipcMain.handle('nexus:abort', call('abort'));
   ipcMain.handle('nexus:startSession', call('startSession'));
   ipcMain.handle('nexus:listSessions', call('listSessions'));
