@@ -35,6 +35,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Obfuscate
+        run: npm run obfuscate
+
       - name: Prepare Electron native
         run: npm run prepare:electron-native
 
