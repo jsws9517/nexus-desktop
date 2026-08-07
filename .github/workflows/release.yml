@@ -58,7 +58,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json
           git commit -m "chore: release v${{ steps.version.outputs.tag }}" || echo "No changes to commit"
-          git push
+          # Tag-triggered checkout is detached HEAD; push the version bump to main
+          # explicitly and never fail the release if the push is rejected.
+          git push origin HEAD:main || echo "Version bump push skipped (non-fatal)"
 
       - name: Setup Node
         uses: actions/setup-node@v4
