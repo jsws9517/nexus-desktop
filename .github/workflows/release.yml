@@ -59,10 +59,28 @@ jobs:
           body: |
             ## Nexus Desktop v${{ steps.version.outputs.tag }}
 
-            ### Downloads
-            - [Windows Installer (x64)](https://github.com/jsws9517/nexus-releases/releases/download/${{ github.ref_name }}/nexus Setup ${{ steps.version.outputs.tag }}.exe)
+            AI Agent 桌面客户端 - 连接本地与云端智能。
 
-            ### Changes
+            ### 系统要求
+            - Windows 10/11 (64-bit)
+
+            ### 安装说明
+            1. 下载下方安装程序
+            2. 双击运行，选择安装目录
+            3. 启动后在 Settings 中配置 API Key
+
+            ### 功能特性
+            - **多模型支持** - Claude、GPT 等主流大语言模型，统一接口切换
+            - **MCP 协议** - 原生支持 Model Context Protocol，连接丰富工具生态
+            - **会话管理** - SQLite 存储，与 CLI 共享数据
+            - **流式响应** - 实时对话，支持思维链展示
+            - **消息队列** - Agent 忙时自动排队
+            - **内嵌配置** - Web UI 配置 Provider / Vision / MCP / Skills
+
+            ### 技术栈
+            Electron 43 · TypeScript · Node.js · SQLite · Anthropic SDK · OpenAI SDK · MCP SDK
+
+            ### 更新日志
             See [commit history](https://github.com/jsws9517/nexus-desktop/commits/${{ github.ref_name }}) for details.
           files: release/nexus Setup ${{ steps.version.outputs.tag }}.exe
           repository: jsws9517/nexus-releases
