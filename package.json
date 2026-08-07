@@ -1,6 +1,6 @@
 {
   "name": "nexus-desktop",
-  "version": "0.1.2",
+  "version": "0.1.0",
   "description": "NexusAgent desktop app - reuses the nexus CLI core (npm package @jsws9517/nexus-core)",
   "type": "module",
   "main": "dist/main/index.js",
@@ -19,7 +19,9 @@
     "pack": "npm run build && npm pack",
     "prepare:electron-native": "node scripts/prepare-electron-native.mjs",
     "rebuild:electron": "node scripts/rebuild-electron.mjs",
-    "dist:win": "npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis"
+    "obfuscate": "node scripts/obfuscate.mjs",
+    "dist:win": "npm run build && npm run obfuscate && node scripts/prepare-electron-native.mjs && electron-builder --win nsis",
+    "dist:win:dev": "npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis"
   },
   "keywords": [
     "nexus",
@@ -48,6 +50,8 @@
     "@types/node": "^26.0.1",
     "electron": "^43.2.0",
     "electron-builder": "^26.0.12",
+    "javascript-obfuscator": "^4.2.2",
+    "terser": "^5.49.2",
     "typescript": "^6.0.3"
   },
   "build": {
