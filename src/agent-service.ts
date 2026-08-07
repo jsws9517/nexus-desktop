@@ -72,6 +72,9 @@ export class AgentService {
     setPermissionPrompter((question: string) => this.askPermission(question));
 
     this.agent.onEvent = (event: AgentEvent) => this.onEvent?.(event);
+    // onOutput is used by slash-command and non-streaming paths (e.g. runRemoteSlashCommand's
+    // /plan /go /tasks). Surface it as a text event so the renderer displays it.
+    this.agent.onOutput = (text: string) => this.onEvent?.({ type: 'text', text });
     this.agent.onPermissionRequest = async (
       toolName: string,
       _toolCallId: string,
@@ -109,6 +112,43 @@ export class AgentService {
 
   abort(): void {
     this.agent?.abort?.();
+  }
+
+  /**
+   * Regenerate the assistant turn that follows the user message at `userIndex`
+   * (0-based over persisted user messages, skipping sub-agent worker blocks).
+   *
+   * Desktop-only implementation — the core branch is untouched:
+   *   1. read message rows directly from ~/.nexus/sessions.db,
+   *   2. delete the target user message and everything after it,
+   *   3. reload the agent's LLM context from the (now truncated) DB via
+   *      startSession(sessionId),
+   *   4. re-run the target prompt through chat() — which re-inserts the user
+   *      message once, so the DB never accumulates a duplicate.
+   */
+  async regenerate(sessionId: string, userIndex: number): Promise<void> {
+    if (!this.agent) throw new Error('Agent not initialized');
+    if (this.agent.isBusy())
+      throw new Error('Agent is busy; wait for the current turn to finish');
+    if (this.agent.currentSessionId !== sessionId) {
+      throw new Error('Session mismatch: target session is not the active one');
+    }
+    const { getMessageRows, deleteMessagesFrom } = await import('./session-truncate.js');
+    const WORKER_MARKERS = ['[Project Directory]', '[Original Request]', '[Prior Task Results]', '[Role:'];
+    const isWorkerBlock = (m: { role: string; content: string }) => {
+      if (m.role !== 'user') return false;
+      const head = m.content.slice(0, 200);
+      return WORKER_MARKERS.some((mk) => head.includes(mk));
+    };
+    const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerBlock(r));
+    const target = userRows[userIndex];
+    if (!target) throw new Error(`Regenerate: no user message at index ${userIndex}`);
+    deleteMessagesFrom(sessionId, target.id);
+    // NOTE: core signature is startSession(name?, sessionId?) — passing the id
+    // in the first slot would CREATE a new session named after the id instead
+    // of reloading the truncated one from the DB.
+    await this.agent.startSession(undefined, sessionId);
+    await this.agent.chat(target.content);
   }
 
   /**
@@ -203,14 +243,14 @@ export class AgentService {
     }
   }
 
-  async startSession(name?: string, sessionId?: string): Promise<string> {
+  async startSession(name?: string, sessionId?: string, metadata?: Record<string, unknown>): Promise<string> {
     if (!this.agent) throw new Error('Agent not initialized');
-    return this.agent.startSession(name, sessionId);
+    return this.agent.startSession(name, sessionId, metadata);
   }
 
-  async listSessions(): Promise<Array<Record<string, unknown>>> {
+  async listSessions(options?: { limit?: number; offset?: number }): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
     if (!this.agent) throw new Error('Agent not initialized');
-    return this.agent.session.list();
+    return this.agent.session.list(options);
   }
 
   async getMessages(sessionId: string): Promise<Array<Record<string, unknown>>> {
@@ -220,7 +260,7 @@ export class AgentService {
 
   async deleteSession(id: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
-    this.agent.session.delete(id);
+    this.agent.deleteSession(id);
   }
 
   async renameSession(id: string, name: string): Promise<void> {
@@ -267,6 +307,63 @@ export class AgentService {
 
   getActiveModel(): string {
     return this.agent?.provider?.model ?? '';
+  }
+
+  /**
+   * Fetch the model list for a provider from its API (OpenAI-compatible
+   * GET /models, Anthropic GET /v1/models). Falls back to the configured
+   * model alone when the API is unreachable or the key is missing.
+   */
+  async getModels(providerName?: string): Promise<string[]> {
+    if (!this.agent) return [];
+    let provider: { type: string; apiKey?: string; baseUrl?: string; model?: string } | undefined;
+    try {
+      provider = this.agent.config.getProvider(providerName);
+    } catch {
+      provider = undefined;
+    }
+    const fallback = (): string[] => {
+      const m = this.agent?.provider?.model;
+      return m ? [String(m)] : [];
+    };
+    if (!provider || typeof provider.apiKey !== 'string' || provider.apiKey.length === 0) {
+      return fallback();
+    }
+    // getProvider() returns an in-memory encrypted blob (mem:/enc:). Decrypt it
+    // to the real key — sending the blob as the Bearer token yields 401 even
+    // though the stored key is valid (createProvider does the same).
+    let apiKey: string;
+    try {
+      const { decryptApiKey } = await import('../vendor/core/src/security/env-key-encrypt.js');
+      apiKey = decryptApiKey(provider.apiKey);
+    } catch {
+      apiKey = provider.apiKey;
+    }
+    if (!apiKey) return fallback();
+    const type = provider.type || 'openai';
+    const base = (provider.baseUrl || (type === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1')).replace(/\/+$/, '');
+    try {
+      let json: { data?: Array<{ id: string }> } | null = null;
+      if (type === 'anthropic') {
+        const res = await fetch(`${base}/v1/models`, {
+          headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        json = (await res.json()) as { data?: Array<{ id: string }> };
+      } else {
+        const res = await fetch(`${base}/models`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        json = (await res.json()) as { data?: Array<{ id: string }> };
+      }
+      const ids = (json?.data ?? []).map((m) => m.id).filter(Boolean);
+      return ids.length > 0 ? ids : fallback();
+    } catch {
+      return fallback();
+    }
   }
 
   getPermissions(): { mode: string; allowlist: string[]; safePaths: string[]; mcpAllowlist: string[] } {

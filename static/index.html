@@ -16,6 +16,8 @@
       <div class="toolbar-right">
         <label class="field-label">Provider</label>
         <select id="provider-select"></select>
+        <label class="field-label" data-i18n="modelLabel">Model</label>
+        <select id="model-select"></select>
         <button id="btn-settings" class="btn ghost" title="Settings" data-i18n="settings">⚙️ 设置</button>
         <span id="busy-indicator" class="busy hidden">●</span>
       </div>
@@ -28,6 +30,11 @@
           <button id="btn-new-session" class="btn primary small" title="New session" data-i18n="newSession">＋ 新建</button>
         </div>
         <ul id="session-list"></ul>
+        <div id="session-pager" class="session-pager hidden">
+          <button id="pager-prev" class="btn ghost small" data-i18n="pagerPrev">‹ 上一页</button>
+          <span id="pager-info"></span>
+          <button id="pager-next" class="btn ghost small" data-i18n="pagerNext">下一页 ›</button>
+        </div>
       </aside>
 
       <main id="chat-panel">

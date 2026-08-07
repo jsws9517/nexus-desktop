@@ -78,6 +78,17 @@ type AgentEvent =
   | { type: 'state_delta'; contextTokens: number; turn: number }
   | { type: 'turn_end'; stopReason: string; usage?: { inputTokens: number; outputTokens: number } }
   | { type: 'session_end' }
+  | {
+      type: 'task_graph';
+      graphId: string;
+      tasks: Array<{
+        id: string;
+        description: string;
+        role: string;
+        status: 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+        error?: string;
+      }>;
+    }
   | { type: 'task_started'; taskId: string; description: string; role: string }
   | { type: 'task_completed'; taskId: string }
   | { type: 'task_failed'; taskId: string; error: string };
@@ -88,7 +99,7 @@ declare global {
       chat(input: string): Promise<unknown>;
       abort(): Promise<unknown>;
       startSession(name?: string, sessionId?: string): Promise<string>;
-      listSessions(): Promise<SessionInfo[]>;
+      listSessions(options?: { limit?: number; offset?: number }): Promise<{ items: SessionInfo[]; total: number }>;
       getMessages(sessionId: string): Promise<Array<Record<string, unknown>>>;
       deleteSession(id: string): Promise<unknown>;
       renameSession(id: string, name: string): Promise<unknown>;
@@ -107,17 +118,20 @@ declare global {
       getSessionStats(sessionId: string): Promise<SessionStats>;
       switchProvider(name: string): Promise<unknown>;
       switchModel(modelId: string): Promise<unknown>;
+      getModels(providerName?: string): Promise<string[]>;
       saveProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
       openConfigWeb(): Promise<{ ok: boolean; port?: number; error?: string }>;
       setCwd(cwd: string): Promise<unknown>;
       openFolder(): Promise<{ canceled: boolean; path?: string }>;
       openFile(): Promise<{ canceled: boolean; path?: string }>;
+      regenerate(sessionId: string, userIndex: number): Promise<unknown>;
       respondPermission(id: string, answer: string): Promise<unknown>;
       setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       getMcpStatus(): Promise<{ enabled: boolean; servers: McpServerStatus[] }>;
       getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }>>;
       setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       onEvent(cb: (event: AgentEvent) => void): void;
+      onEvents(cb: (events: AgentEvent[]) => void): void;
       onPermission(cb: (req: { id: string; question: string }) => void): void;
       onLog(cb: (log: { level: string; message: string }) => void): void;
       onConfigWindowClosed(cb: () => void): void;
@@ -133,7 +147,12 @@ const inputEl = $('#input') as HTMLTextAreaElement;
 const sendBtn = $('#btn-send');
 const stopBtn = $('#btn-stop');
 const sessionListEl = $('#session-list');
+const sessionPagerEl = $('#session-pager');
+const pagerPrevEl = $('#pager-prev') as HTMLButtonElement;
+const pagerNextEl = $('#pager-next') as HTMLButtonElement;
+const pagerInfoEl = $('#pager-info');
 const providerSelect = $('#provider-select') as HTMLSelectElement;
+const modelSelect = $('#model-select') as HTMLSelectElement;
 const cwdLabel = $('#cwd-label');
 const busyIndicator = $('#busy-indicator');
 const inputStatus = $('#input-status');
@@ -160,17 +179,30 @@ const taskEmptyEl = $('#task-empty');
 let currentSessionId = '';
 let busy = false;
 let running = false;
+let stopRequested = false;
 const pendingQueue: string[] = [];
 let attachments: string[] = [];
 let providers: ProviderInfo[] = [];
 let status: StatusInfo = { cwd: '', busy: false, provider: '', model: '' };
 
-// Task lifecycle state (task_started / task_completed / task_failed events)
+// 0-based sequence over the session's *displayable* user messages (worker
+// blocks are skipped), kept in sync with AgentService.regenerate(userIndex).
+let userMessageSeq = 0;
+
+// Per-provider model list cache (filled from the provider API on demand).
+const modelsCache = new Map<string, string[]>();
+
+// Session sidebar pagination: 20 most recent non-ACP sessions per page.
+const SESSION_PAGE_SIZE = 20;
+let sessionPage = 0;
+let sessionTotal = 0;
+
+// Task lifecycle state (task_graph / task_started / task_completed / task_failed events)
 interface TaskItem {
   id: string;
   description: string;
   role: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   error?: string;
 }
 const tasks = new Map<string, TaskItem>();
@@ -198,6 +230,9 @@ const STR: Record<string, { 'zh-CN': string; en: string }> = {
   inputPlaceholder: { 'zh-CN': '输入消息，Enter 发送，Shift+Enter 换行…', en: 'Type a message, Enter to send…' },
   send: { 'zh-CN': '发送', en: 'Send' },
   stop: { 'zh-CN': '停止', en: 'Stop' },
+  regenerate: { 'zh-CN': '重新生成', en: 'Regenerate' },
+  stopped: { 'zh-CN': '已停止', en: 'Stopped' },
+  stopping: { 'zh-CN': '正在停止…', en: 'Stopping…' },
   sessionInfo: { 'zh-CN': '会话信息', en: 'Session Info' },
   permMode: { 'zh-CN': '权限模式', en: 'Permission' },
   activeMcp: { 'zh-CN': '活跃 MCP', en: 'Active MCP' },
@@ -211,6 +246,8 @@ const STR: Record<string, { 'zh-CN': string; en: string }> = {
   taskProgress: { 'zh-CN': '任务进展', en: 'Task Progress' },
   noTasks: { 'zh-CN': '暂无任务', en: 'No tasks' },
   running: { 'zh-CN': '进行中 · {role}', en: 'Running · {role}' },
+  pending: { 'zh-CN': '待处理', en: 'Pending' },
+  cancelled: { 'zh-CN': '已取消', en: 'Cancelled' },
   completed: { 'zh-CN': '已完成', en: 'Completed' },
   failed: { 'zh-CN': '失败：{error}', en: 'Failed: {error}' },
   thinkingDot: { 'zh-CN': '💭 思考中…', en: '💭 Thinking…' },
@@ -231,6 +268,9 @@ const STR: Record<string, { 'zh-CN': string; en: string }> = {
   rename: { 'zh-CN': '重命名', en: 'Rename' },
   delete: { 'zh-CN': '删除', en: 'Delete' },
   renameSession: { 'zh-CN': '重命名会话', en: 'Rename Session' },
+  pagerPrev: { 'zh-CN': '‹ 上一页', en: '‹ Prev' },
+  pagerNext: { 'zh-CN': '下一页 ›', en: 'Next ›' },
+  pagerInfo: { 'zh-CN': '{page} / {pages} 页（共 {total}）', en: 'Page {page}/{pages} of {total}' },
   sessionNamePh: { 'zh-CN': '会话名称', en: 'Session name' },
   deleteConfirm: { 'zh-CN': '删除会话 "{name}"?', en: 'Delete session "{name}"?' },
   confirm: { 'zh-CN': '确认', en: 'Confirm' },
@@ -249,6 +289,8 @@ const STR: Record<string, { 'zh-CN': string; en: string }> = {
   apiKeyEnter: { 'zh-CN': '输入 API Key', en: 'Enter API Key' },
   activeNow: { 'zh-CN': '● 当前', en: '● Active' },
   switchedProvider: { 'zh-CN': '已切换到 Provider: {name}（{model}）', en: 'Switched to Provider: {name} ({model})' },
+  modelLabel: { 'zh-CN': 'Model', en: 'Model' },
+  switchedModel: { 'zh-CN': '已切换到模型: {name}（{from} → {to}）', en: 'Switched model: {name} ({from} → {to})' },
   projectDir: { 'zh-CN': '📁 项目目录: {cwd}', en: '📁 Project directory: {cwd}' },
   advancedConfig: { 'zh-CN': '打开完整配置', en: 'Open full config' },
   speechSection: { 'zh-CN': '语音模型 Speech', en: 'Speech Models' },
@@ -383,6 +425,16 @@ function renderDiff(src: string): string {
 }
 
 // ---------- message rendering ----------
+// ---------- message rendering ----------
+/** Mirrors core resumeMessages(): worker blocks (sub-agent dispatch) start with
+ *  these markers. Skipped from display and from the regenerate index so the
+ *  UI ordering matches AgentService.regenerate(userIndex). */
+const WORKER_MARKERS = ['[Project Directory]', '[Original Request]', '[Prior Task Results]', '[Role:'];
+function isWorkerBlock(text: string): boolean {
+  const head = text.slice(0, 200);
+  return WORKER_MARKERS.some((mk) => head.includes(mk));
+}
+
 function addSystem(text: string): void {
   const wrap = document.createElement('div');
   wrap.className = 'msg system';
@@ -395,12 +447,21 @@ function addSystem(text: string): void {
 }
 
 function addUser(text: string): void {
+  if (isWorkerBlock(text)) return;
+  const userIndex = userMessageSeq++;
   const wrap = document.createElement('div');
   wrap.className = 'msg user';
+  wrap.dataset.userIndex = String(userIndex);
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   bubble.textContent = text;
   wrap.appendChild(bubble);
+  const regenBtn = document.createElement('button');
+  regenBtn.className = 'btn ghost small regen-btn';
+  regenBtn.textContent = t('regenerate');
+  regenBtn.title = text;
+  regenBtn.addEventListener('click', () => void regenerateAt(wrap, userIndex));
+  wrap.appendChild(regenBtn);
   messagesEl.appendChild(wrap);
   scrollToBottom();
 }
@@ -444,6 +505,26 @@ function ensureThinking(): { content: HTMLElement; buffer: string } {
   return curThinking;
 }
 
+/** Append a standalone collapsible thinking block (used when restoring history). */
+function addThinkingBlock(text: string): void {
+  const wrap = document.createElement('div');
+  wrap.className = 'thinking';
+  const toggle = document.createElement('button');
+  toggle.className = 'thinking-toggle';
+  toggle.textContent = t('thinkingDot');
+  const content = document.createElement('div');
+  content.className = 'thinking-content hidden';
+  content.style.whiteSpace = 'pre-wrap';
+  content.textContent = text;
+  wrap.appendChild(toggle);
+  wrap.appendChild(content);
+  messagesEl.appendChild(wrap);
+  toggle.addEventListener('click', () => {
+    content.classList.toggle('hidden');
+    toggle.textContent = content.classList.contains('hidden') ? t('thinkingDot') : t('collapseThinking');
+  });
+}
+
 function addToolCard(event: Extract<AgentEvent, { type: 'tool_call_start' }>): void {
   const card = document.createElement('div');
   card.className = 'tool-card';
@@ -475,14 +556,34 @@ function addFileChip(file: Extract<AgentEvent, { type: 'file_ready' }>): void {
 function handleEvent(event: AgentEvent): void {
   switch (event.type) {
     case 'session_start':
+      // Only reset the task progress list when the session ACTUALLY changed.
+      // Re-entrant session_start events (parent chat, merged sub-agents) reuse
+      // the same id and must not wipe the in-flight task list.
+      if (event.sessionId !== currentSessionId) {
+        tasks.clear();
+        renderTasks();
+      }
       currentSessionId = event.sessionId;
-      tasks.clear();
-      renderTasks();
       void refreshSidebarSession();
       void refreshSessionStats();
       break;
     case 'turn_start':
+      // Keep the task progress list across turns (a worker runs many turns per
+      // task; clearing on every turn made the sidebar only flash).
+      break;
+    case 'task_graph':
+      // Replace the whole list with every task from the graph so pending tasks
+      // are visible alongside running/completed ones.
       tasks.clear();
+      for (const t of event.tasks) {
+        tasks.set(t.id, {
+          id: t.id,
+          description: t.description,
+          role: t.role,
+          status: t.status === 'in_progress' ? 'running' : t.status === 'assigned' ? 'pending' : t.status,
+          error: t.error,
+        });
+      }
       renderTasks();
       break;
     case 'task_started':
@@ -494,7 +595,9 @@ function handleEvent(event: AgentEvent): void {
       if (event.text) {
         const asst = ensureAssistant();
         asst.buffer += event.text;
-        asst.stream.textContent = asst.buffer;
+        // Append only the delta text node instead of rewriting the whole buffer
+        // per token; the full buffer is re-rendered to markdown at turn_end.
+        appendTextDelta(asst.stream, event.text);
         scrollToBottom();
       }
       break;
@@ -502,7 +605,7 @@ function handleEvent(event: AgentEvent): void {
       if (event.thinking) {
         const t = ensureThinking();
         t.buffer += event.thinking;
-        t.content.textContent = t.buffer;
+        appendTextDelta(t.content, event.thinking);
         scrollToBottom();
       }
       break;
@@ -560,8 +663,43 @@ function setBusy(value: boolean): void {
   busyIndicator.classList.toggle('hidden', !value);
   sendBtn.classList.toggle('hidden', value);
   stopBtn.classList.toggle('hidden', !value);
-  if (value) inputStatus.textContent = t('runningEllipsis');
-  else inputStatus.textContent = '';
+  document.querySelectorAll('.regen-btn').forEach((b) => {
+    (b as HTMLButtonElement).disabled = value;
+  });
+  if (value) {
+    inputStatus.textContent = t('runningEllipsis');
+  } else {
+    // If a stop was requested, surface the completion feedback once — the core
+    // always emits session_end in its chat() finally, so any path that leaves
+    // busy state funnels through here and resets the stop request.
+    if (stopRequested) inputStatus.textContent = t('stopped');
+    else inputStatus.textContent = '';
+  }
+  if (!value) {
+    stopRequested = false;
+    (stopBtn as HTMLButtonElement).disabled = false;
+  }
+}
+
+/** Request an interrupt of the current turn. Idempotent; busy is left to the
+ *  core (session_end) to release so the UI never desyncs from the agent. */
+function requestStop(): void {
+  if (!busy || stopRequested) return;
+  stopRequested = true;
+  (stopBtn as HTMLButtonElement).disabled = true;
+  inputStatus.textContent = t('stopping');
+  void window.nexusDesktop.abort();
+}
+
+/** Append `delta` to the last text node if possible, else create one — avoids
+ *  both a full-content textContent rewrite and a node-per-token explosion. */
+function appendTextDelta(el: HTMLElement, delta: string): void {
+  const last = el.lastChild;
+  if (last && last.nodeType === Node.TEXT_NODE) {
+    last.textContent += delta;
+  } else {
+    el.appendChild(document.createTextNode(delta));
+  }
 }
 
 function scrollToBottom(): void {
@@ -654,7 +792,11 @@ function promptDialog(title: string, initial: string): Promise<string | null> {
 }
 
 async function refreshSessions(activeId?: string): Promise<void> {
-  const sessions = await window.nexusDesktop.listSessions();
+  const { items: sessions, total } = await window.nexusDesktop.listSessions({
+    limit: SESSION_PAGE_SIZE,
+    offset: sessionPage * SESSION_PAGE_SIZE,
+  });
+  sessionTotal = total;
   sessionListEl.innerHTML = '';
   for (const s of sessions) {
     const li = document.createElement('li');
@@ -689,11 +831,21 @@ async function refreshSessions(activeId?: string): Promise<void> {
       delete mcpPrefs[s.id];
       saveMcpPrefs();
       if (currentSessionId === s.id) {
+        // Deleting the active session must NOT create a new one. Clear the
+        // view; the core agent's current session is unset by deleteSession,
+        // so the next message lazily starts a fresh session (chat()).
         currentSessionId = '';
         messagesEl.innerHTML = '';
-        await startNewSession();
+        toolCards.clear();
+        tasks.clear();
+        renderTasks();
+        curAssistant = null;
+        curThinking = null;
+        rsideToken.textContent = '—';
+        rsideToken.title = '';
       }
       await refreshSessions();
+      if (currentSessionId === '') await refreshSidebarSession();
     });
     actions.appendChild(renameBtn);
     actions.appendChild(delBtn);
@@ -702,23 +854,35 @@ async function refreshSessions(activeId?: string): Promise<void> {
     li.appendChild(actions);
     sessionListEl.appendChild(li);
   }
+  const pages = Math.max(1, Math.ceil(total / SESSION_PAGE_SIZE));
+  if (sessionPage >= pages) sessionPage = pages - 1;
+  pagerPrevEl.disabled = sessionPage <= 0;
+  pagerNextEl.disabled = sessionPage >= pages - 1;
+  pagerInfoEl.textContent = t('pagerInfo', { page: sessionPage + 1, pages, total });
+  sessionPagerEl.classList.toggle('hidden', total === 0);
 }
 
 async function resumeSession(id: string): Promise<void> {
   if (busy) return;
   messagesEl.innerHTML = '';
   toolCards.clear();
+  tasks.clear();
+  renderTasks();
   curAssistant = null;
   curThinking = null;
+  userMessageSeq = 0;
   currentSessionId = await window.nexusDesktop.startSession(undefined, id);
   const msgs = await window.nexusDesktop.getMessages(id);
   for (const m of msgs) {
     if (m.role === 'user') addUser(String(m.content));
-    else if (m.role === 'assistant' && m.content) {
-      const asst = ensureAssistant();
-      asst.buffer = String(m.content);
-      asst.stream.innerHTML = renderBlocks(asst.buffer);
-      curAssistant = null;
+    else if (m.role === 'assistant') {
+      if (m.thinking) addThinkingBlock(String(m.thinking));
+      if (m.content) {
+        const asst = ensureAssistant();
+        asst.buffer = String(m.content);
+        asst.stream.innerHTML = renderBlocks(asst.buffer);
+        curAssistant = null;
+      }
     }
   }
   addSystem(t('sessionRestored'));
@@ -732,8 +896,11 @@ async function startNewSession(): Promise<void> {
   if (busy) return;
   messagesEl.innerHTML = '';
   toolCards.clear();
+  tasks.clear();
+  renderTasks();
   curAssistant = null;
   curThinking = null;
+  userMessageSeq = 0;
   currentSessionId = await window.nexusDesktop.startSession();
   addSystem(t('sessionCreated'));
   await applyMcpPref(currentSessionId);
@@ -743,7 +910,10 @@ async function startNewSession(): Promise<void> {
 }
 
 async function startOrResumeLatestSession(): Promise<void> {
-  const sessions = await window.nexusDesktop.listSessions();
+  const { items: sessions } = await window.nexusDesktop.listSessions({
+    limit: SESSION_PAGE_SIZE,
+    offset: 0,
+  });
   const latest = sessions[0];
   if (latest) {
     const msgs = await window.nexusDesktop.getMessages(latest.id);
@@ -844,7 +1014,15 @@ function renderTasks(): void {
     li.className = 'task-item';
     const badge = document.createElement('span');
     badge.className = `task-badge ${item.status}`;
-    badge.textContent = item.status === 'running' ? '⏳' : item.status === 'completed' ? '✓' : '✗';
+    badge.textContent = item.status === 'running'
+      ? '⏳'
+      : item.status === 'completed'
+        ? '✓'
+        : item.status === 'failed'
+          ? '✗'
+          : item.status === 'cancelled'
+            ? '−'
+            : '○';
     const body = document.createElement('div');
     body.className = 'task-body';
     const title = document.createElement('div');
@@ -857,7 +1035,11 @@ function renderTasks(): void {
       ? t('running', { role: item.role })
       : item.status === 'completed'
         ? t('completed')
-        : t('failed', { error: item.error ?? '' });
+        : item.status === 'failed'
+          ? t('failed', { error: item.error ?? '' })
+          : item.status === 'cancelled'
+            ? t('cancelled')
+            : t('pending');
     body.appendChild(title);
     body.appendChild(meta);
     li.appendChild(badge);
@@ -868,10 +1050,21 @@ function renderTasks(): void {
 
 function handleTaskEvent(event: Extract<AgentEvent, { type: `task_${string}` }>): void {
   if (event.type === 'task_started') {
-    tasks.set(event.taskId, { id: event.taskId, description: event.description, role: event.role, status: 'running' });
+    // Full-list resets are now handled by task_graph; here we only flip the
+    // individual task to running (and backfill it if the graph event never
+    // arrived, e.g. an older core build).
+    tasks.set(event.taskId, {
+      id: event.taskId,
+      description: event.description,
+      role: event.role,
+      status: 'running',
+    });
   } else if (event.type === 'task_completed') {
     const t = tasks.get(event.taskId);
-    if (t) t.status = 'completed';
+    if (t) {
+      t.status = 'completed';
+      t.error = undefined;
+    }
   } else if (event.type === 'task_failed') {
     const t = tasks.get(event.taskId);
     if (t) {
@@ -1083,6 +1276,36 @@ async function sendMessage(): Promise<void> {
   renderAttachments();
   const composed = attrs.map((p) => `@${p}`).concat(text ? [text] : []).join('\n');
   enqueue(composed);
+}
+
+/** Re-run the assistant turn that follows a past user message. Pure desktop:
+ *  drops the target user message and everything after it, then asks the core to
+ *  re-run that prompt (AgentService.regenerate reloads context from the DB).
+ *  Runs through the same busy/serial scheduler as a normal send so Stop works
+ *  and the queue stays consistent. */
+async function regenerateAt(wrap: HTMLElement, userIndex: number): Promise<void> {
+  if (busy) return;
+  // Remove the stale assistant/thinking/tool cards after the target message.
+  let el = wrap.nextElementSibling;
+  while (el) {
+    const next = el.nextElementSibling;
+    el.remove();
+    el = next;
+  }
+  curAssistant = null;
+  curThinking = null;
+  toolCards.clear();
+  running = true;
+  setBusy(true);
+  try {
+    await window.nexusDesktop.regenerate(currentSessionId, userIndex);
+    await refreshSessions(currentSessionId);
+  } catch (err) {
+    addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    running = false;
+    drain();
+  }
 }
 
 attachBtn.addEventListener('click', async () => {
@@ -1413,6 +1636,8 @@ $('#settings-save').addEventListener('click', async () => {
   providers = await window.nexusDesktop.getProviders();
   status = await window.nexusDesktop.getStatus();
   refreshProviderSelect();
+  modelsCache.clear();
+  refreshModelSelect();
   await refreshSidebarModels();
   await refreshSidebarSession();
   settingsMsg.textContent = t('saved');
@@ -1432,14 +1657,82 @@ function refreshProviderSelect(): void {
   }
 }
 
+/**
+ * Populate the model dropdown for the active provider. Seeds with the current
+ * model immediately, then asynchronously loads the provider's /models list
+ * (cached per provider) and fills in the rest without disturbing the
+ * selection.
+ */
+function refreshModelSelect(): void {
+  const active = status.provider;
+  const current = status.model;
+  modelSelect.disabled = !active || !current;
+  const seed = () => {
+    modelSelect.innerHTML = '';
+    if (current) {
+      const opt = document.createElement('option');
+      opt.value = current;
+      opt.textContent = current;
+      opt.selected = true;
+      modelSelect.appendChild(opt);
+    }
+  };
+  seed();
+  const cached = modelsCache.get(active);
+  if (cached && cached.length > 0) {
+    populateModelOptions(cached, current);
+    return;
+  }
+  void (async () => {
+    try {
+      const models = await window.nexusDesktop.getModels(active);
+      if (!active || active !== status.provider) return;
+      modelsCache.set(active, models);
+      if (models.length > 0) populateModelOptions(models, current);
+    } catch {
+      // keep the seeded current-model option
+    }
+  })();
+}
+
+function populateModelOptions(models: string[], current: string): void {
+  const selected = current || models[0] || '';
+  modelSelect.innerHTML = '';
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    opt.selected = m === selected;
+    modelSelect.appendChild(opt);
+  }
+}
+
 providerSelect.addEventListener('change', async () => {
   const name = providerSelect.value;
   if (!name || name === status.provider) return;
   await window.nexusDesktop.switchProvider(name);
   status = await window.nexusDesktop.getStatus();
   addSystem(t('switchedProvider', { name, model: status.model }));
+  refreshModelSelect();
   await refreshSessions();
   await refreshSidebarSession();
+});
+
+modelSelect.addEventListener('change', async () => {
+  const modelId = modelSelect.value;
+  if (!modelId || modelId === status.model) return;
+  const from = status.model;
+  const providerName = status.provider;
+  try {
+    await window.nexusDesktop.switchModel(modelId);
+    status = await window.nexusDesktop.getStatus();
+    addSystem(t('switchedModel', { name: providerName, from, to: status.model }));
+    await refreshSessions();
+    await refreshSidebarSession();
+  } catch (err) {
+    addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
+    refreshModelSelect();
+  }
 });
 
 $('#btn-open-folder').addEventListener('click', async () => {
@@ -1453,11 +1746,18 @@ $('#btn-open-folder').addEventListener('click', async () => {
 });
 
 $('#btn-new-session').addEventListener('click', () => void startNewSession());
-sendBtn.addEventListener('click', () => void sendMessage());
-stopBtn.addEventListener('click', () => {
-  void window.nexusDesktop.abort();
-  setBusy(false);
+pagerPrevEl.addEventListener('click', () => {
+  if (sessionPage <= 0) return;
+  sessionPage--;
+  void refreshSessions();
 });
+pagerNextEl.addEventListener('click', () => {
+  if (sessionPage >= Math.ceil(sessionTotal / SESSION_PAGE_SIZE) - 1) return;
+  sessionPage++;
+  void refreshSessions();
+});
+sendBtn.addEventListener('click', () => void sendMessage());
+stopBtn.addEventListener('click', () => requestStop());
 
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -1468,6 +1768,9 @@ inputEl.addEventListener('keydown', (e) => {
 
 // ---------- wire events ----------
 window.nexusDesktop.onEvent(handleEvent);
+window.nexusDesktop.onEvents((events) => {
+  for (const e of events) handleEvent(e);
+});
 window.nexusDesktop.onPermission(showPermission);
 window.nexusDesktop.onLog((log) => {
   if (log.level === 'error') inputStatus.textContent = `⚠️ ${log.message}`;
@@ -1485,6 +1788,8 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
     providers = provs;
     refreshProviderSelect();
   }
+  modelsCache.clear();
+  refreshModelSelect();
 });
 
 // ---------- boot ----------
@@ -1498,6 +1803,7 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
       void openSettings();
     }
     refreshProviderSelect();
+    refreshModelSelect();
     cwdLabel.textContent = status.cwd || t('noProject');
     cwdLabel.title = status.cwd;
     await startOrResumeLatestSession();

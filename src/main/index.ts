@@ -13,6 +13,21 @@ function logf(msg: string): void {
   } catch {}
 }
 
+// Single-instance lock: regenerate() truncates the session DB directly, so two
+// windows on the same data dir must never run concurrently (context + DB would
+// desync). A second launch focuses the existing window instead.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 let win: BrowserWindow | null = null;
 let worker: WorkerHost | null = null;
 let readyPromise: Promise<void> = Promise.resolve();
@@ -62,6 +77,39 @@ function send(channel: string, payload: unknown): void {
   }
 }
 
+// Coalesce the chatty streaming events (text/thinking) into periodic batches.
+// The worker emits one JSON per token; forwarding each across the main→renderer
+// IPC hop dominates the visible stream latency. Non-stream events (tool calls,
+// turn_end, session_end, …) still pass through immediately so ordering and
+// busy-state transitions stay exact — a batch is flushed first.
+// 16ms ≈ 60 batches/s: snappy first paint with negligible IPC volume.
+// Shared by main-agent and sub-agent streaming alike.
+const STREAM_BATCH_MS = 16;
+let eventBatch: Array<{ type: string } & Record<string, unknown>> = [];
+let eventBatchTimer: ReturnType<typeof setTimeout> | null = null;
+function flushEventBatch(): void {
+  if (eventBatchTimer) {
+    clearTimeout(eventBatchTimer);
+    eventBatchTimer = null;
+  }
+  if (eventBatch.length > 0) {
+    const batch = eventBatch;
+    eventBatch = [];
+    send('nexus:events', batch);
+  }
+}
+function forwardEvent(event: { type: string } & Record<string, unknown>): void {
+  if (event.type === 'text' || event.type === 'thinking') {
+    eventBatch.push(event);
+    if (!eventBatchTimer) {
+      eventBatchTimer = setTimeout(flushEventBatch, STREAM_BATCH_MS);
+    }
+  } else {
+    flushEventBatch();
+    send('nexus:event', event);
+  }
+}
+
 async function openConfigWindow(): Promise<void> {
   try {
     // Reuse the already-open window.
@@ -99,7 +147,7 @@ async function openConfigWindow(): Promise<void> {
 
 function startWorker(): void {
   worker = new WorkerHost(workerPath());
-  worker.onEvent = (event) => send('nexus:event', event);
+  worker.onEvent = forwardEvent;
   worker.onPermission = (req) => send('nexus:permission', req);
   worker.onLog = (level, message) => send('nexus:log', { level, message });
   worker.onExit = (code) => {
@@ -140,6 +188,7 @@ function registerIpc(): void {
   };
 
   ipcMain.handle('nexus:chat', call('chat'));
+  ipcMain.handle('nexus:regenerate', call('regenerate'));
   ipcMain.handle('nexus:abort', call('abort'));
   ipcMain.handle('nexus:startSession', call('startSession'));
   ipcMain.handle('nexus:listSessions', call('listSessions'));
@@ -175,6 +224,7 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getSessionStats', call('getSessionStats'));
   ipcMain.handle('nexus:switchProvider', call('switchProvider'));
   ipcMain.handle('nexus:switchModel', call('switchModel'));
+  ipcMain.handle('nexus:getModels', call('getModels'));
   ipcMain.handle('nexus:saveProvider', call('saveProvider'));
   ipcMain.handle('nexus:setCwd', call('setCwd'));
   ipcMain.handle('nexus:respondPermission', call('resolvePermission'));
@@ -211,18 +261,20 @@ function registerIpc(): void {
   });
 }
 
-app.whenReady().then(async () => {
-  // No default Electron window menu bar in any window (settings/config view
-  // should not reuse the app's menu styling).
-  Menu.setApplicationMenu(null);
-  startWorker();
-  registerIpc();
-  createWindow();
+if (gotLock) {
+  app.whenReady().then(async () => {
+    // No default Electron window menu bar in any window (settings/config view
+    // should not reuse the app's menu styling).
+    Menu.setApplicationMenu(null);
+    startWorker();
+    registerIpc();
+    createWindow();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
   });
-});
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

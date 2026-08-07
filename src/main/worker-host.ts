@@ -42,8 +42,9 @@ interface ChildLike {
  * - Dev / npm install: spawns system `node` (worker = stdio JSON-RPC). Native
  *   modules keep their system-Node ABI.
  * - Packaged exe: uses Electron `utilityProcess` (worker = parentPort
- *   JSON-RPC). Native modules are rebuilt for the Electron ABI by
- *   electron-builder; the exe ships its own Node runtime.
+ *   JSON-RPC). Native modules ship as an Electron-ABI build compiled under
+ *   .native/electron (prepare-electron-native.mjs) and swapped into the output
+ *   by the afterPack hook; the exe ships its own Node runtime.
  */
 export class WorkerHost {
   private handle: WorkerHandle | null = null;

@@ -59,13 +59,13 @@ const cfg = await req('getConfig');
 await expect(cfg.ok === true && !String(cfg.data.providers?.anthropic?.apiKey || '').includes('sk-'), 'getConfig masks apiKey');
 
 const sessions = await req('listSessions');
-await expect(Array.isArray(sessions.data), 'listSessions');
+await expect(Array.isArray(sessions.data?.items), 'listSessions');
 
 const sid = await req('startSession');
 await expect(typeof sid.data === 'string' && sid.data.length > 0, 'startSession');
 
 const sessions2 = await req('listSessions');
-await expect(Array.isArray(sessions2.data) && sessions2.data.length > 0, 'session persisted');
+await expect(Array.isArray(sessions2.data?.items) && sessions2.data.items.length > 0, 'session persisted');
 
 const msgs = await req('getMessages', { sessionId: sid.data });
 await expect(Array.isArray(msgs.data), 'getMessages');

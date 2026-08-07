@@ -2,10 +2,13 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 const api = {
   chat: (input: string) => ipcRenderer.invoke('nexus:chat', { input }),
+  regenerate: (sessionId: string, userIndex: number) =>
+    ipcRenderer.invoke('nexus:regenerate', { sessionId, userIndex }),
   abort: () => ipcRenderer.invoke('nexus:abort'),
   startSession: (name?: string, sessionId?: string) =>
     ipcRenderer.invoke('nexus:startSession', { name, sessionId }),
-  listSessions: () => ipcRenderer.invoke('nexus:listSessions'),
+  listSessions: (options?: { limit?: number; offset?: number }) =>
+    ipcRenderer.invoke('nexus:listSessions', options),
   getMessages: (sessionId: string) => ipcRenderer.invoke('nexus:getMessages', { sessionId }),
   deleteSession: (id: string) => ipcRenderer.invoke('nexus:deleteSession', { id }),
   renameSession: (id: string, name: string) =>
@@ -27,6 +30,7 @@ const api = {
   getSessionStats: (sessionId: string) => ipcRenderer.invoke('nexus:getSessionStats', { sessionId }),
   switchProvider: (name: string) => ipcRenderer.invoke('nexus:switchProvider', { name }),
   switchModel: (modelId: string) => ipcRenderer.invoke('nexus:switchModel', { modelId }),
+  getModels: (providerName?: string) => ipcRenderer.invoke('nexus:getModels', { providerName }),
   saveProvider: (name: string, fields: Record<string, unknown>) =>
     ipcRenderer.invoke('nexus:saveProvider', { name, fields }),
   setCwd: (cwd: string) => ipcRenderer.invoke('nexus:setCwd', { cwd }),
@@ -43,6 +47,9 @@ const api = {
 
   onEvent: (cb: (event: unknown) => void) => {
     ipcRenderer.on('nexus:event', (_e, event) => cb(event));
+  },
+  onEvents: (cb: (events: unknown[]) => void) => {
+    ipcRenderer.on('nexus:events', (_e, events) => cb(events));
   },
   onPermission: (cb: (req: { id: string; question: string }) => void) => {
     ipcRenderer.on('nexus:permission', (_e, req) => cb(req));

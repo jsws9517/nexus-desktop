@@ -16,7 +16,9 @@
     "test:chat": "node scripts/chat-test.mjs",
     "pack:npm": "node scripts/pack-npm.mjs",
     "pack": "npm run build && npm pack",
-    "dist:win": "npm run build && electron-builder --win nsis"
+    "prepare:electron-native": "node scripts/prepare-electron-native.mjs",
+    "rebuild:electron": "node scripts/rebuild-electron.mjs",
+    "dist:win": "npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis"
   },
   "keywords": [
     "nexus",
@@ -54,6 +56,8 @@
       "**/*.node",
       "node_modules/better-sqlite3/**/*"
     ],
+    "npmRebuild": false,
+    "afterPack": "scripts/after-pack.mjs",
     "publish": null,
     "directories": {
       "output": "release"

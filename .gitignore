@@ -7,3 +7,9 @@ node_modules/
 
 # Synced core copy (copy-core.mjs regenerates from repo dist/src)
 vendor/core/
+
+# Electron-ABI native build cache (prepare-electron-native.mjs regenerates).
+# Only artifacts are ignored; .native/electron/package.json is tracked.
+.native/electron/node_modules/
+.native/electron/.stamp.json
+.native/electron/package-lock.json

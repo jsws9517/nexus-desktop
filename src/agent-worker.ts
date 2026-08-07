@@ -6,9 +6,10 @@ import type { AgentEvent } from './agent-service.js';
 type WorkerRequest =
   | { id: number; method: 'init'; params?: { cwd?: string } }
   | { id: number; method: 'chat'; params: { input: string } }
+  | { id: number; method: 'regenerate'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'abort' }
   | { id: number; method: 'startSession'; params?: { name?: string; sessionId?: string } }
-  | { id: number; method: 'listSessions' }
+  | { id: number; method: 'listSessions'; params?: { limit?: number; offset?: number } }
   | { id: number; method: 'getMessages'; params: { sessionId: string } }
   | { id: number; method: 'deleteSession'; params: { id: string } }
   | { id: number; method: 'renameSession'; params: { id: string; name: string } }
@@ -27,6 +28,7 @@ type WorkerRequest =
   | { id: number; method: 'getSessionStats'; params: { sessionId: string } }
   | { id: number; method: 'switchProvider'; params: { name: string } }
   | { id: number; method: 'switchModel'; params: { modelId: string } }
+  | { id: number; method: 'getModels'; params?: { providerName?: string } }
   | { id: number; method: 'saveProvider'; params: { name: string; fields: Record<string, unknown> } }
   | { id: number; method: 'setCwd'; params: { cwd: string } }
   | { id: number; method: 'resolvePermission'; params: { id: string; answer: string } }
@@ -61,6 +63,14 @@ service.onEvent = (event: AgentEvent) => send({ type: 'event', event });
 service.onPermission = (req) => { tracePerm(`askPermission id=${req.id}`); send({ type: 'permission', ...req }); };
 service.onLog = (level, message) => send({ type: 'log', level, message });
 
+// The main process un-gates renderer requests after a 20s timeout even when the
+// core is still initializing (init can stall on network fetches), so requests
+// can reach the worker while service.init() is still running. Gate every method
+// on the real init promise. Full serialization is NOT an option: abort() must
+// stay able to run concurrently with an in-flight chat().
+let initPromise: Promise<void> | null = null;
+let initDone = false;
+
 function writeDiag(data: unknown): void {
   try {
     writeFileSync('C:/Users/pgw/AppData/Local/Temp/opencode/init-diag.json', JSON.stringify(data, null, 2), 'utf-8');
@@ -85,21 +95,31 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
     req = line as unknown as WorkerRequest;
     if (!req || typeof req.id !== 'number' || typeof req.method !== 'string') return;
   }
+  if (req.method !== 'init' && initPromise !== null && !initDone) {
+    await initPromise.catch(() => {});
+  }
   try {
     switch (req.method) {
       case 'init':
         try {
           const t0 = Date.now();
-          await service.init(req.params?.cwd);
+          initPromise = service.init(req.params?.cwd);
+          await initPromise;
+          initDone = true;
           writeDiag({ ok: true, ms: Date.now() - t0, cwd: service.getCwd() });
           respond(req.id, { ok: true, cwd: service.getCwd() });
         } catch (e) {
+          initDone = false;
           writeDiag({ ok: false, ms: -1, error: e instanceof Error ? `${e.message}\n${e.stack}` : String(e) });
           respondError(req.id, e);
         }
         break;
       case 'chat':
         await service.chat(req.params.input);
+        respond(req.id);
+        break;
+      case 'regenerate':
+        await service.regenerate(req.params.sessionId, req.params.userIndex);
         respond(req.id);
         break;
       case 'abort':
@@ -110,7 +130,7 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         respond(req.id, await service.startSession(req.params?.name, req.params?.sessionId));
         break;
       case 'listSessions':
-        respond(req.id, await service.listSessions());
+        respond(req.id, await service.listSessions(req.params ?? {}));
         break;
       case 'getMessages':
         respond(req.id, await service.getMessages(req.params.sessionId));
@@ -178,6 +198,9 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         break;
       case 'switchModel':
         respond(req.id, await service.switchModel(req.params.modelId));
+        break;
+      case 'getModels':
+        respond(req.id, await service.getModels(req.params?.providerName));
         break;
       case 'saveProvider':
         service.saveProvider(req.params.name, req.params.fields);
