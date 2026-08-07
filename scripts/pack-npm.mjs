@@ -19,7 +19,7 @@ const root = join(__dirname, '..');
 
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
 
-if (!existsSync(join(root, 'dist', 'launcher.js')) || !existsSync(join(root, 'vendor', 'core', 'src', 'agent.js'))) {
+if (!existsSync(join(root, 'dist', 'launcher.js'))) {
   console.error('[nexus-desktop] Build output missing. Run "npm run build" first.');
   process.exit(1);
 }
@@ -45,7 +45,6 @@ rmSync(stage, { recursive: true, force: true });
 mkdirSync(join(stage, 'nexus-desktop'), { recursive: true });
 
 cpSync(join(root, 'dist'), join(stage, 'nexus-desktop', 'dist'), { recursive: true });
-cpSync(join(root, 'vendor'), join(stage, 'nexus-desktop', 'vendor'), { recursive: true });
 writeFileSync(join(stage, 'nexus-desktop', 'package.json'), JSON.stringify(variant, null, 2));
 
 console.log('[nexus-desktop] npm pack (electron moved to dependencies)...');

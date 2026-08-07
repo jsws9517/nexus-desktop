@@ -1,9 +1,9 @@
 # Nexus Desktop
 
-An Electron desktop front-end for the **Nexus** agent core. It reuses the CLI's
-compiled core (`vendor/core/src`) so chat, sessions, tools, MCP, skills, vision,
-and permissions behave identically to the CLI — the desktop only replaces the
-terminal UI layer.
+An Electron desktop front-end for the **Nexus** agent core. It depends on the
+published core package (`@jsws9517/nexus-core`) so chat, sessions, tools, MCP,
+skills, vision, and permissions behave identically to the CLI �?the desktop only
+replaces the terminal UI layer.
 
 ## Features
 
@@ -23,7 +23,7 @@ terminal UI layer.
 
 ```
 renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utilityProcess──▶ worker (Node AgentService)
-   preload.ts                    index.ts / worker-host.ts                 agent-worker.ts + core dist/src
+   preload.ts                    index.ts / worker-host.ts                 agent-worker.ts + @jsws9517/nexus-core
 ```
 
 - The core **Agent** always runs in a separate Node child process — never inside
@@ -39,7 +39,6 @@ renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utili
 ## Getting started
 
 ```bash
-cd desktop
 npm install          # on CN networks: ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
 npm start            # build + launch in dev mode
 ```
@@ -50,7 +49,7 @@ npm start            # build + launch in dev mode
 
 | Command             | Purpose                                              |
 | ------------------- | ---------------------------------------------------- |
-| `npm run build`     | copy core → vendor, compile TS, copy static assets   |
+| `npm run build`     | compile TS, copy static assets                        |
 | `npm start`         | build + run Electron in dev                          |
 | `npm run typecheck` | type-check                                           |
 | `npm run test:smoke`| headless RPC smoke test (no GUI, no LLM)             |
@@ -59,12 +58,14 @@ npm start            # build + launch in dev mode
 
 ## Packaging
 
-- `npm run dist:win` → `desktop/release/nexus Setup X.Y.Z.exe` (electron-builder
+- `npm run dist:win` → `release/nexus Setup X.Y.Z.exe` (electron-builder
   NSIS). On CN networks set:
   - `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
   - `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`
 - `npm run pack:npm` → a global-install tarball (`npm install -g <tarball>`),
   which launches the GUI under the system Node ABI.
+- The core is installed from the private registry `@jsws9517:registry=https://npm.pkg.github.com/`
+  (see `.npmrc`); installs need a GitHub token with `read:packages` scope.
 - `better-sqlite3` must be rebuilt to the correct ABI for the target runtime:
   - Dev / system node: `npm rebuild better-sqlite3`
   - Electron / packaged: `npx @electron/rebuild -f -w better-sqlite3`

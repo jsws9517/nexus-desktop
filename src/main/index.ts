@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -38,8 +39,8 @@ type ConfigServer = { port: number; close: () => Promise<void> };
 let configServer: ConfigServer | null = null;
 let configWin: BrowserWindow | null = null;
 
-const CONFIG_WEB_PATH = join(
-  __dirname, '..', '..', 'vendor', 'core', 'src', 'config', 'web.js'
+const CONFIG_WEB_PATH = createRequire(import.meta.url).resolve(
+  '@jsws9517/nexus-core/dist/src/config/web.js',
 );
 
 function workerPath(): string {
