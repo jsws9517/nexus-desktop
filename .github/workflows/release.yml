@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://npm.pkg.github.com
+          scope: '@jsws9517'
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_READ_TOKEN }}
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Prepare Electron native
+        run: npm run prepare:electron-native
+
+      - name: Build installer
+        run: npx electron-builder --win nsis
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: v${{ steps.version.outputs.tag }}
+          body: |
+            ## Nexus Desktop v${{ steps.version.outputs.tag }}
+
+            ### Downloads
+            - [Windows Installer (x64)](https://github.com/jsws9517/nexus-releases/releases/download/${{ github.ref_name }}/nexus Setup ${{ steps.version.outputs.tag }}.exe)
+
+            ### Changes
+            See [commit history](https://github.com/jsws9517/nexus-desktop/commits/${{ github.ref_name }}) for details.
+          files: release/nexus Setup ${{ steps.version.outputs.tag }}.exe
+          repository: jsws9517/nexus-releases
+          token: ${{ secrets.RELEASE_TOKEN }}
