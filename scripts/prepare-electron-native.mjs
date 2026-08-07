@@ -71,9 +71,15 @@ function probeUnderElectron() {
 }
 
 function run(cmd, args, opts) {
+  // npm 11 forwards the user-level `allow-scripts` config as npm_config_allow_scripts
+  // into this process's env, which the inner `npm install` then treats as a
+  // CLI/env-layer policy and rejects (EALLOWSCRIPTS) for project-scoped installs.
+  // The compile must run regardless, so strip it before spawning.
+  const env = { ...process.env, ...opts };
+  delete env.npm_config_allow_scripts;
   const res = spawnSync(cmd, args, {
     cwd: nativeDir,
-    env: { ...process.env, ...opts },
+    env,
     stdio: 'inherit',
     shell: process.platform === 'win32',
     timeout: 15 * 60_000,
