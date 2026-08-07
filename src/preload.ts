@@ -48,6 +48,12 @@ const api = {
   setMcpServer: (name: string, enabled: boolean) =>
     ipcRenderer.invoke('nexus:setMcpServer', { name, enabled }),
 
+  getUpdateState: () => ipcRenderer.invoke('nexus:getUpdateState'),
+  getCurrentVersion: () => ipcRenderer.invoke('nexus:getCurrentVersion'),
+  checkForUpdate: () => ipcRenderer.invoke('nexus:checkForUpdate'),
+  downloadUpdate: () => ipcRenderer.invoke('nexus:downloadUpdate'),
+  installUpdate: () => ipcRenderer.invoke('nexus:installUpdate'),
+
   onEvent: (cb: (event: unknown) => void) => {
     ipcRenderer.on('nexus:event', (_e, event) => cb(event));
   },
@@ -62,6 +68,9 @@ const api = {
   },
   onConfigWindowClosed: (cb: () => void) => {
     ipcRenderer.on('nexus:configWindowClosed', () => cb());
+  },
+  onUpdateState: (cb: (state: Record<string, unknown>) => void) => {
+    ipcRenderer.on('nexus:updateState', (_e, state) => cb(state));
   },
 };
 

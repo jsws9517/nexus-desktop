@@ -142,11 +142,17 @@ declare global {
       getMcpStatus(): Promise<{ enabled: boolean; servers: McpServerStatus[] }>;
       getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }>>;
       setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
+      getUpdateState(): Promise<Record<string, unknown>>;
+      getCurrentVersion(): Promise<string>;
+      checkForUpdate(): Promise<Record<string, unknown>>;
+      downloadUpdate(): Promise<Record<string, unknown>>;
+      installUpdate(): Promise<unknown>;
       onEvent(cb: (event: AgentEvent) => void): void;
       onEvents(cb: (events: AgentEvent[]) => void): void;
       onPermission(cb: (req: { id: string; question: string }) => void): void;
       onLog(cb: (log: { level: string; message: string }) => void): void;
       onConfigWindowClosed(cb: () => void): void;
+      onUpdateState(cb: (state: Record<string, unknown>) => void): void;
     };
   }
 }
@@ -353,6 +359,18 @@ const STR: Record<string, { 'zh-CN': string; en: string }> = {
   tokenEstimated: { 'zh-CN': '{n}（估算）', en: '{n} (est.)' },
   tokenMsgHint: { 'zh-CN': '约 {n} 条消息', en: '~{n} messages' },
   languageLabel: { 'zh-CN': '界面语言', en: 'Language' },
+  updateSection: { 'zh-CN': '软件更新', en: 'App Updates' },
+  updateVersion: { 'zh-CN': '当前版本：v{version}', en: 'Current version: v{version}' },
+  updateCheck: { 'zh-CN': '检查更新', en: 'Check for Updates' },
+  updateChecking: { 'zh-CN': '检查中…', en: 'Checking…' },
+  updateAvailable: { 'zh-CN': '发现新版本 v{version}', en: 'Update available: v{version}' },
+  updateNotAvailable: { 'zh-CN': '已是最新版本', en: 'You are up to date' },
+  updateDownload: { 'zh-CN': '下载更新', en: 'Download' },
+  updateDownloading: { 'zh-CN': '下载中 {percent}%', en: 'Downloading {percent}%' },
+  updateReady: { 'zh-CN': '更新已就绪，重启安装', en: 'Ready to install' },
+  updateInstall: { 'zh-CN': '重启并安装', en: 'Restart & Install' },
+  updateError: { 'zh-CN': '更新失败：{message}', en: 'Update failed: {message}' },
+  updateUnavailable: { 'zh-CN': '仅安装版支持自动更新', en: 'Auto-update is only available in the installed app' },
 };
 
 function t(key: string, vars?: Record<string, string | number>): string {
@@ -1930,6 +1948,101 @@ function buildSettings(providersList: ProviderInfo[]): void {
       activeName: svConfig.activeVision,
     });
   }
+
+  buildUpdateSection();
+}
+
+type UpdateStateType =
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'available'; version?: string; releaseNotes?: string }
+  | { status: 'not-available'; version?: string }
+  | { status: 'downloading'; percent?: number }
+  | { status: 'downloaded'; version?: string }
+  | { status: 'error'; message?: string };
+
+let updateVersion = '';
+function buildUpdateSection(): void {
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('updateSection');
+  settingsBody.appendChild(title);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'update-row';
+  const info = document.createElement('span');
+  info.className = 'update-info';
+  updateVersion = '';
+  info.textContent = t('updateVersion', { version: '…' });
+  void window.nexusDesktop.getCurrentVersion().then((v: string) => {
+    updateVersion = String(v).replace(/^v/i, '');
+    info.textContent = t('updateVersion', { version: updateVersion });
+  }).catch(() => {
+    info.textContent = t('updateVersion', { version: '?' });
+  });
+  const btn = document.createElement('button');
+  btn.className = 'btn ghost small';
+  btn.textContent = t('updateCheck');
+  btn.addEventListener('click', () => void runUpdateCheck(btn));
+  wrap.appendChild(info);
+  wrap.appendChild(btn);
+  settingsBody.appendChild(wrap);
+  renderUpdateStatus({ status: 'idle' });
+}
+
+function renderUpdateStatus(state: UpdateStateType): void {
+  const existing = settingsBody.querySelector<HTMLElement>('.update-status');
+  if (existing) existing.remove();
+  if (state.status === 'idle' || state.status === 'not-available') {
+    if (state.status === 'not-available') showUpdateMsg(t('updateNotAvailable'));
+    return;
+  }
+  const line = document.createElement('div');
+  line.className = 'update-status';
+  if (state.status === 'checking') {
+    line.textContent = t('updateChecking');
+  } else if (state.status === 'available') {
+    line.textContent = t('updateAvailable', { version: state.version ?? '' });
+    const dl = document.createElement('button');
+    dl.className = 'btn primary small';
+    dl.textContent = t('updateDownload');
+    dl.addEventListener('click', () => void window.nexusDesktop.downloadUpdate());
+    line.appendChild(dl);
+  } else if (state.status === 'downloading') {
+    line.textContent = t('updateDownloading', { percent: state.percent ?? 0 });
+  } else if (state.status === 'downloaded') {
+    line.textContent = t('updateReady');
+    const inst = document.createElement('button');
+    inst.className = 'btn primary small';
+    inst.textContent = t('updateInstall');
+    inst.addEventListener('click', () => void window.nexusDesktop.installUpdate());
+    line.appendChild(inst);
+  } else if (state.status === 'error') {
+    line.textContent = t('updateError', { message: state.message ?? '' });
+  }
+  settingsBody.appendChild(line);
+}
+
+function showUpdateMsg(msg: string): void {
+  const existing = settingsBody.querySelector<HTMLElement>('.update-status');
+  if (existing) existing.remove();
+  const line = document.createElement('div');
+  line.className = 'update-status';
+  line.textContent = msg;
+  settingsBody.appendChild(line);
+}
+
+async function runUpdateCheck(btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  renderUpdateStatus({ status: 'checking' });
+  try {
+    const state = await window.nexusDesktop.checkForUpdate();
+    renderUpdateStatus(state as UpdateStateType);
+  } catch (err) {
+    renderUpdateStatus({ status: 'error', message: err instanceof Error ? err.message : String(err) });
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function openSettings(): Promise<void> {
@@ -1956,6 +2069,13 @@ $('#btn-settings').addEventListener('click', () => void openSettings());
 $('#settings-close').addEventListener('click', () => settingsOverlay.classList.add('hidden'));
 settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
+});
+
+// Live-update the settings update section from main-process events (progress,
+// downloaded, errors) without re-opening the modal.
+window.nexusDesktop.onUpdateState((state) => {
+  if (settingsOverlay.classList.contains('hidden')) return;
+  renderUpdateStatus(state as UpdateStateType);
 });
 
 $('#settings-web').addEventListener('click', () => {

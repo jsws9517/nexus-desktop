@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { WorkerHost } from './worker-host.js';
+import { Updater } from './updater.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
@@ -31,6 +32,7 @@ if (!gotLock) {
 
 let win: BrowserWindow | null = null;
 let worker: WorkerHost | null = null;
+const updater = new Updater();
 let readyPromise: Promise<void> = Promise.resolve();
 // Phase-1 readiness (Agent constructed): read-only session/config IPC can run
 // while MCP/skills are still connecting in the background (see startWorker()).
@@ -289,6 +291,15 @@ function registerIpc(): void {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
+
+  // ── Opt-in updates (方案①: manual check → manual download → manual install) ──
+  ipcMain.handle('nexus:getUpdateState', () => updater.getState());
+  ipcMain.handle('nexus:getCurrentVersion', () => Updater.currentVersion());
+  ipcMain.handle('nexus:checkForUpdate', () => updater.check());
+  ipcMain.handle('nexus:downloadUpdate', () => updater.download());
+  ipcMain.handle('nexus:installUpdate', () => {
+    updater.install();
+  });
 }
 
 if (gotLock) {
@@ -296,6 +307,8 @@ if (gotLock) {
     // No default Electron window menu bar in any window (settings/config view
     // should not reuse the app's menu styling).
     Menu.setApplicationMenu(null);
+    updater.init();
+    updater.onState = (state) => send('nexus:updateState', state);
     startWorker();
     registerIpc();
     createWindow();

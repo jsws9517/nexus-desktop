@@ -545,6 +545,25 @@ body {
 }
 .row-grid input:focus, .provider-row input:focus { border-color: var(--accent); }
 #settings-msg { color: var(--ok); font-size: 12px; margin-right: auto; }
+.update-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.update-info { font-size: 13px; }
+.update-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 2px;
+}
+.update-status .btn { margin-left: 4px; }
 
 /* ---- Right sidebar: session info + task progress ---- */
 #right-sidebar {
