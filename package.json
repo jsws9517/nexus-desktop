@@ -6,7 +6,9 @@
   "main": "dist/main/index.js",
   "author": "ddupws",
   "bin": {
-    "nexus-desktop": "dist/launcher.js"
+    "nexus-desktop": "dist/launcher.js",
+    "nexus": "node_modules/nexus-coder/dist/src/cli/index.js",
+    "agent": "node_modules/nexus-coder/dist/src/cli/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
