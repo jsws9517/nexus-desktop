@@ -78,14 +78,14 @@ export class AgentService {
       }
     }
 
-    const { Agent } = await import('@jsws9517/nexus-core/dist/src/agent.js');
+    const { Agent } = await import('nexus-coder/dist/src/agent.js');
     this.agent = new Agent();
 
     // Route ALL permission prompts to the UI — both the MCP/tool prompt and the
     // path authorization (read_text_file etc.) use this single bridge. The CLI
     // wires the same via setPermissionPrompter; without it the path prompter
     // falls back to a dead stdin readline inside the worker and instantly denies.
-    const { setPermissionPrompter } = await import('@jsws9517/nexus-core/dist/src/security/path-authorizer.js');
+    const { setPermissionPrompter } = await import('nexus-coder/dist/src/security/path-authorizer.js');
     setPermissionPrompter((question: string) => this.askPermission(question));
 
     this.agent.onEvent = (event: AgentEvent) => this.onEvent?.(event);
@@ -420,7 +420,7 @@ export class AgentService {
     // though the stored key is valid (createProvider does the same).
     let apiKey: string;
     try {
-      const { decryptApiKey } = await import('@jsws9517/nexus-core/dist/src/security/env-key-encrypt.js');
+      const { decryptApiKey } = await import('nexus-coder/dist/src/security/env-key-encrypt.js');
       apiKey = decryptApiKey(provider.apiKey);
     } catch {
       apiKey = provider.apiKey;

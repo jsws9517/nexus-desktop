@@ -1,8 +1,8 @@
 # Nexus Desktop
 
 An Electron desktop front-end for the **Nexus** agent core. It depends on the
-published core package (`@jsws9517/nexus-core`) so chat, sessions, tools, MCP,
-skills, vision, and permissions behave identically to the CLI �?the desktop only
+published core package (`nexus-coder`) so chat, sessions, tools, MCP,
+skills, vision, and permissions behave identically to the CLI — the desktop only
 replaces the terminal UI layer.
 
 ## Features
@@ -36,6 +36,11 @@ renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utili
 - The app shares `~/.nexus` (sessions DB + session config) with the CLI; it does
   **not** depend on the CLI binary.
 
+## Dependencies
+
+- `nexus-coder` - Nexus CLI core (includes all transitive dependencies)
+- `electron-updater` - Auto-update support
+
 ## Getting started
 
 ```bash
@@ -64,8 +69,7 @@ npm start            # build + launch in dev mode
   - `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`
 - `npm run pack:npm` → a global-install tarball (`npm install -g <tarball>`),
   which launches the GUI under the system Node ABI.
-- The core is installed from the private registry `@jsws9517:registry=https://npm.pkg.github.com/`
-  (see `.npmrc`); installs need a GitHub token with `read:packages` scope.
+- The core is installed from npmjs.com (`nexus-coder`), no special registry needed.
 - `better-sqlite3` must be rebuilt to the correct ABI for the target runtime:
   - Dev / system node: `npm rebuild better-sqlite3`
   - Electron / packaged: `npx @electron/rebuild -f -w better-sqlite3`

@@ -53,7 +53,7 @@ let configServer: ConfigServer | null = null;
 let configWin: BrowserWindow | null = null;
 
 const CONFIG_WEB_PATH = createRequire(import.meta.url).resolve(
-  '@jsws9517/nexus-core/dist/src/config/web.js',
+  'nexus-coder/dist/src/config/web.js',
 );
 
 function workerPath(): string {
