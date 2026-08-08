@@ -19,8 +19,7 @@
     "pack": "npm run build && npm pack",
     "prepare:electron-native": "node scripts/prepare-electron-native.mjs",
     "rebuild:electron": "node scripts/rebuild-electron.mjs",
-    "obfuscate": "node scripts/obfuscate.mjs",
-    "dist:win": "npm run build && npm run obfuscate && node scripts/prepare-electron-native.mjs && electron-builder --win nsis",
+    "dist:win": "npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis",
     "dist:win:dev": "npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis"
   },
   "keywords": [
@@ -45,8 +44,6 @@
     "better-sqlite3": "^13.0.1",
     "electron": "^43.2.0",
     "electron-builder": "^26.0.12",
-    "javascript-obfuscator": "^4.2.2",
-    "terser": "^5.49.2",
     "typescript": "^6.0.3"
   },
   "build": {
