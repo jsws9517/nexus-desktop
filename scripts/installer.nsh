@@ -15,21 +15,25 @@ LangString nexusCliSkipBtn 2052 "跳过"
 LangString nexusCliSkipBtn 1033 "Skip"
 
 !macro customInstall
-  ; Check if nexus-coder CLI is installed with 5 second timeout
-  nsExec::ExecToStack /TIMEOUT 5000 'nexus --version'
-  Pop $0  ; Return code
+  ; Check if nexus-coder is installed by detecting npm global directory
+  ; This avoids running external commands that may hang
+  IfFileExists "$APPDATA\nexus-coder\node_modules\nexus-coder\package.json" nexus_found nexus_not_found
   
-  ${If} $0 != "0"
+  nexus_found:
+    Goto nexus_check_done
+  
+  nexus_not_found:
     ; nexus-coder not found, show language-appropriate prompt
     MessageBox MB_YESNO "$(nexusCliNotFound)" \
       IDYES install_nexus \
       IDNO skip_nexus
     
     install_nexus:
-      ; Open CMD to install nexus-coder globally
-      ExecShell "open" "cmd.exe" '/k "echo Installing Nexus CLI... && npm install -g nexus-coder && echo. && echo Installation complete! && pause"'
+      ; Open new CMD window to install nexus-coder globally
+      ExecShell "open" "cmd.exe" '/K "npm install -g nexus-coder"'
       Goto skip_nexus
     
     skip_nexus:
-  ${EndIf}
+  
+  nexus_check_done:
 !macroend
