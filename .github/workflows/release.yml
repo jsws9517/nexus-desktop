@@ -26,12 +26,7 @@ jobs:
       - name: Update package.json version
         shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.tag }}"
-          # Update version in package.json
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
-          # Update version in package-lock.json (first two occurrences)
-          sed -i "0,/"version": ".*"/s/"version": ".*"/"version": "$VERSION"/" package-lock.json
-          sed -i "0,/"version": ".*"/s/"version": ".*"/"version": "$VERSION"/" package-lock.json
+          node scripts/set-version.mjs "${{ steps.version.outputs.tag }}"
 
       - name: Generate changelog
         id: changelog
