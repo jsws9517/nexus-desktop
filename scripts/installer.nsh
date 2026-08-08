@@ -14,12 +14,9 @@ LangString nexusCliInstallBtn 1033 "Install CLI"
 LangString nexusCliSkipBtn 2052 "跳过"
 LangString nexusCliSkipBtn 1033 "Skip"
 
-LangString nexusCliInstalling 2052 "正在安装 Nexus CLI..."
-LangString nexusCliInstalling 1033 "Installing Nexus CLI..."
-
 !macro customInstall
-  ; Check if nexus-coder CLI is installed
-  nsExec::ExecToStack 'nexus --version'
+  ; Check if nexus-coder CLI is installed with 5 second timeout
+  nsExec::ExecToStack /TIMEOUT 5000 'nexus --version'
   Pop $0  ; Return code
   
   ${If} $0 != "0"
