@@ -82,11 +82,14 @@
     },
     "artifactName": "nexus-Setup-${version}.${ext}",
     "nsis": {
+      "include": "scripts/installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "nexus"
+      "shortcutName": "nexus",
+      "installerLanguages": ["zh_CN", "en_US"],
+      "language": "2052"
     }
   }
 }
