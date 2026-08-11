@@ -5,16 +5,15 @@ CLI core:
 
 | Repo | Host | Purpose |
 | --- | --- | --- |
-| `cict_1_0/llm-agent` | Gitee | CLI + core library (`@jsws9517/nexus-core`) |
+| `cict_1_0/nexus-coder` | Gitee | CLI + core library (`nexus-coder`) |
 | `jsws9517/nexus-desktop` | GitHub | Electron desktop app (depends on the core npm package) |
 
-The core is published to **GitHub Packages** (`npm.pkg.github.com`), scoped as
-`@jsws9517/nexus-core`. The desktop installs that package — it does **not**
-vendor a copy of the core source anymore.
+The core is published to **npmjs.com** as `nexus-coder`. The desktop installs
+that package — it does **not** vendor a copy of the core source anymore.
 
 ---
 
-## 1. Core package release (repo: `llm-agent`)
+## 1. Core package release (repo: `nexus-coder`)
 
 Branches:
 
@@ -48,30 +47,23 @@ npm test
 `dist/src/index.js` + `.d.ts` must exist (the `src/index.ts` entry is the
 package `main`).
 
-### 1.3 Publish to GitHub Packages
-
-Requires a GitHub token with `write:packages` + `repo` scopes. The registry is
-mapped in the repo `.npmrc`:
-
-```
-@jsws9517:registry=https://npm.pkg.github.com/
-```
+### 1.3 Publish to npm
 
 Publish (token from the environment — never committed):
 
 ```powershell
-$env:NODE_AUTH_TOKEN = $env:GITHUB_TOKEN   # or your PAT
-npm publish --tag next                     # pre-release (1.1.7-x)
-npm publish --tag latest                   # stable
+$env:NODE_AUTH_TOKEN = $env:NPM_TOKEN     # or your npmjs token
+npm publish --tag beta                    # pre-release (1.1.7-x)
+npm publish --tag latest                  # stable
 ```
 
-> npm refuses to publish a pre-release version without `--tag`. Use `next` for
+> npm refuses to publish a pre-release version without `--tag`. Use `beta` for
 > `x.y.z-*`, `latest` only for stable.
 
 Verify it is live:
 
 ```bash
-npm view @jsws9517/nexus-core versions --registry=https://npm.pkg.github.com/
+npm view nexus-coder dist-tags
 ```
 
 ### 1.4 Tag + merge to master (stable only)
@@ -96,9 +88,7 @@ Tag naming follows the existing convention: `v1.0.2`, `v1.1.0`, … `v1.1.6`.
 After a core publish, point the desktop at the new version:
 
 ```bash
-npm update @jsws9517/nexus-core
-# or pin explicitly:
-npm install @jsws9517/nexus-core@1.1.7
+npm install nexus-coder@1.1.7
 ```
 
 Commit `package.json` + `package-lock.json`.
@@ -140,27 +130,11 @@ git push origin v0.1.1
 
 ---
 
-## 3. Private registry auth (consumers + CI)
-
-Anyone installing `@jsws9517/nexus-core` needs:
-
-- `.npmrc` mapping the scope to `npm.pkg.github.com` (committed in both repos).
-- A GitHub token with **read:packages** — either in `~/.npmrc`
-  (`//npm.pkg.github.com/:_authToken=...`) or as `NODE_AUTH_TOKEN` in CI.
-
-CI on the desktop repo (GitHub Actions) uses `actions/setup-node` with the
-registry URL + `NODE_AUTH_TOKEN` (see `.github/workflows/ci.yml`); the token is
-supplied by the repository secret `GH_PACKAGES_READ_TOKEN` (a PAT with
-`read:packages`). The smoke test step sets a placeholder `ANTHROPIC_API_KEY` so
-the worker can initialize without a real config on the clean runner.
-
----
-
-## Checklist before a stable release
+## 3. Checklist before a stable release
 
 - [ ] `npm run typecheck && npm run build && npm test` green on `dev`
-- [ ] Core published to GitHub Packages (tag `next` → then `latest`)
-- [ ] `npm view @jsws9517/nexus-core` shows the new version
-- [ ] Desktop `npm update @jsws9517/nexus-core` + smoke test green
-- [ ] `vX.Y.Z` tag pushed to `llm-agent` (and `nexus-desktop`)
-- [ ] `master` fast-forwarded on `llm-agent` (stable only)
+- [ ] Core published to npm (tag `beta` → then `latest`)
+- [ ] `npm view nexus-coder dist-tags` shows the new version
+- [ ] Desktop `npm install nexus-coder` + smoke test green
+- [ ] `vX.Y.Z` tag pushed to `nexus-coder` (and `nexus-desktop`)
+- [ ] `master` fast-forwarded on `nexus-coder` (stable only)

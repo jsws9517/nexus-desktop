@@ -23,7 +23,7 @@ replaces the terminal UI layer.
 
 ```
 renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utilityProcess──▶ worker (Node AgentService)
-   preload.ts                    index.ts / worker-host.ts                 agent-worker.ts + @jsws9517/nexus-core
+   preload.ts                    index.ts / worker-host.ts                 agent-worker.ts + nexus-coder
 ```
 
 - The core **Agent** always runs in a separate Node child process — never inside
@@ -70,6 +70,9 @@ npm start            # build + launch in dev mode
 - `npm run pack:npm` → a global-install tarball (`npm install -g <tarball>`),
   which launches the GUI under the system Node ABI.
 - The core is installed from npmjs.com (`nexus-coder`), no special registry needed.
+- Auto-update checks GitHub Releases and falls back to gh-proxy CDN mirrors when
+  GitHub is unreachable. To force a custom feed (e.g. a self-hosted generic
+  update server), set the `NEXUS_UPDATE_MIRROR` env var to the feed base URL.
 - `better-sqlite3` must be rebuilt to the correct ABI for the target runtime:
   - Dev / system node: `npm rebuild better-sqlite3`
   - Electron / packaged: `npx @electron/rebuild -f -w better-sqlite3`
