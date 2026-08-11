@@ -71,28 +71,28 @@ jobs:
           cat > "$BODY" <<'MD'
           ## Nexus Desktop ${{ steps.version.outputs.tag }}
 
-          AI Agent 桌面客户端 - 连接本地与云端智能。
+          AI Agent desktop client - connect local and cloud intelligence.
 
-          ### 系统要求
+          ### System Requirements
           - Windows 10/11 (64-bit)
 
-          ### 安装说明
-          1. 下载下方安装程序
-          2. 双击运行，选择安装目录
-          3. 启动后在 Settings 中配置 API Key
+          ### Installation
+          1. Download the installer below
+          2. Run it and choose the install directory
+          3. Launch the app and set your API Key in Settings
 
-          ### 功能特性
-          - **多模型支持** - Claude、GPT 等主流大语言模型，统一接口切换
-          - **MCP 协议** - 原生支持 Model Context Protocol，连接丰富工具生态
-          - **会话管理** - SQLite 存储，与 CLI 共享数据
-          - **流式响应** - 实时对话，支持思维链展示
-          - **消息队列** - Agent 忙时自动排队
-          - **内嵌配置** - Web UI 配置 Provider / Vision / MCP / Skills
+          ### Features
+          - **Multi-model support** - Claude, GPT and other major LLMs, unified interface switching
+          - **MCP protocol** - Native Model Context Protocol support, connecting a rich tool ecosystem
+          - **Session management** - SQLite storage, shared data with the CLI
+          - **Streaming responses** - real-time chat with chain-of-thought display
+          - **Message queueing** - auto-queue when the agent is busy
+          - **Built-in configuration** - configure Provider / Vision / MCP / Skills from the Web UI
 
-          ### 技术栈
+          ### Tech Stack
           Electron 43 · TypeScript · Node.js · SQLite · Anthropic SDK · OpenAI SDK · MCP SDK
 
-          ### 更新日志
+          ### Changelog
 
           MD
 
@@ -107,19 +107,19 @@ jobs:
             fi
           }
 
-          append_group feat     "✨ 新特性"
-          append_group fix      "🐛 修复"
-          append_group perf     "⚡ 性能优化"
-          append_group refactor "♻️ 重构"
-          append_group chore    "🔧 维护"
-          append_group docs     "📝 文档"
-          append_group test     "✅ 测试"
-          append_group build    "🔨 构建"
-          append_group style    "🎨 样式"
-          append_group other    "📦 其他"
+          append_group feat     "✨ Features"
+          append_group fix      "🐛 Fixes"
+          append_group perf     "⚡ Performance"
+          append_group refactor "♻️ Refactor"
+          append_group chore    "🔧 Maintenance"
+          append_group docs     "📝 Docs"
+          append_group test     "✅ Tests"
+          append_group build    "🔨 Build"
+          append_group style    "🎨 Style"
+          append_group other    "📦 Other"
 
           if [ "$COUNT" -eq 0 ]; then
-            printf -- '- 无新增提交\n' >> "$BODY"
+            printf -- '- No new commits\n' >> "$BODY"
           fi
 
       - name: Commit version bump
