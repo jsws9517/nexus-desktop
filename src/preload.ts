@@ -47,6 +47,8 @@ const api = {
   getMcpServers: () => ipcRenderer.invoke('nexus:getMcpServers'),
   setMcpServer: (name: string, enabled: boolean) =>
     ipcRenderer.invoke('nexus:setMcpServer', { name, enabled }),
+  getDeferMcp: () => ipcRenderer.invoke('nexus:getDeferMcp'),
+  setDeferMcp: (enabled: boolean) => ipcRenderer.invoke('nexus:setDeferMcp', enabled),
 
   getUpdateState: () => ipcRenderer.invoke('nexus:getUpdateState'),
   getCurrentVersion: () => ipcRenderer.invoke('nexus:getCurrentVersion'),

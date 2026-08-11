@@ -110,16 +110,61 @@ export class AgentService {
   }
 
   /**
-   * Phase 2 of startup: full init (MCP connect + skills load). Only chat and
+   * Phase 2 of startup: full init (skills load + MCP connect). Only chat and
    * mutation methods gate on this — see EARLY_METHODS in main/index.ts.
+   *
+   * The core's agent.init() bundles MCP connect (sequential) with skills load
+   * and ignores the `deferMCP` option. We bypass its sequential connectAll by
+   * temporarily clearing cfg.mcpServers (ConfigManager.get() returns the live
+   * in-memory object), then connect MCP servers ourselves IN PARALLEL. `defer`
+   * chooses whether init waits for MCP (default, false) or returns immediately
+   * while MCP connects in the background (true) — see the desktop settings
+   * toggle, persisted to ~/.nexus/desktop.json and passed via the worker.
    */
-  async init(cwd?: string): Promise<void> {
+  async init(cwd?: string, opts?: { deferMcp?: boolean }): Promise<void> {
     await this.earlyInit(cwd);
-    // `deferMCP`: connect MCP servers in the background so startup is not
-    // blocked (config/sessions load immediately). Only MCP-dependent calls wait.
-    await this.agent.init({ deferMCP: true });
+    const defer = !!opts?.deferMcp;
+    const cfg = this.agent.config.get();
+    const savedMcp = cfg.mcpServers;
+    if (savedMcp) cfg.mcpServers = {};
+    try {
+      await this.agent.init();
+    } finally {
+      if (savedMcp) cfg.mcpServers = savedMcp;
+    }
+    const enabled = (Object.entries(savedMcp ?? {}) as Array<[string, { autoStart?: boolean } & Record<string, unknown>]>)
+      .filter(([, s]) => s.autoStart !== false);
+    if (defer) {
+      // Background connect: init resolves immediately, MCP tools appear as
+      // each server lands. Failures are logged, never fatal.
+      void this.connectMcpParallel(enabled);
+    } else {
+      await this.connectMcpParallel(enabled);
+    }
     this.initialized = true;
-    this.onLog?.('info', `Nexus core initialized (cwd=${process.cwd()})`);
+    this.onLog?.('info', `Nexus core initialized (cwd=${process.cwd()}, deferMcp=${defer})`);
+  }
+
+  /**
+   * Connect all auto-start MCP servers concurrently. Each server's own latency
+   * is no longer summed — the phase completes when the slowest server is done.
+   * connectServer is idempotent per name and catches per-server failures.
+   */
+  private async connectMcpParallel(enabled: Array<[string, { autoStart?: boolean } & Record<string, unknown>]>): Promise<void> {
+    if (enabled.length === 0) return;
+    const t0 = Date.now();
+    const results = await Promise.allSettled(
+      enabled.map(async ([name, srv]) => {
+        try {
+          await this.agent.mcp.connectServer(name, srv);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          this.onLog?.('warn', `MCP "${name}" connect failed: ${msg}`);
+        }
+      }),
+    );
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    this.onLog?.('info', `MCP connect done: ${enabled.length - failed}/${enabled.length} servers in ${Date.now() - t0}ms`);
   }
 
   async shutdown(): Promise<void> {

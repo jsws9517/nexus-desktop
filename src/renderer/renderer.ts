@@ -142,6 +142,8 @@ declare global {
       getMcpStatus(): Promise<{ enabled: boolean; servers: McpServerStatus[] }>;
       getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }>>;
       setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
+      getDeferMcp(): Promise<boolean>;
+      setDeferMcp(enabled: boolean): Promise<{ ok: boolean }>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
       checkForUpdate(): Promise<Record<string, unknown>>;
@@ -371,6 +373,14 @@ const STR: Record<string, { 'zh-CN': string; en: string }> = {
   updateInstall: { 'zh-CN': '重启并安装', en: 'Restart & Install' },
   updateError: { 'zh-CN': '更新失败：{message}', en: 'Update failed: {message}' },
   updateUnavailable: { 'zh-CN': '仅安装版支持自动更新', en: 'Auto-update is only available in the installed app' },
+  startupSection: { 'zh-CN': '启动选项', en: 'Startup' },
+  deferMcpLabel: { 'zh-CN': '延迟 MCP 连接', en: 'Defer MCP connection' },
+  deferMcpHint: {
+    'zh-CN': 'MCP 服务器在后台并行连接，界面与聊天更早可用（MCP 启动慢时推荐开启）',
+    en: 'Connect MCP servers in the background so the UI and chat are usable sooner (recommended when MCP servers start slowly)',
+  },
+  deferMcpEnabled: { 'zh-CN': '已开启（下次启动生效）', en: 'Enabled (takes effect on next launch)' },
+  deferMcpDisabled: { 'zh-CN': '已关闭（下次启动生效）', en: 'Disabled (takes effect on next launch)' },
 };
 
 function t(key: string, vars?: Record<string, string | number>): string {
@@ -1233,7 +1243,9 @@ async function resumeSession(id: string): Promise<void> {
   }
   saveMsgCache(id, fresh);
   addSystem(t('sessionRestored'));
-  await applyMcpPref(currentSessionId);
+  // Non-blocking: applies the session's MCP toggles once core init finishes,
+  // so opening a session never waits on the MCP connect phase.
+  void applyMcpPref(currentSessionId);
   await refreshSessions(id);
   await refreshSidebarSession();
   await refreshSessionStats();
@@ -1255,7 +1267,7 @@ async function startNewSession(): Promise<void> {
   msgWindowStart = 0;
   currentSessionId = await window.nexusDesktop.startSession();
   addSystem(t('sessionCreated'));
-  await applyMcpPref(currentSessionId);
+  void applyMcpPref(currentSessionId);
   await refreshSessions();
   await refreshSidebarSession();
   await refreshSessionStats();
@@ -1949,7 +1961,50 @@ function buildSettings(providersList: ProviderInfo[]): void {
     });
   }
 
+  buildStartupSection();
   buildUpdateSection();
+}
+
+function buildStartupSection(): void {
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('startupSection');
+  settingsBody.appendChild(title);
+
+  const row = document.createElement('div');
+  row.className = 'startup-row';
+  const label = document.createElement('label');
+  label.className = 'startup-toggle';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  const text = document.createElement('span');
+  text.textContent = t('deferMcpLabel');
+  const hint = document.createElement('div');
+  hint.className = 'startup-hint';
+  hint.textContent = t('deferMcpHint');
+  void window.nexusDesktop.getDeferMcp().then((v: boolean) => {
+    cb.checked = v === true;
+  }).catch(() => {});
+  cb.addEventListener('change', () => {
+    const v = cb.checked;
+    cb.disabled = true;
+    void window.nexusDesktop.setDeferMcp(v)
+      .then(() => {
+        settingsMsg.textContent = v ? t('deferMcpEnabled') : t('deferMcpDisabled');
+      })
+      .catch((err: unknown) => {
+        settingsMsg.textContent = `⚠️ ${err instanceof Error ? err.message : String(err)}`;
+        cb.checked = !v;
+      })
+      .finally(() => {
+        cb.disabled = false;
+      });
+  });
+  label.appendChild(cb);
+  label.appendChild(text);
+  row.appendChild(label);
+  row.appendChild(hint);
+  settingsBody.appendChild(row);
 }
 
 type UpdateStateType =

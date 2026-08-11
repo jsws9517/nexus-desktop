@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { WorkerHost } from './worker-host.js';
 import { Updater } from './updater.js';
@@ -43,7 +43,7 @@ let sessionReadyPromise: Promise<void> = Promise.resolve();
 const EARLY_METHODS = new Set<string>([
   'listSessions', 'getMessages', 'getConfig', 'getProviders', 'getStatus',
   'getPermissions', 'getSpeechVisionConfig', 'getSessionStats',
-  'getMcpServers', 'getMcpStatus',
+  'getMcpServers', 'getMcpStatus', 'startSession',
 ]);
 
 // Full config Web UI (reuses core's src/config/web.ts). Started on demand and
@@ -55,6 +55,30 @@ let configWin: BrowserWindow | null = null;
 const CONFIG_WEB_PATH = createRequire(import.meta.url).resolve(
   'nexus-coder/dist/src/config/web.js',
 );
+
+// Desktop-only settings live in ~/.nexus/desktop.json — the core's config.json
+// is validated by a zod schema that strips unknown fields, so a desktop-only
+// flag would be dropped on the next config save/parse.
+const DESKTOP_CONFIG_PATH = join(homedir(), '.nexus', 'desktop.json');
+
+function getDeferMcp(): boolean {
+  try {
+    if (!existsSync(DESKTOP_CONFIG_PATH)) return false;
+    const cfg = JSON.parse(readFileSync(DESKTOP_CONFIG_PATH, 'utf-8')) as { deferMcp?: boolean };
+    return cfg.deferMcp === true;
+  } catch {
+    return false;
+  }
+}
+
+function setDeferMcp(enabled: boolean): void {
+  try {
+    const cur = existsSync(DESKTOP_CONFIG_PATH)
+      ? (JSON.parse(readFileSync(DESKTOP_CONFIG_PATH, 'utf-8')) as Record<string, unknown>)
+      : {};
+    writeFileSync(DESKTOP_CONFIG_PATH, JSON.stringify({ ...cur, deferMcp: enabled }, null, 2));
+  } catch {}
+}
 
 function workerPath(): string {
   return join(__dirname, '..', 'agent-worker.js');
@@ -190,7 +214,7 @@ function startWorker(): void {
   // gate block the UI forever: resolve on success, on failure, or after a timeout.
   readyPromise = Promise.race([
     worker
-      .request('init')
+      .request('init', { deferMcp: getDeferMcp() })
       .then(() => {
         send('nexus:log', { level: 'info', message: 'Core ready' });
       })
@@ -264,6 +288,14 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getMcpStatus', call('getMcpStatus'));
   ipcMain.handle('nexus:getMcpServers', call('getMcpServers'));
   ipcMain.handle('nexus:setMcpServer', call('setMcpServer'));
+
+  // Desktop-only startup setting (persisted to ~/.nexus/desktop.json). Takes
+  // effect on the next launch — the value is read by startWorker().
+  ipcMain.handle('nexus:getDeferMcp', (): boolean => getDeferMcp());
+  ipcMain.handle('nexus:setDeferMcp', (_e, enabled: boolean): { ok: boolean } => {
+    setDeferMcp(enabled === true);
+    return { ok: true };
+  });
 
   ipcMain.handle('nexus:openFolder', async (): Promise<{ canceled: boolean; path?: string }> => {
     const result = await dialog.showOpenDialog(win!, {

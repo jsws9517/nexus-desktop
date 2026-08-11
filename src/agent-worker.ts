@@ -5,7 +5,7 @@ import type { AgentEvent } from './agent-service.js';
 
 type WorkerRequest =
   | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
-  | { id: number; method: 'init'; params?: { cwd?: string } }
+  | { id: number; method: 'init'; params?: { cwd?: string; deferMcp?: boolean } }
   | { id: number; method: 'chat'; params: { input: string } }
   | { id: number; method: 'regenerate'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'withdraw'; params: { sessionId: string; userIndex: number } }
@@ -143,7 +143,7 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
       case 'init':
         try {
           const t0 = Date.now();
-          initPromise = service.init(req.params?.cwd);
+          initPromise = service.init(req.params?.cwd, { deferMcp: req.params?.deferMcp });
           await initPromise;
           initDone = true;
           writeDiag({ ok: true, ms: Date.now() - t0, cwd: service.getCwd() });
