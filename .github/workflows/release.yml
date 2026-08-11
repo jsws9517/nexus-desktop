@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Get version
         id: version
@@ -27,23 +29,98 @@ jobs:
           node scripts/set-version.mjs "${{ steps.version.outputs.tag }}"
 
       - name: Generate changelog
-        id: changelog
         shell: bash
         run: |
-          # Get previous tag
+          set -euo pipefail
+
+          # Previous tag = nearest tag reachable from the parent of HEAD
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          
           if [ -z "$PREV_TAG" ]; then
             # First release, get all commits
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" HEAD)
+            RANGE="HEAD"
           else
             # Get commits since previous tag
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD)
+            RANGE="${PREV_TAG}..HEAD"
           fi
-          
-          # Escape multiline string for GitHub Actions
-          CHANGELOG=$(echo "$CHANGELOG" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
-          echo "changelog=$CHANGELOG" >> $GITHUB_OUTPUT
+
+          # Collect commits (no merges), one "subject \x1f short-sha" per line
+          LOG=$(git log --no-merges --pretty=format:"%s%x1f%h" "$RANGE")
+
+          TMP=$(mktemp -d)
+          for k in feat fix perf refactor chore docs test build ci style other; do
+            : > "$TMP/$k"
+          done
+
+          while IFS=$'\x1f' read -r subj sha; do
+            case "$subj" in
+              feat:*)      g=feat ;;
+              fix:*)       g=fix ;;
+              perf:*)      g=perf ;;
+              refactor:*)  g=refactor ;;
+              chore:*)     g=chore ;;
+              docs:*)      g=docs ;;
+              test:*)      g=test ;;
+              build:*|ci:*) g=build ;;
+              style:*)     g=style ;;
+              *)           g=other ;;
+            esac
+            printf -- "- %s ([%s](https://github.com/%s/commit/%s))\n" "$subj" "$sha" "$GITHUB_REPOSITORY" "$sha" >> "$TMP/$g"
+          done <<< "$LOG"
+
+          BODY=".release_body.md"
+          cat > "$BODY" <<'MD'
+## Nexus Desktop ${{ steps.version.outputs.tag }}
+
+AI Agent 桌面客户端 - 连接本地与云端智能。
+
+### 系统要求
+- Windows 10/11 (64-bit)
+
+### 安装说明
+1. 下载下方安装程序
+2. 双击运行，选择安装目录
+3. 启动后在 Settings 中配置 API Key
+
+### 功能特性
+- **多模型支持** - Claude、GPT 等主流大语言模型，统一接口切换
+- **MCP 协议** - 原生支持 Model Context Protocol，连接丰富工具生态
+- **会话管理** - SQLite 存储，与 CLI 共享数据
+- **流式响应** - 实时对话，支持思维链展示
+- **消息队列** - Agent 忙时自动排队
+- **内嵌配置** - Web UI 配置 Provider / Vision / MCP / Skills
+
+### 技术栈
+Electron 43 · TypeScript · Node.js · SQLite · Anthropic SDK · OpenAI SDK · MCP SDK
+
+### 更新日志
+
+MD
+
+          COUNT=0
+          append_group() {
+            local key="$1" header="$2"
+            if [ -s "$TMP/$key" ]; then
+              printf '### %s\n\n' "$header" >> "$BODY"
+              cat "$TMP/$key" >> "$BODY"
+              printf '\n' >> "$BODY"
+              COUNT=$((COUNT + 1))
+            fi
+          }
+
+          append_group feat     "✨ 新特性"
+          append_group fix      "🐛 修复"
+          append_group perf     "⚡ 性能优化"
+          append_group refactor "♻️ 重构"
+          append_group chore    "🔧 维护"
+          append_group docs     "📝 文档"
+          append_group test     "✅ 测试"
+          append_group build    "🔨 构建"
+          append_group style    "🎨 样式"
+          append_group other    "📦 其他"
+
+          if [ "$COUNT" -eq 0 ]; then
+            printf -- '- 无新增提交\n' >> "$BODY"
+          fi
 
       - name: Commit version bump
         shell: bash
@@ -84,33 +161,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ steps.version.outputs.tag }}
-          body: |
-            ## Nexus Desktop ${{ steps.version.outputs.tag }}
-
-            AI Agent 桌面客户端 - 连接本地与云端智能。
-
-            ### 系统要求
-            - Windows 10/11 (64-bit)
-
-            ### 安装说明
-            1. 下载下方安装程序
-            2. 双击运行，选择安装目录
-            3. 启动后在 Settings 中配置 API Key
-
-            ### 功能特性
-            - **多模型支持** - Claude、GPT 等主流大语言模型，统一接口切换
-            - **MCP 协议** - 原生支持 Model Context Protocol，连接丰富工具生态
-            - **会话管理** - SQLite 存储，与 CLI 共享数据
-            - **流式响应** - 实时对话，支持思维链展示
-            - **消息队列** - Agent 忙时自动排队
-            - **内嵌配置** - Web UI 配置 Provider / Vision / MCP / Skills
-
-            ### 技术栈
-            Electron 43 · TypeScript · Node.js · SQLite · Anthropic SDK · OpenAI SDK · MCP SDK
-
-            ### 更新日志
-
-            ${{ steps.changelog.outputs.changelog }}
+          body_path: .release_body.md
           files: |
             release/nexus-Setup-${{ steps.version.outputs.tag }}.exe
             release/latest.yml
