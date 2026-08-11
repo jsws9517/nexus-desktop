@@ -13,3 +13,6 @@ nexus-releases/
 .native/electron/node_modules/
 .native/electron/.stamp.json
 .native/electron/package-lock.json
+.opencode/
+gen-final.mjs
+verify-final.mjs
