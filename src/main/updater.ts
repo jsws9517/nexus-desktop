@@ -2,6 +2,16 @@ import { app } from 'electron';
 import updaterModule from 'electron-updater';
 import type { UpdateInfo } from 'electron-updater';
 
+// 更新源候选：GitHub Release 直连优先，再回退到 gh-proxy 类 CDN。
+// 每个候选在 check() 时并行探测 latest.yml，取第一个可达的作为本次 feed。
+const FEED_DIRECT =
+  'https://github.com/jsws9517/nexus-desktop/releases/latest/download';
+const FEED_MIRRORS = [
+  'https://gh-proxy.com/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+  'https://ghfast.top/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+];
+const PROBE_TIMEOUT_MS = 6000;
+
 // electron-updater v6 exposes `autoUpdater` as a lazy getter on the CJS default
 // export; the named import (`import { autoUpdater }`) fails under NodeNext ESM
 // resolution and the getter instantiates an NsisUpdater (needs Electron's app),
@@ -86,7 +96,10 @@ export class Updater {
       return this.state;
     }
     try {
-      await getAutoUpdater().checkForUpdates();
+      const autoUpdater = getAutoUpdater();
+      const feedUrl = await this.resolveFeedUrl();
+      autoUpdater.setFeedURL(feedUrl);
+      await autoUpdater.checkForUpdates();
     } catch (e) {
       this.setState({ status: 'error', message: e instanceof Error ? e.message : String(e) });
     }
@@ -109,6 +122,33 @@ export class Updater {
   install(): void {
     if (!this.enabled || this.state.status !== 'downloaded') return;
     getAutoUpdater().quitAndInstall(false, true);
+  }
+
+  private feedCandidates(): string[] {
+    return [FEED_DIRECT, ...FEED_MIRRORS];
+  }
+
+  private async resolveFeedUrl(): Promise<string> {
+    const override = process.env.NEXUS_UPDATE_MIRROR;
+    if (override) return override;
+    const results = await Promise.all(
+      this.feedCandidates().map(async (url) => ((await this.probe(url)) ? url : null)),
+    );
+    return results.find((url) => url !== null) ?? FEED_DIRECT;
+  }
+
+  private async probe(url: string): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${url}/latest.yml`, { signal: controller.signal });
+      await res.arrayBuffer().catch(() => undefined);
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private normalizeNotes(notes?: UpdateInfo['releaseNotes']): string | undefined {
