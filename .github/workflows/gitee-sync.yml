@@ -26,7 +26,17 @@ jobs:
         run: |
           set -euo pipefail
           git remote add gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/cict_1_0/nexus-desktop.git"
-          git push gitee main --force
-          git push gitee --tags --force
+          git config http.postBuffer 524288000
+          for attempt in 1 2 3; do
+            echo "--- gitee mirror attempt ${attempt} ---"
+            if git push gitee main --force && git push gitee --tags --force; then
+              echo "gitee mirror OK"
+              exit 0
+            fi
+            echo "gitee mirror attempt ${attempt} failed, retrying..."
+            sleep 10
+          done
+          echo "gitee mirror failed after 3 attempts"
+          exit 1
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
