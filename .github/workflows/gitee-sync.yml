@@ -1,0 +1,32 @@
+name: Gitee Sync
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitee-sync
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Mirror main + tags to Gitee
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/cict_1_0/nexus-desktop.git"
+          git push gitee main --force
+          git push gitee --tags --force
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}

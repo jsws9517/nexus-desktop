@@ -7,9 +7,12 @@ CLI core:
 | --- | --- | --- |
 | `cict_1_0/nexus-coder` | Gitee | CLI + core library (`nexus-coder`) |
 | `jsws9517/nexus-desktop` | GitHub | Electron desktop app (depends on the core npm package) |
+| `cict_1_0/nexus-desktop` | Gitee | Read-only mirror of the desktop (synced by CI) |
 
 The core is published to **npmjs.com** as `nexus-coder`. The desktop installs
-that package — it does **not** vendor a copy of the core source anymore.
+that package — it does **not** vendor a copy of the core source anymore. The
+desktop source (`main` + all tags) is auto-mirrored to the Gitee repo on every
+push via `.github/workflows/gitee-sync.yml` (requires the `GITEE_TOKEN` secret).
 
 ---
 
@@ -127,6 +130,16 @@ git tag v0.1.1
 git push origin main
 git push origin v0.1.1
 ```
+
+Pushing the `v*` tag triggers the Release workflow: it builds the installer,
+creates the GitHub Release, mirrors the tag to Gitee, and publishes a matching
+Gitee Release on `cict_1_0/nexus-desktop` (body from the same changelog, via
+`scripts/gitee-publish.mjs`). Every `main` push is also auto-mirrored to Gitee
+by `gitee-sync.yml`; both workflows need the `GITEE_TOKEN` secret.
+
+> Gitee caps release attachments at **100 MiB**. The NSIS installer (~110 MiB)
+> is skipped there, so installers stay GitHub-only; `latest.yml` and the
+> `.blockmap` are still uploaded for reference.
 
 ---
 

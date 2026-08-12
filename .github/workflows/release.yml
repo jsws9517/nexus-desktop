@@ -166,3 +166,19 @@ jobs:
             release/nexus-Setup-${{ steps.version.outputs.tag }}.exe
             release/latest.yml
             release/*.blockmap
+
+      - name: Publish Gitee Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Mirror the release tag so the Gitee release resolves to a real ref
+          git push "https://oauth2:${GITEE_TOKEN}@gitee.com/cict_1_0/nexus-desktop.git" "${GITHUB_REF_NAME}" || \
+            echo "Gitee tag push skipped (non-fatal)"
+          GITEE_REPO=cict_1_0/nexus-desktop \
+          GITEE_TAG="${GITHUB_REF_NAME}" \
+          GITEE_NAME="${{ steps.version.outputs.tag }}" \
+          GITEE_BODY_FILE=".release_body.md" \
+          GITEE_RELEASE_DIR="release" \
+          node scripts/gitee-publish.mjs
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}

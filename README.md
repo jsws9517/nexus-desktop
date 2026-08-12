@@ -41,6 +41,17 @@ renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utili
 - `nexus-coder` - Nexus CLI core (includes all transitive dependencies)
 - `electron-updater` - Auto-update support
 
+## Source mirror
+
+The source (`main` + tags) is auto-mirrored to Gitee on every push
+(`.github/workflows/gitee-sync.yml`), and releases are published on both hosts:
+
+- GitHub: https://github.com/jsws9517/nexus-desktop
+- Gitee mirror: https://gitee.com/cict_1_0/nexus-desktop
+
+Installer binaries (~110 MiB) are GitHub-only because Gitee caps release
+attachments at 100 MiB.
+
 ## Getting started
 
 ```bash
