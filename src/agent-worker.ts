@@ -11,7 +11,7 @@ type WorkerRequest =
   | { id: number; method: 'withdraw'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'abort' }
   | { id: number; method: 'startSession'; params?: { name?: string; sessionId?: string } }
-  | { id: number; method: 'listSessions'; params?: { limit?: number; offset?: number } }
+  | { id: number; method: 'listSessions'; params?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean } }
   | { id: number; method: 'getMessages'; params: { sessionId: string; last?: number; limit?: number; offset?: number } }
   | { id: number; method: 'deleteSession'; params: { id: string } }
   | { id: number; method: 'renameSession'; params: { id: string; name: string } }

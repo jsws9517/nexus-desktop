@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
  * Prepares the Electron-ABI build of better-sqlite3 used by the packaged app.
  *
  * The desktop dev flow runs the worker under system Node (ABI 141) and the
- * packaged exe under Electron 43 (ABI 148) �?the same .node binary can never
+ * packaged exe under Electron 43 (ABI 148)  - the same .node binary can never
  * serve both. Instead of rebuilding dev's node_modules back and forth, we
  * compile a dedicated copy under `.native/electron` and have electron-builder's
  * afterPack hook swap it into the output. Dev's node_modules is never touched.
@@ -114,7 +114,7 @@ function compile(modVersion) {
     return false;
   }
   if (!probeUnderElectron()) {
-    console.error('[prepare-electron-native] compiled binary does NOT load under Electron �?rebuild failed');
+    console.error('[prepare-electron-native] compiled binary does NOT load under Electron  - rebuild failed');
     return false;
   }
   writeStamp(modVersion, electronVersion, arch);
@@ -126,7 +126,7 @@ function main() {
   const modVersion = getModuleVersion();
   const stamp = getStamp();
   if (stamp && stamp.modVersion === modVersion && stamp.electronVersion === electronPkg.version && stamp.arch === process.arch) {
-    console.log('[prepare-electron-native] stamp matches �?skipping (force with `npm run rebuild:electron`)');
+    console.log('[prepare-electron-native] stamp matches  - skipping (force with `npm run rebuild:electron`)');
     return;
   }
   if (!compile(modVersion)) {

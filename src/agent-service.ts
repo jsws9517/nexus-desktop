@@ -49,6 +49,9 @@ export class AgentService {
   private mcpEnabled = true;
   private pendingPermissions = new Map<string, (answer: string) => void>();
   private nextPermissionId = 1;
+  /** Set by a bare `/revise`; the next plain (non-slash) message is the fix
+   *  for the revise dialogue instead of a normal chat turn. */
+  private pendingRevise = false;
 
   onEvent?: (event: AgentEvent) => void;
   onPermission?: (req: PermissionRequest) => void;
@@ -173,6 +176,16 @@ export class AgentService {
     this.agent = null;
   }
 
+  private persistUserInput(input: string): void {
+    const sid = this.agent?.currentSessionId;
+    if (!sid) return;
+    try {
+      this.agent.session.addMessage(sid, { role: 'user', content: input });
+    } catch (e) {
+      this.onLog?.('warn', `Persist user input failed: ${(e as Error).message}`);
+    }
+  }
+
   /**
    * Slash commands (e.g. /plan /go /tasks) are intercepted by the core's chat()
    * and return BEFORE the user message is persisted to the session DB, so the
@@ -182,13 +195,7 @@ export class AgentService {
    */
   private persistSlashInput(input: string): void {
     if (!input.trim().startsWith('/')) return;
-    const sid = this.agent?.currentSessionId;
-    if (!sid) return;
-    try {
-      this.agent.session.addMessage(sid, { role: 'user', content: input });
-    } catch (e) {
-      this.onLog?.('warn', `Persist slash input failed: ${(e as Error).message}`);
-    }
+    this.persistUserInput(input);
   }
 
   async chat(input: string): Promise<void> {
@@ -196,8 +203,172 @@ export class AgentService {
     if (this.agent.isBusy()) throw new Error('Agent is busy');
     // chat() resolves pending askUser with the next user input, otherwise runs a turn
     this.persistSlashInput(input);
+    const bridged = await this.handleDagCommand(input);
+    if (bridged) return;
     await this.agent.chat(input);
   }
+
+  // ---------------------------------------------------------------- DAG bridge
+  // /commit, /revise and /go --loop are implemented on the interactive CLI path
+  // only (src/cli/chat.ts); the core's runRemoteSlashCommand allowlist rejects
+  // them over a remote channel. This desktop-side bridge routes them straight
+  // onto the core's public plan methods so the desktop gets the same behaviour
+  // with zero core changes.
+
+  /** Parse a `/cmd args` line. Returns null for non-slash / malformed input. */
+  private parseSlash(input: string): { cmd: string; args: string[] } | null {
+    if (!input.startsWith('/')) return null;
+    const parts = input.split(/\s+/);
+    const raw = parts[0] ?? '';
+    if (raw.length <= 1) return null;
+    return { cmd: raw.slice(1).toLowerCase(), args: parts.slice(1) };
+  }
+
+  private emitText(text: string): void {
+    this.onEvent?.({ type: 'text', text });
+  }
+
+  /** Returns true when the input was consumed by the DAG bridge. */
+  private async handleDagCommand(input: string): Promise<boolean> {
+    if (!this.agent) return false;
+    const trimmed = input.trim();
+    const parsed = this.parseSlash(trimmed);
+    if (!parsed) {
+      // Bare /revise armed revise mode — the next plain message is the fix.
+      if (this.pendingRevise) {
+        this.pendingRevise = false;
+        this.persistUserInput(trimmed);
+        await this.runRevise(trimmed);
+        return true;
+      }
+      return false;
+    }
+    // Any slash command cancels a pending bare-/revise prompt.
+    this.pendingRevise = false;
+    const { cmd, args } = parsed;
+    if (cmd === 'revise') {
+      await this.runRevise(args.join(' ').trim());
+      return true;
+    }
+    if (cmd === 'commit') {
+      await this.runPlanExecution(args, true);
+      return true;
+    }
+    if (cmd === 'go' && args.some((a) => a.startsWith('--loop'))) {
+      await this.runPlanExecution(args, false);
+      return true;
+    }
+    return false;
+  }
+
+  private async runRevise(instruction: string): Promise<void> {
+    if (!this.agent) return;
+    if (!this.agent.currentPlan) {
+      this.emitText('No plan to revise. Use /plan <request>, then /go, then /revise.\n');
+      return;
+    }
+    this.agent.enterReviseMode?.();
+    if (instruction) {
+      try {
+        await this.agent.revisePlan(instruction);
+      } catch (err) {
+        this.emitText(`Revision failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    } else {
+      this.pendingRevise = true;
+      this.emitText(
+        'Entering revise mode. Describe how to fix the failed breakpoint; the failed subgraph will be re-planned. /go to re-run, or /revise <fix> to revise inline.\n',
+      );
+    }
+  }
+
+  /** Shared /commit + /go --loop execution path (plan resolution incl. redo). */
+  private async runPlanExecution(args: string[], commit: boolean): Promise<void> {
+    if (!this.agent) return;
+    const redo = args.includes('redo');
+    let plan = this.agent.currentPlan;
+    const sid = this.agent.getCurrentSessionId?.();
+    if (!plan) {
+      if (sid) {
+        plan = this.agent.tracker.getGraphBySession(sid);
+        if (plan) this.agent.currentPlan = plan;
+      }
+    } else if (!redo) {
+      const hasWork = plan.nodes.some(
+        (n: { status: string }) => n.status !== 'completed' && n.status !== 'cancelled',
+      );
+      if (!hasWork && sid) {
+        const sessionGraph = this.agent.tracker.getGraphBySession(sid);
+        if (sessionGraph && sessionGraph.id !== plan.id) {
+          plan = sessionGraph;
+          this.agent.currentPlan = sessionGraph;
+        }
+      }
+    }
+    if (!plan) {
+      this.emitText('? No plan found. Use /plan <request> first.\n');
+      return;
+    }
+    if (commit) this.agent.exitPlanMode?.();
+    if (redo) {
+      for (const n of plan.nodes) {
+        n.status = 'pending';
+        n.result = undefined;
+        n.error = undefined;
+        n.retryCount = 0;
+        n.updatedAt = Date.now();
+      }
+      this.agent.tracker.updateGraph(plan);
+      this.emitText(`? Reset ${plan.nodes.length} tasks to pending for redo.\n`);
+    }
+    const completed = plan.nodes.filter((n: { status: string }) => n.status === 'completed').length;
+    const failed = plan.nodes.filter((n: { status: string }) => n.status === 'failed').length;
+    const pending = plan.nodes.filter(
+      (n: { status: string }) => n.status === 'pending' || n.status === 'in_progress',
+    ).length;
+    if (completed > 0) {
+      this.emitText(`Resuming ? ${completed} done, ${failed} failed, ${pending} remaining.\n`);
+    }
+    this.emitText('Executing plan...\n');
+    try {
+      const result = await this.runPlanWithLoop(args);
+      this.emitText(`? ${result}\n`);
+    } catch (err) {
+      this.emitText(`? Execution failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
+  /**
+   * Run the current plan, honoring `/go --loop[=N|∞|config]` (mirrors the CLI
+   * parse in src/cli/chat.ts). `--loop=0` → single run; `--loop`/`--loop=config`
+   * → config loop.maxRounds; `--loop=∞/-1` → unlimited.
+   */
+  private async runPlanWithLoop(args: string[]): Promise<string> {
+    const loopArg = args.find((a) => a.startsWith('--loop'));
+    let loopOverride: number | null = null;
+    if (loopArg) {
+      let raw = loopArg.includes('=') ? loopArg.slice('--loop'.length + 1) : '';
+      if (!raw) {
+        const i = args.indexOf(loopArg);
+        const next = args[i + 1];
+        if (next !== undefined && !next.startsWith('--')) raw = next;
+      }
+      if (raw === '' || raw === 'config') {
+        loopOverride = null;
+      } else if (raw === '∞' || raw === 'inf' || raw === 'infinity' || raw === '-1') {
+        loopOverride = -1;
+      } else {
+        const n = Number.parseInt(raw, 10);
+        loopOverride = Number.isInteger(n) ? n : null;
+      }
+    }
+    const loopCfg = this.agent.config.getLoopConfig();
+    const maxRounds = loopOverride ?? loopCfg.maxRounds;
+    return maxRounds !== 0
+      ? await this.agent.executePlanWithLoop(maxRounds)
+      : await this.agent.executePlan();
+  }
+  // ---------------------------------------------------------------------- end
 
   abort(): void {
     this.agent?.abort?.();
@@ -351,12 +522,35 @@ export class AgentService {
 
   async startSession(name?: string, sessionId?: string, metadata?: Record<string, unknown>): Promise<string> {
     if (!this.agent) throw new Error('Agent not initialized');
+    this.pendingRevise = false;
     return this.agent.startSession(name, sessionId, metadata);
   }
 
-  async listSessions(options?: { limit?: number; offset?: number }): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
+  async listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean }): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
     if (!this.agent) throw new Error('Agent not initialized');
-    return this.agent.session.list(options);
+    const limit = options?.limit;
+    const offset = options?.offset ?? 0;
+    if (!options?.excludeMock && !options?.excludeEmpty) {
+      return this.agent.session.list({ limit, offset });
+    }
+    // Desktop-side filtering (the core SQL is untouched): fetch the full
+    // candidate set, apply the filters, then slice + recount so pagination and
+    // the page numbers stay exact for the filtered list.
+    const all = (this.agent.session.list({}).items ?? []) as Array<Record<string, unknown>>;
+    let items = all;
+    if (options?.excludeMock) {
+      // Inner-test/beta sessions use mock models (model id contains "mock").
+      items = items.filter((s) => !/mock/i.test(String(s.model ?? '')));
+    }
+    if (options?.excludeEmpty) {
+      // Skip empty-context sessions (CLI scratch / AI-intermediary noise).
+      const { getNonEmptySessionIds } = await import('./session-truncate.js');
+      const nonEmpty = getNonEmptySessionIds();
+      items = items.filter((s) => nonEmpty.has(String(s.id)));
+    }
+    const total = items.length;
+    const sliced = limit !== undefined && limit >= 0 ? items.slice(offset, offset + limit) : items.slice(offset);
+    return { items: sliced, total };
   }
 
   /**

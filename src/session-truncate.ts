@@ -58,3 +58,23 @@ export function deleteMessagesFrom(sessionId: string, fromId: number): { deleted
     db.close();
   }
 }
+
+/**
+ * Sessions that actually contain at least one message row. Used by
+ * listSessions({ excludeEmpty }) so the initial-load flow never picks an
+ * empty-context session. Returns an empty set when the DB/messages table does
+ * not exist yet (fresh install).
+ */
+export function getNonEmptySessionIds(): Set<string> {
+  const db = openDb();
+  try {
+    const rows = db
+      .prepare('SELECT DISTINCT session_id FROM messages')
+      .all() as Array<{ session_id: string }>;
+    return new Set(rows.map((r) => r.session_id));
+  } catch {
+    return new Set<string>();
+  } finally {
+    db.close();
+  }
+}

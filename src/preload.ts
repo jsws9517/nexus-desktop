@@ -9,7 +9,7 @@ const api = {
   abort: () => ipcRenderer.invoke('nexus:abort'),
   startSession: (name?: string, sessionId?: string) =>
     ipcRenderer.invoke('nexus:startSession', { name, sessionId }),
-  listSessions: (options?: { limit?: number; offset?: number }) =>
+  listSessions: (options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean }) =>
     ipcRenderer.invoke('nexus:listSessions', options),
   getMessages: (sessionId: string, options?: { last?: number; limit?: number; offset?: number }) =>
     ipcRenderer.invoke('nexus:getMessages', { sessionId, ...(options ?? {}) }),

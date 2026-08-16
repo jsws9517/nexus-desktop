@@ -1,5 +1,7 @@
 /// <reference lib="dom" />
 
+import { initFx } from './fx.js';
+
 interface SessionInfo {
   id: string;
   name: string;
@@ -107,7 +109,7 @@ declare global {
       chat(input: string): Promise<unknown>;
       abort(): Promise<unknown>;
       startSession(name?: string, sessionId?: string): Promise<string>;
-      listSessions(options?: { limit?: number; offset?: number }): Promise<{ items: SessionInfo[]; total: number }>;
+      listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean }): Promise<{ items: SessionInfo[]; total: number }>;
       getMessages(
         sessionId: string,
         options?: { last?: number; limit?: number; offset?: number },
@@ -585,7 +587,7 @@ function ensureAssistant(): { bubble: HTMLElement; stream: HTMLElement; buffer: 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     const stream = document.createElement('div');
-    stream.className = 'stream-text';
+    stream.className = 'stream-text streaming';
     stream.style.whiteSpace = 'pre-wrap';
     bubble.appendChild(stream);
     wrap.appendChild(bubble);
@@ -802,6 +804,7 @@ function handleEvent(event: AgentEvent): void {
       // finalize markdown rendering of accumulated text
       if (curAssistant && curAssistant.buffer) {
         curAssistant.stream.innerHTML = renderBlocks(curAssistant.buffer);
+        curAssistant.stream.classList.remove('streaming');
       }
       if (curThinking) {
         const t2 = curThinking;
@@ -975,6 +978,7 @@ async function refreshSessions(activeId?: string): Promise<void> {
   const { items: sessions, total } = await window.nexusDesktop.listSessions({
     limit: SESSION_PAGE_SIZE,
     offset: sessionPage * SESSION_PAGE_SIZE,
+    excludeMock: true,
   });
   sessionTotal = total;
   sessionListEl.innerHTML = '';
@@ -1065,6 +1069,7 @@ function renderHistoryRow(m: StoredMsg): void {
       const asst = ensureAssistant();
       asst.buffer = String(m.content);
       asst.stream.innerHTML = renderBlocks(asst.buffer);
+      asst.stream.classList.remove('streaming');
       curAssistant = null;
     }
   } else if (m.role === 'tool' && m.content) {
@@ -1274,19 +1279,19 @@ async function startNewSession(): Promise<void> {
 }
 
 async function startOrResumeLatestSession(): Promise<void> {
+  // Resume the latest session that actually has content — empty-context
+  // sessions (CLI scratch / AI-intermediary noise) are excluded, and inner-test
+  // sessions (model contains "mock") never surface at all.
   const { items: sessions } = await window.nexusDesktop.listSessions({
     limit: SESSION_PAGE_SIZE,
     offset: 0,
+    excludeMock: true,
+    excludeEmpty: true,
   });
   const latest = sessions[0];
   if (latest) {
-    const { total } = await window.nexusDesktop.getMessages(latest.id, { last: 1 });
-    if (total === 0) {
-      // The most recent historical session is still empty (no messages/tokens).
-      // Continue it instead of creating another empty session on every launch.
-      await resumeSession(latest.id);
-      return;
-    }
+    await resumeSession(latest.id);
+    return;
   }
   await startNewSession();
 }
@@ -2340,6 +2345,7 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
 (async function boot(): Promise<void> {
   try {
     loadTheme();
+    initFx();
     await loadLanguage();
     status = await window.nexusDesktop.getStatus();
     providers = await window.nexusDesktop.getProviders();
