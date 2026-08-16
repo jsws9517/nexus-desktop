@@ -2,10 +2,14 @@
 ; Detects a global nexus-coder CLI (nexus / agent) and prompts the user to
 ; install one if not found.
 ;
-; NOTE: electron-builder compiles this with makensis `-WX` (warnings-as-errors
-; unless `nsis.warningsAsErrors=false`), so everything must stay inline inside
-; the macro — a top-level `Function` that the final script does not reference
-; becomes fatal warning 6010. No top-level Functions here.
+; Robustness notes (verified empirically on Win11 x64):
+; - Builtin `IfFileExists` / `ExecWait` work; the `nsExec` plugin returns
+;   `error` for every command at runtime on this setup, so it is NOT used.
+; - `FileRead` already strips the trailing CRLF from redirect output, so any
+;   manual `StrCpy -1/-2` trim would corrupt the path. We instead test the
+;   npm prefix with 0, 1 and 2 trailing-char variants below.
+; - electron-builder compiles this with makensis `-WX` (warnings-as-errors),
+;   so everything must stay inline inside the macro - no top-level Functions.
 
 ; Define multi-language strings using LCID (Language Code Identifier)
 ; Chinese Simplified: 2052 (0x0804)
@@ -15,12 +19,7 @@ LangString nexusCliNotFound 2052 "检测到全局尚未安装 Nexus CLI 工具�
 LangString nexusCliNotFound 1033 "Global Nexus CLI (nexus / agent) not found. $\r$\n$\r$\nInstall now? (requires npm)"
 
 !macro customInstall
-  ; --- Detection -------------------------------------------------------
-  ; Detect *global* CLI availability by inspecting real npm global dirs.
-  ; We deliberately do NOT run `nexus --version` here: the elevated installer
-  ; process often cannot resolve the user-level PATH, so the command would
-  ; hang / be unreadable inside NSIS.
-
+  ; --- Static detection ------------------------------------------------
   ; npm's default global prefix on Windows: %APPDATA%\npm
   IfFileExists "$APPDATA\npm\node_modules\nexus-coder\package.json" cli_found
   IfFileExists "$APPDATA\npm\nexus.cmd" cli_found
@@ -30,17 +29,29 @@ LangString nexusCliNotFound 1033 "Global Nexus CLI (nexus / agent) not found. $\
   IfFileExists "$PROGRAMFILES32\nodejs\node_modules\nexus-coder\package.json" cli_found
   IfFileExists "$PROGRAMFILES\nodejs\node_modules\nexus-coder\package.json" cli_found
 
-  ; Custom global prefixes (nvm / fnm / volta ...): probe `npm prefix -g`
-  ; when resolvable. Timeout guards against hangs.
-  nsExec::ExecToStack /TIMEOUT 6000 'npm prefix -g'
-  Pop $R1                   ; exit code
-  Pop $R2                   ; stdout: "<prefix>\r\n"
-  StrLen $R3 $R2
-  IntCmp $R3 2 cli_missing cli_probe cli_missing
-cli_probe:
-  StrCpy $R2 $R2 -2         ; strip the trailing CRLF
+  ; --- Dynamic detection -----------------------------------------------
+  ; Custom global prefixes (nvm / fnm / volta ...): resolve via
+  ; `npm prefix -g`, redirecting to a temp file, then check the path.
+  ; ExecWait returns 0 when npm resolved; path handling is newline-safe.
+  ExecWait 'cmd.exe /c npm prefix -g > "$TEMP\nx_npm_prefix.txt" 2>nul' $R9
+  IfFileExists "$TEMP\nx_npm_prefix.txt" 0 cli_missing
+  FileOpen $R8 "$TEMP\nx_npm_prefix.txt" r
+  FileRead $R8 $R2
+  FileClose $R8
+  Delete "$TEMP\nx_npm_prefix.txt"
+
+  ; $R2 may carry 0, 1 or 2 trailing whitespace bytes depending on how the
+  ; redirect was captured; try all variants without assuming either.
   IfFileExists "$R2\node_modules\nexus-coder\package.json" cli_found
   IfFileExists "$R2\nexus.cmd" cli_found
+
+  StrCpy $R3 $R2 -1
+  IfFileExists "$R3\node_modules\nexus-coder\package.json" cli_found
+  IfFileExists "$R3\nexus.cmd" cli_found
+
+  StrCpy $R4 $R2 -2
+  IfFileExists "$R4\node_modules\nexus-coder\package.json" cli_found
+  IfFileExists "$R4\nexus.cmd" cli_found
 
 cli_missing:
   ; Global CLI missing: show language-appropriate prompt

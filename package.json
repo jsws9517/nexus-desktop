@@ -1,6 +1,6 @@
 {
   "name": "nexus-desktop",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Nexus Agent Desktop - AI agent with multi-model support, MCP protocol integration, session persistence, streaming responses, and tool permissions.",
   "type": "module",
   "main": "dist/main/index.js",
@@ -56,6 +56,7 @@
       "node_modules/better-sqlite3/**/*"
     ],
     "npmRebuild": false,
+    "compression": "maximum",
     "afterPack": "scripts/after-pack.mjs",
     "publish": {
       "provider": "github",
@@ -68,10 +69,18 @@
     "files": [
       "dist/**/*",
       "package.json",
-      "node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "!node_modules/better-sqlite3/deps/**/*",
+      "!node_modules/better-sqlite3/src/**/*",
+      "!node_modules/better-sqlite3/build/**/*",
+      "!node_modules/better-sqlite3/prebuilds/{darwin-x64,darwin-arm64,linux-x64,linux-arm64,linuxmusl-x64,linuxmusl-arm64,win32-arm64}.node"
     ],
     "win": {
       "icon": "build/icon.ico",
+      "electronLanguages": [
+        "zh-CN",
+        "en-US"
+      ],
       "target": [
         {
           "target": "nsis",
@@ -85,6 +94,8 @@
     "nsis": {
       "include": "scripts/installer.nsh",
       "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
