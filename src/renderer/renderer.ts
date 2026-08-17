@@ -236,8 +236,8 @@ interface TaskItem {
 const tasks = new Map<string, TaskItem>();
 
 // per-turn DOM handles
-let curAssistant: { bubble: HTMLElement; stream: HTMLElement; buffer: string } | null = null;
-let curThinking: { content: HTMLElement; buffer: string } | null = null;
+let curAssistant: { bubble: HTMLElement; stream: HTMLElement; buffer: string; cleaned: boolean } | null = null;
+let curThinking: { content: HTMLElement; buffer: string; cleaned: boolean } | null = null;
 interface ToolCardRec {
   card: HTMLElement;
   resultEl: HTMLElement | null;
@@ -580,7 +580,7 @@ function addUser(text: string): void {
   scrollToBottom();
 }
 
-function ensureAssistant(): { bubble: HTMLElement; stream: HTMLElement; buffer: string } {
+function ensureAssistant(): { bubble: HTMLElement; stream: HTMLElement; buffer: string; cleaned: boolean } {
   if (!curAssistant) {
     const wrap = document.createElement('div');
     wrap.className = 'msg assistant';
@@ -592,7 +592,7 @@ function ensureAssistant(): { bubble: HTMLElement; stream: HTMLElement; buffer: 
     bubble.appendChild(stream);
     wrap.appendChild(bubble);
     messagesEl.appendChild(wrap);
-    curAssistant = { bubble, stream, buffer: '' };
+    curAssistant = { bubble, stream, buffer: '', cleaned: false };
   }
   return curAssistant;
 }
@@ -625,7 +625,7 @@ function ensureThinking(): { content: HTMLElement; buffer: string } {
         toggle.textContent = t('thinkingDot');
       }
     });
-    curThinking = { content, buffer: '' };
+    curThinking = { content, buffer: '', cleaned: false };
   }
   return curThinking;
 }
@@ -648,7 +648,7 @@ function addThinkingBlock(text: string): void {
   let filled = false;
   toggle.addEventListener('click', () => {
     if (!filled) {
-      content.textContent = text;
+      content.textContent = text.replace(/^[\s\u00a0]+/, '');
       filled = true;
     }
     content.classList.toggle('hidden');
@@ -749,20 +749,38 @@ function handleEvent(event: AgentEvent): void {
     case 'text':
       if (event.text) {
         const asst = ensureAssistant();
-        asst.buffer += event.text;
+        let delta = event.text;
+        // The provider often emits newline-only `content` deltas before the
+        // real text (e.g. one blank line per pending tool call).  Skip leading
+        // whitespace until the first non-empty chunk so the bubble never opens
+        // with a run of blank lines.
+        if (!asst.cleaned) {
+          const trimmed = delta.replace(/^[\s\u00a0]+/, '');
+          if (!trimmed) break;
+          delta = trimmed;
+          asst.cleaned = true;
+        }
+        asst.buffer += delta;
         // Append only the delta text node instead of rewriting the whole buffer
         // per token; the full buffer is re-rendered to markdown at turn_end.
-        appendTextDelta(asst.stream, event.text);
+        appendTextDelta(asst.stream, delta);
         scrollToBottom();
       }
       break;
     case 'thinking':
       if (event.thinking) {
+        let delta = event.thinking;
+        // Strip leading whitespace exactly once (one blank line per pending
+        // tool call), then preserve all real internal \n / \t formatting.
+        if (!curThinking?.cleaned) {
+          const noLead = delta.replace(/^[\s\u00a0]+/, '');
+          if (!noLead) break;
+          delta = noLead;
+        }
         const t = ensureThinking();
-        t.buffer += event.thinking;
-        // Only write the DOM when the block is expanded; collapsed thinking is
-        // buffered and filled lazily on first expand.
-        if (!t.content.classList.contains('hidden')) appendTextDelta(t.content, event.thinking);
+        t.buffer += delta;
+        if (!t.content.classList.contains('hidden')) appendTextDelta(t.content, delta);
+        curThinking!.cleaned = true;
         scrollToBottom();
       }
       break;
@@ -803,13 +821,15 @@ function handleEvent(event: AgentEvent): void {
     case 'turn_end': {
       // finalize markdown rendering of accumulated text
       if (curAssistant && curAssistant.buffer) {
+        curAssistant.buffer = curAssistant.buffer.replace(/^[\s\u00a0]+/, '');
         curAssistant.stream.innerHTML = renderBlocks(curAssistant.buffer);
         curAssistant.stream.classList.remove('streaming');
       }
       if (curThinking) {
         const t2 = curThinking;
         // Single final write (bounded) — keep `filled` in sync so a later
-        // expand doesn't rewrite.
+        // expand doesn't rewrite.  Leading whitespace is already stripped
+        // once at stream time, so the raw buffer can be written as-is.
         t2.content.textContent = t2.buffer;
         t2.content.dataset.filled = '1';
         const toggle = t2.content.parentElement?.querySelector('.thinking-toggle');
@@ -1067,7 +1087,7 @@ function renderHistoryRow(m: StoredMsg): void {
     if (m.thinking) addThinkingBlock(String(m.thinking));
     if (m.content) {
       const asst = ensureAssistant();
-      asst.buffer = String(m.content);
+      asst.buffer = String(m.content).replace(/^[\s\u00a0]+/, '');
       asst.stream.innerHTML = renderBlocks(asst.buffer);
       asst.stream.classList.remove('streaming');
       curAssistant = null;

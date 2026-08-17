@@ -286,6 +286,7 @@ body {
   white-space: pre-wrap;
   border-radius: 0 8px 8px 0;
 }
+.thinking-content:empty { display: none; }
 
 /* tool cards */
 .tool-card {
