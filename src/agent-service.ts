@@ -805,7 +805,7 @@ export class AgentService {
 
   saveProvider(
     name: string,
-    fields: { type?: string; apiKey?: string; model?: string; baseUrl?: string },
+    fields: { type?: string; apiKey?: string; model?: string; baseUrl?: string; options?: Record<string, unknown> },
   ): void {
     if (!this.agent) throw new Error('Agent not initialized');
     const cfg = this.agent.config.get();
@@ -815,6 +815,7 @@ export class AgentService {
       model: fields.model ?? existing.model ?? '',
       apiKey: existing.apiKey ?? '',
       baseUrl: fields.baseUrl ?? existing.baseUrl,
+      options: fields.options ?? existing.options ?? {},
     };
     if (fields.apiKey && fields.apiKey !== KEY_MASK) {
       next.apiKey = fields.apiKey;
