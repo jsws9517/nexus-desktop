@@ -4,6 +4,10 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
+// Disable HW acceleration so offscreen page capture (capturePage) doesn't fail
+// with Chromium "UnknownVizError" on GPU-less/remote sessions.
+app.disableHardwareAcceleration();
+
 const SRC = path.join(__dirname, '..', 'icon.svg');
 const OUT_DIR = path.join(__dirname, '..', 'build');
 const OUT = path.join(OUT_DIR, 'icon.ico');
@@ -19,10 +23,12 @@ async function run() {
     show: false,
     frame: false,
     useContentSize: true,
+    backgroundColor: '#00000000',
     webPreferences: { offscreen: true, backgroundThrottling: false },
   });
   await win.loadFile(SRC);
-  await new Promise((r) => setTimeout(r, 400));
+  // Give the SVG filters (feGaussianBlur / feMerge) time to rasterize before capture.
+  await new Promise((r) => setTimeout(r, 800));
 
   const img = await win.webContents.capturePage();
   const pngs = [];
