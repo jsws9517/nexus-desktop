@@ -2,7 +2,7 @@
 
 import { initFx } from './fx.js';
 import { isWorkerBlockText } from '../shared/constants.js';
-import { t, fmtNum, getUiLang, loadLanguage } from './i18n.js';
+import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 
 interface SessionInfo {
@@ -674,6 +674,11 @@ function appendTextDelta(el: HTMLElement, delta: string): void {
 function scrollToBottom(): void {
   if (frozen) return;
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+/** Localize a thrown value's message for display (common core/network errors). */
+function errText(e: unknown): string {
+  return localizeError(e instanceof Error ? e.message : String(e));
 }
 
 // ---------- streaming markdown preview ----------
@@ -1494,7 +1499,7 @@ mcpToggle.addEventListener('change', async () => {
       await window.nexusDesktop.setMcpEnabled(false);
     }
   } catch (err) {
-    addSystem(`⚠️ MCP: ${err instanceof Error ? err.message : String(err)}`);
+    addSystem(`⚠️ MCP: ${errText(err)}`);
   } finally {
     mcpToggle.disabled = false;
   }
@@ -1544,7 +1549,7 @@ function drain(): void {
       await refreshSessions(currentSessionId);
       await syncMsgCache(currentSessionId);
     } catch (err) {
-      addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
+      addSystem(`${t('error')}${errText(err)}`);
     } finally {
       running = false;
       drain();
@@ -1582,7 +1587,7 @@ async function undoAt(wrap: HTMLElement, userIndex: number): Promise<void> {
     await refreshSessions(currentSessionId);
     await refreshSessionStats();
   } catch (err) {
-    addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
+    addSystem(`${t('error')}${errText(err)}`);
   }
 }
 
@@ -1610,7 +1615,7 @@ async function regenerateAt(wrap: HTMLElement, userIndex: number): Promise<void>
     await refreshSessions(currentSessionId);
     await syncMsgCache(currentSessionId);
   } catch (err) {
-    addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
+    addSystem(`${t('error')}${errText(err)}`);
   } finally {
     running = false;
     drain();
@@ -1622,7 +1627,7 @@ attachBtn.addEventListener('click', async () => {
     const res = await window.nexusDesktop.openFile();
     if (!res.canceled && res.paths) attachFiles(res.paths);
   } catch (err) {
-    inputStatus.textContent = `${t('attachFailed')}${err instanceof Error ? err.message : String(err)}`;
+    inputStatus.textContent = `${t('attachFailed')}${errText(err)}`;
   }
 });
 
@@ -1655,6 +1660,7 @@ async function answerPermission(answer: string): Promise<void> {
 }
 
 $('#perm-allow').addEventListener('click', () => void answerPermission('y'));
+$('#perm-always').addEventListener('click', () => void answerPermission('a'));
 $('#perm-deny').addEventListener('click', () => void answerPermission('n'));
 
 // ---------- settings modal ----------
@@ -1915,7 +1921,7 @@ function buildStartupSection(): void {
           settingsMsg.textContent = '';
         })
         .catch((err: unknown) => {
-          settingsMsg.textContent = `⚠️ ${err instanceof Error ? err.message : String(err)}`;
+          settingsMsg.textContent = `⚠️ ${errText(err)}`;
           cb.checked = !v;
         })
         .finally(() => {
@@ -2064,7 +2070,7 @@ async function runUpdateCheck(btn: HTMLButtonElement): Promise<void> {
     const state = await window.nexusDesktop.checkForUpdate();
     renderUpdateStatus(state as UpdateStateType);
   } catch (err) {
-    renderUpdateStatus({ status: 'error', message: err instanceof Error ? err.message : String(err) });
+    renderUpdateStatus({ status: 'error', message: errText(err) });
   } finally {
     btn.disabled = false;
   }
@@ -2078,7 +2084,7 @@ async function openSettings(): Promise<void> {
     svConfig = await window.nexusDesktop.getSpeechVisionConfig();
     buildSettings(providers);
   } catch (err) {
-    settingsMsg.textContent = err instanceof Error ? err.message : String(err);
+    settingsMsg.textContent = errText(err);
   }
 }
 
@@ -2234,7 +2240,7 @@ modelSelect.addEventListener('change', async () => {
     await refreshSessions();
     await refreshSidebarSession();
   } catch (err) {
-    addSystem(`${t('error')}${err instanceof Error ? err.message : String(err)}`);
+    addSystem(`${t('error')}${errText(err)}`);
     refreshModelSelect();
   }
 });
@@ -2354,7 +2360,7 @@ window.nexusDesktop.onEvents((events) => {
 });
 window.nexusDesktop.onPermission(showPermission);
 window.nexusDesktop.onLog((log) => {
-  if (log.level === 'error') inputStatus.textContent = `⚠️ ${log.message}`;
+  if (log.level === 'error') inputStatus.textContent = `⚠️ ${errText(log.message)}`;
 });
 
 // When the full config Web UI closes it may have rewritten config.json
@@ -2404,6 +2410,6 @@ window.nexusDesktop.onWorkerRestarted(async () => {
     await refreshSessions();
     await refreshSidebarSession();
   } catch (err) {
-    addSystem(`${t('startFailed')}${err instanceof Error ? err.message : String(err)}`);
+    addSystem(`${t('startFailed')}${errText(err)}`);
   }
 })();

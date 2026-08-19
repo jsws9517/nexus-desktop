@@ -197,3 +197,23 @@ export async function loadLanguage(): Promise<void> {
   }
   applyI18n();
 }
+
+// ---- light localization of common core/network error messages (D4) ----
+const CORE_ERROR_HINTS: Array<[RegExp, string]> = [
+  [/no provider configured/i, '未配置 Provider，请先在设置中填写 API Key'],
+  [/no api key|api key.*(invalid|missing)|invalid.*api key/i, 'API Key 无效或缺失'],
+  [/401|unauthorized|authentication failed/i, '认证失败（401），请检查 API Key'],
+  [/403|forbidden/i, '访问被拒绝（403）'],
+  [/429|rate limit/i, '请求过于频繁（429），请稍后重试'],
+  [/timeout|timed out|deadline/i, '请求超时，请重试'],
+  [/econnreset|econnrefused|fetch failed|socket hang up|network/i, '网络连接失败'],
+  [/worker|core process/i, '核心进程异常'],
+];
+
+/** Map common English core/network errors to a localized hint; pass through otherwise. */
+export function localizeError(msg: string): string {
+  for (const [re, zh] of CORE_ERROR_HINTS) {
+    if (re.test(msg)) return zh;
+  }
+  return msg;
+}

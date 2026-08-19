@@ -3,6 +3,7 @@ import { AgentService } from './agent-service.js';
 import type { AgentEvent } from './agent-service.js';
 import { logger } from './shared/logger.js';
 import { EARLY_METHODS } from './shared/constants.js';
+import { validateWorkerParams } from './shared/ipc-validation.js';
 
 type WorkerRequest =
   | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
@@ -118,6 +119,15 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
       respondError(req.id, e);
     }
     return;
+  }
+  // C1: validate params against the single-source spec before dispatch.
+  {
+    const r = req as unknown as { method: string; params?: Record<string, unknown> };
+    const err = validateWorkerParams(r.method, r.params);
+    if (err) {
+      respondError(req.id, new Error(`invalid request: ${err}`));
+      return;
+    }
   }
   if (req.method === 'init' && earlyPromise !== null) {
     // Serialize init after earlyInit so the two can never double-construct the

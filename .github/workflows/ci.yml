@@ -30,6 +30,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: i18n check
+        run: npm run check:i18n
+
       - name: Smoke test
         run: npm run test:smoke
         env:

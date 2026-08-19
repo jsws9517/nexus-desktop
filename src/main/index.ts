@@ -8,6 +8,7 @@ import { WorkerHost } from './worker-host.js';
 import { Updater } from './updater.js';
 import { logger, recentLogLines } from '../shared/logger.js';
 import { EARLY_METHODS } from '../shared/constants.js';
+import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList } from '../shared/ipc-validation.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
@@ -489,26 +490,29 @@ function registerIpc(): void {
   // Desktop-only startup setting (persisted to ~/.nexus/desktop.json). Takes
   // effect on the next launch — the value is read by startWorker().
   ipcMain.handle('nexus:getDeferMcp', (): boolean => getDeferMcp());
-  ipcMain.handle('nexus:setDeferMcp', (_e, enabled: boolean): { ok: boolean } => {
-    setDeferMcp(enabled === true);
+  ipcMain.handle('nexus:setDeferMcp', (_e, enabled: unknown): { ok: boolean } => {
+    if (!isBoolean(enabled)) return { ok: false };
+    setDeferMcp(enabled);
     return { ok: true };
   });
 
   // E3: pinned sessions + minimize-to-tray, persisted to desktop.json.
   ipcMain.handle('nexus:getPinned', (): string[] => getPinnedIds());
   ipcMain.handle('nexus:setPinned', (_e, ids: unknown): { ok: boolean } => {
-    setPinnedIds(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : []);
+    if (!isValidPathList(ids)) return { ok: false };
+    setPinnedIds(ids);
     return { ok: true };
   });
   ipcMain.handle('nexus:getMinimizeToTray', (): boolean => getMinimizeToTray());
-  ipcMain.handle('nexus:setMinimizeToTray', (_e, enabled: boolean): { ok: boolean } => {
-    setMinimizeToTray(enabled === true);
+  ipcMain.handle('nexus:setMinimizeToTray', (_e, enabled: unknown): { ok: boolean } => {
+    if (!isBoolean(enabled)) return { ok: false };
+    setMinimizeToTray(enabled);
     return { ok: true };
   });
 
   // E4: read recent log lines for the in-app viewer.
   ipcMain.handle('nexus:readRecentLogs', (_e, maxLines: unknown): string[] => {
-    const n = typeof maxLines === 'number' && Number.isFinite(maxLines) ? Math.max(1, Math.floor(maxLines)) : 200;
+    const n = isFiniteNumber(maxLines) ? Math.max(1, Math.floor(maxLines)) : 200;
     return recentLogLines(n);
   });
 
@@ -531,7 +535,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('nexus:revealFile', (_e, path: unknown): { ok: boolean } => {
-    if (typeof path === 'string' && path) shell.showItemInFolder(path);
+    if (isNonEmptyString(path)) shell.showItemInFolder(path);
     return { ok: true };
   });
 
@@ -540,10 +544,9 @@ function registerIpc(): void {
   ipcMain.handle(
     'nexus:getFileInfos',
     (_e, paths: unknown): Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }> => {
-      if (!Array.isArray(paths)) return [];
+      if (!isValidPathList(paths)) return [];
       const out: Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }> = [];
       for (const p of paths) {
-        if (typeof p !== 'string' || !p) continue;
         try {
           const st = statSync(p);
           const ext = extname(p).toLowerCase();
@@ -563,7 +566,7 @@ function registerIpc(): void {
 
   // Load a local image as a data URL for markdown rendering (hydrateImages).
   ipcMain.handle('nexus:readImagePreview', (_e, path: unknown): string | undefined => {
-    if (typeof path !== 'string' || !path) return undefined;
+    if (!isString(path) || path.length === 0 || path.length > 4096) return undefined;
     return imageDataUrl(path);
   });
 

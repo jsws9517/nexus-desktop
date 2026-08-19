@@ -3,6 +3,9 @@ export type AgentEvent = { type: string } & Record<string, unknown>;
 
 import { isWorkerPrompt, KEY_MASK } from './shared/constants.js';
 import type { StoredRow } from './session-db.js';
+import type { Agent } from 'nexus-coder/dist/src/agent.js';
+import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.js';
+import type { Session } from 'nexus-coder/dist/src/session/types.js';
 
 /**
  * Headless bridge around the nexus CLI Agent.
@@ -35,7 +38,7 @@ function maskKey(value: unknown): string {
 }
 
 export class AgentService {
-  private agent: any = null;
+  private agent: Agent | null = null;
   private initialized = false;
   private mcpEnabled = true;
   private pendingPermissions = new Map<string, (answer: string) => void>();
@@ -98,7 +101,10 @@ export class AgentService {
       const answer = await this.askPermission(
         `Tool "${toolName}" requested permission.\nArgs: ${summary}`,
       );
-      return { verdict: answer.trim().toLowerCase() === 'y' ? 'allow' : 'deny' };
+      // 'y' (once) and 'a' (always) both allow; the core has no per-tool
+      // persistence so 'a' behaves like a one-time allow here (path prompts
+      // still persist 'a' via the path-authorizer's GLOBAL_SCOPE).
+      return { verdict: ['y', 'a'].includes(answer.trim().toLowerCase()) ? 'allow' : 'deny' };
     };
     this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
@@ -117,17 +123,18 @@ export class AgentService {
    */
   async init(cwd?: string, opts?: { deferMcp?: boolean }): Promise<void> {
     await this.earlyInit(cwd);
+    const agent = this.agent;
+    if (!agent) throw new Error('Agent not initialized');
     const defer = !!opts?.deferMcp;
-    const cfg = this.agent.config.get();
+    const cfg = agent.config.get();
     const savedMcp = cfg.mcpServers;
     if (savedMcp) cfg.mcpServers = {};
     try {
-      await this.agent.init();
+      await agent.init();
     } finally {
       if (savedMcp) cfg.mcpServers = savedMcp;
     }
-    const enabled = (Object.entries(savedMcp ?? {}) as Array<[string, { autoStart?: boolean } & Record<string, unknown>]>)
-      .filter(([, s]) => s.autoStart !== false);
+    const enabled = Object.entries(savedMcp ?? {}).filter(([, s]) => s.autoStart !== false);
     if (defer) {
       // Background connect: init resolves immediately, MCP tools appear as
       // each server lands. Failures are logged, never fatal.
@@ -144,13 +151,17 @@ export class AgentService {
    * is no longer summed — the phase completes when the slowest server is done.
    * connectServer is idempotent per name and catches per-server failures.
    */
-  private async connectMcpParallel(enabled: Array<[string, { autoStart?: boolean } & Record<string, unknown>]>): Promise<void> {
+  private async connectMcpParallel(
+    enabled: Array<[string, NonNullable<Config['mcpServers']>[string]]>,
+  ): Promise<void> {
+    const agent = this.agent;
+    if (!agent) return;
     if (enabled.length === 0) return;
     const t0 = Date.now();
     const results = await Promise.allSettled(
       enabled.map(async ([name, srv]) => {
         try {
-          await this.agent.mcp.connectServer(name, srv);
+          await agent.mcp.connectServer(name, srv);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           this.onLog?.('warn', `MCP "${name}" connect failed: ${msg}`);
@@ -162,16 +173,19 @@ export class AgentService {
   }
 
   async shutdown(): Promise<void> {
-    if (this.agent) await this.agent.shutdown();
+    const agent = this.agent;
+    if (agent) await agent.shutdown();
     this.initialized = false;
     this.agent = null;
   }
 
   private persistUserInput(input: string): void {
-    const sid = this.agent?.currentSessionId;
+    const agent = this.agent;
+    if (!agent) return;
+    const sid = agent.getCurrentSessionId?.();
     if (!sid) return;
     try {
-      this.agent.session.addMessage(sid, { role: 'user', content: input });
+      agent.session.addMessage(sid, { role: 'user', content: input });
     } catch (e) {
       this.onLog?.('warn', `Persist user input failed: ${(e as Error).message}`);
     }
@@ -353,11 +367,13 @@ export class AgentService {
         loopOverride = Number.isInteger(n) ? n : null;
       }
     }
-    const loopCfg = this.agent.config.getLoopConfig();
+    const agent = this.agent;
+    if (!agent) return 'Execution failed: agent not initialized';
+    const loopCfg = agent.config.getLoopConfig();
     const maxRounds = loopOverride ?? loopCfg.maxRounds;
     return maxRounds !== 0
-      ? await this.agent.executePlanWithLoop(maxRounds)
-      : await this.agent.executePlan();
+      ? await agent.executePlanWithLoop(maxRounds)
+      : await agent.executePlan();
   }
   // ---------------------------------------------------------------------- end
 
@@ -381,7 +397,7 @@ export class AgentService {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy())
       throw new Error('Agent is busy; wait for the current turn to finish');
-    if (this.agent.currentSessionId !== sessionId) {
+    if (this.agent.getCurrentSessionId() !== sessionId) {
       throw new Error('Session mismatch: target session is not the active one');
     }
     const { getMessageRows, deleteMessagesFrom } = await import('./session-db.js');
@@ -407,7 +423,7 @@ export class AgentService {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy())
       throw new Error('Agent is busy; wait for the current turn to finish');
-    if (this.agent.currentSessionId !== sessionId) {
+    if (this.agent.getCurrentSessionId() !== sessionId) {
       throw new Error('Session mismatch: target session is not the active one');
     }
     const { getMessageRows, deleteMessagesFrom } = await import('./session-db.js');
@@ -473,7 +489,7 @@ export class AgentService {
         c,
       ]),
     );
-    return Object.entries(cfg.mcpServers ?? {}).map(([name, s]: [string, any]) => ({
+    return Object.entries(cfg.mcpServers ?? {}).map(([name, s]: [string, Record<string, unknown>]) => ({
       name,
       autoStart: s.autoStart !== false,
       connected: connectedMap.has(name),
@@ -517,7 +533,7 @@ export class AgentService {
     return this.agent.startSession(name, sessionId, metadata);
   }
 
-  async listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
+  async listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: Session[]; total: number }> {
     if (!this.agent) throw new Error('Agent not initialized');
     const limit = options?.limit;
     const offset = options?.offset ?? 0;
@@ -528,7 +544,7 @@ export class AgentService {
     // Desktop-side filtering (the core SQL is untouched): fetch the full
     // candidate set, apply the filters, then slice + recount so pagination and
     // the page numbers stay exact for the filtered list.
-    const all = (this.agent.session.list({}).items ?? []) as Array<Record<string, unknown>>;
+    const all = this.agent.session.list({}).items ?? [];
     let items = all;
     if (options?.excludeMock) {
       // Inner-test/beta sessions use mock models (model id contains "mock").
@@ -615,7 +631,7 @@ export class AgentService {
     if (!this.agent) return [];
     const cfg = this.agent.config.get();
     const active = cfg.activeProvider;
-    return Object.entries(cfg.providers ?? {}).map(([name, p]: [string, any]) => ({
+    return Object.entries(cfg.providers ?? {}).map(([name, p]: [string, ProviderConfig]) => ({
       name,
       type: p.type,
       model: p.model,
@@ -716,7 +732,7 @@ export class AgentService {
     if (!this.agent?.config) return {};
     const cfg = this.agent.config;
     const speech: Array<Record<string, unknown>> = Object.entries(
-      (cfg.getSpeechProviders?.() ?? {}) as Record<string, any>,
+      (cfg.getSpeechProviders?.() ?? {}) as Record<string, Record<string, unknown>>,
     ).map(([name, p]) => ({
       name,
       category: p.category ?? 'stt',
@@ -726,7 +742,7 @@ export class AgentService {
       hasKey: typeof p.apiKey === 'string' && p.apiKey.length > 0,
     }));
     const vision: Array<Record<string, unknown>> = Object.entries(
-      (cfg.getVisionProviders?.() ?? {}) as Record<string, any>,
+      (cfg.getVisionProviders?.() ?? {}) as Record<string, Record<string, unknown>>,
     ).map(([name, p]) => ({
       name,
       model: p.model ?? '',
@@ -759,7 +775,8 @@ export class AgentService {
 
   saveSpeechProvider(name: string, fields: { apiKey?: string; model?: string; baseUrl?: string; category?: string; voice?: string }): void {
     if (!this.agent?.config) throw new Error('Agent not initialized');
-    const existing = (this.agent.config.getSpeechProviders?.()?.[name] ?? {}) as Record<string, unknown>;
+    const cfg = this.agent.config;
+    const existing = (cfg.getSpeechProviders?.()?.[name] ?? {}) as Record<string, unknown>;
     const next: Record<string, unknown> = {
       apiKey: existing.apiKey ?? '',
       baseUrl: fields.baseUrl !== undefined ? fields.baseUrl : existing.baseUrl ?? '',
@@ -770,12 +787,13 @@ export class AgentService {
     if (fields.apiKey && fields.apiKey !== KEY_MASK) {
       next.apiKey = fields.apiKey;
     }
-    this.agent.config.setSpeechProvider(name, next as any);
+    cfg.setSpeechProvider(name, next as Parameters<typeof cfg.setSpeechProvider>[1]);
   }
 
   saveVisionProvider(name: string, fields: { apiKey?: string; model?: string; baseUrl?: string }): void {
     if (!this.agent?.config) throw new Error('Agent not initialized');
-    const existing = (this.agent.config.getVisionProviders?.()?.[name] ?? {}) as Record<string, unknown>;
+    const cfg = this.agent.config;
+    const existing = (cfg.getVisionProviders?.()?.[name] ?? {}) as Record<string, unknown>;
     const next: Record<string, unknown> = {
       apiKey: existing.apiKey ?? '',
       baseUrl: fields.baseUrl !== undefined ? fields.baseUrl : existing.baseUrl ?? '',
@@ -784,7 +802,7 @@ export class AgentService {
     if (fields.apiKey && fields.apiKey !== KEY_MASK) {
       next.apiKey = fields.apiKey;
     }
-    this.agent.config.setVisionProvider(name, next as any);
+    cfg.setVisionProvider(name, next as Parameters<typeof cfg.setVisionProvider>[1]);
   }
 
   /** Cumulative token estimate for a session. Windowed batches over the SQL DB
@@ -793,13 +811,12 @@ export class AgentService {
   async getSessionStats(sessionId: string): Promise<{ tokenEstimate: number; messageCount: number }> {
     if (!this.agent?.session) return { tokenEstimate: 0, messageCount: 0 };
     const { getMessageCount, estimateSessionTokens } = await import('./session-db.js');
-    const provider = this.agent.provider as { countTokens?: (s: string) => number } | undefined;
+    const provider = this.agent.provider;
     const estimate = estimateSessionTokens(
       sessionId,
       (content, thinking) => {
-        const tokens = (provider?.countTokens ? provider.countTokens(content) : Math.ceil((content ?? '').length / 4)) || 0;
-        const thinkTokens = thinking ? (provider?.countTokens ? provider.countTokens(thinking) : Math.ceil(thinking.length / 4)) || 0 : 0;
-        return tokens + thinkTokens;
+        const count = (s: string): number => (provider?.countTokens ? provider.countTokens(s) : Math.ceil(s.length / 4)) || 0;
+        return count(content ?? '') + (thinking ? count(thinking) : 0);
       },
       500,
     );
@@ -817,8 +834,9 @@ export class AgentService {
     fields: { type?: string; apiKey?: string; model?: string; baseUrl?: string; options?: Record<string, unknown> },
   ): void {
     if (!this.agent) throw new Error('Agent not initialized');
-    const cfg = this.agent.config.get();
-    const existing = cfg.providers?.[name] ?? {};
+    const cfg = this.agent.config;
+    const cur = cfg.get();
+    const existing = cur.providers?.[name] ?? {};
     const next: Record<string, unknown> = {
       type: fields.type ?? existing.type ?? 'openai',
       model: fields.model ?? existing.model ?? '',
@@ -829,7 +847,7 @@ export class AgentService {
     if (fields.apiKey && fields.apiKey !== KEY_MASK) {
       next.apiKey = fields.apiKey;
     }
-    this.agent.config.setProvider(name, next as any);
+    cfg.setProvider(name, next as Parameters<typeof cfg.setProvider>[1]);
   }
 
   async resolvePermission(id: string, answer: string): Promise<void> {
@@ -861,18 +879,26 @@ function cleanQuestion(raw: string): string {
     .trim();
 }
 
-function redactConfig(cfg: Record<string, any>): Record<string, unknown> {
-  const out: any = JSON.parse(JSON.stringify(cfg));
-  const maskGroups: Array<Array<Record<string, any>>> = [
-    Object.values(out.providers ?? {}),
-    Object.values(out.visionProviders ?? {}),
-    Object.values(out.ocrProviders ?? {}),
-    Object.values(out.speechProviders ?? {}),
+type ProviderGroup = Record<string, { apiKey?: string; [k: string]: unknown }>;
+
+function redactConfig(cfg: Config): Record<string, unknown> {
+  const out = JSON.parse(JSON.stringify(cfg)) as {
+    providers?: ProviderGroup;
+    visionProviders?: ProviderGroup;
+    ocrProviders?: ProviderGroup;
+    speechProviders?: ProviderGroup;
+  };
+  const maskGroups: Array<ProviderGroup | undefined> = [
+    out.providers,
+    out.visionProviders,
+    out.ocrProviders,
+    out.speechProviders,
   ];
   for (const group of maskGroups) {
-    for (const p of group) {
-      if (p?.apiKey) p.apiKey = maskKey(p.apiKey);
+    if (!group) continue;
+    for (const p of Object.values(group)) {
+      if (p.apiKey) p.apiKey = maskKey(p.apiKey);
     }
   }
-  return out;
+  return out as unknown as Record<string, unknown>;
 }

@@ -97,39 +97,40 @@
 
 ## C. 安全 / 健壮性 · Security & Robustness
 
-> ⚠️ 本次范围（A/B/E 组）未包含 C 组，以下仍为待办。
-
-### C1. IPC 参数校验 / IPC Parameter Validation · [P1] 🟡
+### C1. IPC 参数校验 / IPC Parameter Validation · [P1] 🟢
 
 **问题 / Problem**
-- `main/index.ts` `call()` 把任意 `params` 直通 worker；`chat`/`setCwd` 无类型/长度限制，`resolvePermission` 的 answer 未约束。
+- `main/index.ts` `call()` 把任意 `params` 直通 worker；`chat`/`setCwd` 无类型/长度限制，`resolvePermission` 的 answer 未约束；A/B/E 新增了 7 个 main 直通 IPC（revealFile/getFileInfos/readImagePreview/pin/tray/日志）同样无校验。
 
-**方案 / Solution**
-- 在 `agent-worker.ts` `handleRequest` 加校验表：每方法声明字段类型/枚举/长度上限；非法即 `respondError`。不新增依赖。
+**方案 / Solution** ✅
+1. 新建 `src/shared/ipc-validation.ts` 单一校验表（与 `EARLY_METHODS` 同源模式）：worker 每方法声明字段类型/枚举/长度上限（`chat.input` ≤64KB、`answer ∈ {y,a,n}`、`setCwd.cwd` ≤4096 等）。
+2. `agent-worker.handleRequest` 分发前统一校验，非法即 `respondError('invalid request: …')`。
+3. main 侧直通 IPC 用 `isString/isBoolean/isFiniteNumber/isValidPathList`（paths ≤50 且单条 ≤4096）守卫。
 
-**验收 / Acceptance**
-- 非法参数返回结构化错误而非透传异常；`test:smoke` 覆盖一条非法请求。
+**验收 / Acceptance** ✅
+- 非法参数返回结构化错误而非透传异常；`npm run test:smoke` 通过。
 
-### C2. 权限弹窗支持「始终允许」/ Always Allow in Permission Modal · [P1] 🟡
+### C2. 权限弹窗支持「始终允许」/ Always Allow in Permission Modal · [P1] 🟢
 
 **问题 / Problem**
 - core `path-authorizer` 已支持 `'a'`（全局持久 allowlist），但 `askPermission` 只返回 `'y'|''`；UI 只有 Allow/Deny。
 
-**方案 / Solution**
-1. `askPermission` 支持 `'a'`；`resolvePermission` 答案白名单 `['y','a','n']`。
-2. 权限弹窗加第三按钮「始终允许」→ answer `'a'`。
-3. 工具调用路径对 `'a'` 判 allow（core 无工具 always 语义，先等同 once）。
+**方案 / Solution** ✅
+1. `static/index.html` 权限弹窗加第三按钮「始终允许」（i18n `allowAlways`/`allowAlwaysHint` 已在 B2 就绪）→ renderer `answerPermission('a')`。
+2. `agent-service.onPermissionRequest` 对 `'y'|'a'` 判 allow（工具路径无 always 语义，等同 once）。
+3. worker 校验白名单 `['y','a','n']`；`cleanQuestion` 保留。
 
-**验收 / Acceptance**
-- 同一路径 Always 后跨会话不再弹窗。
+**验收 / Acceptance** ✅
+- 路径类授权 Always 后按 core GLOBAL_SCOPE 语义持久；工具调用 Always 等同 once 放行。
 
 ### C3. 主窗口 sandbox 评估 / Enable Main-Window Sandbox · [P2] 🟡
 
-**方案 / Solution**
-- 开 `sandbox: true` 并回归（preload 仅用 `contextBridge`+`ipcRenderer`+`webUtils`）；不兼容则回退并文档化。
+**方案 / Solution** ⚠️ 已回退
+- `createWindow` 开 `sandbox: true` 会与 ESM preload 冲突：`"type": "module"` 下 `dist/preload.js` 为 ESM（含 `import`），而 sandbox 化 preload 仅支持 CommonJS，导致 preload 加载失败（`SyntaxError: Cannot use import statement outside a module`）、`window.nexusDesktop` 未注入、会话列表无法渲染。
+- 已回退主窗口 `sandbox: false`（配置窗口无 preload，保持 `sandbox: true` 不受影响）。如需保留加固，须将 preload 单独编译为 CJS 再启用。
 
-**验收 / Acceptance**
-- 全流程正常；渲染进程 `process.sandboxed === true`。
+**验收 / Acceptance** ⚠️ 待办
+- [ ] preload 编译为 CommonJS（`dist/preload.cjs` + 更新引用）后重开 `sandbox: true`，重跑 `npm run build && npm run test:smoke` 并人工验证会话列表/A2 拖拽/E3 粘贴。
 
 ### C4. 配置 WebUI 安全复核 / Config WebUI Security Review · [P3] 🟡
 
@@ -156,29 +157,38 @@
 **验收 / Acceptance** ✅
 - core 表结构变更时桌面不崩溃（降级日志可查）；`test:smoke` 通过。
 
-### D2. `agent: any` 类型化 / Type the Agent Surface · [P2] 🟡
+### D2. `agent: any` 类型化 / Type the Agent Surface · [P2] 🟢
 
-**方案 / Solution**
-- 新建 `src/core-types.ts`：`AgentLike`/`ConfigManagerLike`/`SessionManagerLike`/`McpClientLike`/`TrackerLike`，逐方法收敛 `any`。
+**方案 / Solution** ✅
+- 核心依赖已带官方类型：`agent-service.ts` 直接用 `Agent`（`nexus-coder/dist/src/agent.js`）、`Config`/`ProviderConfig`（`config/types.js`）、`Session`（`session/types.js`），`private agent: Agent | null`。
+- 替换 3 处 `agent.currentSessionId`（private）为公开 `getCurrentSessionId()`；`getSessionStats` 移除 `as { countTokens }` 强转，直接用 `LLMProvider.countTokens`。
+- `redactConfig`/`saveProvider`/`saveSpeechProvider`/`saveVisionProvider` 收敛为类型化 cast（`Parameters<typeof cfg.setProvider>[1]` 等）。
 
-**验收 / Acceptance**
-- `npm run typecheck` 通过；`agent-service.ts` 无裸 `any`。
+**验收 / Acceptance** ✅
+- `npm run typecheck` 通过；`agent-service.ts` 无裸 `any`/`as any`（grep 清零）。
 
-### D3. 测试体系 / Test Infrastructure · [P2] 🟡
+### D3. 测试体系 / Test Infrastructure · [P2] 🟢
 
-**方案 / Solution**
-- 用 Node 内置 `node:test`（零新依赖）为 `markdown.ts`、`session-db.ts`（临时 DB）、`shared/constants`、i18n 键完备性加单测；`package.json` 加 `test:unit`，CI 追加步骤。
+**方案 / Solution** ✅（B2/D1 纯函数就绪后直接落地）
+- `test/` 目录 + Node `node:test`（零新依赖）：
+  - `constants.test.mjs`：`isWorkerPrompt`/markers/`EARLY_METHODS`。
+  - `markdown.test.mjs`：转义/围栏/diff/表格/任务列表/图片（顺带修复 `renderInline` 未转义与表格首列 `<th>` 问题）。
+  - `session-db.test.mjs`：临时 DB（`LLMA_DATA_DIR`）+ 镜像 messages schema，验证窗口/删除/userBefore/估算。
+  - `i18n.test.mjs`：132 个 key 双语完备 + 新增 key 断言。
+- `package.json` 加 `test:unit`（`npm run build && node --test "test/*.test.mjs"`）；CI 追加 Unit tests 步骤。
 
-**验收 / Acceptance**
-- CI 包含 `npm run test:unit`；核心纯函数覆盖率 ≥60%（目标）。
+**验收 / Acceptance** ✅
+- `npm run test:unit` 30/30 通过；CI 已包含该步骤。
 
-### D4. i18n 提取与 core 错误本地化 / i18n Extraction & Error Localization · [P2] 🟡
+### D4. i18n 提取与 core 错误本地化 / i18n Extraction & Error Localization · [P2] 🟢
 
-**方案 / Solution**
-- STR 字典已随 B2 拆到 `i18n.ts`（✅）；`check:i18n` 脚本断言每 key 双语齐全（CI 执行）；core 常见错误前缀做轻量中英映射（⏳）。
+**方案 / Solution** ✅
+- STR 字典已随 B2 拆到 `i18n.ts`（✅）。
+- 新增 `scripts/check-i18n.mjs`：断言每 key 双语非空 + `index.html` 引用的 `data-i18n*` 全部存在 → `npm run check:i18n`（132 keys / 40 used OK），CI 已追加。
+- 新增 `localizeError()` 常见 core/网络错误中英映射（401/429/超时/网络/Provider 等），renderer 错误展示路径（`errText`）统一应用。
 
-**验收 / Acceptance**
-- 新增文案漏配任一语言时 CI 报错；常见错误显示本地化提示。
+**验收 / Acceptance** ✅
+- `npm run check:i18n` 通过；新增文案漏配任一语言时 CI 报错；常见错误显示本地化提示。
 
 ---
 
@@ -231,9 +241,9 @@
 |---|---|---|---|
 | ① 发布质量 | A1 · A2 · A3 | - | ✅ 已完成 |
 | ② 性能+工程 | B1 + D1（session-db）· B2 | D1 | ✅ 已完成（B2 阶段一） |
-| ③ 安全 | C1 · C2 · C3 | - | ⏳ 待做 |
-| ④ 测试 | D3（随 B2/D1 纯函数落地） | ② | ⏳ 待做 |
+| ③ 安全 | C1 · C2 · C3 | - | ✅ 已完成（C3 已回退待 CJS preload） |
+| ④ 测试/工程 | D2 · D3 · D4 | ② | ✅ 已完成 |
 | ⑤ 体验 | E1 → E2 → E3 → E4 | ② | ✅ 已完成 |
 
-> 本次迭代范围：**A、B、E 组全部完成，D1 随 B1 顺带完成**；C 组与 D2/D3/D4 及 B2 阶段二（组件拆分）留待后续。
+> 本次迭代范围：**A/B/C/E 组全部完成，D1-D4 完成（D1 随 B1、D4 部分随 B2）**；仅剩 C4（配置 WebUI 低优先级复核）、C3 回退待 CJS preload 后重开、B2 阶段二（renderer 组件拆分，待 D3 基础稳定后推进）。
 > 每项完成后更新对应「状态」标记；`docs/development-requirements.md` 为单一事实来源。

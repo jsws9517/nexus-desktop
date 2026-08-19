@@ -19,13 +19,16 @@ const LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
 const IMG_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
 
 export function renderInline(src: string): string {
+  // Escape first so headings/plain lines/cells are always safe; callers that
+  // previously pre-escaped (escapeHtml) no longer need to.
+  const safe = esc(src);
   // Images first (data:/blob: inline, local paths get a data-src for hydration).
-  let out = src.replace(IMG_RE, (m, alt, url) => {
+  let out = safe.replace(IMG_RE, (m, alt, url) => {
     if (/^(data:|blob:|https?:\/\/)/.test(url)) {
-      return `<img alt="${esc(String(alt))}" src="${esc(url)}" loading="lazy" />`;
+      return `<img alt="${alt}" src="${url}" loading="lazy" />`;
     }
     if (url.startsWith('local:')) {
-      return `<img alt="${esc(String(alt))}" data-src="${esc(url.slice(6))}" loading="lazy" />`;
+      return `<img alt="${alt}" data-src="${url.slice(6)}" loading="lazy" />`;
     }
     return m;
   });
@@ -78,17 +81,12 @@ function collectTable(lines: string[], i: number): { rows: string[][]; end: numb
 function renderTable(rows: string[][]): string {
   const header = rows[0];
   const body = rows.slice(2);
-  const thead = `<thead><tr>${header.map((h) => `<th>${renderInline(escapeHtml(h))}</th>`).join('')}</tr></thead>`;
+  const thead = `<thead><tr>${header.map((h) => `<th>${renderInline(h)}</th>`).join('')}</tr></thead>`;
   const tbody = body.length
     ? `<tbody>${body
         .map(
           (r) =>
-            `<tr>${r
-              .map((c, idx) => {
-                const tag = idx === 0 ? 'th' : 'td';
-                return `<${tag}>${renderInline(escapeHtml(c))}</${tag}>`;
-              })
-              .join('')}</tr>`,
+            `<tr>${r.map((c) => `<td>${renderInline(c)}</td>`).join('')}</tr>`,
         )
         .join('')}</tbody>`
     : '';
@@ -160,8 +158,8 @@ export function renderBlocks(src: string): string {
         i = tbl.end;
         continue;
       }
-      out.push(renderInline(escapeHtml(line)));
-    } else out.push(renderInline(escapeHtml(line)));
+      out.push(renderInline(line));
+    } else out.push(renderInline(line));
     i++;
   }
   flushCode();

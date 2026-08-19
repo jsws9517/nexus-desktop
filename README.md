@@ -90,6 +90,14 @@ npm start            # build + launch in dev mode
 
 ## Troubleshooting
 
+- **IPC/preload silently missing** — `window.nexusDesktop` is `undefined` and
+  the session list never renders, with
+  `Main process: renderer[3]: SyntaxError: Cannot use import statement outside a module`
+  in the log. The main-window preload (`dist/preload.js`) is ESM
+  (`"type": "module"`), but Electron's **sandboxed** preloads only support
+  CommonJS, so `sandbox: true` makes the preload fail to load. Keep the main
+  window at `sandbox: false`; if sandboxing is required, compile the preload to
+  a CommonJS bundle first (see C3 in `docs/development-requirements.md`).
 - **Permission popup hangs / Allow does nothing** — ensure the worker's
   `permission` message id is forwarded correctly (`worker-host.ts` maps the
   `id` field); the id is how the renderer answers back.

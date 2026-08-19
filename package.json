@@ -15,6 +15,8 @@
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:smoke": "node scripts/smoke-test.mjs",
+    "test:unit": "npm run build && node --test \"test/*.test.mjs\"",
+    "check:i18n": "node scripts/check-i18n.mjs",
     "icon": "electron scripts/make-icon.cjs && electron scripts/export-preview.cjs",
     "test:chat": "node scripts/chat-test.mjs",
     "pack:npm": "node scripts/pack-npm.mjs",
