@@ -1,18 +1,43 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { WorkerHost } from './worker-host.js';
 import { Updater } from './updater.js';
+import { logger, recentLogLines } from '../shared/logger.js';
+import { EARLY_METHODS } from '../shared/constants.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 function logf(msg: string): void {
+  logger.info(msg);
+}
+
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.avif']);
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.avif': 'image/avif',
+};
+
+function imageDataUrl(path: string): string | undefined {
   try {
-    appendFileSync('C:/Users/pgw/AppData/Local/Temp/opencode/main.log', `${Date.now()} ${msg}\n`);
-  } catch {}
+    const st = statSync(path);
+    if (st.size > 2 * 1024 * 1024) return undefined;
+    const mime = IMAGE_MIME[extname(path).toLowerCase()];
+    if (!mime) return undefined;
+    return `data:${mime};base64,${readFileSync(path).toString('base64')}`;
+  } catch {
+    return undefined;
+  }
 }
 
 // Single-instance lock: regenerate() truncates the session DB directly, so two
@@ -23,10 +48,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
+    showMainWindow();
   });
 }
 
@@ -37,14 +59,54 @@ let readyPromise: Promise<void> = Promise.resolve();
 // Phase-1 readiness (Agent constructed): read-only session/config IPC can run
 // while MCP/skills are still connecting in the background (see startWorker()).
 let sessionReadyPromise: Promise<void> = Promise.resolve();
+// Resolves true only when `init` actually succeeds (distinct from readyPromise's
+// timeout). Used by the crash auto-restart to decide success vs. retry.
+let initOkPromise: Promise<boolean> = Promise.resolve(true);
+
+// ---- worker crash auto-restart ----
+let intentionallyStopped = false;
+let isQuitting = false;
+let restartAttempts = 0;
+let restartTimer: ReturnType<typeof setTimeout> | null = null;
+const RESTART_MAX_ATTEMPTS = 3;
+
+function scheduleRestart(): void {
+  if (intentionallyStopped) return;
+  if (restartAttempts >= RESTART_MAX_ATTEMPTS) {
+    send('nexus:log', { level: 'error', message: 'Core worker crashed repeatedly; please restart the app.' });
+    return;
+  }
+  const delay = Math.min(30000, 1000 * Math.pow(2, restartAttempts));
+  restartAttempts++;
+  send('nexus:log', {
+    level: 'warn',
+    message: `Restarting core worker in ${delay}ms (attempt ${restartAttempts}/${RESTART_MAX_ATTEMPTS})`,
+  });
+  restartTimer = setTimeout(() => {
+    void restartWorker();
+  }, delay);
+}
+
+async function restartWorker(): Promise<void> {
+  if (intentionallyStopped) return;
+  try {
+    worker?.stop();
+  } catch {}
+  worker = null;
+  startWorker();
+  const ok = await initOkPromise;
+  if (ok) {
+    restartAttempts = 0;
+    send('nexus:workerRestarted', {});
+  } else {
+    scheduleRestart();
+  }
+}
 
 // IPC methods that only need the core's session/config layer and therefore gate
-// on sessionReadyPromise (fast) instead of the full init (slow).
-const EARLY_METHODS = new Set<string>([
-  'listSessions', 'getMessages', 'getConfig', 'getProviders', 'getStatus',
-  'getPermissions', 'getSpeechVisionConfig', 'getSessionStats',
-  'getMcpServers', 'getMcpStatus', 'startSession',
-]);
+// on sessionReadyPromise (fast) instead of the full init (slow). Single source:
+// src/shared/constants.ts (shared with the worker's own gating set).
+const EARLY_METHODS_SET = EARLY_METHODS;
 
 // Full config Web UI (reuses core's src/config/web.ts). Started on demand and
 // torn down when its BrowserWindow closes so the port is released.
@@ -80,14 +142,117 @@ function setDeferMcp(enabled: boolean): void {
   } catch {}
 }
 
+// ---- E1: desktop-state persistence (~/.nexus/desktop.json) ----
+interface DesktopState {
+  deferMcp?: boolean;
+  lastCwd?: string;
+  windowBounds?: { x?: number; y?: number; width?: number; height?: number };
+  pinnedIds?: string[];
+  minimizeToTray?: boolean;
+}
+
+function readDesktopState(): DesktopState {
+  try {
+    if (!existsSync(DESKTOP_CONFIG_PATH)) return {};
+    return JSON.parse(readFileSync(DESKTOP_CONFIG_PATH, 'utf-8')) as DesktopState;
+  } catch {
+    return {};
+  }
+}
+
+function writeDesktopState(patch: DesktopState): void {
+  try {
+    const next = { ...readDesktopState(), ...patch };
+    writeFileSync(DESKTOP_CONFIG_PATH, JSON.stringify(next, null, 2));
+  } catch {}
+}
+
+function loadSavedCwd(): string | undefined {
+  const cwd = readDesktopState().lastCwd;
+  return typeof cwd === 'string' && cwd && existsSync(cwd) ? cwd : undefined;
+}
+
+function saveSavedCwd(cwd: string): void {
+  if (typeof cwd === 'string' && cwd) writeDesktopState({ lastCwd: cwd });
+}
+
+function loadWindowBounds(): { x?: number; y?: number; width?: number; height?: number } | undefined {
+  const b = readDesktopState().windowBounds;
+  if (!b || typeof b.width !== 'number' || typeof b.height !== 'number') return undefined;
+  return b;
+}
+
+function saveWindowBounds(bounds: { x?: number; y?: number; width?: number; height?: number }): void {
+  writeDesktopState({ windowBounds: bounds });
+}
+
+function getPinnedIds(): string[] {
+  const ids = readDesktopState().pinnedIds;
+  return Array.isArray(ids) ? ids : [];
+}
+
+function setPinnedIds(ids: string[]): void {
+  writeDesktopState({ pinnedIds: ids });
+}
+
+function getMinimizeToTray(): boolean {
+  return readDesktopState().minimizeToTray === true;
+}
+
+function setMinimizeToTray(enabled: boolean): void {
+  writeDesktopState({ minimizeToTray: enabled });
+}
+
 function workerPath(): string {
   return join(__dirname, '..', 'agent-worker.js');
 }
 
+// ---- E3: system tray (embedded 16×16 icon, no file dependency) ----
+let tray: Tray | null = null;
+const TRAY_ICON_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAARklEQVR4nGPw7/nPgA/PqniGF+PVTKkB/0F4VsUzGCbagP/IGMkArAbh1YzDgP80MwBDMx4D/g9TAwY+FqiSkKiSlOmbGwEPJVivUDv5XAAAAABJRU5ErkJggg==';
+
+function showMainWindow(): void {
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  } else {
+    createWindow();
+  }
+}
+
+function createTray(): void {
+  if (tray) return;
+  try {
+    tray = new Tray(nativeImage.createFromDataURL(TRAY_ICON_DATA_URL));
+    tray.setToolTip('Nexus Desktop');
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: '打开 Nexus', click: () => showMainWindow() },
+        { type: 'separator' },
+        {
+          label: '退出',
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
+        },
+      ]),
+    );
+    tray.on('click', () => showMainWindow());
+  } catch (err) {
+    logf(`tray init failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 function createWindow(): void {
+  const saved = loadWindowBounds();
   win = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    width: saved?.width ?? 1280,
+    height: saved?.height ?? 860,
+    x: saved?.x,
+    y: saved?.y,
     minWidth: 940,
     minHeight: 600,
     title: 'Nexus Desktop',
@@ -106,6 +271,22 @@ function createWindow(): void {
   });
   win.on('closed', () => {
     win = null;
+  });
+
+  // Persist window bounds (debounced) so position/size survive a restart.
+  let boundsTimer: ReturnType<typeof setTimeout> | null = null;
+  const persistBounds = () => {
+    if (!win || win.isDestroyed()) return;
+    if (win.isMaximized() || win.isMinimized() || win.isFullScreen()) return;
+    saveWindowBounds(win.getNormalBounds());
+  };
+  win.on('resize', () => {
+    if (boundsTimer) clearTimeout(boundsTimer);
+    boundsTimer = setTimeout(persistBounds, 500);
+  });
+  win.on('move', () => {
+    if (boundsTimer) clearTimeout(boundsTimer);
+    boundsTimer = setTimeout(persistBounds, 500);
   });
 }
 
@@ -190,14 +371,17 @@ function startWorker(): void {
   worker.onLog = (level, message) => send('nexus:log', { level, message });
   worker.onExit = (code) => {
     send('nexus:log', { level: 'warn', message: `Core worker exited (code=${code})` });
+    scheduleRestart();
   };
   worker.start();
+  const savedCwd = loadSavedCwd();
+  const earlyParams = savedCwd ? { cwd: savedCwd } : undefined;
   // Phase 1 (fast): construct the Agent so session list + message reads respond
   // immediately. Phase 2 (slow): MCP/skills. Read-only IPC gates on phase 1,
   // mutations on phase 2 — see EARLY_METHODS above.
   sessionReadyPromise = Promise.race([
     worker
-      .request('earlyInit')
+      .request('earlyInit', earlyParams)
       .then(() => {})
       .catch((err) => {
         send('nexus:log', { level: 'error', message: `Core early-init failed: ${err.message}` });
@@ -212,15 +396,23 @@ function startWorker(): void {
   // Core init connects MCP/skills and can take 10-20s (or stall on CN-network
   // marketplace/skill fetches). Gate renderer requests on it but NEVER let the
   // gate block the UI forever: resolve on success, on failure, or after a timeout.
+  const init = worker
+    .request('init', { deferMcp: getDeferMcp(), ...(earlyParams ?? {}) })
+    .then(() => true)
+    .catch(() => false);
+  // Bounded initOkPromise for the auto-restart path (avoids awaiting forever
+  // when the core hangs past the gate timeout).
+  initOkPromise = Promise.race([
+    init,
+    new Promise<boolean>((resolve) => {
+      setTimeout(() => resolve(false), 25000);
+    }),
+  ]);
   readyPromise = Promise.race([
-    worker
-      .request('init', { deferMcp: getDeferMcp() })
-      .then(() => {
-        send('nexus:log', { level: 'info', message: 'Core ready' });
-      })
-      .catch((err) => {
-        send('nexus:log', { level: 'error', message: `Core init failed: ${err.message}` });
-      }),
+    init.then((ok) => {
+      if (ok) send('nexus:log', { level: 'info', message: 'Core ready' });
+      else send('nexus:log', { level: 'error', message: 'Core init failed' });
+    }),
     new Promise<void>((resolve) => {
       setTimeout(() => {
         send('nexus:log', { level: 'warn', message: 'Core init timed out; continuing without MCP/skills.' });
@@ -233,7 +425,7 @@ function startWorker(): void {
 function registerIpc(): void {
   const call = (method: string) => async (_e: unknown, params?: Record<string, unknown>) => {
     if (method === 'resolvePermission') logf(`invoke resolvePermission params=${JSON.stringify(params)}`);
-    await (EARLY_METHODS.has(method) ? sessionReadyPromise : readyPromise);
+    await (EARLY_METHODS_SET.has(method) ? sessionReadyPromise : readyPromise);
     try {
       return await worker!.request(method, params);
     } catch (err) {
@@ -282,7 +474,12 @@ function registerIpc(): void {
   ipcMain.handle('nexus:switchModel', call('switchModel'));
   ipcMain.handle('nexus:getModels', call('getModels'));
   ipcMain.handle('nexus:saveProvider', call('saveProvider'));
-  ipcMain.handle('nexus:setCwd', call('setCwd'));
+  ipcMain.handle('nexus:setCwd', async (_e, params) => {
+    const res = await call('setCwd')(_e, params);
+    const cwd = (res as { cwd?: unknown } | undefined)?.cwd;
+    if (typeof cwd === 'string' && cwd) saveSavedCwd(cwd);
+    return res;
+  });
   ipcMain.handle('nexus:respondPermission', call('resolvePermission'));
   ipcMain.handle('nexus:setMcpEnabled', call('setMcpEnabled'));
   ipcMain.handle('nexus:getMcpStatus', call('getMcpStatus'));
@@ -297,6 +494,24 @@ function registerIpc(): void {
     return { ok: true };
   });
 
+  // E3: pinned sessions + minimize-to-tray, persisted to desktop.json.
+  ipcMain.handle('nexus:getPinned', (): string[] => getPinnedIds());
+  ipcMain.handle('nexus:setPinned', (_e, ids: unknown): { ok: boolean } => {
+    setPinnedIds(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : []);
+    return { ok: true };
+  });
+  ipcMain.handle('nexus:getMinimizeToTray', (): boolean => getMinimizeToTray());
+  ipcMain.handle('nexus:setMinimizeToTray', (_e, enabled: boolean): { ok: boolean } => {
+    setMinimizeToTray(enabled === true);
+    return { ok: true };
+  });
+
+  // E4: read recent log lines for the in-app viewer.
+  ipcMain.handle('nexus:readRecentLogs', (_e, maxLines: unknown): string[] => {
+    const n = typeof maxLines === 'number' && Number.isFinite(maxLines) ? Math.max(1, Math.floor(maxLines)) : 200;
+    return recentLogLines(n);
+  });
+
   ipcMain.handle('nexus:openFolder', async (): Promise<{ canceled: boolean; path?: string }> => {
     const result = await dialog.showOpenDialog(win!, {
       properties: ['openDirectory', 'createDirectory'],
@@ -306,13 +521,50 @@ function registerIpc(): void {
     return { canceled: false, path: result.filePaths[0] };
   });
 
-  ipcMain.handle('nexus:openFile', async (): Promise<{ canceled: boolean; path?: string }> => {
+  ipcMain.handle('nexus:openFile', async (): Promise<{ canceled: boolean; paths: string[] }> => {
     const result = await dialog.showOpenDialog(win!, {
       properties: ['openFile', 'multiSelections'],
       title: '添加附件',
     });
-    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
-    return { canceled: false, path: result.filePaths[0] };
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true, paths: [] };
+    return { canceled: false, paths: result.filePaths };
+  });
+
+  ipcMain.handle('nexus:revealFile', (_e, path: unknown): { ok: boolean } => {
+    if (typeof path === 'string' && path) shell.showItemInFolder(path);
+    return { ok: true };
+  });
+
+  // Attachment metadata + inline image preview (≤2 MiB) so the UI can render
+  // chips with size and thumbnails without exposing the fs to the renderer.
+  ipcMain.handle(
+    'nexus:getFileInfos',
+    (_e, paths: unknown): Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }> => {
+      if (!Array.isArray(paths)) return [];
+      const out: Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }> = [];
+      for (const p of paths) {
+        if (typeof p !== 'string' || !p) continue;
+        try {
+          const st = statSync(p);
+          const ext = extname(p).toLowerCase();
+          const isImage = IMAGE_EXT.has(ext);
+          out.push({
+            path: p,
+            name: basename(p),
+            size: st.size,
+            isImage,
+            preview: isImage ? imageDataUrl(p) : undefined,
+          });
+        } catch {}
+      }
+      return out;
+    },
+  );
+
+  // Load a local image as a data URL for markdown rendering (hydrateImages).
+  ipcMain.handle('nexus:readImagePreview', (_e, path: unknown): string | undefined => {
+    if (typeof path !== 'string' || !path) return undefined;
+    return imageDataUrl(path);
   });
 
   ipcMain.handle('nexus:openConfigWeb', async (): Promise<{ ok: boolean; port?: number; error?: string }> => {
@@ -341,6 +593,7 @@ if (gotLock) {
     Menu.setApplicationMenu(null);
     updater.init();
     updater.onState = (state) => send('nexus:updateState', state);
+    createTray();
     startWorker();
     registerIpc();
     createWindow();
@@ -352,9 +605,14 @@ if (gotLock) {
 }
 
 app.on('window-all-closed', () => {
+  // Minimize-to-tray: keep the app alive when the last window closes.
+  if (getMinimizeToTray() && !isQuitting) return;
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
+  intentionallyStopped = true;
+  if (restartTimer) clearTimeout(restartTimer);
   worker?.stop();
 });

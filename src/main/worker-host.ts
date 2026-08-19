@@ -1,16 +1,13 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { createInterface } from 'node:readline';
-import { appendFileSync } from 'node:fs';
 import { app, utilityProcess } from 'electron';
 import type { UtilityProcess } from 'electron';
 import type { AgentEvent } from '../agent-service.js';
+import { logger } from '../shared/logger.js';
 
-const DIAG = 'C:/Users/pgw/AppData/Local/Temp/opencode/worker-host.log';
 const diag = (s: string): void => {
-  try {
-    appendFileSync(DIAG, `${Date.now()} ${s}\n`);
-  } catch {}
+  logger.debug(s);
 };
 
 interface WorkerResponse {

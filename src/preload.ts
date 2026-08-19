@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 const api = {
   chat: (input: string) => ipcRenderer.invoke('nexus:chat', { input }),
@@ -39,6 +39,11 @@ const api = {
   setCwd: (cwd: string) => ipcRenderer.invoke('nexus:setCwd', { cwd }),
   openFolder: () => ipcRenderer.invoke('nexus:openFolder'),
   openFile: () => ipcRenderer.invoke('nexus:openFile'),
+  revealFile: (path: string) => ipcRenderer.invoke('nexus:revealFile', path),
+  getFileInfos: (paths: string[]) => ipcRenderer.invoke('nexus:getFileInfos', paths),
+  readImagePreview: (path: string) => ipcRenderer.invoke('nexus:readImagePreview', path),
+  // Resolve a dropped/pasted File to its real path (Electron webUtils).
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
   openConfigWeb: () => ipcRenderer.invoke('nexus:openConfigWeb'),
   respondPermission: (id: string, answer: string) =>
     ipcRenderer.invoke('nexus:respondPermission', { id, answer }),
@@ -49,6 +54,11 @@ const api = {
     ipcRenderer.invoke('nexus:setMcpServer', { name, enabled }),
   getDeferMcp: () => ipcRenderer.invoke('nexus:getDeferMcp'),
   setDeferMcp: (enabled: boolean) => ipcRenderer.invoke('nexus:setDeferMcp', enabled),
+  getPinned: () => ipcRenderer.invoke('nexus:getPinned'),
+  setPinned: (ids: string[]) => ipcRenderer.invoke('nexus:setPinned', ids),
+  getMinimizeToTray: () => ipcRenderer.invoke('nexus:getMinimizeToTray'),
+  setMinimizeToTray: (enabled: boolean) => ipcRenderer.invoke('nexus:setMinimizeToTray', enabled),
+  readRecentLogs: (maxLines?: number) => ipcRenderer.invoke('nexus:readRecentLogs', maxLines),
 
   getUpdateState: () => ipcRenderer.invoke('nexus:getUpdateState'),
   getCurrentVersion: () => ipcRenderer.invoke('nexus:getCurrentVersion'),
@@ -70,6 +80,9 @@ const api = {
   },
   onConfigWindowClosed: (cb: () => void) => {
     ipcRenderer.on('nexus:configWindowClosed', () => cb());
+  },
+  onWorkerRestarted: (cb: () => void) => {
+    ipcRenderer.on('nexus:workerRestarted', () => cb());
   },
   onUpdateState: (cb: (state: Record<string, unknown>) => void) => {
     ipcRenderer.on('nexus:updateState', (_e, state) => cb(state));

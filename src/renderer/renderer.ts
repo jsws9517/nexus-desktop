@@ -1,6 +1,9 @@
 /// <reference lib="dom" />
 
 import { initFx } from './fx.js';
+import { isWorkerBlockText } from '../shared/constants.js';
+import { t, fmtNum, getUiLang, loadLanguage } from './i18n.js';
+import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 
 interface SessionInfo {
   id: string;
@@ -109,7 +112,7 @@ declare global {
       chat(input: string): Promise<unknown>;
       abort(): Promise<unknown>;
       startSession(name?: string, sessionId?: string): Promise<string>;
-      listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean }): Promise<{ items: SessionInfo[]; total: number }>;
+      listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: SessionInfo[]; total: number }>;
       getMessages(
         sessionId: string,
         options?: { last?: number; limit?: number; offset?: number },
@@ -136,7 +139,11 @@ declare global {
       openConfigWeb(): Promise<{ ok: boolean; port?: number; error?: string }>;
       setCwd(cwd: string): Promise<unknown>;
       openFolder(): Promise<{ canceled: boolean; path?: string }>;
-      openFile(): Promise<{ canceled: boolean; path?: string }>;
+      openFile(): Promise<{ canceled: boolean; paths: string[] }>;
+      revealFile(path: string): Promise<{ ok: boolean }>;
+      getFileInfos(paths: string[]): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>>;
+      readImagePreview(path: string): Promise<string | undefined>;
+      getPathForFile(file: File): string;
       regenerate(sessionId: string, userIndex: number): Promise<unknown>;
       withdraw(sessionId: string, userIndex: number): Promise<string>;
       respondPermission(id: string, answer: string): Promise<unknown>;
@@ -146,6 +153,11 @@ declare global {
       setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       getDeferMcp(): Promise<boolean>;
       setDeferMcp(enabled: boolean): Promise<{ ok: boolean }>;
+      getPinned(): Promise<string[]>;
+      setPinned(ids: string[]): Promise<{ ok: boolean }>;
+      getMinimizeToTray(): Promise<boolean>;
+      setMinimizeToTray(enabled: boolean): Promise<{ ok: boolean }>;
+      readRecentLogs(maxLines?: number): Promise<string[]>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
       checkForUpdate(): Promise<Record<string, unknown>>;
@@ -156,6 +168,7 @@ declare global {
       onPermission(cb: (req: { id: string; question: string }) => void): void;
       onLog(cb: (log: { level: string; message: string }) => void): void;
       onConfigWindowClosed(cb: () => void): void;
+      onWorkerRestarted(cb: () => void): void;
       onUpdateState(cb: (state: Record<string, unknown>) => void): void;
     };
   }
@@ -170,6 +183,7 @@ const sendBtn = $('#btn-send');
 const stopBtn = $('#btn-stop');
 const freezeBtn = $('#btn-freeze') as HTMLButtonElement;
 const sessionListEl = $('#session-list');
+const searchEl = $('#session-search') as HTMLInputElement;
 const sessionPagerEl = $('#session-pager');
 const pagerPrevEl = $('#pager-prev') as HTMLButtonElement;
 const pagerNextEl = $('#pager-next') as HTMLButtonElement;
@@ -258,166 +272,7 @@ let msgTotal = 0;
 let msgUserBefore = 0;
 let msgWindowStart = 0;
 
-// ---------- i18n (syncs with core config language) ----------
-type Lang = 'en' | 'zh-CN';
-let uiLang: Lang = 'zh-CN';
-
-const STR: Record<string, { 'zh-CN': string; en: string }> = {
-  openProject: { 'zh-CN': '📁 打开项目', en: '📁 Open Project' },
-  noProject: { 'zh-CN': '未选择项目', en: 'No project selected' },
-  settings: { 'zh-CN': '⚙️ 设置', en: '⚙️ Settings' },
-  sessions: { 'zh-CN': '会话', en: 'Sessions' },
-  newSession: { 'zh-CN': '＋ 新建', en: '＋ New' },
-  attach: { 'zh-CN': '📎', en: '📎' },
-  attachTitle: { 'zh-CN': '添加附件', en: 'Attach files' },
-  mcpMasterTitle: { 'zh-CN': '主开关：启用/禁用全部 MCP 工具', en: 'Master switch: enable/disable all MCP tools' },
-  mcpPickTitle: { 'zh-CN': '选择 MCP 服务器工具', en: 'Select MCP server tools' },
-  mcpPopoverTitle: { 'zh-CN': 'MCP 服务器工具（当前会话）', en: 'MCP server tools (current session)' },
-  inputPlaceholder: { 'zh-CN': '输入消息，Enter 发送，Shift+Enter 换行…', en: 'Type a message, Enter to send…' },
-  send: { 'zh-CN': '发送', en: 'Send' },
-  stop: { 'zh-CN': '停止', en: 'Stop' },
-  regenerate: { 'zh-CN': '重新生成', en: 'Regenerate' },
-  stopped: { 'zh-CN': '已停止', en: 'Stopped' },
-  stopping: { 'zh-CN': '正在停止…', en: 'Stopping…' },
-  sessionInfo: { 'zh-CN': '会话信息', en: 'Session Info' },
-  permMode: { 'zh-CN': '权限模式', en: 'Permission' },
-  activeMcp: { 'zh-CN': '活跃 MCP', en: 'Active MCP' },
-  tokenUsage: { 'zh-CN': 'Token 用量', en: 'Token Usage' },
-  speechModel: { 'zh-CN': '语音模型', en: 'Speech' },
-  visionModel: { 'zh-CN': '视觉模型', en: 'Vision' },
-  none: { 'zh-CN': '无', en: 'None' },
-  toolsCount: { 'zh-CN': '{n} 工具', en: '{n} tools' },
-  mcpDisabled: { 'zh-CN': '关闭', en: 'Disabled' },
-  mcpCount: { 'zh-CN': '{n} 台', en: '{n}' },
-  taskProgress: { 'zh-CN': '任务进展', en: 'Task Progress' },
-  noTasks: { 'zh-CN': '暂无任务', en: 'No tasks' },
-  running: { 'zh-CN': '进行中 · {role}', en: 'Running · {role}' },
-  pending: { 'zh-CN': '待处理', en: 'Pending' },
-  cancelled: { 'zh-CN': '已取消', en: 'Cancelled' },
-  completed: { 'zh-CN': '已完成', en: 'Completed' },
-  failed: { 'zh-CN': '失败：{error}', en: 'Failed: {error}' },
-  thinkingDot: { 'zh-CN': '💭 思考中…', en: '💭 Thinking…' },
-  collapseThinking: { 'zh-CN': '💭 收起思考', en: '💭 Collapse' },
-  thought: { 'zh-CN': '💭 思考', en: '💭 Thought' },
-  noMcpServers: { 'zh-CN': '未配置 MCP 服务器', en: 'No MCP servers configured' },
-  mcpLoadFailed: { 'zh-CN': '加载失败', en: 'Failed to load' },
-  mcpFailed: { 'zh-CN': '失败', en: 'Failed' },
-  mcpNotConnected: { 'zh-CN': '未连接', en: 'Not connected' },
-  sessionCreated: { 'zh-CN': '新会话已创建。发送消息开始对话。', en: 'New session created. Send a message to start.' },
-  sessionRestored: { 'zh-CN': '已恢复会话', en: 'Session restored' },
-  noProviderConfigured: { 'zh-CN': '未配置 Provider。点击右上角 ⚙️ 设置填写 API Key。', en: 'No provider configured. Click ⚙️ Settings to add an API key.' },
-  startFailed: { 'zh-CN': '启动失败: ', en: 'Failed to start: ' },
-  error: { 'zh-CN': '⚠️ 错误: ', en: '⚠️ Error: ' },
-  attachFailed: { 'zh-CN': '⚠️ 附件失败: ', en: '⚠️ Attach failed: ' },
-  runningEllipsis: { 'zh-CN': '运行中…', en: 'Running…' },
-  freeze: { 'zh-CN': '❄ 冻结视图', en: '❄ Freeze' },
-  unfreeze: { 'zh-CN': '▶ 恢复视图', en: '▶ Resume' },
-  queued: { 'zh-CN': '⏳ 排队：{n} 条待发…', en: '⏳ Queued: {n} pending…' },
-  rename: { 'zh-CN': '重命名', en: 'Rename' },
-  delete: { 'zh-CN': '删除', en: 'Delete' },
-  renameSession: { 'zh-CN': '重命名会话', en: 'Rename Session' },
-  pagerPrev: { 'zh-CN': '‹ 上一页', en: '‹ Prev' },
-  pagerNext: { 'zh-CN': '下一页 ›', en: 'Next ›' },
-  loadEarlier: { 'zh-CN': '↑ 加载更早的消息', en: '↑ Load earlier messages' },
-  undo: { 'zh-CN': '撤回', en: 'Undo' },
-  undoHint: {
-    'zh-CN': '撤回该消息及其后的上下文，并把原文贴回输入框修改',
-    en: 'Withdraw this message and everything after it, then edit & resubmit',
-  },
-  undoAsk: {
-    'zh-CN': '撤回该消息及其后的上下文？原文会贴回输入框供你修改。',
-    en: 'Withdraw this message and everything after it? The text will be put back in the input box for editing.',
-  },
-  themeLabel: { 'zh-CN': '主题', en: 'Theme' },
-  themeDark: { 'zh-CN': '深色', en: 'Dark' },
-  themeWarm: { 'zh-CN': '暖色护眼', en: 'Warm' },
-  pagerInfo: { 'zh-CN': '{page} / {pages} 页（共 {total}）', en: 'Page {page}/{pages} of {total}' },
-  sessionNamePh: { 'zh-CN': '会话名称', en: 'Session name' },
-  deleteConfirm: { 'zh-CN': '删除会话 "{name}"?', en: 'Delete session "{name}"?' },
-  confirm: { 'zh-CN': '确认', en: 'Confirm' },
-  cancel: { 'zh-CN': '取消', en: 'Cancel' },
-  ok: { 'zh-CN': '确定', en: 'OK' },
-  permRequired: { 'zh-CN': '权限确认', en: 'Permission Required' },
-  allow: { 'zh-CN': '允许', en: 'Allow' },
-  deny: { 'zh-CN': '拒绝', en: 'Deny' },
-  saved: { 'zh-CN': '已保存', en: 'Saved' },
-  save: { 'zh-CN': '保存', en: 'Save' },
-  apiKey: { 'zh-CN': 'API Key', en: 'API Key' },
-  model: { 'zh-CN': '模型', en: 'Model' },
-  baseUrlOptional: { 'zh-CN': 'Base URL（可选）', en: 'Base URL (optional)' },
-  type: { 'zh-CN': '类型', en: 'Type' },
-  apiKeyKeep: { 'zh-CN': '••••••••••••（留空保持不变）', en: '•••••••••••• (leave blank to keep)' },
-  apiKeyEnter: { 'zh-CN': '输入 API Key', en: 'Enter API Key' },
-  activeNow: { 'zh-CN': '● 当前', en: '● Active' },
-  switchedProvider: { 'zh-CN': '已切换到 Provider: {name}（{model}）', en: 'Switched to Provider: {name} ({model})' },
-  modelLabel: { 'zh-CN': 'Model', en: 'Model' },
-  switchedModel: { 'zh-CN': '已切换到模型: {name}（{from} → {to}）', en: 'Switched model: {name} ({from} → {to})' },
-  projectDir: { 'zh-CN': '📁 项目目录: {cwd}', en: '📁 Project directory: {cwd}' },
-  advancedConfig: { 'zh-CN': '打开完整配置', en: 'Open full config' },
-  speechSection: { 'zh-CN': '语音模型 Speech', en: 'Speech Models' },
-  visionSection: { 'zh-CN': '视觉模型 Vision', en: 'Vision Models' },
-  sttLabel: { 'zh-CN': '语音识别 STT', en: 'Speech-to-Text (STT)' },
-  ttsLabel: { 'zh-CN': '语音合成 TTS', en: 'Text-to-Speech (TTS)' },
-  visionLabel: { 'zh-CN': '视觉分析', en: 'Vision Analysis' },
-  active: { 'zh-CN': '当前激活', en: 'Active' },
-  tokenEstimated: { 'zh-CN': '{n}（估算）', en: '{n} (est.)' },
-  tokenMsgHint: { 'zh-CN': '约 {n} 条消息', en: '~{n} messages' },
-  languageLabel: { 'zh-CN': '界面语言', en: 'Language' },
-  updateSection: { 'zh-CN': '软件更新', en: 'App Updates' },
-  updateVersion: { 'zh-CN': '当前版本：v{version}', en: 'Current version: v{version}' },
-  updateCheck: { 'zh-CN': '检查更新', en: 'Check for Updates' },
-  updateChecking: { 'zh-CN': '检查中…', en: 'Checking…' },
-  updateAvailable: { 'zh-CN': '发现新版本 v{version}', en: 'Update available: v{version}' },
-  updateNotAvailable: { 'zh-CN': '已是最新版本', en: 'You are up to date' },
-  updateDownload: { 'zh-CN': '下载更新', en: 'Download' },
-  updateDownloading: { 'zh-CN': '下载中 {percent}%', en: 'Downloading {percent}%' },
-  updateReady: { 'zh-CN': '更新已就绪，重启安装', en: 'Ready to install' },
-  updateInstall: { 'zh-CN': '重启并安装', en: 'Restart & Install' },
-  updateError: { 'zh-CN': '更新失败：{message}', en: 'Update failed: {message}' },
-  updateUnavailable: { 'zh-CN': '仅安装版支持自动更新', en: 'Auto-update is only available in the installed app' },
-  startupSection: { 'zh-CN': '启动选项', en: 'Startup' },
-  deferMcpLabel: { 'zh-CN': '延迟 MCP 连接', en: 'Defer MCP connection' },
-  deferMcpHint: {
-    'zh-CN': 'MCP 服务器在后台并行连接，界面与聊天更早可用（MCP 启动慢时推荐开启）',
-    en: 'Connect MCP servers in the background so the UI and chat are usable sooner (recommended when MCP servers start slowly)',
-  },
-  deferMcpEnabled: { 'zh-CN': '已开启（下次启动生效）', en: 'Enabled (takes effect on next launch)' },
-  deferMcpDisabled: { 'zh-CN': '已关闭（下次启动生效）', en: 'Disabled (takes effect on next launch)' },
-};
-
-function t(key: string, vars?: Record<string, string | number>): string {
-  const entry = STR[key]?.[uiLang] ?? STR[key]?.['zh-CN'] ?? key;
-  if (!vars) return entry;
-  return entry.replace(/\{(\w+)\}/g, (_m, k) => (vars[k] !== undefined ? String(vars[k]) : ''));
-}
-
-function fmtNum(n: number): string {
-  return n.toLocaleString(uiLang === 'zh-CN' ? 'zh-CN' : 'en-US');
-}
-
-function applyI18n(): void {
-  document.documentElement.lang = uiLang;
-  document.title = 'Nexus Desktop';
-  document.querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => {
-    el.textContent = t(el.dataset.i18n!);
-  });
-  document.querySelectorAll<HTMLElement>('[data-i18n-title]').forEach((el) => {
-    el.title = t(el.dataset.i18nTitle!);
-  });
-  document.querySelectorAll<HTMLInputElement>('[data-i18n-placeholder]').forEach((el) => {
-    el.placeholder = t(el.dataset.i18nPlaceholder!);
-  });
-}
-
-async function loadLanguage(): Promise<void> {
-  try {
-    const lang = await window.nexusDesktop.getLanguage();
-    uiLang = lang === 'en' ? 'en' : 'zh-CN';
-  } catch {
-    uiLang = 'zh-CN';
-  }
-  applyI18n();
-}
+// ---------- i18n ---------- (moved to i18n.ts; see imports above)
 
 // ---------- theme ----------
 const THEME_KEY = 'nexus.theme';
@@ -443,102 +298,11 @@ themeSelect.addEventListener('change', () => {
   applyTheme(themeSelect.value === 'warm' ? 'warm' : 'dark');
 });
 
-// ---------- markdown-ish rendering ----------
-function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function escapeHtml(s: string): string {
-  return esc(s);
-}
-
-function renderInline(src: string): string {
-  return src
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-}
-
-function renderBlocks(src: string): string {
-  const lines = src.split('\n');
-  const out: string[] = [];
-  let i = 0;
-  let inFence = false;
-  let fenceLang = '';
-  let code: string[] = [];
-
-  const flushCode = () => {
-    if (code.length > 0) {
-      const joined = code.join('\n');
-      if (fenceLang === 'diff') {
-        out.push(renderDiff(joined));
-      } else {
-        out.push(`<pre><code>${escapeHtml(joined)}</code></pre>`);
-      }
-      code = [];
-    }
-  };
-
-  while (i < lines.length) {
-    const line = lines[i];
-    const fence = /^```([\w+-]*)\s*$/.exec(line.trim());
-    if (fence) {
-      if (inFence) {
-        flushCode();
-        inFence = false;
-        fenceLang = '';
-      } else {
-        inFence = true;
-        fenceLang = fence[1];
-      }
-      i++;
-      continue;
-    }
-    if (inFence) {
-      code.push(line);
-      i++;
-      continue;
-    }
-    if (/^###\s/.test(line)) out.push(`<h3>${renderInline(line.replace(/^###\s/, ''))}</h3>`);
-    else if (/^##\s/.test(line)) out.push(`<h2>${renderInline(line.replace(/^##\s/, ''))}</h2>`);
-    else if (/^#\s/.test(line)) out.push(`<h1>${renderInline(line.replace(/^#\s/, ''))}</h1>`);
-    else if (/^\s*[-*]\s/.test(line)) out.push(`• ${renderInline(line.replace(/^\s*[-*]\s/, ''))}`);
-    else if (/^\s*\d+\.\s/.test(line)) out.push(`&nbsp;&nbsp;${renderInline(line)}`);
-    else if (/^---+\s*$/.test(line)) out.push('<hr>');
-    else if (line.trim() === '') out.push('');
-    else out.push(renderInline(escapeHtml(line)));
-    i++;
-  }
-  flushCode();
-  return out.join('\n');
-}
-
-function renderDiff(src: string): string {
-  return src
-    .split('\n')
-    .map((line) => {
-      const cls = line.startsWith('+')
-        ? 'style="color:#7bc96f"'
-        : line.startsWith('-')
-          ? 'style="color:#e05a5a"'
-          : line.startsWith('@@')
-            ? 'style="color:#4f8cff"'
-            : '';
-      return cls ? `<div ${cls}>${escapeHtml(line)}</div>` : escapeHtml(line);
-    })
-    .join('\n');
-}
+// ---------- markdown ---------- (moved to markdown.ts; see imports above)
 
 // ---------- message rendering ----------
-// ---------- message rendering ----------
-/** Mirrors core resumeMessages(): worker blocks (sub-agent dispatch) start with
- *  these markers. Skipped from display and from the regenerate index so the
- *  UI ordering matches AgentService.regenerate(userIndex). */
-const WORKER_MARKERS = ['[Project Directory]', '[Original Request]', '[Prior Task Results]', '[Role:'];
-function isWorkerBlock(text: string): boolean {
-  const head = text.slice(0, 200);
-  return WORKER_MARKERS.some((mk) => head.includes(mk));
-}
+// Worker-block detection now uses the shared single-source markers
+// (src/shared/constants.ts); the definition here was removed to avoid drift.
 
 function addSystem(text: string): void {
   const wrap = document.createElement('div');
@@ -552,7 +316,7 @@ function addSystem(text: string): void {
 }
 
 function addUser(text: string): void {
-  if (isWorkerBlock(text)) return;
+  if (isWorkerBlockText(text)) return;
   const userIndex = userMessageSeq++;
   const wrap = document.createElement('div');
   wrap.className = 'msg user';
@@ -702,7 +466,7 @@ function addFileChip(file: Extract<AgentEvent, { type: 'file_ready' }>): void {
   chip.textContent = `📄 ${file.name}`;
   chip.title = file.path;
   chip.addEventListener('click', () => {
-    void window.nexusDesktop.setCwd(''); // placeholder; full file-open handled later
+    void window.nexusDesktop.revealFile(file.path);
   });
   messagesEl.appendChild(chip);
   scrollToBottom();
@@ -762,8 +526,10 @@ function handleEvent(event: AgentEvent): void {
         }
         asst.buffer += delta;
         // Append only the delta text node instead of rewriting the whole buffer
-        // per token; the full buffer is re-rendered to markdown at turn_end.
+        // per token; a debounced pass re-renders the buffer as markdown while
+        // streaming (see scheduleStreamRender) and turn_end finalizes it.
         appendTextDelta(asst.stream, delta);
+        scheduleStreamRender(asst);
         scrollToBottom();
       }
       break;
@@ -819,10 +585,11 @@ function handleEvent(event: AgentEvent): void {
     case 'state_delta':
       break;
     case 'turn_end': {
+      clearStreamRender();
       // finalize markdown rendering of accumulated text
       if (curAssistant && curAssistant.buffer) {
         curAssistant.buffer = curAssistant.buffer.replace(/^[\s\u00a0]+/, '');
-        curAssistant.stream.innerHTML = renderBlocks(curAssistant.buffer);
+        renderAssistantStream(curAssistant);
         curAssistant.stream.classList.remove('streaming');
       }
       if (curThinking) {
@@ -909,9 +676,51 @@ function scrollToBottom(): void {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+// ---------- streaming markdown preview ----------
+// While a turn streams we append raw text deltas (fast), but every 300ms we
+// opportunistically re-render the accumulated buffer as markdown so headings /
+// lists / code appear progressively. Bounded to the first STREAM_MD_MAX chars —
+// beyond that we fall back to raw streaming and finalize at turn_end.
+let streamRenderTimer: ReturnType<typeof setTimeout> | null = null;
+const STREAM_MD_MAX = 12000;
+function renderAssistantStream(asst: { stream: HTMLElement; buffer: string }): void {
+  asst.stream.innerHTML = renderBlocks(asst.buffer);
+  attachCodeCopy(asst.stream);
+  hydrateImages(asst.stream);
+}
+function scheduleStreamRender(asst: { stream: HTMLElement; buffer: string }): void {
+  if (streamRenderTimer) return;
+  if (asst.buffer.length > STREAM_MD_MAX) return;
+  streamRenderTimer = setTimeout(() => {
+    streamRenderTimer = null;
+    if (curAssistant === asst && asst.buffer) renderAssistantStream(asst);
+  }, 300);
+}
+function clearStreamRender(): void {
+  if (streamRenderTimer) {
+    clearTimeout(streamRenderTimer);
+    streamRenderTimer = null;
+  }
+}
+
 // ---------- attachments ----------
+interface AttachInfo {
+  path: string;
+  name: string;
+  size: number;
+  isImage: boolean;
+  preview?: string;
+}
+const attachInfos = new Map<string, AttachInfo>();
+
 function basename(p: string): string {
   return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? p;
+}
+
+function fmtFileSize(n: number): string {
+  if (n < 1024) return t('fileSizeBytes', { n });
+  if (n < 1024 * 1024) return t('fileSizeKb', { n: Math.round(n / 1024) });
+  return t('fileSizeMb', { n: (n / (1024 * 1024)).toFixed(1) });
 }
 
 function renderAttachments(): void {
@@ -920,23 +729,56 @@ function renderAttachments(): void {
   for (const p of attachments) {
     const chip = document.createElement('span');
     chip.className = 'attach-chip';
-    chip.textContent = basename(p);
-    chip.title = p;
+    const info = attachInfos.get(p);
+    if (info?.preview) {
+      const img = document.createElement('img');
+      img.className = 'attach-thumb';
+      img.src = info.preview;
+      img.alt = info.name;
+      chip.appendChild(img);
+    }
+    const name = document.createElement('span');
+    name.className = 'attach-name';
+    name.textContent = info?.name ?? basename(p);
+    name.title = p;
+    chip.appendChild(name);
+    if (info && info.size > 0) {
+      const size = document.createElement('span');
+      size.className = 'attach-size';
+      size.textContent = fmtFileSize(info.size);
+      chip.appendChild(size);
+    }
     const rm = document.createElement('button');
     rm.className = 'chip-remove';
     rm.textContent = '✕';
-    rm.addEventListener('click', () => {
+    rm.addEventListener('click', (e) => {
+      e.stopPropagation();
       attachments = attachments.filter((x) => x !== p);
+      attachInfos.delete(p);
       renderAttachments();
     });
     chip.appendChild(rm);
+    chip.addEventListener('click', () => {
+      void window.nexusDesktop.revealFile(p);
+    });
+    chip.title = t('revealFile');
     attachmentsEl.appendChild(chip);
   }
 }
 
-function attachFiles(paths: string[]): void {
+async function attachFiles(paths: string[]): Promise<void> {
+  const added: string[] = [];
   for (const p of paths) {
-    if (p && !attachments.includes(p)) attachments.push(p);
+    if (p && !attachments.includes(p)) {
+      attachments.push(p);
+      added.push(p);
+    }
+  }
+  if (added.length > 0) {
+    try {
+      const infos = await window.nexusDesktop.getFileInfos(added);
+      for (const info of infos) attachInfos.set(info.path, info);
+    } catch {}
   }
   renderAttachments();
 }
@@ -994,75 +836,124 @@ function promptDialog(title: string, initial: string): Promise<string | null> {
   });
 }
 
+let searchQuery = '';
+let pinnedIds: string[] = [];
+
+async function togglePin(id: string): Promise<void> {
+  pinnedIds = pinnedIds.filter((x) => x !== id);
+  if (!pinnedIds.includes(id)) pinnedIds.push(id);
+  try {
+    await window.nexusDesktop.setPinned(pinnedIds);
+  } catch {}
+  await refreshSessions();
+}
+
+function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void {
+  const li = document.createElement('li');
+  li.classList.toggle('active', s.id === (activeId ?? currentSessionId));
+  const name = document.createElement('span');
+  name.className = 'session-name';
+  name.textContent = s.name || s.id;
+  name.addEventListener('click', () => resumeSession(s.id));
+  const meta = document.createElement('span');
+  meta.className = 'session-meta';
+  meta.textContent = `${s.provider} · ${s.model ?? ''}`;
+  const actions = document.createElement('div');
+  actions.className = 'session-actions';
+  const pinBtn = document.createElement('button');
+  pinBtn.className = pinned ? 'pin-btn active' : 'pin-btn';
+  pinBtn.textContent = '📌';
+  pinBtn.title = pinned ? t('unpin') : t('pin');
+  pinBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void togglePin(s.id);
+  });
+  const renameBtn = document.createElement('button');
+  renameBtn.textContent = t('rename');
+  renameBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const newName = await promptDialog(t('renameSession'), s.name);
+    if (newName) {
+      await window.nexusDesktop.renameSession(s.id, newName);
+      await refreshSessions();
+    }
+  });
+  const delBtn = document.createElement('button');
+  delBtn.textContent = t('delete');
+  delBtn.style.color = 'var(--danger)';
+  delBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const ok = await confirmDialog(t('deleteConfirm', { name: s.name }));
+    if (!ok) return;
+    await window.nexusDesktop.deleteSession(s.id);
+    delete mcpPrefs[s.id];
+    saveMcpPrefs();
+    clearMsgCache(s.id);
+    pinnedIds = pinnedIds.filter((x) => x !== s.id);
+    if (currentSessionId === s.id) {
+      // Deleting the active session must NOT create a new one. Clear the
+      // view; the core agent's current session is unset by deleteSession,
+      // so the next message lazily starts a fresh session (chat()).
+      currentSessionId = '';
+      messagesEl.innerHTML = '';
+      toolCards.clear();
+      tasks.clear();
+      renderTasks();
+      curAssistant = null;
+      curThinking = null;
+      msgItems = [];
+      msgOffset = 0;
+      msgTotal = 0;
+      msgUserBefore = 0;
+      msgWindowStart = 0;
+      rsideToken.textContent = '—';
+      rsideToken.title = '';
+    }
+    await refreshSessions();
+    if (currentSessionId === '') await refreshSidebarSession();
+  });
+  actions.appendChild(pinBtn);
+  actions.appendChild(renameBtn);
+  actions.appendChild(delBtn);
+  li.appendChild(name);
+  li.appendChild(meta);
+  li.appendChild(actions);
+  sessionListEl.appendChild(li);
+}
+
 async function refreshSessions(activeId?: string): Promise<void> {
+  try {
+    pinnedIds = await window.nexusDesktop.getPinned();
+  } catch {}
+  const opts = { excludeMock: true, search: searchQuery || undefined };
+  const pinnedSet = new Set(pinnedIds);
+  let pinnedItems: SessionInfo[] = [];
+  try {
+    const res = await window.nexusDesktop.listSessions({ limit: 500, ...opts });
+    pinnedItems = res.items.filter((s) => pinnedSet.has(s.id));
+  } catch {}
   const { items: sessions, total } = await window.nexusDesktop.listSessions({
     limit: SESSION_PAGE_SIZE,
     offset: sessionPage * SESSION_PAGE_SIZE,
-    excludeMock: true,
+    ...opts,
   });
   sessionTotal = total;
   sessionListEl.innerHTML = '';
-  for (const s of sessions) {
-    const li = document.createElement('li');
-    li.classList.toggle('active', s.id === (activeId ?? currentSessionId));
-    const name = document.createElement('span');
-    name.className = 'session-name';
-    name.textContent = s.name || s.id;
-    name.addEventListener('click', () => resumeSession(s.id));
-    const meta = document.createElement('span');
-    meta.className = 'session-meta';
-    meta.textContent = `${s.provider} · ${s.model ?? ''}`;
-    const actions = document.createElement('div');
-    actions.className = 'session-actions';
-    const renameBtn = document.createElement('button');
-    renameBtn.textContent = t('rename');
-    renameBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const newName = await promptDialog(t('renameSession'), s.name);
-      if (newName) {
-        await window.nexusDesktop.renameSession(s.id, newName);
-        await refreshSessions();
-      }
-    });
-    const delBtn = document.createElement('button');
-    delBtn.textContent = t('delete');
-    delBtn.style.color = 'var(--danger)';
-    delBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const ok = await confirmDialog(t('deleteConfirm', { name: s.name }));
-      if (!ok) return;
-      await window.nexusDesktop.deleteSession(s.id);
-      delete mcpPrefs[s.id];
-      saveMcpPrefs();
-      clearMsgCache(s.id);
-      if (currentSessionId === s.id) {
-        // Deleting the active session must NOT create a new one. Clear the
-        // view; the core agent's current session is unset by deleteSession,
-        // so the next message lazily starts a fresh session (chat()).
-        currentSessionId = '';
-        messagesEl.innerHTML = '';
-        toolCards.clear();
-        tasks.clear();
-        renderTasks();
-        curAssistant = null;
-        curThinking = null;
-        msgItems = [];
-        msgOffset = 0;
-        msgTotal = 0;
-        msgUserBefore = 0;
-        msgWindowStart = 0;
-        rsideToken.textContent = '—';
-        rsideToken.title = '';
-      }
-      await refreshSessions();
-      if (currentSessionId === '') await refreshSidebarSession();
-    });
-    actions.appendChild(renameBtn);
-    actions.appendChild(delBtn);
-    li.appendChild(name);
-    li.appendChild(meta);
-    li.appendChild(actions);
-    sessionListEl.appendChild(li);
+  if (pinnedItems.length > 0) {
+    const grp = document.createElement('li');
+    grp.className = 'session-group';
+    grp.textContent = t('pinnedSessions');
+    sessionListEl.appendChild(grp);
+    for (const s of pinnedItems) addSessionRow(s, true, activeId);
+  }
+  const rest = sessions.filter((s) => !pinnedSet.has(s.id));
+  if (rest.length === 0 && pinnedItems.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'session-empty';
+    empty.textContent = searchQuery ? t('noSearchResults') : '—';
+    sessionListEl.appendChild(empty);
+  } else {
+    for (const s of rest) addSessionRow(s, false, activeId);
   }
   const pages = Math.max(1, Math.ceil(total / SESSION_PAGE_SIZE));
   if (sessionPage >= pages) sessionPage = pages - 1;
@@ -1076,7 +967,7 @@ async function refreshSessions(activeId?: string): Promise<void> {
 /** Displayable user rows only — worker blocks are skipped everywhere so the
  *  regenerate() user index matches AgentService (same markers). */
 function countUserRows(rows: StoredMsg[]): number {
-  return rows.filter((r) => r.role === 'user' && !isWorkerBlock(String(r.content ?? ''))).length;
+  return rows.filter((r) => r.role === 'user' && !isWorkerBlockText(String(r.content ?? ''))).length;
 }
 
 /** Render one persisted message row into the history view. */
@@ -1088,7 +979,7 @@ function renderHistoryRow(m: StoredMsg): void {
     if (m.content) {
       const asst = ensureAssistant();
       asst.buffer = String(m.content).replace(/^[\s\u00a0]+/, '');
-      asst.stream.innerHTML = renderBlocks(asst.buffer);
+      renderAssistantStream(asst);
       asst.stream.classList.remove('streaming');
       curAssistant = null;
     }
@@ -1268,6 +1159,7 @@ async function resumeSession(id: string): Promise<void> {
   }
   saveMsgCache(id, fresh);
   addSystem(t('sessionRestored'));
+  loadDraft(currentSessionId);
   // Non-blocking: applies the session's MCP toggles once core init finishes,
   // so opening a session never waits on the MCP connect phase.
   void applyMcpPref(currentSessionId);
@@ -1292,6 +1184,7 @@ async function startNewSession(): Promise<void> {
   msgWindowStart = 0;
   currentSessionId = await window.nexusDesktop.startSession();
   addSystem(t('sessionCreated'));
+  loadDraft(currentSessionId);
   void applyMcpPref(currentSessionId);
   await refreshSessions();
   await refreshSidebarSession();
@@ -1318,8 +1211,9 @@ async function startOrResumeLatestSession(): Promise<void> {
 
 // ---------- right sidebar: session info + task progress ----------
 function permLabel(mode: string): string {
-  if (mode === 'auto') return uiLang === 'zh-CN' ? 'auto（自动放行）' : 'auto (auto-approve)';
-  if (mode === 'prompt') return uiLang === 'zh-CN' ? 'prompt（每次询问）' : 'prompt (ask each time)';
+  const zh = getUiLang() === 'zh-CN';
+  if (mode === 'auto') return zh ? 'auto（自动放行）' : 'auto (auto-approve)';
+  if (mode === 'prompt') return zh ? 'prompt（每次询问）' : 'prompt (ask each time)';
   return mode || '—';
 }
 
@@ -1666,6 +1560,7 @@ async function sendMessage(): Promise<void> {
   attachments = [];
   renderAttachments();
   const composed = attrs.map((p) => `@${p}`).concat(text ? [text] : []).join('\n');
+  clearDraft(currentSessionId);
   enqueue(composed);
 }
 
@@ -1725,7 +1620,7 @@ async function regenerateAt(wrap: HTMLElement, userIndex: number): Promise<void>
 attachBtn.addEventListener('click', async () => {
   try {
     const res = await window.nexusDesktop.openFile();
-    if (!res.canceled && res.path) attachFiles([res.path]);
+    if (!res.canceled && res.paths) attachFiles(res.paths);
   } catch (err) {
     inputStatus.textContent = `${t('attachFailed')}${err instanceof Error ? err.message : String(err)}`;
   }
@@ -1988,6 +1883,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
 
   buildStartupSection();
   buildUpdateSection();
+  buildLogSection();
 }
 
 function buildStartupSection(): void {
@@ -1996,40 +1892,89 @@ function buildStartupSection(): void {
   title.textContent = t('startupSection');
   settingsBody.appendChild(title);
 
-  const row = document.createElement('div');
-  row.className = 'startup-row';
-  const label = document.createElement('label');
-  label.className = 'startup-toggle';
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  const text = document.createElement('span');
-  text.textContent = t('deferMcpLabel');
-  const hint = document.createElement('div');
-  hint.className = 'startup-hint';
-  hint.textContent = t('deferMcpHint');
-  void window.nexusDesktop.getDeferMcp().then((v: boolean) => {
-    cb.checked = v === true;
-  }).catch(() => {});
-  cb.addEventListener('change', () => {
-    const v = cb.checked;
-    cb.disabled = true;
-    void window.nexusDesktop.setDeferMcp(v)
-      .then(() => {
-        settingsMsg.textContent = v ? t('deferMcpEnabled') : t('deferMcpDisabled');
-      })
-      .catch((err: unknown) => {
-        settingsMsg.textContent = `⚠️ ${err instanceof Error ? err.message : String(err)}`;
-        cb.checked = !v;
-      })
-      .finally(() => {
-        cb.disabled = false;
-      });
+  const buildToggle = (labelText: string, hintText: string, initial: Promise<boolean> | boolean, onToggle: (v: boolean) => void): void => {
+    const row = document.createElement('div');
+    row.className = 'startup-row';
+    const label = document.createElement('label');
+    label.className = 'startup-toggle';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    const text = document.createElement('span');
+    text.textContent = labelText;
+    const hint = document.createElement('div');
+    hint.className = 'startup-hint';
+    hint.textContent = hintText;
+    Promise.resolve(initial).then((v) => {
+      cb.checked = v === true;
+    }).catch(() => {});
+    cb.addEventListener('change', () => {
+      const v = cb.checked;
+      cb.disabled = true;
+      Promise.resolve(onToggle(v))
+        .then(() => {
+          settingsMsg.textContent = '';
+        })
+        .catch((err: unknown) => {
+          settingsMsg.textContent = `⚠️ ${err instanceof Error ? err.message : String(err)}`;
+          cb.checked = !v;
+        })
+        .finally(() => {
+          cb.disabled = false;
+        });
+    });
+    label.appendChild(cb);
+    label.appendChild(text);
+    row.appendChild(label);
+    row.appendChild(hint);
+    settingsBody.appendChild(row);
+  };
+
+  buildToggle(t('deferMcpLabel'), t('deferMcpHint'), window.nexusDesktop.getDeferMcp(), (v) => {
+    settingsMsg.textContent = v ? t('deferMcpEnabled') : t('deferMcpDisabled');
+    return window.nexusDesktop.setDeferMcp(v);
   });
-  label.appendChild(cb);
-  label.appendChild(text);
-  row.appendChild(label);
-  row.appendChild(hint);
-  settingsBody.appendChild(row);
+  buildToggle(t('minimizeToTrayLabel'), t('minimizeToTrayHint'), window.nexusDesktop.getMinimizeToTray(), (v) => {
+    return window.nexusDesktop.setMinimizeToTray(v);
+  });
+}
+
+function buildLogSection(): void {
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('logSection');
+  settingsBody.appendChild(title);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'log-row';
+  const pre = document.createElement('pre');
+  pre.className = 'log-viewer hidden';
+  pre.textContent = t('logsEmpty');
+  const btn = document.createElement('button');
+  btn.className = 'btn ghost small';
+  btn.textContent = t('viewLogs');
+  const load = async () => {
+    btn.disabled = true;
+    try {
+      const lines = await window.nexusDesktop.readRecentLogs(300);
+      if (lines.length === 0) {
+        pre.textContent = t('logsEmpty');
+      } else {
+        pre.textContent = lines.join('\n');
+      }
+      pre.classList.remove('hidden');
+    } catch {
+      pre.textContent = t('logsEmpty');
+      pre.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  btn.addEventListener('click', () => {
+    void load();
+  });
+  wrap.appendChild(btn);
+  wrap.appendChild(pre);
+  settingsBody.appendChild(wrap);
 }
 
 type UpdateStateType =
@@ -2335,6 +2280,73 @@ inputEl.addEventListener('keydown', (e) => {
   }
 });
 
+// ---------- session search (E3) ----------
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+searchEl.addEventListener('input', () => {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchQuery = searchEl.value.trim();
+    sessionPage = 0;
+    void refreshSessions();
+  }, 250);
+});
+searchEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    searchEl.value = '';
+    searchQuery = '';
+    sessionPage = 0;
+    void refreshSessions();
+  }
+});
+
+// ---------- input draft persistence (E1) ----------
+const draftKey = (id: string): string => `nexus.draft.${id}`;
+function saveDraft(): void {
+  try {
+    if (currentSessionId) localStorage.setItem(draftKey(currentSessionId), inputEl.value);
+  } catch {}
+}
+function loadDraft(id: string): void {
+  try {
+    const d = localStorage.getItem(draftKey(id));
+    inputEl.value = d ?? '';
+  } catch {}
+}
+function clearDraft(id: string): void {
+  try {
+    localStorage.removeItem(draftKey(id));
+  } catch {}
+}
+let draftTimer: ReturnType<typeof setTimeout> | null = null;
+inputEl.addEventListener('input', () => {
+  if (draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveDraft, 400);
+});
+
+// ---------- drag & drop / paste attachments (E3) ----------
+const dropZone = $('#input-area');
+['dragover', 'dragenter'].forEach((ev) => {
+  dropZone.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  const paths = files.map((f) => window.nexusDesktop.getPathForFile(f)).filter(Boolean);
+  if (paths.length > 0) void attachFiles(paths);
+});
+inputEl.addEventListener('paste', (e) => {
+  const files = Array.from(e.clipboardData?.files ?? []);
+  if (files.length === 0) return;
+  e.preventDefault();
+  const paths = files.map((f) => window.nexusDesktop.getPathForFile(f)).filter(Boolean);
+  if (paths.length > 0) void attachFiles(paths);
+});
+
 // ---------- wire events ----------
 window.nexusDesktop.onEvent(handleEvent);
 window.nexusDesktop.onEvents((events) => {
@@ -2359,6 +2371,17 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
   }
   modelsCache.clear();
   refreshModelSelect();
+});
+
+// The core worker crashed and auto-restarted: refresh state and re-attach the
+// current session so the UI is usable again without a manual app restart.
+window.nexusDesktop.onWorkerRestarted(async () => {
+  addSystem(t('workerRestarted'));
+  currentSessionId = '';
+  msgItems = [];
+  await startOrResumeLatestSession();
+  await refreshSessions();
+  await refreshSidebarSession();
 });
 
 // ---------- boot ----------

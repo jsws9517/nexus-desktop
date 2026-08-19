@@ -1,7 +1,8 @@
 import readline from 'node:readline';
-import { writeFileSync, appendFileSync } from 'node:fs';
 import { AgentService } from './agent-service.js';
 import type { AgentEvent } from './agent-service.js';
+import { logger } from './shared/logger.js';
+import { EARLY_METHODS } from './shared/constants.js';
 
 type WorkerRequest =
   | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
@@ -81,22 +82,13 @@ let earlyDone = false;
 let initPromise: Promise<void> | null = null;
 let initDone = false;
 
-/** Methods that are safe before MCP/skills finish connecting. */
-const EARLY_METHODS = new Set<string>([
-  'listSessions', 'getMessages', 'getConfig', 'getProviders', 'getStatus',
-  'getPermissions', 'getSpeechVisionConfig', 'getSessionStats',
-  'getMcpServers', 'getMcpStatus',
-]);
+// EARLY_METHODS imported from src/shared/constants.ts (single source).
 
 function writeDiag(data: unknown): void {
-  try {
-    writeFileSync('C:/Users/pgw/AppData/Local/Temp/opencode/init-diag.json', JSON.stringify(data, null, 2), 'utf-8');
-  } catch {}
+  logger.debug(`init-diag ${JSON.stringify(data)}`);
 }
 function tracePerm(msg: string): void {
-  try {
-    appendFileSync('C:/Users/pgw/AppData/Local/Temp/opencode/perm.log', `${Date.now()} ${msg}\n`, 'utf-8');
-  } catch {}
+  logger.debug(`perm ${msg}`);
 }
 async function handleRequest(line: string | Record<string, unknown>): Promise<void> {
   let req: WorkerRequest;
@@ -233,7 +225,7 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         respond(req.id);
         break;
       case 'getSessionStats':
-        respond(req.id, service.getSessionStats(req.params.sessionId));
+        respond(req.id, await service.getSessionStats(req.params.sessionId));
         break;
       case 'switchProvider':
         await service.switchProvider(req.params.name);

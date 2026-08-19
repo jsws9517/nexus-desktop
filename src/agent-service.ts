@@ -1,6 +1,9 @@
 /** Loose event shape forwarded from the core to the UI bridge. */
 export type AgentEvent = { type: string } & Record<string, unknown>;
 
+import { isWorkerPrompt, KEY_MASK } from './shared/constants.js';
+import type { StoredRow } from './session-db.js';
+
 /**
  * Headless bridge around the nexus CLI Agent.
  *
@@ -24,18 +27,6 @@ export interface ProviderInfo {
   model: string;
   baseUrl?: string;
   hasKey: boolean;
-}
-
-export const KEY_MASK = '••••••••••••';
-
-/** Worker blocks (sub-agent dispatch) start with these markers. They are skipped
- *  from display AND from regenerate()'s user index, so the desktop's numbering
- *  matches the core's. */
-const WORKER_MARKERS = ['[Project Directory]', '[Original Request]', '[Prior Task Results]', '[Role:'];
-function isWorkerPrompt(m: { role?: string; content?: unknown }): boolean {
-  if (m.role !== 'user') return false;
-  const head = String(m.content ?? '').slice(0, 200);
-  return WORKER_MARKERS.some((mk) => head.includes(mk));
 }
 
 function maskKey(value: unknown): string {
@@ -393,7 +384,7 @@ export class AgentService {
     if (this.agent.currentSessionId !== sessionId) {
       throw new Error('Session mismatch: target session is not the active one');
     }
-    const { getMessageRows, deleteMessagesFrom } = await import('./session-truncate.js');
+    const { getMessageRows, deleteMessagesFrom } = await import('./session-db.js');
     const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerPrompt(r));
     const target = userRows[userIndex];
     if (!target) throw new Error(`Regenerate: no user message at index ${userIndex}`);
@@ -419,7 +410,7 @@ export class AgentService {
     if (this.agent.currentSessionId !== sessionId) {
       throw new Error('Session mismatch: target session is not the active one');
     }
-    const { getMessageRows, deleteMessagesFrom } = await import('./session-truncate.js');
+    const { getMessageRows, deleteMessagesFrom } = await import('./session-db.js');
     const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerPrompt(r));
     const target = userRows[userIndex];
     if (!target) throw new Error(`Withdraw: no user message at index ${userIndex}`);
@@ -526,11 +517,12 @@ export class AgentService {
     return this.agent.startSession(name, sessionId, metadata);
   }
 
-  async listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean }): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
+  async listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
     if (!this.agent) throw new Error('Agent not initialized');
     const limit = options?.limit;
     const offset = options?.offset ?? 0;
-    if (!options?.excludeMock && !options?.excludeEmpty) {
+    const q = options?.search?.trim().toLowerCase();
+    if (!options?.excludeMock && !options?.excludeEmpty && !q) {
       return this.agent.session.list({ limit, offset });
     }
     // Desktop-side filtering (the core SQL is untouched): fetch the full
@@ -544,9 +536,16 @@ export class AgentService {
     }
     if (options?.excludeEmpty) {
       // Skip empty-context sessions (CLI scratch / AI-intermediary noise).
-      const { getNonEmptySessionIds } = await import('./session-truncate.js');
+      const { getNonEmptySessionIds } = await import('./session-db.js');
       const nonEmpty = getNonEmptySessionIds();
       items = items.filter((s) => nonEmpty.has(String(s.id)));
+    }
+    if (q) {
+      items = items.filter((s) => {
+        const name = String(s.name ?? '').toLowerCase();
+        const id = String(s.id ?? '').toLowerCase();
+        return name.includes(q) || id.includes(q);
+      });
     }
     const total = items.length;
     const sliced = limit !== undefined && limit >= 0 ? items.slice(offset, offset + limit) : items.slice(offset);
@@ -567,20 +566,19 @@ export class AgentService {
   async getMessages(
     sessionId: string,
     options?: { last?: number; limit?: number; offset?: number },
-  ): Promise<{ items: Array<Record<string, unknown>>; total: number; userBefore: number }> {
+  ): Promise<{ items: StoredRow[]; total: number; userBefore: number }> {
     if (!this.agent) throw new Error('Agent not initialized');
-    const all = this.agent.session.getMessages(sessionId) as Array<Record<string, unknown>>;
-    let slice = all;
-    let offset = 0;
+    // SQL-windowed reads (src/session-db.ts) so a long session never loads
+    // every row into memory just to paginate.
+    const { getMessageWindow, getMessageLast } = await import('./session-db.js');
     if (options?.last !== undefined) {
-      offset = Math.max(0, all.length - options.last);
-      slice = all.slice(offset);
-    } else if (options?.limit !== undefined) {
-      offset = options.offset ?? 0;
-      slice = all.slice(offset, offset + options.limit);
+      const w = getMessageLast(sessionId, options.last);
+      return { items: w.items, total: w.total, userBefore: w.userBefore };
     }
-    const userBefore = all.slice(0, offset).filter((m) => m.role === 'user' && !isWorkerPrompt(m)).length;
-    return { items: slice, total: all.length, userBefore };
+    const limit = options?.limit ?? 500;
+    const offset = options?.offset ?? 0;
+    const w = getMessageWindow(sessionId, offset, limit);
+    return { items: w.items, total: w.total, userBefore: w.userBefore };
   }
 
   async deleteSession(id: string): Promise<void> {
@@ -789,12 +787,23 @@ export class AgentService {
     this.agent.config.setVisionProvider(name, next as any);
   }
 
-  /** Cumulative token estimate for a session, from persisted messages via the core's own estimator. */
-  getSessionStats(sessionId: string): { tokenEstimate: number; messageCount: number } {
+  /** Cumulative token estimate for a session. Windowed batches over the SQL DB
+   *  keep memory bounded for very long sessions; tokenizer falls back to the
+   *  core's char/4 heuristic when the active provider has no countTokens. */
+  async getSessionStats(sessionId: string): Promise<{ tokenEstimate: number; messageCount: number }> {
     if (!this.agent?.session) return { tokenEstimate: 0, messageCount: 0 };
-    const messages = this.agent.session.getMessages(sessionId);
-    const estimate = this.agent.session.getTokenEstimate(sessionId, this.agent.provider);
-    return { tokenEstimate: estimate, messageCount: messages.length };
+    const { getMessageCount, estimateSessionTokens } = await import('./session-db.js');
+    const provider = this.agent.provider as { countTokens?: (s: string) => number } | undefined;
+    const estimate = estimateSessionTokens(
+      sessionId,
+      (content, thinking) => {
+        const tokens = (provider?.countTokens ? provider.countTokens(content) : Math.ceil((content ?? '').length / 4)) || 0;
+        const thinkTokens = thinking ? (provider?.countTokens ? provider.countTokens(thinking) : Math.ceil(thinking.length / 4)) || 0 : 0;
+        return tokens + thinkTokens;
+      },
+      500,
+    );
+    return { tokenEstimate: estimate, messageCount: getMessageCount(sessionId) };
   }
 
   getConfig(): Record<string, unknown> {
