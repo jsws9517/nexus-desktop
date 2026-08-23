@@ -104,7 +104,8 @@ type AgentEvent =
     }
   | { type: 'task_started'; taskId: string; description: string; role: string }
   | { type: 'task_completed'; taskId: string }
-  | { type: 'task_failed'; taskId: string; error: string };
+  | { type: 'task_failed'; taskId: string; error: string }
+  | { type: 'sessionRenamed'; sessionId: string; name: string };
 
 declare global {
   interface Window {
@@ -509,6 +510,10 @@ function handleEvent(event: AgentEvent): void {
     case 'task_completed':
     case 'task_failed':
       handleTaskEvent(event);
+      break;
+    case 'sessionRenamed':
+      // Session was renamed (manually via /rename or auto-named on first message)
+      void refreshSidebarSession();
       break;
     case 'text':
       if (event.text) {
