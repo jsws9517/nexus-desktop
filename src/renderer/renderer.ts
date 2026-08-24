@@ -158,6 +158,8 @@ declare global {
       setPinned(ids: string[]): Promise<{ ok: boolean }>;
       getMinimizeToTray(): Promise<boolean>;
       setMinimizeToTray(enabled: boolean): Promise<{ ok: boolean }>;
+      getInputRows(): Promise<number>;
+      setInputRows(rows: number): Promise<{ ok: boolean }>;
       readRecentLogs(maxLines?: number): Promise<string[]>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
@@ -1893,6 +1895,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
   }
 
   buildStartupSection();
+  buildAppearanceSection();
   buildUpdateSection();
   buildLogSection();
 }
@@ -1947,6 +1950,63 @@ function buildStartupSection(): void {
   buildToggle(t('minimizeToTrayLabel'), t('minimizeToTrayHint'), window.nexusDesktop.getMinimizeToTray(), (v) => {
     return window.nexusDesktop.setMinimizeToTray(v);
   });
+}
+
+function applyInputRows(rows: number): void {
+  const clamped = Math.max(1, Math.min(20, Math.round(rows)));
+  inputEl.rows = clamped;
+  const lineHeight = 20;
+  const padding = 22;
+  inputEl.style.setProperty('--input-min-h', `${clamped * lineHeight + padding}px`);
+}
+
+function buildAppearanceSection(): void {
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('appearanceSection');
+  settingsBody.appendChild(title);
+
+  const row = document.createElement('div');
+  row.className = 'startup-row';
+  const label = document.createElement('label');
+  label.className = 'startup-toggle';
+  const numInput = document.createElement('input');
+  numInput.type = 'number';
+  numInput.min = '1';
+  numInput.max = '20';
+  const text = document.createElement('span');
+  text.textContent = t('inputRowsLabel');
+  const hint = document.createElement('div');
+  hint.className = 'startup-hint';
+  hint.textContent = t('inputRowsHint');
+
+  void window.nexusDesktop.getInputRows().then((v) => {
+    numInput.value = String(v);
+    applyInputRows(v);
+  }).catch(() => {});
+
+  numInput.addEventListener('change', () => {
+    const val = parseInt(numInput.value, 10);
+    if (isNaN(val)) return;
+    numInput.disabled = true;
+    void window.nexusDesktop.setInputRows(val)
+      .then(() => {
+        settingsMsg.textContent = '';
+        applyInputRows(val);
+      })
+      .catch((err: unknown) => {
+        settingsMsg.textContent = `⚠️ ${errText(err)}`;
+      })
+      .finally(() => {
+        numInput.disabled = false;
+      });
+  });
+
+  label.appendChild(numInput);
+  label.appendChild(text);
+  row.appendChild(label);
+  row.appendChild(hint);
+  settingsBody.appendChild(row);
 }
 
 function buildLogSection(): void {
@@ -2401,6 +2461,7 @@ window.nexusDesktop.onWorkerRestarted(async () => {
     loadTheme();
     initFx();
     await loadLanguage();
+    void window.nexusDesktop.getInputRows().then((r) => applyInputRows(r)).catch(() => {});
     status = await window.nexusDesktop.getStatus();
     providers = await window.nexusDesktop.getProviders();
     if (providers.length === 0) {

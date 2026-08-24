@@ -154,6 +154,9 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   viewLogs: { 'zh-CN': '查看最近日志', en: 'View recent logs' },
   logsEmpty: { 'zh-CN': '暂无日志', en: 'No logs yet' },
   refreshLogs: { 'zh-CN': '刷新', en: 'Refresh' },
+  appearanceSection: { 'zh-CN': '外观', en: 'Appearance' },
+  inputRowsLabel: { 'zh-CN': '输入框行数', en: 'Input box rows' },
+  inputRowsHint: { 'zh-CN': '输入框的默认可见行数（1–20）', en: 'Default visible rows for the input box (1–20)' },
 };
 
 export function setUiLang(lang: Lang): void {

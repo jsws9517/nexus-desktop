@@ -58,6 +58,8 @@ const api = {
   setPinned: (ids: string[]) => ipcRenderer.invoke('nexus:setPinned', ids),
   getMinimizeToTray: () => ipcRenderer.invoke('nexus:getMinimizeToTray'),
   setMinimizeToTray: (enabled: boolean) => ipcRenderer.invoke('nexus:setMinimizeToTray', enabled),
+  getInputRows: () => ipcRenderer.invoke('nexus:getInputRows'),
+  setInputRows: (rows: number) => ipcRenderer.invoke('nexus:setInputRows', rows),
   readRecentLogs: (maxLines?: number) => ipcRenderer.invoke('nexus:readRecentLogs', maxLines),
 
   getUpdateState: () => ipcRenderer.invoke('nexus:getUpdateState'),

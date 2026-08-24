@@ -150,6 +150,7 @@ interface DesktopState {
   windowBounds?: { x?: number; y?: number; width?: number; height?: number };
   pinnedIds?: string[];
   minimizeToTray?: boolean;
+  inputRows?: number;
 }
 
 function readDesktopState(): DesktopState {
@@ -202,6 +203,16 @@ function getMinimizeToTray(): boolean {
 
 function setMinimizeToTray(enabled: boolean): void {
   writeDesktopState({ minimizeToTray: enabled });
+}
+
+function getInputRows(): number {
+  const v = readDesktopState().inputRows;
+  return typeof v === 'number' && v >= 1 && v <= 20 ? v : 4;
+}
+
+function setInputRows(rows: number): void {
+  const clamped = Math.max(1, Math.min(20, Math.round(rows)));
+  writeDesktopState({ inputRows: clamped });
 }
 
 function workerPath(): string {
@@ -507,6 +518,14 @@ function registerIpc(): void {
   ipcMain.handle('nexus:setMinimizeToTray', (_e, enabled: unknown): { ok: boolean } => {
     if (!isBoolean(enabled)) return { ok: false };
     setMinimizeToTray(enabled);
+    return { ok: true };
+  });
+
+  // Appearance: input textarea row count.
+  ipcMain.handle('nexus:getInputRows', (): number => getInputRows());
+  ipcMain.handle('nexus:setInputRows', (_e, rows: unknown): { ok: boolean } => {
+    if (!isFiniteNumber(rows)) return { ok: false };
+    setInputRows(rows);
     return { ok: true };
   });
 
