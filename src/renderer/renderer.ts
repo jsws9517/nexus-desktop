@@ -1638,31 +1638,53 @@ attachBtn.addEventListener('click', async () => {
   }
 });
 
-// ---------- permission modal ----------
-let pendingPermissionId: string | null = null;
+// ---------- permission modal (batch coalescing) ----------
+const BATCH_WINDOW_MS = 300;
 const permOverlay = $('#perm-overlay');
+const permCount = $('#perm-count');
 const permQuestion = $('#perm-question');
+const permBatch: { id: string; question: string }[] = [];
+let permTimer: ReturnType<typeof setTimeout> | null = null;
 
 function showPermission(req: { id: string; question: string }): void {
-  pendingPermissionId = req.id;
-  permQuestion.textContent = req.question;
-  console.log(`showPermission id=${req.id}`);
-  permOverlay.classList.remove('hidden');
+  permBatch.push(req);
+  if (permOverlay.classList.contains('hidden')) {
+    permOverlay.classList.remove('hidden');
+  }
+  if (permTimer !== null) clearTimeout(permTimer);
+  permTimer = setTimeout(flushPermBatch, BATCH_WINDOW_MS);
+}
+
+function flushPermBatch(): void {
+  if (permTimer !== null) { clearTimeout(permTimer); permTimer = null; }
+  if (permBatch.length === 0) return;
+  const count = permBatch.length;
+  if (count > 1) {
+    permCount.classList.remove('hidden');
+    permCount.textContent = t('permBatchTitle') + ` (${count})`;
+    permQuestion.textContent = t('permBatchPrompt', { count }) + '\n' + permBatch[permBatch.length - 1].question;
+  } else {
+    permCount.classList.add('hidden');
+    permQuestion.textContent = permBatch[0].question;
+  }
+  console.log(`flushPermBatch: ${count} pending request(s)`);
 }
 
 async function answerPermission(answer: string): Promise<void> {
-  if (!pendingPermissionId) {
-    console.warn('answerPermission: no pendingPermissionId');
+  if (permTimer !== null) { clearTimeout(permTimer); permTimer = null; }
+  if (permBatch.length === 0) {
+    console.warn('answerPermission: no pending permission');
     return;
   }
-  const id = pendingPermissionId;
-  pendingPermissionId = null;
+  const batch = permBatch.splice(0);
   permOverlay.classList.add('hidden');
-  console.log(`answerPermission id=${id} answer=${answer}`);
-  try {
-    await window.nexusDesktop.respondPermission(id, answer);
-  } catch (e) {
-    console.error(`respondPermission failed: ${e instanceof Error ? e.message : String(e)}`);
+  console.log(`answerPermission: batch of ${batch.length} id(s) answer=${answer}`);
+  for (const p of batch) {
+    try {
+      await window.nexusDesktop.respondPermission(p.id, answer);
+    } catch (e) {
+      console.error(`respondPermission id=${p.id} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }
 

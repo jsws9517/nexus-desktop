@@ -91,6 +91,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
     en: 'Remember this grant (persisted per path), no more prompts',
   },
   deny: { 'zh-CN': '拒绝', en: 'Deny' },
+  permBatchTitle: { 'zh-CN': '批量权限确认', en: 'Bulk Permission' },
+  permBatchPrompt: { 'zh-CN': '将允许 {count} 个操作。最后一条请求：', en: 'Allow {count} operations. Last one:' },
   saved: { 'zh-CN': '已保存', en: 'Saved' },
   save: { 'zh-CN': '保存', en: 'Save' },
   apiKey: { 'zh-CN': 'API Key', en: 'API Key' },
