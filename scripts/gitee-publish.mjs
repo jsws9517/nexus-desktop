@@ -14,6 +14,8 @@ if (!TOKEN || !TAG) {
 }
 
 const API = `https://gitee.com/api/v5/repos/${REPO}`;
+const UPLOAD_TIMEOUT = 180_000;
+const MAX_RETRIES = 3;
 
 async function request(url, options = {}) {
   const res = await fetch(url, options);
@@ -22,6 +24,31 @@ async function request(url, options = {}) {
     throw new Error(`Gitee API ${res.status}: ${text}`);
   }
   return text ? JSON.parse(text) : null;
+}
+
+async function uploadWithRetry(url, form, size, retries = MAX_RETRIES) {
+  const name = form.get('file')?.name || 'unknown';
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT);
+      const res = await fetch(url, { method: 'POST', body: form, signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
+      console.log(`attached ${name} (${(size / 1048576).toFixed(1)} MiB)`);
+      return;
+    } catch (err) {
+      if (attempt < retries) {
+        const delay = Math.min(2 ** attempt * 5, 30);
+        console.log(`upload ${name} attempt ${attempt} failed (${err.message}), retrying in ${delay}s...`);
+        await new Promise((r) => setTimeout(r, delay * 1000));
+      } else {
+        throw new Error(`upload ${name} failed after ${retries} attempts: ${err.message}`);
+      }
+    }
+  }
 }
 
 async function main() {
@@ -59,15 +86,7 @@ async function main() {
     const buffer = await readFile(file);
     const form = new FormData();
     form.append('file', new Blob([buffer]), name);
-    const res = await fetch(`${API}/releases/${releaseId}/attach_files?access_token=${TOKEN}`, {
-      method: 'POST',
-      body: form,
-    });
-    if (!res.ok) {
-      console.error(`attach ${name} failed: ${res.status} ${await res.text()}`);
-    } else {
-      console.log(`attached ${name} (${(info.size / 1048576).toFixed(1)} MiB)`);
-    }
+    await uploadWithRetry(`${API}/releases/${releaseId}/attach_files?access_token=${TOKEN}`, form, info.size);
   }
 }
 

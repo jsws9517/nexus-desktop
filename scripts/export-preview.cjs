@@ -3,6 +3,10 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
+// Disable HW acceleration so offscreen page capture (capturePage) doesn't fail
+// with Chromium "UnknownVizError" on GPU-less/remote sessions.
+app.disableHardwareAcceleration();
+
 const SRC = path.join(__dirname, '..', 'icon.svg');
 const OUT = path.join(__dirname, '..', 'build', 'icon-preview.png');
 
