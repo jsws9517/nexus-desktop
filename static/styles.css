@@ -98,9 +98,30 @@ body {
 .btn.danger:hover { background: var(--danger); color: #fff; }
 .btn.ghost { background: transparent; }
 .btn.small { padding: 3px 8px; font-size: 12px; }
+.btn.icon.small {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 11px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.btn.icon.small:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 
 /* ---- Layout ---- */
-#layout { display: flex; flex: 1; min-height: 0; }
+#layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
 
 /* ---- Sidebar ---- */
 #sidebar {
@@ -110,13 +131,22 @@ body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  transition: width 0.2s ease;
+  overflow: hidden;
+  position: relative;
 }
+#sidebar.collapsed { width: 48px; }
+#sidebar.collapsed .sidebar-title { display: none; }
+#sidebar.collapsed .session-search { display: none; }
+#sidebar.collapsed #session-list { display: none; }
+#sidebar.collapsed #session-pager { display: none; }
 .sidebar-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .sidebar-title { font-size: 13px; font-weight: 600; color: var(--text-dim); }
 #session-list { list-style: none; overflow-y: auto; flex: 1; }
@@ -145,6 +175,34 @@ body {
   color: var(--text-dim);
 }
 #session-pager button:disabled { opacity: 0.35; cursor: default; }
+
+/* Sidebar toggle — pinned to the right edge of the sidebar, straddling the dividing line */
+.sidebar-toggle {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 20;
+  width: 16px;
+  height: 44px;
+  border: none;
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  transition: background 0.15s, color 0.15s;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.25);
+  outline: none;
+  padding: 0;
+}
+.sidebar-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
+  color: var(--accent);
+}
 
 /* ---- Chat panel ---- */
 #chat-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
@@ -345,9 +403,11 @@ body {
 
 /* ---- Input ---- */
 #input-area {
-  border-top: 1px solid var(--border);
-  padding: 10px 14px;
-  background: var(--bg-panel);
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  padding: 14px 18px 14px;
+  background: color-mix(in srgb, var(--bg) 92%, var(--bg-panel));
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -361,72 +421,188 @@ body {
 .attach-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 3px 8px;
+  gap: 5px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-input));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 20px;
+  padding: 2px 10px 2px 6px;
   font-size: 12px;
+  color: color-mix(in srgb, var(--accent) 90%, var(--text));
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.attach-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-input));
 }
 .chip-remove {
   background: transparent;
   border: none;
-  color: var(--text-dim);
+  color: color-mix(in srgb, var(--accent) 60%, var(--text-dim));
   cursor: pointer;
-  padding: 0 2px;
-  font-size: 11px;
+  padding: 0 1px;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 50%;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
 }
-.chip-remove:hover { color: var(--danger); }
+.chip-remove:hover { background: color-mix(in srgb, var(--danger) 25%, transparent); color: var(--danger); }
+
+/* ---- Input ---- */
+#input-area .btn.primary {
+  background: var(--accent-dim);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: #fff;
+  border-radius: 10px;
+  padding: 5px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 0 12px -4px color-mix(in srgb, var(--accent) 40%, transparent);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+#input-area .btn.primary:hover {
+  background: var(--accent);
+  box-shadow: 0 0 20px -4px var(--accent);
+}
+#input-area .btn.danger {
+  background: #3a2525;
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--danger);
+  border-radius: 10px;
+  padding: 5px 14px;
+  font-size: 13px;
+  box-shadow: 0 0 12px -6px var(--danger);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+#input-area .btn.danger:hover { background: var(--danger); color: #fff; box-shadow: 0 0 20px -4px var(--danger); }
+
+/* Unified input card: composer + action bar merged into one visual unit */
+.input-card {
+  background: color-mix(in srgb, var(--bg-input) 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: 18px;
+  padding: 6px 6px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.input-card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent), 0 4px 28px rgba(0, 0, 0, 0.25);
+}
 .composer {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  padding: 4px 6px 2px;
 }
-.composer #input { flex: 1; }
-.btn.icon { flex-shrink: 0; padding: 0 12px; font-size: 16px; }
-.mcp-toggle {
+.composer #input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: none;
+  min-height: var(--input-min-h, 44px);
+  max-height: 180px;
+  outline: none;
+  line-height: 1.6;
+  transition: background 0.2s;
+}
+.composer #input::placeholder { color: var(--text-dim); opacity: 0.45; }
+.composer #input:focus { background: color-mix(in srgb, var(--text) 3%, transparent); }
+
+.input-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 6px;
+}
+.input-left {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: auto;
+}
+
+/* Compact icon buttons in the action bar */
+.input-left .btn.icon {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.input-left .btn.icon:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+
+/* MCP toggle — compact, no border */
+.input-left .mcp-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-dim);
   cursor: pointer;
   user-select: none;
-  padding: 0 10px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  transition: background 0.15s, color 0.15s;
 }
-.mcp-toggle input { accent-color: var(--accent); cursor: pointer; margin: 0; }
-.mcp-toggle:hover { color: var(--text); }
-.mcp-toggle.on { color: var(--ok); }
-.mcp-toggle.off { color: var(--danger); }
-#mcp-status { font-size: 11px; white-space: nowrap; }
+.input-left .mcp-toggle:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.input-left .mcp-toggle input { accent-color: var(--accent); cursor: pointer; margin: 0; width: 13px; height: 13px; }
+.input-left .mcp-toggle.on  { color: var(--ok); }
+.input-left .mcp-toggle.off { color: var(--danger); }
+#mcp-status { font-size: 10px; white-space: nowrap; letter-spacing: 0.02em; }
 .mcp-box { position: relative; flex-shrink: 0; display: inline-flex; align-items: center; }
-.mcp-caret {
+.input-left .mcp-caret {
   background: transparent;
   border: none;
   color: var(--text-dim);
   cursor: pointer;
-  font-size: 10px;
-  padding: 4px 2px;
+  font-size: 9px;
+  padding: 4px 5px;
+  border-radius: 8px;
+  transition: background 0.15s, color 0.15s;
 }
-.mcp-caret:hover { color: var(--text); }
+.input-left .mcp-caret:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 .mcp-popover {
   position: absolute;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + 8px);
   left: 0;
-  min-width: 260px;
+  min-width: 280px;
   max-height: min(320px, 60vh);
   overflow-y: auto;
-  background: var(--bg-elevated, #1c1c24);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 14px;
   padding: 8px;
   z-index: 50;
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 -12px 36px rgba(0, 0, 0, 0.45);
 }
 .mcp-popover-title { font-size: 12px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
 .mcp-server-row {
@@ -434,33 +610,17 @@ body {
   align-items: center;
   gap: 8px;
   padding: 5px 6px;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   font-size: 12px;
   color: var(--text);
 }
-.mcp-server-row:hover { background: rgba(255, 255, 255, 0.05); }
+.mcp-server-row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .mcp-server-row input { accent-color: var(--accent); cursor: pointer; margin: 0; }
 .mcp-server-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-server-meta { font-size: 11px; color: var(--text-dim); }
 .mcp-empty { font-size: 12px; color: var(--text-dim); padding: 6px; }
 .mcp-loading { font-size: 12px; color: var(--text-dim); padding: 6px; }
-#input {
-  background: var(--bg-input);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 14px;
-  font-family: inherit;
-  resize: none;
-  min-height: var(--input-min-h, 44px);
-  max-height: 160px;
-  outline: none;
-}
-#input:focus { border-color: var(--accent); }
-.input-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-#input-status { color: var(--text-dim); font-size: 12px; margin-right: auto; }
 
 /* ---- Modals ---- */
 .overlay {
@@ -714,11 +874,6 @@ html[data-theme='warm'] #fx-vignette {
 }
 #sidebar { border-color: color-mix(in srgb, var(--border) 82%, transparent); }
 #right-sidebar { border-color: color-mix(in srgb, var(--border) 82%, transparent); }
-#input-area {
-  background: color-mix(in srgb, var(--bg-panel) 84%, transparent);
-  -webkit-backdrop-filter: blur(16px) saturate(1.25);
-  backdrop-filter: blur(16px) saturate(1.25);
-}
 #toolbar {
   background: linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 97%, var(--accent) 3%), var(--bg-panel));
   border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, var(--accent) 12%);
@@ -742,12 +897,6 @@ html[data-theme='warm'] #fx-vignette {
 .btn.danger { box-shadow: 0 0 16px -8px var(--danger); }
 .busy { text-shadow: 0 0 10px var(--accent), 0 0 24px var(--accent); }
 
-#input:focus {
-  border-color: var(--accent);
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent),
-    0 0 24px -8px var(--accent);
-}
 #provider-select:focus,
 #model-select:focus,
 #theme-select:focus,
@@ -891,19 +1040,6 @@ html[data-theme='warm'] #fx-vignette {
 .pin-btn:hover { opacity: 1; }
 .pin-btn.active { opacity: 1; color: var(--accent); }
 
-/* ---- attachments (A2) ---- */
-.attach-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.attach-chip:hover { border-color: var(--accent); }
 .attach-thumb {
   width: 22px;
   height: 22px;

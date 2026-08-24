@@ -188,6 +188,8 @@ const freezeBtn = $('#btn-freeze') as HTMLButtonElement;
 const sessionListEl = $('#session-list');
 const searchEl = $('#session-search') as HTMLInputElement;
 const sessionPagerEl = $('#session-pager');
+const sidebarEl = $('#sidebar') as HTMLElement;
+const collapseBtn = $('#btn-collapse-sidebar') as HTMLButtonElement;
 const pagerPrevEl = $('#pager-prev') as HTMLButtonElement;
 const pagerNextEl = $('#pager-next') as HTMLButtonElement;
 const pagerInfoEl = $('#pager-info');
@@ -2343,6 +2345,27 @@ $('#btn-open-folder').addEventListener('click', async () => {
 });
 
 $('#btn-new-session').addEventListener('click', () => void startNewSession());
+
+// ---------- sidebar collapse/expand ----------
+const SIDEBAR_COLLAPSED_KEY = 'nexus.sidebar.collapsed';
+function loadSidebarState(): void {
+  try {
+    const collapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== '0';
+    if (collapsed) sidebarEl.classList.add('collapsed');
+  } catch {}
+}
+function saveSidebarState(collapsed: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {}
+}
+collapseBtn.addEventListener('click', () => {
+  const isCollapsed = sidebarEl.classList.toggle('collapsed');
+  saveSidebarState(isCollapsed);
+  collapseBtn.textContent = isCollapsed ? '▶' : '◀';
+});
+loadSidebarState();
+collapseBtn.textContent = sidebarEl.classList.contains('collapsed') ? '▶' : '◀';
 pagerPrevEl.addEventListener('click', () => {
   if (sessionPage <= 0) return;
   sessionPage--;

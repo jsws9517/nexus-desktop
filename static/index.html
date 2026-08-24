@@ -47,6 +47,7 @@
           <span id="pager-info"></span>
           <button id="pager-next" class="btn ghost small" data-i18n="pagerNext">下一页 ›</button>
         </div>
+        <button id="btn-collapse-sidebar" class="sidebar-toggle" title="折叠侧栏" data-i18n-title="collapseSidebar">◀</button>
       </aside>
 
       <main id="chat-panel">
@@ -54,25 +55,29 @@
         <div id="messages"></div>
         <div id="input-area">
           <div id="attachments" class="attachments hidden"></div>
-          <div class="composer">
-            <button id="btn-attach" class="btn ghost icon" data-i18n-title="attachTitle" data-i18n="attach">📎</button>
-            <div id="mcp-box" class="mcp-box">
-              <label id="mcp-toggle" class="mcp-toggle" data-i18n-title="mcpMasterTitle">
-                <input type="checkbox" checked />
-                <span id="mcp-status">MCP</span>
-              </label>
-              <button id="mcp-servers-btn" class="mcp-caret" data-i18n-title="mcpPickTitle">▾</button>
-              <div id="mcp-popover" class="mcp-popover hidden">
-                <div class="mcp-popover-title" data-i18n="mcpPopoverTitle">MCP 服务器工具（当前会话）</div>
-                <div id="mcp-servers"></div>
-              </div>
+          <div class="input-card">
+            <div class="composer">
+              <textarea id="input" rows="4" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
             </div>
-            <textarea id="input" rows="4" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
-          </div>
-          <div class="input-actions">
-            <span id="input-status"></span>
-            <button id="btn-send" class="btn primary" data-i18n="send">发送</button>
-            <button id="btn-stop" class="btn danger hidden" data-i18n="stop">停止</button>
+            <div class="input-actions">
+              <div class="input-left">
+                <button id="btn-attach" class="btn icon" data-i18n-title="attachTitle" title="添加附件">＋</button>
+                <div id="mcp-box" class="mcp-box">
+                  <label id="mcp-toggle" class="mcp-toggle" data-i18n-title="mcpMasterTitle">
+                    <input type="checkbox" checked />
+                    <span id="mcp-status">MCP</span>
+                  </label>
+                  <button id="mcp-servers-btn" class="mcp-caret" data-i18n-title="mcpPickTitle">▾</button>
+                  <div id="mcp-popover" class="mcp-popover hidden">
+                    <div class="mcp-popover-title" data-i18n="mcpPopoverTitle">MCP 服务器工具（当前会话）</div>
+                    <div id="mcp-servers"></div>
+                  </div>
+                </div>
+              </div>
+              <span id="input-status"></span>
+              <button id="btn-send" class="btn primary" data-i18n="send">发送</button>
+              <button id="btn-stop" class="btn danger hidden" data-i18n="stop">停止</button>
+            </div>
           </div>
         </div>
       </main>

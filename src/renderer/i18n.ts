@@ -14,6 +14,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   settings: { 'zh-CN': '⚙️ 设置', en: '⚙️ Settings' },
   sessions: { 'zh-CN': '会话', en: 'Sessions' },
   newSession: { 'zh-CN': '＋ 新建', en: '＋ New' },
+  collapseSidebar: { 'zh-CN': '折叠侧栏', en: 'Collapse sidebar' },
+  expandSidebar: { 'zh-CN': '展开侧栏', en: 'Expand sidebar' },
   attach: { 'zh-CN': '📎', en: '📎' },
   attachTitle: { 'zh-CN': '添加附件', en: 'Attach files' },
   mcpMasterTitle: { 'zh-CN': '主开关：启用/禁用全部 MCP 工具', en: 'Master switch: enable/disable all MCP tools' },
