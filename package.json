@@ -108,5 +108,9 @@
       ],
       "language": "2052"
     }
+  },
+  "allowScripts": {
+    "better-sqlite3": true,
+    "electron-winstaller": true
   }
 }
