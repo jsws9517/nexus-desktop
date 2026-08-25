@@ -2388,6 +2388,9 @@ document.addEventListener('keydown', (e) => {
     if (busy) setFrozen(!frozen);
   }
 });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && busy && !stopRequested) requestStop();
+});
 
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
