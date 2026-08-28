@@ -13,6 +13,8 @@ const api = {
     ipcRenderer.invoke('nexus:listSessions', options),
   getMessages: (sessionId: string, options?: { last?: number; limit?: number; offset?: number }) =>
     ipcRenderer.invoke('nexus:getMessages', { sessionId, ...(options ?? {}) }),
+  getSlashLog: (sessionId: string) => ipcRenderer.invoke('nexus:getSlashLog', { sessionId }),
+  getSlashLogPath: (sessionId: string) => ipcRenderer.invoke('nexus:getSlashLogPath', { sessionId }),
   deleteSession: (id: string) => ipcRenderer.invoke('nexus:deleteSession', { id }),
   renameSession: (id: string, name: string) =>
     ipcRenderer.invoke('nexus:renameSession', { id, name }),

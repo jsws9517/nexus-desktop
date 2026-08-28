@@ -112,6 +112,23 @@ const WORKER_EXCLUDE_SQL = WORKER_MARKERS.map(
 ).join(' AND ');
 const WORKER_EXCLUDE_PARAMS = WORKER_MARKERS.map((m) => likeEscape(m));
 
+/** DB id of the most recently inserted user row for a session, or null.
+ *  Used to anchor slash-log cards to the exact slash-input message on reload. */
+export function getLastUserMessageId(sessionId: string): number | null {
+  const db = openDb();
+  if (!db) return null;
+  try {
+    const row = db
+      .prepare('SELECT id FROM messages WHERE session_id = ? AND role = ? ORDER BY id DESC LIMIT 1')
+      .get(sessionId, 'user') as { id: number } | undefined;
+    return row ? row.id : null;
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
 /** Count of displayable user rows before `beforeId` (exclusive). */
 function countUserBefore(db: Database.Database, sessionId: string, beforeId: number | null): number {
   if (beforeId === null) return 0;

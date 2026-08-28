@@ -67,6 +67,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   pagerPrev: { 'zh-CN': '‹ 上一页', en: '‹ Prev' },
   pagerNext: { 'zh-CN': '下一页 ›', en: 'Next ›' },
   loadEarlier: { 'zh-CN': '↑ 加载更早的消息', en: '↑ Load earlier messages' },
+  openLog: { 'zh-CN': '打开日志文件', en: 'Open log file' },
   undo: { 'zh-CN': '撤回', en: 'Undo' },
   undoHint: {
     'zh-CN': '撤回该消息及其后的上下文，并把原文贴回输入框修改',

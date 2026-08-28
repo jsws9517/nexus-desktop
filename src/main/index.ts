@@ -453,6 +453,8 @@ function registerIpc(): void {
   ipcMain.handle('nexus:startSession', call('startSession'));
   ipcMain.handle('nexus:listSessions', call('listSessions'));
   ipcMain.handle('nexus:getMessages', call('getMessages'));
+  ipcMain.handle('nexus:getSlashLog', call('getSlashLog'));
+  ipcMain.handle('nexus:getSlashLogPath', call('getSlashLogPath'));
   ipcMain.handle('nexus:deleteSession', call('deleteSession'));
   ipcMain.handle('nexus:renameSession', call('renameSession'));
   ipcMain.handle('nexus:getConfig', call('getConfig'));

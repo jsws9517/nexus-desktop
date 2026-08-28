@@ -77,6 +77,8 @@ export const WORKER_METHODS: Record<string, MethodSpec> = {
   getMcpStatus: { fields: {} },
   getMcpServers: { fields: {} },
   setMcpServer: { fields: { name: S.str(200), enabled: S.bool() } },
+  getSlashLog: { fields: { sessionId: S.str() } },
+  getSlashLogPath: { fields: { sessionId: S.str() } },
   shutdown: { fields: {} },
 };
 

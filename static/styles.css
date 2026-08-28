@@ -384,6 +384,62 @@ body {
 .tool-card.collapsed .tool-result { display: none; }
 .tool-card.error { border-left-color: var(--danger); }
 
+/* slash-command output cards (per-session log, persisted on disk) */
+.slash-card {
+  align-self: flex-start;
+  max-width: 92%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-dim);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+.slash-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.slash-chevron {
+  color: var(--text-dim);
+  font-size: 11px;
+  transition: transform 0.12s ease;
+  flex-shrink: 0;
+}
+.slash-card:not(.collapsed) .slash-chevron { transform: rotate(90deg); }
+.slash-name { color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.slash-open-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 5px;
+}
+.slash-open-btn:hover { border-color: var(--accent); color: var(--accent); }
+.slash-body {
+  margin-top: 6px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.slash-card.collapsed .slash-body { display: none; }
+
 /* file chip */
 .file-chip {
   align-self: flex-start;

@@ -15,6 +15,8 @@ type WorkerRequest =
   | { id: number; method: 'startSession'; params?: { name?: string; sessionId?: string } }
   | { id: number; method: 'listSessions'; params?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean } }
   | { id: number; method: 'getMessages'; params: { sessionId: string; last?: number; limit?: number; offset?: number } }
+  | { id: number; method: 'getSlashLog'; params: { sessionId: string } }
+  | { id: number; method: 'getSlashLogPath'; params: { sessionId: string } }
   | { id: number; method: 'deleteSession'; params: { id: string } }
   | { id: number; method: 'renameSession'; params: { id: string; name: string } }
   | { id: number; method: 'getConfig' }
@@ -179,6 +181,12 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         break;
       case 'getMessages':
         respond(req.id, await service.getMessages(req.params.sessionId, req.params));
+        break;
+      case 'getSlashLog':
+        respond(req.id, await service.getSlashLog(req.params.sessionId));
+        break;
+      case 'getSlashLogPath':
+        respond(req.id, await service.getSlashLogPath(req.params.sessionId));
         break;
       case 'deleteSession':
         await service.deleteSession(req.params.id);

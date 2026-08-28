@@ -31,4 +31,5 @@ export const EARLY_METHODS = new Set<string>([
   'listSessions', 'getMessages', 'getConfig', 'getProviders', 'getStatus',
   'getPermissions', 'getSpeechVisionConfig', 'getSessionStats',
   'getMcpServers', 'getMcpStatus', 'startSession',
+  'getSlashLog', 'getSlashLogPath',
 ]);

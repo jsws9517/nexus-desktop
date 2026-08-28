@@ -74,9 +74,18 @@ interface SessionStats {
 /** A persisted message row returned by getMessages(). Only user/assistant rows
  *  are rendered for history; `content`/`thinking` may be absent. */
 interface StoredMsg {
+  id?: number;
   role: string;
   content?: string;
   thinking?: string;
+}
+
+/** A slash-command execution restored from the per-session log file. */
+interface SlashLogEntry {
+  ts: string;
+  command: string;
+  anchorId?: number;
+  content: string;
 }
 
 type AgentEvent =
@@ -105,7 +114,10 @@ type AgentEvent =
   | { type: 'task_started'; taskId: string; description: string; role: string }
   | { type: 'task_completed'; taskId: string }
   | { type: 'task_failed'; taskId: string; error: string }
-  | { type: 'sessionRenamed'; sessionId: string; name: string };
+  | { type: 'sessionRenamed'; sessionId: string; name: string }
+  | { type: 'slash_start'; command: string; anchorId?: number }
+  | { type: 'slash'; text: string }
+  | { type: 'slash_end'; anchorId?: number; command: string };
 
 declare global {
   interface Window {
@@ -118,6 +130,8 @@ declare global {
         sessionId: string,
         options?: { last?: number; limit?: number; offset?: number },
       ): Promise<{ items: StoredMsg[]; total: number; userBefore: number }>;
+      getSlashLog(sessionId: string): Promise<SlashLogEntry[]>;
+      getSlashLogPath(sessionId: string): Promise<string>;
       deleteSession(id: string): Promise<unknown>;
       renameSession(id: string, name: string): Promise<unknown>;
       getConfig(): Promise<Record<string, unknown>>;
@@ -257,12 +271,22 @@ const tasks = new Map<string, TaskItem>();
 // per-turn DOM handles
 let curAssistant: { bubble: HTMLElement; stream: HTMLElement; buffer: string; cleaned: boolean } | null = null;
 let curThinking: { content: HTMLElement; buffer: string; cleaned: boolean } | null = null;
+interface SlashCardRec {
+  card: HTMLElement;
+  body: HTMLElement;
+  chevron: HTMLElement;
+}
+let curSlash: SlashCardRec | null = null;
 interface ToolCardRec {
   card: HTMLElement;
   resultEl: HTMLElement | null;
   resultText: string;
 }
 const toolCards = new Map<number, ToolCardRec>();
+
+/** Slash-log entries for the active session, re-inserted after every history
+ *  re-render (resume / load-earlier) so collapsible cards track their anchor. */
+let slashLog: SlashLogEntry[] = [];
 
 // ---------- history windowing + cache ----------
 // History is fetched in windows so a long session never renders every message
@@ -320,12 +344,13 @@ function addSystem(text: string): void {
   scrollToBottom();
 }
 
-function addUser(text: string): void {
+function addUser(text: string, mid?: number): void {
   if (isWorkerBlockText(text)) return;
   const userIndex = userMessageSeq++;
   const wrap = document.createElement('div');
   wrap.className = 'msg user';
   wrap.dataset.userIndex = String(userIndex);
+  if (mid != null) wrap.dataset.mid = String(mid);
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   bubble.textContent = text;
@@ -542,6 +567,37 @@ function handleEvent(event: AgentEvent): void {
         scrollToBottom();
       }
       break;
+    case 'slash_start':
+      // Open a single collapsible card for this command's output.
+      if (curSlash) {
+        // Defensive: close any dangling card before starting a new one.
+        curSlash = null;
+      }
+      curSlash = makeSlashCardEl(event.command, '');
+      messagesEl.appendChild(curSlash.card);
+      scrollToBottom();
+      break;
+    case 'slash':
+      if (event.text && curSlash) {
+        curSlash.body.textContent += event.text;
+        scrollToBottom();
+      }
+      break;
+    case 'slash_end': {
+      if (curSlash) {
+        // Auto-collapse only when the accumulated content is actually large;
+        // an empty card from a no-output command is simply removed.
+        if (curSlash.body.textContent.trim().length === 0) {
+          curSlash.card.remove();
+        } else if (slashShouldCollapse(curSlash.body.textContent)) {
+          curSlash.card.classList.add('collapsed');
+          curSlash.chevron.textContent = '▸';
+          curSlash.body.classList.add('hidden');
+        }
+        curSlash = null;
+      }
+      break;
+    }
     case 'thinking':
       if (event.thinking) {
         let delta = event.thinking;
@@ -987,7 +1043,7 @@ function countUserRows(rows: StoredMsg[]): number {
 /** Render one persisted message row into the history view. */
 function renderHistoryRow(m: StoredMsg): void {
   if (m.role === 'user') {
-    addUser(String(m.content ?? ''));
+    addUser(String(m.content ?? ''), m.id);
   } else if (m.role === 'assistant') {
     if (m.thinking) addThinkingBlock(String(m.thinking));
     if (m.content) {
@@ -1038,6 +1094,92 @@ function addToolResultBlock(content: string): void {
   });
 }
 
+/** Largeness threshold: above this we render the slash card collapsed by default
+ *  so a huge /plan or /tasks dump doesn't dominate the screen. */
+const SLASH_AUTO_COLLAPSE_CHARS = 2000;
+const SLASH_AUTO_COLLAPSE_LINES = 50;
+
+function slashShouldCollapse(content: string): boolean {
+  return content.length > SLASH_AUTO_COLLAPSE_CHARS || content.split('\n').length > SLASH_AUTO_COLLAPSE_LINES;
+}
+
+/** Build a collapsible slash-output card DOM. Returns the card plus its body
+ *  and chevron so live streaming can append to `body` and toggle collapse. */
+function makeSlashCardEl(command: string, content: string): SlashCardRec {
+  const card = document.createElement('div');
+  card.className = 'slash-card';
+  const header = document.createElement('button');
+  header.className = 'slash-header';
+  const chevron = document.createElement('span');
+  chevron.className = 'slash-chevron';
+  const name = document.createElement('span');
+  name.className = 'slash-name';
+  name.textContent = `⌨ ${command}`;
+  header.appendChild(chevron);
+  header.appendChild(name);
+
+  const openBtn = document.createElement('button');
+  openBtn.className = 'slash-open-btn';
+  openBtn.textContent = '📄';
+  openBtn.title = t('openLog');
+  openBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    void window.nexusDesktop.getSlashLogPath(currentSessionId).then((p) => {
+      if (p) void window.nexusDesktop.revealFile(p);
+    }).catch(() => {});
+  });
+  header.appendChild(openBtn);
+
+  const body = document.createElement('div');
+  body.className = 'slash-body hidden';
+  body.textContent = content;
+
+  const setCollapsed = (collapsed: boolean) => {
+    card.classList.toggle('collapsed', collapsed);
+    chevron.textContent = collapsed ? '▸' : '▾';
+    body.classList.toggle('hidden', collapsed);
+  };
+  header.addEventListener('click', () => setCollapsed(!card.classList.contains('collapsed')));
+
+  card.appendChild(header);
+  card.appendChild(body);
+  // Start collapsed only when the content is already known to be large (history
+  // cards). Live cards start empty → expanded so streaming is visible; the
+  // slash_end handler collapses them once if they grow large.
+  setCollapsed(slashShouldCollapse(content));
+  return { card, body, chevron };
+}
+
+/** Re-insert all cached slash cards into the current history DOM, anchored
+ *  after their slash-input message (matched by data-mid). Cards whose anchor
+ *  isn't in the visible window are appended at the end. Call after any
+ *  renderMessageWindow() so reloads / load-earlier don't drop them. */
+function insertSlashCards(): void {
+  if (slashLog.length === 0) return;
+  for (const e of slashLog) {
+    const rec = makeSlashCardEl(e.command, e.content);
+    if (e.anchorId != null) {
+      const anchor = messagesEl.querySelector(`[data-mid="${e.anchorId}"]`);
+      if (anchor) {
+        if (anchor.nextSibling) messagesEl.insertBefore(rec.card, anchor.nextSibling);
+        else messagesEl.appendChild(rec.card);
+        continue;
+      }
+    }
+    messagesEl.appendChild(rec.card);
+  }
+}
+
+/** Fetch the session's slash log from disk and re-insert its cards. */
+async function refreshSlashLog(sessionId: string): Promise<void> {
+  try {
+    slashLog = await window.nexusDesktop.getSlashLog(sessionId);
+  } catch {
+    slashLog = [];
+  }
+  insertSlashCards();
+}
+
 /** Rebuild the visible history window from the loaded rows. `scroll=false`
  *  preserves the caller's scroll position (used when prepending older rows). */
 function renderMessageWindow(scroll = true): void {
@@ -1077,6 +1219,7 @@ async function loadEarlier(): Promise<void> {
   msgUserBefore = prev.userBefore;
   msgWindowStart = 0;
   renderMessageWindow(false);
+  insertSlashCards();
   messagesEl.scrollTop = messagesEl.scrollHeight - distFromBottom;
 }
 
@@ -1172,6 +1315,9 @@ async function resumeSession(id: string): Promise<void> {
     renderMessageWindow();
   }
   saveMsgCache(id, fresh);
+  // Rehydrate collapsible slash-output cards from the per-session log file so
+  // they survive the reload (content lives on disk, not in the session DB).
+  await refreshSlashLog(id);
   addSystem(t('sessionRestored'));
   loadDraft(currentSessionId);
   // Non-blocking: applies the session's MCP toggles once core init finishes,
@@ -1190,6 +1336,8 @@ async function startNewSession(): Promise<void> {
   renderTasks();
   curAssistant = null;
   curThinking = null;
+  curSlash = null;
+  slashLog = [];
   userMessageSeq = 0;
   msgItems = [];
   msgOffset = 0;

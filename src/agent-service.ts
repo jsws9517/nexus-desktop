@@ -3,6 +3,9 @@ export type AgentEvent = { type: string } & Record<string, unknown>;
 
 import { isWorkerPrompt, KEY_MASK } from './shared/constants.js';
 import type { StoredRow } from './session-db.js';
+import { getLastUserMessageId } from './session-db.js';
+import { appendSlashLog, readSlashLog, slashLogPath } from './slash-log.js';
+import type { SlashLogEntry } from './slash-log.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
 import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.js';
 import type { Session } from 'nexus-coder/dist/src/session/types.js';
@@ -150,6 +153,11 @@ export class AgentService {
    *  for the revise dialogue instead of a normal chat turn. */
   private pendingRevise = false;
 
+  /** Active slash-command turn accumulation. Non-null only while a `/cmd` is
+   *  being executed; its buffered output is appended to the per-session log
+   *  file and surfaced to the UI as a collapsible card. Null for normal turns. */
+  private slashTurn: { cmd: string; anchorId?: number; buf: string } | null = null;
+
   onEvent?: (event: AgentEvent) => void;
   onPermission?: (req: PermissionRequest) => void;
   onLog?: (level: string, message: string) => void;
@@ -190,8 +198,15 @@ export class AgentService {
 
     this.agent.onEvent = (event: AgentEvent) => this.onEvent?.(event);
     // onOutput is used by slash-command and non-streaming paths (e.g. runRemoteSlashCommand's
-    // /plan /go /tasks). Surface it as a text event so the renderer displays it.
-    this.agent.onOutput = (text: string) => this.onEvent?.({ type: 'text', text });
+    // /plan /go /tasks). When we are inside a slash turn, route it to the slash
+    // log/card channel; otherwise surface it as a plain text event.
+    this.agent.onOutput = (text: string) => {
+      if (this.slashTurn) {
+        this.pushSlashText(text);
+        return;
+      }
+      this.onEvent?.({ type: 'text', text });
+    };
     this.agent.onPermissionRequest = async (
       toolName: string,
       _toolCallId: string,
@@ -282,15 +297,19 @@ export class AgentService {
     this.agent = null;
   }
 
-  private persistUserInput(input: string): void {
+  private persistUserInput(input: string): number | null {
     const agent = this.agent;
-    if (!agent) return;
+    if (!agent) return null;
     const sid = agent.getCurrentSessionId?.();
-    if (!sid) return;
+    if (!sid) return null;
     try {
       agent.session.addMessage(sid, { role: 'user', content: input });
+      // addMessage does not return the row id; read back the last user row we
+      // just inserted so the slash card can be anchored on reload.
+      return getLastUserMessageId(sid);
     } catch (e) {
       this.onLog?.('warn', `Persist user input failed: ${(e as Error).message}`);
+      return null;
     }
   }
 
@@ -300,19 +319,25 @@ export class AgentService {
    * transcript would otherwise miss them. Persist the raw input ourselves so
    * history/resume matches what the user actually typed. Persisted BEFORE the
    * turn so the row lands ahead of any sub-agent worker blocks that /go spawns.
+   * Returns the inserted user-row id (anchor for the slash-output card).
    */
-  private persistSlashInput(input: string): void {
-    if (!input.trim().startsWith('/')) return;
-    this.persistUserInput(input);
+  private persistSlashInput(input: string): number | null {
+    if (!input.trim().startsWith('/')) return null;
+    return this.persistUserInput(input);
   }
 
   async chat(input: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy()) throw new Error('Agent is busy');
     // chat() resolves pending askUser with the next user input, otherwise runs a turn
-    this.persistSlashInput(input);
+    const isSlash = input.trim().startsWith('/');
+    const anchorId = isSlash ? this.persistSlashInput(input) : null;
+    this.slashTurn = isSlash ? { cmd: input.trim(), anchorId: anchorId ?? undefined, buf: '' } : null;
     const bridged = await this.handleDagCommand(input);
-    if (bridged) return;
+    if (bridged) {
+      this.finalizeSlashTurn();
+      return;
+    }
 
     // Auto-name session on first user message
     const sid = this.agent.getCurrentSessionId?.();
@@ -340,6 +365,7 @@ export class AgentService {
     }
 
     await this.agent.chat(input);
+    this.finalizeSlashTurn();
   }
 
   // ---------------------------------------------------------------- DAG bridge
@@ -359,7 +385,49 @@ export class AgentService {
   }
 
   private emitText(text: string): void {
+    if (this.slashTurn) {
+      this.pushSlashText(text);
+      return;
+    }
     this.onEvent?.({ type: 'text', text });
+  }
+
+  /** Route a chunk of slash output to the UI as a collapsible card and buffer
+   *  it for the per-session log file. Emits `slash_start` on the first chunk so
+   *  the renderer opens exactly one card per command, then `slash` deltas. */
+  private pushSlashText(text: string): void {
+    const t = this.slashTurn;
+    if (!t) return;
+    if (t.buf === '') {
+      this.onEvent?.({ type: 'slash_start', command: t.cmd, anchorId: t.anchorId });
+    }
+    t.buf += text;
+    this.onEvent?.({ type: 'slash', text });
+  }
+
+  /** Finalize the active slash turn: append the buffered output to the
+   *  per-session markdown log and tell the renderer to close the card. Always
+   *  emits `slash_end` (even for empty output) so the renderer can drop a
+   *  card that never received real content. */
+  private finalizeSlashTurn(): void {
+    const t = this.slashTurn;
+    this.slashTurn = null;
+    if (!t) return;
+    const sid = this.agent?.getCurrentSessionId?.();
+    const hasContent = t.buf.trim().length > 0;
+    if (hasContent && sid) {
+      try {
+        appendSlashLog(sid, {
+          ts: new Date().toISOString(),
+          command: t.cmd,
+          anchorId: t.anchorId,
+          content: t.buf,
+        });
+      } catch (e) {
+        this.onLog?.('warn', `Slash log write failed: ${(e as Error).message}`);
+      }
+    }
+    this.onEvent?.({ type: 'slash_end', anchorId: t.anchorId, command: t.cmd });
   }
 
   /** Returns true when the input was consumed by the DAG bridge. */
@@ -738,6 +806,25 @@ export class AgentService {
     const offset = options?.offset ?? 0;
     const w = getMessageWindow(sessionId, offset, limit);
     return { items: w.items, total: w.total, userBefore: w.userBefore };
+  }
+
+  /**
+   * Slash-command output archive for a session (read back from the per-session
+   * markdown log; see src/slash-log.ts). Returned to the renderer so collapsible
+   * cards survive a session reload — the content lives on disk, never in the
+   * LLM session DB.
+   */
+  getSlashLog(sessionId: string): SlashLogEntry[] {
+    try {
+      return readSlashLog(sessionId);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Absolute path of the per-session slash log file (for the "open file" action). */
+  getSlashLogPath(sessionId: string): string {
+    return slashLogPath(sessionId);
   }
 
   async deleteSession(id: string): Promise<void> {
