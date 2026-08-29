@@ -153,6 +153,9 @@ declare global {
       saveProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
       openConfigWeb(): Promise<{ ok: boolean; port?: number; error?: string }>;
       setCwd(cwd: string): Promise<unknown>;
+      getDefaultProjectDir(): Promise<{ dir: string }>;
+      getSessionMetadata(sessionId: string): Promise<Record<string, unknown>>;
+      setSessionMetadata(sessionId: string, metadata: Record<string, unknown>): Promise<void>;
       openFolder(): Promise<{ canceled: boolean; path?: string }>;
       openFile(): Promise<{ canceled: boolean; paths: string[] }>;
       revealFile(path: string): Promise<{ ok: boolean }>;
@@ -667,7 +670,11 @@ function handleEvent(event: AgentEvent): void {
         const toggle = t2.content.parentElement?.querySelector('.thinking-toggle');
         if (toggle) toggle.textContent = t('thought');
       }
-      setBusy(false);
+      // NOTE: Do NOT call setBusy(false) here.  The core's runLlmTurn loops
+      // on tool calls — each intermediate turn emits turn_end, but busy stays
+      // true until the outer finally block emits session_end.  Resetting busy
+      // on turn_end causes a race where the renderer lets the user send a new
+      // message while the core is still processing tool results.
       void refreshSessionStats();
       break;
     }
@@ -1301,6 +1308,21 @@ async function syncMsgCache(sessionId: string): Promise<void> {
 
 async function resumeSession(id: string): Promise<void> {
   if (busy) return;
+  // Read session metadata BEFORE startSession so core's ensureMetadata
+  // (which backfills cwd with process.cwd()) doesn't overwrite a missing cwd.
+  let meta: Record<string, unknown> = {};
+  try { meta = await window.nexusDesktop.getSessionMetadata(id); } catch {}
+  const defaultDir = (await window.nexusDesktop.getDefaultProjectDir()).dir;
+  const metaCwd = (meta.projectDir ?? meta.cwd ?? '') as string;
+  const targetCwd = metaCwd && !/^[A-Z]:\\[\\\/]?$|^\//i.test(metaCwd) === false ? metaCwd : (metaCwd || defaultDir);
+  if (targetCwd) {
+    try {
+      await window.nexusDesktop.setCwd(targetCwd);
+      status = await window.nexusDesktop.getStatus();
+      cwdLabel.textContent = status.cwd;
+      cwdLabel.title = status.cwd;
+    } catch {}
+  }
   currentSessionId = await window.nexusDesktop.startSession(undefined, id);
   const cached = loadMsgCache(id);
   if (cached) {
@@ -1344,6 +1366,15 @@ async function startNewSession(): Promise<void> {
   msgTotal = 0;
   msgUserBefore = 0;
   msgWindowStart = 0;
+  // Chdir to default tasks dir before creating the session so core's
+  // ensureMetadata stores the correct cwd.
+  try {
+    const { dir } = await window.nexusDesktop.getDefaultProjectDir();
+    await window.nexusDesktop.setCwd(dir);
+    status = await window.nexusDesktop.getStatus();
+    cwdLabel.textContent = status.cwd;
+    cwdLabel.title = status.cwd;
+  } catch {}
   currentSessionId = await window.nexusDesktop.startSession();
   addSystem(t('sessionCreated'));
   loadDraft(currentSessionId);
@@ -2486,6 +2517,12 @@ $('#btn-open-folder').addEventListener('click', async () => {
   const res = await window.nexusDesktop.openFolder();
   if (res.canceled || !res.path) return;
   await window.nexusDesktop.setCwd(res.path);
+  // Persist to session metadata so future resume switches cwd.
+  if (currentSessionId) {
+    try {
+      await window.nexusDesktop.setSessionMetadata(currentSessionId, { projectDir: res.path, cwd: res.path });
+    } catch {}
+  }
   status = await window.nexusDesktop.getStatus();
   cwdLabel.textContent = status.cwd;
   cwdLabel.title = status.cwd;

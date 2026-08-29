@@ -494,6 +494,9 @@ function registerIpc(): void {
     if (typeof cwd === 'string' && cwd) saveSavedCwd(cwd);
     return res;
   });
+  ipcMain.handle('nexus:getDefaultProjectDir', call('getDefaultProjectDir'));
+  ipcMain.handle('nexus:getSessionMetadata', call('getSessionMetadata'));
+  ipcMain.handle('nexus:setSessionMetadata', call('setSessionMetadata'));
   ipcMain.handle('nexus:respondPermission', call('resolvePermission'));
   ipcMain.handle('nexus:setMcpEnabled', call('setMcpEnabled'));
   ipcMain.handle('nexus:getMcpStatus', call('getMcpStatus'));

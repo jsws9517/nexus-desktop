@@ -9,6 +9,9 @@ import type { SlashLogEntry } from './slash-log.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
 import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.js';
 import type { Session } from 'nexus-coder/dist/src/session/types.js';
+import { homedir } from 'node:os';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Headless bridge around the nexus CLI Agent.
@@ -849,12 +852,33 @@ export class AgentService {
 
   async setCwd(cwd: string): Promise<void> {
     if (!cwd) return;
+    try {
+      if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true });
+    } catch {}
     process.chdir(cwd);
     this.onLog?.('info', `Project directory set to ${cwd}`);
   }
 
   getCwd(): string {
     return process.cwd();
+  }
+
+  getDefaultProjectDir(): string {
+    const dir = join(homedir(), '.nexus', 'tasks');
+    try {
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    } catch {}
+    return dir;
+  }
+
+  getSessionMetadata(sessionId: string): Record<string, unknown> {
+    if (!this.agent?.session) return {};
+    return this.agent.session.get(sessionId)?.metadata ?? {};
+  }
+
+  setSessionMetadata(sessionId: string, metadata: Record<string, unknown>): void {
+    if (!this.agent?.session) return;
+    this.agent.session.updateMetadata(sessionId, metadata);
   }
 
   getProviders(): ProviderInfo[] {

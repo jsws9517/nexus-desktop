@@ -37,6 +37,9 @@ type WorkerRequest =
   | { id: number; method: 'getModels'; params?: { providerName?: string } }
   | { id: number; method: 'saveProvider'; params: { name: string; fields: Record<string, unknown> } }
   | { id: number; method: 'setCwd'; params: { cwd: string } }
+  | { id: number; method: 'getDefaultProjectDir' }
+  | { id: number; method: 'getSessionMetadata'; params: { sessionId: string } }
+  | { id: number; method: 'setSessionMetadata'; params: { sessionId: string; metadata: Record<string, unknown> } }
   | { id: number; method: 'resolvePermission'; params: { id: string; answer: string } }
   | { id: number; method: 'setMcpEnabled'; params: { enabled: boolean } }
   | { id: number; method: 'getMcpStatus' }
@@ -262,6 +265,16 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
       case 'setCwd':
         await service.setCwd(req.params.cwd);
         respond(req.id, { cwd: service.getCwd() });
+        break;
+      case 'getDefaultProjectDir':
+        respond(req.id, { dir: service.getDefaultProjectDir() });
+        break;
+      case 'getSessionMetadata':
+        respond(req.id, service.getSessionMetadata(req.params.sessionId));
+        break;
+      case 'setSessionMetadata':
+        service.setSessionMetadata(req.params.sessionId, req.params.metadata);
+        respond(req.id);
         break;
       case 'resolvePermission':
         tracePerm(`resolvePermission id=${req.params.id} answer=${req.params.answer}`);

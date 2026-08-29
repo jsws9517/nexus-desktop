@@ -39,6 +39,10 @@ const api = {
   saveProvider: (name: string, fields: Record<string, unknown>) =>
     ipcRenderer.invoke('nexus:saveProvider', { name, fields }),
   setCwd: (cwd: string) => ipcRenderer.invoke('nexus:setCwd', { cwd }),
+  getDefaultProjectDir: () => ipcRenderer.invoke('nexus:getDefaultProjectDir'),
+  getSessionMetadata: (sessionId: string) => ipcRenderer.invoke('nexus:getSessionMetadata', { sessionId }),
+  setSessionMetadata: (sessionId: string, metadata: Record<string, unknown>) =>
+    ipcRenderer.invoke('nexus:setSessionMetadata', { sessionId, metadata }),
   openFolder: () => ipcRenderer.invoke('nexus:openFolder'),
   openFile: () => ipcRenderer.invoke('nexus:openFile'),
   revealFile: (path: string) => ipcRenderer.invoke('nexus:revealFile', path),

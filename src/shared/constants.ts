@@ -32,4 +32,5 @@ export const EARLY_METHODS = new Set<string>([
   'getPermissions', 'getSpeechVisionConfig', 'getSessionStats',
   'getMcpServers', 'getMcpStatus', 'startSession',
   'getSlashLog', 'getSlashLogPath',
+  'setCwd', 'getDefaultProjectDir', 'getSessionMetadata',
 ]);
