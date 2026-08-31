@@ -771,10 +771,15 @@ export class AgentService {
       items = items.filter((s) => nonEmpty.has(String(s.id)));
     }
     if (q) {
+      // Session-name/id search plus task-graph matching: a query that is (or
+      // contains) a graphId or project name from task_graphs resolves to the
+      // sessions that own those graphs.
+      const { getSessionIdsByTaskGraph } = await import('./session-db.js');
+      const byTaskGraph = getSessionIdsByTaskGraph(q);
       items = items.filter((s) => {
         const name = String(s.name ?? '').toLowerCase();
         const id = String(s.id ?? '').toLowerCase();
-        return name.includes(q) || id.includes(q);
+        return name.includes(q) || id.includes(q) || byTaskGraph.has(String(s.id));
       });
     }
     const total = items.length;

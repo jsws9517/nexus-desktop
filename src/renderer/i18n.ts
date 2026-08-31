@@ -147,7 +147,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   dropHint: { 'zh-CN': '拖拽文件到此处，或 📎 选择', en: 'Drop files here or use 📎 to attach' },
   copied: { 'zh-CN': '已复制', en: 'Copied' },
   copy: { 'zh-CN': '复制', en: 'Copy' },
-  searchSessions: { 'zh-CN': '搜索会话…', en: 'Search sessions…' },
+  searchSessions: { 'zh-CN': '搜索会话（名称 / ID / graphId / 项目名）…', en: 'Search sessions (name / ID / graphId / project)…' },
   pinnedSessions: { 'zh-CN': '置顶', en: 'Pinned' },
   pin: { 'zh-CN': '置顶', en: 'Pin' },
   unpin: { 'zh-CN': '取消置顶', en: 'Unpin' },

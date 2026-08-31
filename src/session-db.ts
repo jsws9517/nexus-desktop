@@ -267,6 +267,46 @@ export function deleteMessagesFrom(sessionId: string, fromId: number): { deleted
 }
 
 /**
+ * Session ids whose task graph matches `q` against the graph id (graphId) or
+ * its project name. Used by listSessions({ search }) so a query can find
+ * sessions by graphId / projectName (mirrors core task_graphs schema). Returns
+ * an empty set when the DB/table is missing or the expected columns are absent
+ * (soft failure — a fresh install or core schema rename degrades to a no-op).
+ */
+export function getSessionIdsByTaskGraph(q: string): Set<string> {
+  const db = openDb();
+  if (!db) return new Set<string>();
+  try {
+    const cols = db.prepare('PRAGMA table_info(task_graphs)').all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has('id') || !names.has('session_id')) {
+      return new Set<string>();
+    }
+    const pattern = `%${likeEscape(q)}%`;
+    let rows: Array<{ session_id: string }>;
+    if (names.has('project_name')) {
+      rows = db
+        .prepare(
+          `SELECT session_id FROM task_graphs
+           WHERE id LIKE ? ESCAPE '\\' OR project_name LIKE ? ESCAPE '\\'`,
+        )
+        .all(pattern, pattern) as Array<{ session_id: string }>;
+    } else {
+      // Legacy core DB where the ALTER TABLE project_name never ran: degrade to
+      // graph-id-only matching so search still works.
+      rows = db
+        .prepare(`SELECT session_id FROM task_graphs WHERE id LIKE ? ESCAPE '\\'`)
+        .all(pattern) as Array<{ session_id: string }>;
+    }
+    return new Set(rows.map((r) => String(r.session_id)));
+  } catch {
+    return new Set<string>();
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * Sessions that actually contain at least one message row. Used by
  * listSessions({ excludeEmpty }) so the initial-load flow never picks an
  * empty-context session. Returns an empty set when the DB/messages table does

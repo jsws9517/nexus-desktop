@@ -12,7 +12,7 @@ const nexusDir = join(tmp, '.nexus');
 mkdirSync(nexusDir, { recursive: true });
 process.env.LLMA_DATA_DIR = tmp;
 
-const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens } =
+const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph } =
   await import('../dist/session-db.js');
 
 let db;
@@ -41,6 +41,15 @@ before(() => {
       FOREIGN KEY (session_id) REFERENCES sessions(id)
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+    CREATE TABLE IF NOT EXISTS task_graphs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      root_request TEXT NOT NULL,
+      project_name TEXT,
+      nodes TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
   const sid = 'sess-1';
   db.prepare('INSERT INTO sessions (id, name, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -57,6 +66,18 @@ before(() => {
     ['sess-1', 'assistant', 'reply', null],
   ];
   rows.forEach((r, i) => ins.run(...r, Date.now() + i));
+  const ig = db.prepare(
+    `INSERT INTO task_graphs (id, session_id, root_request, project_name, nodes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const graphs = [
+    ['graph-abc-1', 'sess-1', 'root1', 'alpha', '[]', 1, 1],
+    ['graph-zzz-2', 'sess-2', 'root2', 'beta', '[]', 2, 2],
+    ['graph-abc-3', 'sess-1', 'root3', 'gamma_50%', '[]', 3, 3], // graphId + tricky project name
+    ['graph-esc-4', 'sess-2', 'root4', 'pre_esc', '[]', 4, 4],
+    ['graph-pre-5', 'sess-1', 'root5', 'preXesc', '[]', 5, 5], // must NOT match 'pre_'
+  ];
+  graphs.forEach((g) => ig.run(...g));
 });
 
 test('getMessageRows returns all rows in insertion order', () => {
@@ -128,4 +149,35 @@ test('returns empty results for missing sessions', () => {
   assert.deepEqual(getMessageWindow('nope', 0, 10), { items: [], total: 0, userBefore: 0 });
   assert.equal(getMessageCount('nope'), 0);
   assert.equal(deleteMessagesFrom('nope', 1).deleted, 0);
+});
+
+test('getSessionIdsByTaskGraph matches graphId substrings', () => {
+  assert.deepEqual([...getSessionIdsByTaskGraph('abc')].sort(), ['sess-1']);
+  assert.deepEqual([...getSessionIdsByTaskGraph('graph-zzz')].sort(), ['sess-2']);
+  assert.deepEqual([...getSessionIdsByTaskGraph('zzz')].sort(), ['sess-2']);
+});
+
+test('getSessionIdsByTaskGraph matches project_name substrings', () => {
+  assert.deepEqual([...getSessionIdsByTaskGraph('alp')].sort(), ['sess-1']);
+  assert.deepEqual([...getSessionIdsByTaskGraph('beta')].sort(), ['sess-2']);
+});
+
+test('getSessionIdsByTaskGraph escapes LIKE wildcards (% and _)', () => {
+  // Literal '%' in the query must only match the graph whose project_name has
+  // an actual '50%' — not act as a wildcard.
+  assert.deepEqual([...getSessionIdsByTaskGraph('50%')].sort(), ['sess-1']);
+  // Literal '_' matches 'pre_esc' but NOT 'preXesc' (single-char wildcard off).
+  assert.deepEqual([...getSessionIdsByTaskGraph('pre_')].sort(), ['sess-2']);
+});
+
+test('getSessionIdsByTaskGraph returns empty set for no match', () => {
+  assert.equal(getSessionIdsByTaskGraph('nomatch-xyz').size, 0);
+});
+
+test('getSessionIdsByTaskGraph degrades to id-only when project_name is absent', () => {
+  // Legacy core DB without the ALTER TABLE project_name column: id matching
+  // still works, project-name matching silently no-ops.
+  db.prepare('ALTER TABLE task_graphs DROP COLUMN project_name').run();
+  assert.deepEqual([...getSessionIdsByTaskGraph('zzz')].sort(), ['sess-2']);
+  assert.equal(getSessionIdsByTaskGraph('beta').size, 0);
 });
