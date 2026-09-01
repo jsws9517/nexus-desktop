@@ -674,6 +674,10 @@ function registerIpc(): void {
     return call('switchModel')(_e, params);
   });
   ipcMain.handle('nexus:getModels', callForSession('getModels'));
+  ipcMain.handle('nexus:setDepthOverride', callForSession('setDepthOverride'));
+  ipcMain.handle('nexus:getActiveDepth', callForSession('getActiveDepth'));
+  ipcMain.handle('nexus:setPermissionsOverride', callForSession('setPermissionsOverride'));
+  ipcMain.handle('nexus:getActiveMode', callForSession('getActiveMode'));
   ipcMain.handle('nexus:saveProvider', call('saveProvider'));
   ipcMain.handle('nexus:setCwd', async (_e, params) => {
     const res = await call('setCwd')(_e, params);

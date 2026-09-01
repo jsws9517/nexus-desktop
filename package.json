@@ -11,6 +11,9 @@
     "agent": "node_modules/nexus-coder/dist/src/cli/index.js"
   },
   "scripts": {
+    "sync:core": "node scripts/sync-core.mjs",
+    "prebuild": "npm run sync:core",
+    "pretypecheck": "npm run sync:core",
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",

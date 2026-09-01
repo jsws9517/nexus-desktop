@@ -191,6 +191,10 @@ declare global {
       setRestoreSessionOnLaunch(enabled: boolean): Promise<{ ok: boolean }>;
       getLastOpenTabs(): Promise<string[]>;
       setLastOpenTabs(ids: string[]): Promise<{ ok: boolean }>;
+      setDepthOverride(level: string): Promise<{ depth: string }>;
+      getActiveDepth(): Promise<string>;
+      setPermissionsOverride(mode: string): Promise<{ mode: string }>;
+      getActiveMode(): Promise<string>;
       getInputRows(): Promise<number>;
       setInputRows(rows: number): Promise<{ ok: boolean }>;
       readRecentLogs(maxLines?: number): Promise<string[]>;
@@ -3127,15 +3131,19 @@ window.nexusDesktop.onTabsChanged((open) => {
     if (shouldRestore) {
       const savedTabs = await window.nexusDesktop.getLastOpenTabs();
       if (savedTabs.length > 0) {
-        // Open all previously open tabs. The last one in the list is the most
-        // recently opened / active tab.
+        // Check if global permissions is unattended — if so, inherit on all restored tabs.
+        let globalMode = '';
+        try { globalMode = (await window.nexusDesktop.getPermissions()).mode ?? ''; } catch {}
         for (let i = 0; i < savedTabs.length; i++) {
-          const sid = savedTabs[i];
-          await openTab(sid).catch(() => {});
+          await openTab(savedTabs[i]).catch(() => {});
         }
-        // Focus the last (most recently used) tab.
         const lastSid = savedTabs[savedTabs.length - 1];
         if (lastSid && tabs.has(lastSid)) await switchTab(lastSid);
+        if (globalMode === 'unattended') {
+          for (const sid of savedTabs) {
+            try { await window.nexusDesktop.setPermissionsOverride('unattended'); } catch {}
+          }
+        }
       } else {
         await startNewSession();
       }

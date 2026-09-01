@@ -36,6 +36,10 @@ type WorkerRequest =
   | { id: number; method: 'switchModel'; params: { modelId: string } }
   | { id: number; method: 'setProviderOverride'; params: { name: string; model?: string } }
   | { id: number; method: 'setModelOverride'; params: { modelId: string } }
+  | { id: number; method: 'setDepthOverride'; params: { level: string } }
+  | { id: number; method: 'getActiveDepth' }
+  | { id: number; method: 'setPermissionsOverride'; params: { mode: string } }
+  | { id: number; method: 'getActiveMode' }
   | { id: number; method: 'getModels'; params?: { providerName?: string } }
   | { id: number; method: 'saveProvider'; params: { name: string; fields: Record<string, unknown> } }
   | { id: number; method: 'setCwd'; params: { cwd: string } }
@@ -298,6 +302,18 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         break;
       case 'setModelOverride':
         respond(req.id, await service.setModelOverride(req.params.modelId));
+        break;
+      case 'setDepthOverride':
+        respond(req.id, await service.setDepthOverride(req.params.level));
+        break;
+      case 'getActiveDepth':
+        respond(req.id, service.getActiveDepth());
+        break;
+      case 'setPermissionsOverride':
+        respond(req.id, await service.setPermissionsOverride(req.params.mode));
+        break;
+      case 'getActiveMode':
+        respond(req.id, service.getActiveMode());
         break;
       case 'getModels':
         respond(req.id, await service.getModels(req.params?.providerName));

@@ -178,6 +178,8 @@ export class AgentService {
    *  config.json the whole app shares. */
   private overrideName = '';
   private overrideModel = '';
+  private overrideDepth = '';
+  private overrideMode = '';
 
   /** Active slash-command turn accumulation. Non-null only while a `/cmd` is
    *  being executed; its buffered output is appended to the per-session log
@@ -529,6 +531,40 @@ export class AgentService {
         }
       } else {
         this.emitText('Usage: /rename <new name>\n');
+      }
+      return true;
+    }
+    if (cmd === 'depth') {
+      // /depth | /depth switch <level> | /depth set <level> | /depth <level>
+      const sub = (args[0] || '').toLowerCase();
+      const levelArg = sub === 'switch' || sub === 'set' ? (args[1] || '') : (args[0] || '');
+      if (!levelArg) {
+        this.emitText(`Current depth: ${this.getActiveDepth()}\n`);
+      } else {
+        const valid = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+        const level = valid.includes(levelArg) ? levelArg : null;
+        if (!level) {
+          this.emitText(`Invalid depth: "${levelArg}". Valid: ${valid.join(' | ')}\n`);
+        } else {
+          await this.setDepthOverride(level);
+          this.emitText(`Depth set: ${level}\n`);
+        }
+      }
+      return true;
+    }
+    if (cmd === 'bypass') {
+      // /bypass | /bypass auto | /bypass off
+      const sub = (args[0] || '').toLowerCase();
+      if (!sub || sub === 'status') {
+        this.emitText(`Permission mode: ${this.getActiveMode()}\n`);
+      } else if (sub === 'auto') {
+        await this.setPermissionsOverride('auto');
+        this.emitText('Bypass ON: whitelist active, tools run without prompting.\n');
+      } else if (sub === 'off' || sub === 'prompt') {
+        await this.setPermissionsOverride('prompt');
+        this.emitText('Bypass OFF: reverted to prompt mode (each tool asks).\n');
+      } else {
+        this.emitText('Usage: /bypass [auto|off|status]\n');
       }
       return true;
     }
@@ -936,6 +972,54 @@ export class AgentService {
     this.overrideName = providerName;
     this.overrideModel = modelId;
     return { provider: providerName, model: modelId };
+  }
+
+  /**
+   * Per-session thinking-depth override (in-memory ONLY). Rebuilds the current
+   * provider with the overridden depth without writing to the shared config.
+   */
+  async setDepthOverride(level: string): Promise<{ depth: string }> {
+    if (!this.agent) throw new Error('Agent not initialized');
+    const cfg: Config = this.agent.config.get();
+    const providerName = this.overrideName || cfg.activeProvider;
+    const providerConfig = this.agent.config.getProvider(providerName);
+    const depth = level || this.overrideDepth || providerConfig.depth || 'off';
+    const p = createProvider(
+      providerConfig.type,
+      providerConfig.apiKey,
+      this.overrideModel || providerConfig.model,
+      providerConfig.baseUrl,
+      providerConfig.options,
+      providerName,
+      depth as Parameters<typeof createProvider>[6],
+    );
+    this.agent.provider = p;
+    this.agent.context?.setProvider(p);
+    const newLimit = this.agent.config.getModelContextLimit(this.overrideModel || providerConfig.model);
+    this.agent.context?.setMaxContextTokens(newLimit);
+    this.overrideDepth = depth;
+    return { depth };
+  }
+
+  getActiveDepth(): string {
+    return this.overrideDepth || this.agent?.getCurrentDepth?.() || 'off';
+  }
+
+  /**
+   * Per-session permissions-mode override (in-memory ONLY). Uses the core's
+   * setPermissionsInMemory so it never touches the shared config.json.
+   */
+  async setPermissionsOverride(mode: string): Promise<{ mode: string }> {
+    if (!this.agent) throw new Error('Agent not initialized');
+    const valid = ['prompt', 'auto', 'unattended'];
+    if (!valid.includes(mode)) throw new Error(`Invalid mode: ${mode}`);
+    this.agent.config.setPermissionsInMemory({ mode: mode as 'auto' | 'prompt' | 'unattended' });
+    this.overrideMode = mode;
+    return { mode };
+  }
+
+  getActiveMode(): string {
+    return this.overrideMode || this.agent?.config?.getPermissions?.()?.mode || 'prompt';
   }
 
   async setCwd(cwd: string): Promise<void> {
