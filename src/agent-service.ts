@@ -303,6 +303,12 @@ export class AgentService {
       _toolCallId: string,
       toolArgs: unknown,
     ) => {
+      // Auto mode: skip UI prompt entirely — let downstream checks handle everything.
+      // The safety gate (unattended) is intentionally more conservative; in auto mode
+      // there's no safety gate so we trust the allowlist + safe paths.
+      if (this.getActiveMode() === 'auto') {
+        return { verdict: 'allow' as const };
+      }
       const summary =
         toolArgs && typeof toolArgs === 'object'
           ? JSON.stringify(toolArgs).slice(0, 200)
