@@ -77,7 +77,7 @@ export const WORKER_METHODS: Record<string, MethodSpec> = {
   getDefaultProjectDir: { fields: {} },
   getSessionMetadata: { fields: { sessionId: S.str() } },
   setSessionMetadata: { fields: { sessionId: S.str(), metadata: S.obj() } },
-  resolvePermission: { fields: { id: S.str(200), answer: S.en(PERMISSION_ANSWERS) } },
+  resolvePermission: { fields: { id: S.str(200), answer: S.en(PERMISSION_ANSWERS), sessionId: S.str() }, optional: ['sessionId'] },
   setMcpEnabled: { fields: { enabled: S.bool() } },
   getMcpStatus: { fields: {} },
   getMcpServers: { fields: {} },

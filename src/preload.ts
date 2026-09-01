@@ -56,8 +56,8 @@ const api = {
   // Resolve a dropped/pasted File to its real path (Electron webUtils).
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   openConfigWeb: () => ipcRenderer.invoke('nexus:openConfigWeb'),
-  respondPermission: (id: string, answer: string) =>
-    ipcRenderer.invoke('nexus:respondPermission', { id, answer }),
+  respondPermission: (id: string, answer: string, sessionId?: string) =>
+    ipcRenderer.invoke('nexus:respondPermission', { id, answer, sessionId }),
   setMcpEnabled: (enabled: boolean) => ipcRenderer.invoke('nexus:setMcpEnabled', { enabled }),
   getMcpStatus: () => ipcRenderer.invoke('nexus:getMcpStatus'),
   getMcpServers: () => ipcRenderer.invoke('nexus:getMcpServers'),
@@ -105,7 +105,7 @@ const api = {
   onEvents: (cb: (events: unknown[]) => void) => {
     ipcRenderer.on('nexus:events', (_e, events) => cb(events));
   },
-  onPermission: (cb: (req: { id: string; question: string }) => void) => {
+  onPermission: (cb: (req: { id: string; question: string; sessionId?: string }) => void) => {
     ipcRenderer.on('nexus:permission', (_e, req) => cb(req));
   },
   onLog: (cb: (log: { level: string; message: string }) => void) => {

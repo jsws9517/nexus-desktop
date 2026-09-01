@@ -665,7 +665,7 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getDefaultProjectDir', call('getDefaultProjectDir'));
   ipcMain.handle('nexus:getSessionMetadata', call('getSessionMetadata'));
   ipcMain.handle('nexus:setSessionMetadata', call('setSessionMetadata'));
-  ipcMain.handle('nexus:respondPermission', call('resolvePermission'));
+  ipcMain.handle('nexus:respondPermission', callForSession('resolvePermission'));
   ipcMain.handle('nexus:setMcpEnabled', call('setMcpEnabled'));
   ipcMain.handle('nexus:getMcpStatus', call('getMcpStatus'));
   ipcMain.handle('nexus:getMcpServers', call('getMcpServers'));

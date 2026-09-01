@@ -168,7 +168,7 @@ declare global {
       getPathForFile(file: File): string;
       regenerate(sessionId: string, userIndex: number): Promise<unknown>;
       withdraw(sessionId: string, userIndex: number): Promise<string>;
-      respondPermission(id: string, answer: string): Promise<unknown>;
+      respondPermission(id: string, answer: string, sessionId?: string): Promise<unknown>;
       setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       getMcpStatus(): Promise<{ enabled: boolean; servers: McpServerStatus[] }>;
       getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }>>;
@@ -2008,10 +2008,10 @@ const BATCH_WINDOW_MS = 300;
 const permOverlay = $('#perm-overlay');
 const permCount = $('#perm-count');
 const permQuestion = $('#perm-question');
-const permBatch: { id: string; question: string }[] = [];
+const permBatch: { id: string; question: string; sessionId?: string }[] = [];
 let permTimer: ReturnType<typeof setTimeout> | null = null;
 
-function showPermission(req: { id: string; question: string }): void {
+function showPermission(req: { id: string; question: string; sessionId?: string }): void {
   permBatch.push(req);
   if (permOverlay.classList.contains('hidden')) {
     permOverlay.classList.remove('hidden');
@@ -2046,7 +2046,7 @@ async function answerPermission(answer: string): Promise<void> {
   console.log(`answerPermission: batch of ${batch.length} id(s) answer=${answer}`);
   for (const p of batch) {
     try {
-      await window.nexusDesktop.respondPermission(p.id, answer);
+      await window.nexusDesktop.respondPermission(p.id, answer, p.sessionId);
     } catch (e) {
       console.error(`respondPermission id=${p.id} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
