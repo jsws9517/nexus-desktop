@@ -103,6 +103,7 @@ type AgentEvent =
   | { type: 'tool_call_start'; index: number; name: string; args: Record<string, unknown> }
   | { type: 'tool_call_end'; index: number; id: string; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; index: number; name: string; content: string; isError?: boolean }
+  | { type: 'security_blocked'; toolName: string; rule: string; reason: string }
   | { type: 'file_ready'; path: string; mimeType: string; name: string }
   | { type: 'state_delta'; contextTokens: number; turn: number }
   | { type: 'turn_end'; stopReason: string; usage?: { inputTokens: number; outputTokens: number } }
@@ -705,6 +706,27 @@ function handleEvent(event: AgentEvent): void {
     case 'file_ready':
       addFileChip(event);
       break;
+    case 'security_blocked': {
+      // Unattended safety gate hard-blocked a dangerous operation — render a
+      // prominent warning card (the block is also audited to the security log).
+      const wrap = document.createElement('div');
+      wrap.className = 'msg security-blocked';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      const title = document.createElement('div');
+      title.className = 'security-blocked-title';
+      const zhB = getUiLang() === 'zh-CN';
+      title.textContent = `🚫 ${zhB ? '已阻断危险操作' : 'Dangerous operation blocked'} (${event.rule})`;
+      const body = document.createElement('div');
+      body.className = 'security-blocked-body';
+      body.textContent = event.reason;
+      bubble.appendChild(title);
+      bubble.appendChild(body);
+      wrap.appendChild(bubble);
+      messagesEl.appendChild(wrap);
+      scrollToBottom();
+      break;
+    }
     case 'state_delta':
       break;
     case 'turn_end': {
@@ -1623,6 +1645,7 @@ async function syncOpenTabs(): Promise<void> {
 function permLabel(mode: string): string {
   const zh = getUiLang() === 'zh-CN';
   if (mode === 'auto') return zh ? 'auto（自动放行）' : 'auto (auto-approve)';
+  if (mode === 'unattended') return zh ? 'unattended（无人值守·安全门）' : 'unattended (auto + guard)';
   if (mode === 'prompt') return zh ? 'prompt（每次询问）' : 'prompt (ask each time)';
   return mode || '—';
 }
@@ -2335,6 +2358,7 @@ function buildStartupSection(): void {
     return window.nexusDesktop.setMinimizeToTray(v);
   });
   buildToggle(t('restoreSessionLabel'), t('restoreSessionHint'), window.nexusDesktop.getRestoreSessionOnLaunch(), (v) => {
+    settingsMsg.textContent = v ? t('restoreSessionEnabled') : t('restoreSessionDisabled');
     return window.nexusDesktop.setRestoreSessionOnLaunch(v);
   });
 }
@@ -3115,9 +3139,8 @@ window.nexusDesktop.onTabsChanged((open) => {
       } else {
         await startNewSession();
       }
-    } else {
-      await startNewSession();
     }
+    // When shouldRestore is false, stay on blank slate — no session created.
     await refreshSessions();
     await refreshSidebarSession();
     await syncOpenTabs();

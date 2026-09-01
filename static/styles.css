@@ -350,6 +350,29 @@ body {
   padding: 4px 10px;
 }
 
+/* unattended safety gate: dangerous operation blocked */
+.msg.security-blocked { align-self: center; max-width: 96%; margin: 6px 0; }
+.msg.security-blocked .bubble {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: 10px;
+  padding: 8px 14px;
+  text-align: left;
+}
+.security-blocked-title {
+  color: var(--danger);
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+.security-blocked-body {
+  color: var(--text);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+
 /* load earlier */
 .load-earlier {
   align-self: center;

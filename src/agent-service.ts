@@ -1047,9 +1047,21 @@ export class AgentService {
     }
   }
 
-  getPermissions(): { mode: string; allowlist: string[]; safePaths: string[]; mcpAllowlist: string[] } {
+  getPermissions(): {
+    mode: string;
+    allowlist: string[];
+    safePaths: string[];
+    mcpAllowlist: string[];
+    safetyRules?: {
+      dbDeletion?: string;
+      iterativeDelete?: string;
+      batchWriteLimit?: number;
+      requireGitCheckpoint?: boolean;
+      autoCheckpoint?: boolean;
+    };
+  } {
     if (!this.agent?.config?.getPermissions) {
-      return { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [] };
+      return { mode: 'prompt', allowlist: [], safePaths: [], mcpAllowlist: [], safetyRules: {} };
     }
     return this.agent.config.getPermissions();
   }
