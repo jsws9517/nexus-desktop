@@ -2342,7 +2342,6 @@ function buildSettings(providersList: ProviderInfo[]): void {
   }
 
   buildStartupSection();
-  buildResourceSection();
   buildAppearanceSection();
   buildUpdateSection();
   buildLogSection();
@@ -2462,57 +2461,6 @@ function renderResourceInto(el: HTMLElement, s: ResourceStateInfo): void {
 
 function renderResourcePanel(s: ResourceStateInfo): void {
   if (rsideResourceEl) renderResourceInto(rsideResourceEl, s);
-}
-
-function buildResourceSection(): void {
-  const title = document.createElement('div');
-  title.className = 'settings-section-title';
-  title.textContent = t('resourceSection');
-  settingsBody.appendChild(title);
-
-  // Live system-load readout (memory / CPU) fed by the main-process watchdog.
-  const stateWrap = document.createElement('div');
-  stateWrap.className = 'startup-row';
-  const stateLabel = document.createElement('span');
-  stateLabel.className = 'startup-toggle';
-  const stateText = document.createElement('span');
-  stateText.className = 'startup-state';
-  stateLabel.appendChild(stateText);
-  const stateHint = document.createElement('div');
-  stateHint.className = 'startup-hint';
-  stateHint.textContent = t('resourceStateTitle');
-  stateWrap.appendChild(stateLabel);
-  stateWrap.appendChild(stateHint);
-  settingsBody.appendChild(stateWrap);
-
-  const renderState = (s: ResourceStateInfo): void => {
-    if (stateText) renderResourceInto(stateText, s);
-  };
-  window.nexusDesktop.getResourceState().then(renderState).catch(() => {});
-  window.nexusDesktop.onResourceState(renderState);
-
-  // Concurrent session (tab) limit.
-  const maxTabsRow = buildNumberRow(t('maxTabsLabel'), t('maxTabsHint'), 1, 20, window.nexusDesktop.getMaxTabs(), (v) =>
-    window.nexusDesktop.setMaxTabs(v),
-  );
-  settingsBody.appendChild(maxTabsRow);
-
-  // Memory threshold (%).
-  const memRow = buildNumberRow(t('memThresholdLabel'), t('memThresholdHint'), 50, 99, window.nexusDesktop.getMemThreshold(), (v) =>
-    window.nexusDesktop.setMemThreshold(v),
-  );
-  settingsBody.appendChild(memRow);
-
-  // CPU threshold (%).
-  const cpuRow = buildNumberRow(t('cpuThresholdLabel'), t('cpuThresholdHint'), 50, 99, window.nexusDesktop.getCpuThreshold(), (v) =>
-    window.nexusDesktop.setCpuThreshold(v),
-  );
-  settingsBody.appendChild(cpuRow);
-
-  // Resource monitoring toggle.
-  buildToggle(t('monitorEnabledLabel'), t('monitorEnabledHint'), window.nexusDesktop.getMonitorEnabled(), (v) => {
-    return window.nexusDesktop.setMonitorEnabled(v);
-  });
 }
 
 /** Build a labeled number-input settings row that persists immediately on change. */
@@ -3063,11 +3011,14 @@ window.nexusDesktop.onLog((log) => {
 // Right-side "Resources" panel: surface the live memory/CPU readout pushed by
 // the main-process watchdog. Subscribe to the stream for continuous updates and
 // pull once now so the panel has a value immediately (no 5s sampling lag).
-window.nexusDesktop.onResourceState((s) => renderResourcePanel(s as ResourceStateInfo));
-void window.nexusDesktop
-  .getResourceState()
-  .then((s) => renderResourcePanel(s))
-  .catch(() => {});
+// These must run after loadLanguage() so the first render uses the correct lang.
+async function initResourcePanel(): Promise<void> {
+  window.nexusDesktop.onResourceState((s) => renderResourcePanel(s as ResourceStateInfo));
+  try {
+    const s = await window.nexusDesktop.getResourceState();
+    renderResourcePanel(s);
+  } catch {}
+}
 
 // When the full config Web UI closes it may have rewritten config.json
 // (language, providers, MCP, ...). Reload the core config so the long-lived
@@ -3152,6 +3103,7 @@ window.nexusDesktop.onTabsChanged((open) => {
     await refreshSessions();
     await refreshSidebarSession();
     await syncOpenTabs();
+    await initResourcePanel();
     // Open the resumed session in its own tab so it runs in a per-session worker.
     if (currentSessionId && !tabs.has(currentSessionId)) await openTab(currentSessionId);
     renderTabBar();
