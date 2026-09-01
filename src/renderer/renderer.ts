@@ -34,6 +34,13 @@ interface PermissionsInfo {
   allowlist: string[];
   safePaths: string[];
   mcpAllowlist: string[];
+  safetyRules?: {
+    dbDeletion?: string;
+    iterativeDelete?: string;
+    batchWriteLimit?: number;
+    requireGitCheckpoint?: boolean;
+    autoCheckpoint?: boolean;
+  };
 }
 
 interface McpServerStatus {
@@ -181,6 +188,8 @@ declare global {
       setMinimizeToTray(enabled: boolean): Promise<{ ok: boolean }>;
       getRestoreSessionOnLaunch(): Promise<boolean>;
       setRestoreSessionOnLaunch(enabled: boolean): Promise<{ ok: boolean }>;
+      getLastOpenTabs(): Promise<string[]>;
+      setLastOpenTabs(ids: string[]): Promise<{ ok: boolean }>;
       getInputRows(): Promise<number>;
       setInputRows(rows: number): Promise<{ ok: boolean }>;
       readRecentLogs(maxLines?: number): Promise<string[]>;
@@ -3092,7 +3101,20 @@ window.nexusDesktop.onTabsChanged((open) => {
     cwdLabel.title = status.cwd;
     const shouldRestore = await window.nexusDesktop.getRestoreSessionOnLaunch();
     if (shouldRestore) {
-      await startOrResumeLatestSession();
+      const savedTabs = await window.nexusDesktop.getLastOpenTabs();
+      if (savedTabs.length > 0) {
+        // Open all previously open tabs. The last one in the list is the most
+        // recently opened / active tab.
+        for (let i = 0; i < savedTabs.length; i++) {
+          const sid = savedTabs[i];
+          await openTab(sid).catch(() => {});
+        }
+        // Focus the last (most recently used) tab.
+        const lastSid = savedTabs[savedTabs.length - 1];
+        if (lastSid && tabs.has(lastSid)) await switchTab(lastSid);
+      } else {
+        await startNewSession();
+      }
     } else {
       await startNewSession();
     }

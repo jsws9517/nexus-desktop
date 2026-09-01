@@ -167,6 +167,7 @@ interface DesktopState {
   minimizeToTray?: boolean;
   inputRows?: number;
   restoreSessionOnLaunch?: boolean;
+  lastOpenTabs?: string[];
   // Resource/session governance (desktop-only; the core schema strips unknowns).
   maxTabs?: number;
   memThresholdPct?: number;
@@ -232,6 +233,15 @@ function getRestoreSessionOnLaunch(): boolean {
 
 function setRestoreSessionOnLaunch(enabled: boolean): void {
   writeDesktopState({ restoreSessionOnLaunch: enabled });
+}
+
+function getLastOpenTabs(): string[] {
+  const tabs = readDesktopState().lastOpenTabs;
+  return Array.isArray(tabs) ? tabs : [];
+}
+
+function setLastOpenTabs(ids: string[]): void {
+  writeDesktopState({ lastOpenTabs: ids.length > 0 ? ids : undefined });
 }
 
 function getInputRows(): number {
@@ -708,6 +718,12 @@ function registerIpc(): void {
     setRestoreSessionOnLaunch(enabled);
     return { ok: true };
   });
+  ipcMain.handle('nexus:getLastOpenTabs', (): string[] => getLastOpenTabs());
+  ipcMain.handle('nexus:setLastOpenTabs', (_e, ids: unknown): { ok: boolean } => {
+    if (!Array.isArray(ids)) return { ok: false };
+    setLastOpenTabs(ids as string[]);
+    return { ok: true };
+  });
 
   // Appearance: input textarea row count.
   ipcMain.handle('nexus:getInputRows', (): number => getInputRows());
@@ -906,6 +922,7 @@ app.on('before-quit', () => {
   intentionallyStopped = true;
   if (restartTimer) clearTimeout(restartTimer);
   resourceMon.stop();
+  setLastOpenTabs(sessionWorkers.tabs().map((t) => t.sessionId));
   sessionWorkers.closeAll();
   worker?.stop();
 });
