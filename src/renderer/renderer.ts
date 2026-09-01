@@ -1353,50 +1353,6 @@ async function syncMsgCache(sessionId: string): Promise<void> {
   } catch {}
 }
 
-async function resumeSession(id: string): Promise<void> {
-  if (busy) return;
-  // Read session metadata BEFORE startSession so core's ensureMetadata
-  // (which backfills cwd with process.cwd()) doesn't overwrite a missing cwd.
-  let meta: Record<string, unknown> = {};
-  try { meta = await window.nexusDesktop.getSessionMetadata(id); } catch {}
-  const defaultDir = (await window.nexusDesktop.getDefaultProjectDir()).dir;
-  const metaCwd = (meta.projectDir ?? meta.cwd ?? '') as string;
-  const targetCwd = metaCwd && !/^[A-Z]:\\[\\\/]?$|^\//i.test(metaCwd) === false ? metaCwd : (metaCwd || defaultDir);
-  if (targetCwd) {
-    try {
-      await window.nexusDesktop.setCwd(targetCwd);
-      status = await window.nexusDesktop.getStatus();
-      cwdLabel.textContent = status.cwd;
-      cwdLabel.title = status.cwd;
-    } catch {}
-  }
-  currentSessionId = await window.nexusDesktop.startSession(undefined, id);
-  const cached = loadMsgCache(id);
-  if (cached) {
-    // Instant paint from cache while the fresh window is fetched in the background.
-    applyMsgWindow(cached);
-    renderMessageWindow();
-  }
-  const fresh = await window.nexusDesktop.getMessages(id, { last: MSG_WINDOW });
-  const changed = !cached || cached.total !== fresh.total || !sameTail(cached.items, fresh.items);
-  if (changed) {
-    applyMsgWindow(fresh);
-    renderMessageWindow();
-  }
-  saveMsgCache(id, fresh);
-  // Rehydrate collapsible slash-output cards from the per-session log file so
-  // they survive the reload (content lives on disk, not in the session DB).
-  await refreshSlashLog(id);
-  addSystem(t('sessionRestored'));
-  loadDraft(currentSessionId);
-  // Non-blocking: applies the session's MCP toggles once core init finishes,
-  // so opening a session never waits on the MCP connect phase.
-  void applyMcpPref(currentSessionId);
-  await refreshSessions(id);
-  await refreshSidebarSession();
-  await refreshSessionStats();
-}
-
 async function startNewSession(): Promise<void> {
   if (busy) return;
   messagesEl.innerHTML = '';
@@ -1405,30 +1361,7 @@ async function startNewSession(): Promise<void> {
   renderTasks();
   curAssistant = null;
   curThinking = null;
-  curSlash = null;
-  slashLog = [];
-  userMessageSeq = 0;
-  msgItems = [];
-  msgOffset = 0;
-  msgTotal = 0;
-  msgUserBefore = 0;
-  msgWindowStart = 0;
-  // Chdir to default tasks dir before creating the session so core's
-  // ensureMetadata stores the correct cwd.
-  try {
-    const { dir } = await window.nexusDesktop.getDefaultProjectDir();
-    await window.nexusDesktop.setCwd(dir);
-    status = await window.nexusDesktop.getStatus();
-    cwdLabel.textContent = status.cwd;
-    cwdLabel.title = status.cwd;
-  } catch {}
-  currentSessionId = await window.nexusDesktop.startSession();
-  addSystem(t('sessionCreated'));
-  loadDraft(currentSessionId);
-  void applyMcpPref(currentSessionId);
-  await refreshSessions();
-  await refreshSidebarSession();
-  await refreshSessionStats();
+  await openNewTab();
 }
 
 async function startOrResumeLatestSession(): Promise<void> {
@@ -1443,7 +1376,8 @@ async function startOrResumeLatestSession(): Promise<void> {
   });
   const latest = sessions[0];
   if (latest) {
-    await resumeSession(latest.id);
+    // Open as a tab (session worker) so it doesn't share the global worker.
+    await openTab(latest.id, latest.name);
     return;
   }
   await startNewSession();
