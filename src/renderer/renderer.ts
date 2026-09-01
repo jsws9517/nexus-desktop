@@ -2413,34 +2413,52 @@ function buildToggle(
 
 /** Resource & session governance (desktop.json — see main/index.ts). Values are
  *  applied immediately on change (like deferMcp/inputRows), not on Save. */
-function resourceStateText(s: ResourceStateInfo): { text: string; color: string } {
-  const mem = Math.round(s.memoryPct * 100);
-  const cpu = Math.round(s.cpuPct * 100);
-  const val =
-    Number.isFinite(mem) && Number.isFinite(cpu)
-      ? t('resourceStateValue', { mem: Math.max(0, Math.min(100, mem)), cpu: Math.max(0, Math.min(100, cpu)) })
-      : t('resourceStateUnavailable');
-  const status = !s.running
-    ? t('resourceStatusPaused')
-    : s.status === 'overloaded'
-      ? t('resourceStatusOverloaded')
-      : s.status === 'warning'
-        ? t('resourceStatusWarning')
-        : t('resourceStatusNormal');
-  const color =
-    !s.running || s.status === 'normal'
-      ? 'var(--text-dim)'
-      : s.status === 'overloaded'
-        ? 'var(--danger)'
-        : 'var(--warn)';
-  return { text: `${val} · ${status}`, color };
+
+/** Status text + class suffix for the live readout; also computes a load color
+ *  that shifts mem/cpu value tints toward warning/danger when overloaded. */
+function resourceStatusInfo(s: ResourceStateInfo): { key: string; cls: 'paused' | 'normal' | 'warning' | 'overloaded' } {
+  if (!s.running) return { key: 'resourceStatusPaused', cls: 'paused' };
+  if (s.status === 'overloaded') return { key: 'resourceStatusOverloaded', cls: 'overloaded' };
+  if (s.status === 'warning') return { key: 'resourceStatusWarning', cls: 'warning' };
+  return { key: 'resourceStatusNormal', cls: 'normal' };
 }
 
-/** Render the live memory/CPU readout into an element (shared by settings + right panel). */
+/**
+ * Render the live memory/CPU readout into an element (shared by settings + right
+ * panel). Labels are dim-neutral; the Memory value is tinted accent (blue), the
+ * CPU value ok (green), and the status shifts to warn/danger when load is high.
+ * Built with createElement/textContent (no innerHTML) to stay injection-safe.
+ */
 function renderResourceInto(el: HTMLElement, s: ResourceStateInfo): void {
-  const { text, color } = resourceStateText(s);
-  el.textContent = text;
-  el.style.color = color;
+  const mem = Math.round(s.memoryPct * 100);
+  const cpu = Math.round(s.cpuPct * 100);
+  const hasValues = Number.isFinite(mem) && Number.isFinite(cpu);
+  const status = resourceStatusInfo(s);
+  const loadCls = status.cls === 'overloaded' ? 'is-overloaded' : status.cls === 'warning' ? 'is-warning' : '';
+
+  el.textContent = '';
+  el.style.color = '';
+
+  const span = (cls: string, text: string): HTMLSpanElement => {
+    const sEl = document.createElement('span');
+    sEl.className = cls;
+    sEl.textContent = text;
+    return sEl;
+  };
+
+  if (hasValues) {
+    const memLabel = span('rres-label', t('resourceMemoryLabel'));
+    const memVal = span(`rres-val rres-val-mem ${loadCls}`, `${Math.max(0, Math.min(100, mem))}%`);
+    const cpuLabel = span('rres-label', t('resourceCpuLabel'));
+    const cpuVal = span(`rres-val rres-val-cpu ${loadCls}`, `${Math.max(0, Math.min(100, cpu))}%`);
+    const sep = span('rres-sep', '·');
+    el.append(memLabel, memVal, sep, cpuLabel, cpuVal);
+  } else {
+    el.append(span('rres-val rres-invalid', t('resourceStateUnavailable')));
+  }
+
+  const statusEl = span(`rres-status ${status.cls}`, t(status.key));
+  el.append(span('rres-sep', '·'), statusEl);
 }
 
 function renderResourcePanel(s: ResourceStateInfo): void {
@@ -3042,6 +3060,15 @@ window.nexusDesktop.onPermission(showPermission);
 window.nexusDesktop.onLog((log) => {
   if (log.level === 'error') inputStatus.textContent = `⚠️ ${errText(log.message)}`;
 });
+
+// Right-side "Resources" panel: surface the live memory/CPU readout pushed by
+// the main-process watchdog. Subscribe to the stream for continuous updates and
+// pull once now so the panel has a value immediately (no 5s sampling lag).
+window.nexusDesktop.onResourceState((s) => renderResourcePanel(s as ResourceStateInfo));
+void window.nexusDesktop
+  .getResourceState()
+  .then((s) => renderResourcePanel(s))
+  .catch(() => {});
 
 // When the full config Web UI closes it may have rewritten config.json
 // (language, providers, MCP, ...). Reload the core config so the long-lived

@@ -166,6 +166,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   resourcePanelTitle: { 'zh-CN': '系统资源', en: 'Resources' },
   resourceStateTitle: { 'zh-CN': '系统资源占用', en: 'System load' },
   resourceStateValue: { 'zh-CN': '内存 {mem}% · CPU {cpu}%', en: 'Memory {mem}% · CPU {cpu}%' },
+  resourceMemoryLabel: { 'zh-CN': '内存', en: 'Memory' },
+  resourceCpuLabel: { 'zh-CN': 'CPU', en: 'CPU' },
   resourceStateUnavailable: { 'zh-CN': '不可用（采样中…）', en: 'Unavailable (sampling…)' },
   resourceStatusNormal: { 'zh-CN': '正常', en: 'Normal' },
   resourceStatusWarning: { 'zh-CN': '占用升高', en: 'Elevated' },

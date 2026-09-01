@@ -883,6 +883,22 @@ body {
 .rside-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
 .rside-divider { border: 0; border-top: 1px solid var(--border); margin: 2px 0; }
 
+/* Live memory/CPU readout (right sidebar + settings). Labels stay dim-neutral
+   with the values tinted by channel; status shifts to warn/danger under load. */
+.rside-resource, .startup-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.5; }
+.rres-label { color: var(--text-dim); }
+.rres-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+.rres-val-mem { color: var(--accent); }
+.rres-val-cpu { color: var(--ok); }
+.rres-val-mem.is-warning, .rres-val-cpu.is-warning { color: var(--warn); }
+.rres-val-mem.is-overloaded, .rres-val-cpu.is-overloaded { color: var(--danger); }
+.rres-invalid { color: var(--text-dim); }
+.rres-sep { color: var(--text-dim); }
+.rres-status { color: var(--text-dim); }
+.rres-status.warning { color: var(--warn); }
+.rres-status.overloaded { color: var(--danger); }
+.rres-status.normal { color: var(--ok); }
+
 .info-grid { display: flex; flex-direction: column; gap: 7px; }
 .info-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 .info-row-top { align-items: flex-start; }

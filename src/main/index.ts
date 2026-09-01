@@ -263,7 +263,8 @@ function setCpuThresholdPct(n: number): void {
 }
 
 function getMonitorEnabled(): boolean {
-  return readDesktopState().monitorEnabled === true;
+  const v = readDesktopState().monitorEnabled;
+  return typeof v === 'boolean' ? v : true;
 }
 function setMonitorEnabled(enabled: boolean): void {
   writeDesktopState({ monitorEnabled: enabled });
