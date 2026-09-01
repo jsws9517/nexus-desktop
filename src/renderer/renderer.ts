@@ -1206,20 +1206,42 @@ function makeSlashCardEl(command: string, content: string): SlashCardRec {
 
 /** Re-insert all cached slash cards into the current history DOM, anchored
  *  after their slash-input message (matched by data-mid). Cards whose anchor
- *  isn't in the visible window are appended at the end. Call after any
+ *  isn't in the visible window are placed at the correct chronological position
+ *  relative to visible messages (not dumped at the end). Call after any
  *  renderMessageWindow() so reloads / load-earlier don't drop them. */
 function insertSlashCards(): void {
   if (slashLog.length === 0) return;
+  // Collect all visible elements with data-mid in DOM order for position lookups.
+  const visibleMids: Array<{ mid: number; el: Element }> = [];
+  for (const el of messagesEl.querySelectorAll('[data-mid]')) {
+    const mid = Number((el as HTMLElement).dataset.mid);
+    if (!isNaN(mid)) visibleMids.push({ mid, el });
+  }
   for (const e of slashLog) {
     const rec = makeSlashCardEl(e.command, e.content);
     if (e.anchorId != null) {
+      // Fast path: exact anchor in the visible DOM → insert right after it.
       const anchor = messagesEl.querySelector(`[data-mid="${e.anchorId}"]`);
       if (anchor) {
         if (anchor.nextSibling) messagesEl.insertBefore(rec.card, anchor.nextSibling);
         else messagesEl.appendChild(rec.card);
         continue;
       }
+      // Slow path: anchor is outside the loaded message window. Find the first
+      // visible element whose mid is greater than the anchorId and insert before
+      // it so the card lands at the correct chronological position.
+      let insertBefore: Element | null = null;
+      for (const v of visibleMids) {
+        if (v.mid > e.anchorId) { insertBefore = v.el; break; }
+      }
+      if (insertBefore) {
+        messagesEl.insertBefore(rec.card, insertBefore);
+      } else {
+        messagesEl.appendChild(rec.card);
+      }
+      continue;
     }
+    // No anchorId at all (legacy entry): append at end as last resort.
     messagesEl.appendChild(rec.card);
   }
 }
