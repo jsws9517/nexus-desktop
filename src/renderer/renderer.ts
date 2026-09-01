@@ -2370,6 +2370,7 @@ function buildToggle(
   label.appendChild(text);
   row.appendChild(label);
   row.appendChild(hint);
+  settingsBody.appendChild(row);
 }
 
 /** Resource & session governance (desktop.json — see main/index.ts). Values are
