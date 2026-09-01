@@ -69,6 +69,8 @@ export const WORKER_METHODS: Record<string, MethodSpec> = {
   getSessionStats: { fields: { sessionId: S.str() } },
   switchProvider: { fields: { name: S.str(200) } },
   switchModel: { fields: { modelId: S.str(500) } },
+  setProviderOverride: { fields: { name: S.str(200), model: S.str(500) }, optional: ['model'] },
+  setModelOverride: { fields: { modelId: S.str(500) } },
   getModels: { fields: { providerName: S.str(200) }, optional: ['providerName'] },
   saveProvider: { fields: { name: S.str(200), fields: S.obj() } },
   setCwd: { fields: { cwd: S.str(4096) } },

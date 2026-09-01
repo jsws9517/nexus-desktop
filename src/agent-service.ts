@@ -7,6 +7,7 @@ import { getLastUserMessageId } from './session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from './slash-log.js';
 import type { SlashLogEntry } from './slash-log.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
+import { createProvider } from 'nexus-coder/dist/src/llm/provider.js';
 import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.js';
 import type { Session } from 'nexus-coder/dist/src/session/types.js';
 import { homedir } from 'node:os';
@@ -41,6 +42,21 @@ export interface ProviderInfo {
 function maskKey(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) return '';
   return KEY_MASK;
+}
+
+/** A tool definition surfaced by the MCP hub (MCP tools carry a `server` tag). */
+interface McpToolDef {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  server?: string;
+}
+
+/** Structural subset of the core `ClientManager` we patch for MCP proxying. */
+interface ClientManagerLike {
+  getAllTools(): Promise<McpToolDef[]> | McpToolDef[];
+  callTool(name: string, args: unknown): Promise<unknown>;
+  builtinTools: Array<{ name: string }>;
 }
 
 /**
@@ -156,14 +172,84 @@ export class AgentService {
    *  for the revise dialogue instead of a normal chat turn. */
   private pendingRevise = false;
 
+  /** Per-session provider/model override (in-memory ONLY — never writes the
+   *  shared global config). Populated by setProviderOverride/setModelOverride
+   *  so a session worker can run a different model without polluting the
+   *  config.json the whole app shares. */
+  private overrideName = '';
+  private overrideModel = '';
+
   /** Active slash-command turn accumulation. Non-null only while a `/cmd` is
    *  being executed; its buffered output is appended to the per-session log
    *  file and surfaced to the UI as a collapsible card. Null for normal turns. */
   private slashTurn: { cmd: string; anchorId?: number; buf: string } | null = null;
 
+  /**
+   * Forwarder to the shared, main-process MCP hub. Set by the worker process
+   * (`sendMcp`). When non-null, this agent proxies MCP tool discovery + calls
+   * through the hub instead of owning its own MCP child processes — so every
+   * tab shares ONE MCP server process instead of spawning a shadow copy.
+   */
+  onMcpRequest?: (op: string, params?: Record<string, unknown>) => Promise<unknown>;
+
   onEvent?: (event: AgentEvent) => void;
   onPermission?: (req: PermissionRequest) => void;
   onLog?: (level: string, message: string) => void;
+
+  private async mcpRequest<T = unknown>(op: string, params?: Record<string, unknown>): Promise<T> {
+    if (!this.onMcpRequest) throw new Error('MCP proxy is not wired (no main-process hub)');
+    return (await this.onMcpRequest(op, params)) as T;
+  }
+
+  /**
+   * Cached MCP tool definitions fetched from the shared main-process hub. The
+   * core calls `agent.mcp.getAllTools()` SYNCHRONOUSLY (per turn, to build the
+   * tool list), so this patch must supply an array, not a Promise. Remote MCP
+   * tools are prefetched into this cache asynchronously by `refreshMcpToolCache()`.
+   */
+  private mcpToolCache: McpToolDef[] = [];
+
+  /**
+   * Asynchronously refresh the cached MCP tool list from the shared hub. Called
+   * after init / MCP toggles; failures leave the previous cache intact and log.
+   */
+  async refreshMcpToolCache(): Promise<void> {
+    try {
+      const remote = await this.mcpRequest<McpToolDef[]>('getTools');
+      this.mcpToolCache = remote ?? [];
+    } catch (e) {
+      this.onLog?.('warn', `MCP tool cache refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * Route MCP tool discovery + execution through the shared hub while keeping
+   * builtin tools (file/exec/skill) running locally on this worker. The core
+   * only touches `agent.mcp.getAllTools` (per turn) and `agent.mcp.callTool`
+   * (per tool call), so patching just those two methods is sufficient.
+   */
+  private applyMcpProxy(agent: Agent): void {
+    // The core ClientManager's `builtinTools` is private-ish in the typings;
+    // cast through unknown so we can wrap getAllTools/callTool at runtime.
+    const local = agent.mcp as unknown as ClientManagerLike;
+    if (!local) return;
+    const originalGetAll = local.getAllTools.bind(local);
+    const originalCall = local.callTool.bind(local);
+    // Builtin tools carry no `server` tag; MCP tools carry one. Keep builtin
+    // local (fast, per-worker), forward only MCP tools to the hub.
+    local.getAllTools = () => {
+      const builtin = (originalGetAll() as McpToolDef[]).filter((t: McpToolDef) => !(t as McpToolDef).server);
+      return [...builtin, ...this.mcpToolCache];
+    };
+    local.callTool = async (name: string, args: unknown): Promise<unknown> => {
+      const isBuiltin = (local.builtinTools as Array<{ name: string }>).some((t) => t.name === name);
+      if (isBuiltin) return originalCall(name, args);
+      return this.mcpRequest('callTool', { name, args });
+    };
+    // Kick off the first prefetch so MCP tools are available (not just builtin)
+    // on the first turn without blocking synchronous tool-list assembly.
+    void this.refreshMcpToolCache();
+  }
 
   get isReady(): boolean {
     return this.initialized && this.agent !== null;
@@ -227,20 +313,18 @@ export class AgentService {
       // still persist 'a' via the path-authorizer's GLOBAL_SCOPE).
       return { verdict: ['y', 'a'].includes(answer.trim().toLowerCase()) ? 'allow' : 'deny' };
     };
+    this.applyMcpProxy(this.agent);
     this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
-   * Phase 2 of startup: full init (skills load + MCP connect). Only chat and
-   * mutation methods gate on this — see EARLY_METHODS in main/index.ts.
-   *
-   * The core's agent.init() bundles MCP connect (sequential) with skills load
-   * and ignores the `deferMCP` option. We bypass its sequential connectAll by
-   * temporarily clearing cfg.mcpServers (ConfigManager.get() returns the live
-   * in-memory object), then connect MCP servers ourselves IN PARALLEL. `defer`
-   * chooses whether init waits for MCP (default, false) or returns immediately
-   * while MCP connects in the background (true) — see the desktop settings
-   * toggle, persisted to ~/.nexus/desktop.json and passed via the worker.
+   * Phase 2 of startup: full init (skills load). MCP is owned by the shared
+   * main-process hub, NOT by this worker, so no shadow MCP processes are
+   * spawned per worker/tab. This method keeps the core from connecting MCP
+   * locally (by temporarily clearing cfg.mcpServers around agent.init()) and
+   * relies on the hub proxy wired in `earlyInit` for any MCP tool access. The
+   * `defer` flag now just chooses whether init waits for the hub to begin its
+   * background connect (default) or returns immediately.
    */
   async init(cwd?: string, opts?: { deferMcp?: boolean }): Promise<void> {
     await this.earlyInit(cwd);
@@ -255,42 +339,13 @@ export class AgentService {
     } finally {
       if (savedMcp) cfg.mcpServers = savedMcp;
     }
-    const enabled = Object.entries(savedMcp ?? {}).filter(([, s]) => s.autoStart !== false);
-    if (defer) {
-      // Background connect: init resolves immediately, MCP tools appear as
-      // each server lands. Failures are logged, never fatal.
-      void this.connectMcpParallel(enabled);
-    } else {
-      await this.connectMcpParallel(enabled);
-    }
+    // Kick the hub so MCP servers connect once (globally), without blocking
+    // this worker. Tools appear in every tab once the hub they proxy is ready.
+    void this.mcpRequest('connect')
+      .then(() => this.refreshMcpToolCache())
+      .catch(() => {});
     this.initialized = true;
     this.onLog?.('info', `Nexus core initialized (cwd=${process.cwd()}, deferMcp=${defer})`);
-  }
-
-  /**
-   * Connect all auto-start MCP servers concurrently. Each server's own latency
-   * is no longer summed — the phase completes when the slowest server is done.
-   * connectServer is idempotent per name and catches per-server failures.
-   */
-  private async connectMcpParallel(
-    enabled: Array<[string, NonNullable<Config['mcpServers']>[string]]>,
-  ): Promise<void> {
-    const agent = this.agent;
-    if (!agent) return;
-    if (enabled.length === 0) return;
-    const t0 = Date.now();
-    const results = await Promise.allSettled(
-      enabled.map(async ([name, srv]) => {
-        try {
-          await agent.mcp.connectServer(name, srv);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          this.onLog?.('warn', `MCP "${name}" connect failed: ${msg}`);
-        }
-      }),
-    );
-    const failed = results.filter((r) => r.status === 'rejected').length;
-    this.onLog?.('info', `MCP connect done: ${enabled.length - failed}/${enabled.length} servers in ${Date.now() - t0}ms`);
   }
 
   async shutdown(): Promise<void> {
@@ -657,14 +712,11 @@ export class AgentService {
     if (!this.agent) return { ok: false, error: 'Agent not initialized' };
     if (enabled === this.mcpEnabled) return { ok: true };
     try {
-      if (enabled) {
-        const cfg = this.agent.config.get();
-        await this.agent.mcp.connectAll(cfg.mcpServers ?? {});
-      } else {
-        await this.agent.mcp.disconnect();
-      }
+      const res = (await this.mcpRequest('setEnabled', { enable: enabled })) as { ok: boolean; error?: string };
+      if (!res.ok) return res;
       this.mcpEnabled = enabled;
       this.onLog?.('info', `MCP ${enabled ? 'enabled' : 'disabled'}`);
+      await this.refreshMcpToolCache();
       return { ok: true };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -673,66 +725,37 @@ export class AgentService {
     }
   }
 
-  getMcpStatus(): { enabled: boolean; servers: Array<Record<string, unknown>> } {
-    const servers = (this.agent?.mcp?.listConnections?.() ?? []).map((c: Record<string, unknown>) => ({
-      name: c.name,
-      toolCount: c.toolCount,
-      status: c.status,
-    }));
-    return {
-      enabled: servers.length > 0,
-      servers,
-    };
+  async getMcpStatus(): Promise<{ enabled: boolean; servers: Array<Record<string, unknown>> }> {
+    try {
+      const st = (await this.mcpRequest('status')) as { enabled: boolean; servers: Array<Record<string, unknown>> };
+      return { enabled: !!st?.enabled, servers: st?.servers ?? [] };
+    } catch {
+      return { enabled: this.mcpEnabled, servers: [] };
+    }
   }
 
   /**
-   * Registered MCP servers from config, with live connection state.
+   * Registered MCP servers from config, with live connection state (via hub).
    */
-  getMcpServers(): Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }> {
-    if (!this.agent) return [];
-    const cfg = this.agent.config.get();
-    const connectedMap = new Map<string, Record<string, unknown>>(
-      (this.agent.mcp.listConnections?.() ?? []).map((c: Record<string, unknown>) => [
-        c.name as string,
-        c,
-      ]),
-    );
-    const errors = new Map<string, Record<string, unknown>>(
-      (this.agent.mcp.getServerErrors?.() ?? []).map((c: Record<string, unknown>) => [
-        c.name as string,
-        c,
-      ]),
-    );
-    return Object.entries(cfg.mcpServers ?? {}).map(([name, s]: [string, Record<string, unknown>]) => ({
-      name,
-      autoStart: s.autoStart !== false,
-      connected: connectedMap.has(name),
-      toolCount: Number(connectedMap.get(name)?.toolCount ?? 0),
-      error: errors.get(name)?.error as string | undefined,
-      stderr: errors.get(name)?.stderr as string | undefined,
-    }));
+  async getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }>> {
+    try {
+      const res = (await this.mcpRequest('servers')) as Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string }>;
+      return res.map((s) => ({ ...s, autoStart: !!s.autoStart, connected: !!s.connected, toolCount: Number(s.toolCount ?? 0) }));
+    } catch {
+      return [];
+    }
   }
 
   /**
-   * Toggle a single MCP server. Idempotent: connects only when disconnected,
-   * disconnects only when connected.
+   * Toggle a single MCP server (via hub). Idempotent.
    */
   async setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {
     if (!this.agent) return { ok: false, error: 'Agent not initialized' };
     try {
-      const connected = (this.agent.mcp.listConnections?.() ?? []).some(
-        (c: Record<string, unknown>) => c.name === name,
-      );
-      if (enabled && !connected) {
-        const cfg = this.agent.config.get();
-        const srv = cfg.mcpServers?.[name];
-        if (!srv) return { ok: false, error: `MCP server "${name}" not configured` };
-        await this.agent.mcp.connectServer(name, srv);
-        this.onLog?.('info', `MCP server "${name}" connected (${srv.command})`);
-      } else if (!enabled && connected) {
-        await this.agent.mcp.disconnect(name);
-        this.onLog?.('info', `MCP server "${name}" disconnected`);
-      }
+      const res = (await this.mcpRequest('setServer', { name, enable: enabled })) as { ok: boolean; error?: string };
+      if (!res.ok) return res;
+      this.onLog?.('info', `MCP server "${name}" ${enabled ? 'connected' : 'disconnected'}`);
+      await this.refreshMcpToolCache();
       return { ok: true };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -855,6 +878,66 @@ export class AgentService {
     return this.agent.switchModel(modelId);
   }
 
+  /**
+   * Per-session provider switch. Like the core `switchProvider`, but applies
+   * the provider IN-MEMORY ONLY (reassigns `this.provider` + context) and
+   * never writes to the shared global config.json. Safe for a session worker
+   * that must not pollute other tabs/sessions.
+   */
+  async setProviderOverride(name: string, model?: string): Promise<{ provider: string; model: string }> {
+    if (!this.agent) throw new Error('Agent not initialized');
+    const cfg: Config = this.agent.config.get();
+    const providerCfg = cfg.providers?.[name];
+    if (!providerCfg) throw new Error(`Provider "${name}" not configured`);
+    const resolvedModel = model || providerCfg.model;
+    const providerConfig = this.agent.config.getProvider(name);
+    const p = createProvider(
+      providerConfig.type,
+      providerConfig.apiKey,
+      resolvedModel,
+      providerConfig.baseUrl,
+      providerConfig.options,
+      name,
+      providerConfig.depth,
+    );
+    this.agent.provider = p;
+    this.agent.context?.setProvider(p);
+    const newLimit = this.agent.config.getModelContextLimit(resolvedModel);
+    this.agent.context?.setMaxContextTokens(newLimit);
+    this.overrideName = name;
+    this.overrideModel = resolvedModel;
+    return { provider: name, model: resolvedModel };
+  }
+
+  /**
+   * Per-session model switch. Rebuilds the current provider with a new model
+   * IN-MEMORY ONLY — never writes to the shared global config.json.
+   */
+  async setModelOverride(modelId: string): Promise<{ provider: string; model: string }> {
+    if (!this.agent) throw new Error('Agent not initialized');
+    const cfg: Config = this.agent.config.get();
+    const providerName = this.overrideName || cfg.activeProvider;
+    const providerCfg = cfg.providers?.[providerName];
+    if (!providerCfg) throw new Error(`Provider "${providerName}" not configured`);
+    const providerConfig = this.agent.config.getProvider(providerName);
+    const p = createProvider(
+      providerConfig.type,
+      providerConfig.apiKey,
+      modelId,
+      providerConfig.baseUrl,
+      providerConfig.options,
+      providerName,
+      providerConfig.depth,
+    );
+    this.agent.provider = p;
+    this.agent.context?.setProvider(p);
+    const newLimit = this.agent.config.getModelContextLimit(modelId);
+    this.agent.context?.setMaxContextTokens(newLimit);
+    this.overrideName = providerName;
+    this.overrideModel = modelId;
+    return { provider: providerName, model: modelId };
+  }
+
   async setCwd(cwd: string): Promise<void> {
     if (!cwd) return;
     try {
@@ -900,11 +983,11 @@ export class AgentService {
   }
 
   getActiveProvider(): string {
-    return this.agent?.config?.getActiveProvider?.() ?? '';
+    return this.overrideName || this.agent?.config?.getActiveProvider?.() || '';
   }
 
   getActiveModel(): string {
-    return this.agent?.provider?.model ?? '';
+    return this.overrideModel || this.agent?.provider?.model || '';
   }
 
   /**

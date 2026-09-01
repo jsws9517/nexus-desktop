@@ -1,12 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 const api = {
-  chat: (input: string) => ipcRenderer.invoke('nexus:chat', { input }),
+  chat: (input: string, opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:chat', { input, ...(opts ?? {}) }),
   regenerate: (sessionId: string, userIndex: number) =>
     ipcRenderer.invoke('nexus:regenerate', { sessionId, userIndex }),
   withdraw: (sessionId: string, userIndex: number) =>
     ipcRenderer.invoke('nexus:withdraw', { sessionId, userIndex }),
-  abort: () => ipcRenderer.invoke('nexus:abort'),
+  abort: (opts?: { sessionId?: string }) => ipcRenderer.invoke('nexus:abort', opts ?? {}),
   startSession: (name?: string, sessionId?: string) =>
     ipcRenderer.invoke('nexus:startSession', { name, sessionId }),
   listSessions: (options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean }) =>
@@ -20,7 +21,8 @@ const api = {
     ipcRenderer.invoke('nexus:renameSession', { id, name }),
   getConfig: () => ipcRenderer.invoke('nexus:getConfig'),
   getProviders: () => ipcRenderer.invoke('nexus:getProviders'),
-  getStatus: () => ipcRenderer.invoke('nexus:getStatus'),
+  getStatus: (opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:getStatus', opts ?? {}),
   getPermissions: () => ipcRenderer.invoke('nexus:getPermissions'),
   getLanguage: () => ipcRenderer.invoke('nexus:getLanguage'),
   reloadConfig: () => ipcRenderer.invoke('nexus:reloadConfig'),
@@ -33,9 +35,12 @@ const api = {
   saveVisionProvider: (name: string, fields: Record<string, unknown>) =>
     ipcRenderer.invoke('nexus:saveVisionProvider', { name, fields }),
   getSessionStats: (sessionId: string) => ipcRenderer.invoke('nexus:getSessionStats', { sessionId }),
-  switchProvider: (name: string) => ipcRenderer.invoke('nexus:switchProvider', { name }),
-  switchModel: (modelId: string) => ipcRenderer.invoke('nexus:switchModel', { modelId }),
-  getModels: (providerName?: string) => ipcRenderer.invoke('nexus:getModels', { providerName }),
+  switchProvider: (name: string, opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:switchProvider', { name, ...(opts ?? {}) }),
+  switchModel: (modelId: string, opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:switchModel', { modelId, ...(opts ?? {}) }),
+  getModels: (providerName?: string, opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:getModels', { providerName, ...(opts ?? {}) }),
   saveProvider: (name: string, fields: Record<string, unknown>) =>
     ipcRenderer.invoke('nexus:saveProvider', { name, fields }),
   setCwd: (cwd: string) => ipcRenderer.invoke('nexus:setCwd', { cwd }),
@@ -68,6 +73,26 @@ const api = {
   setInputRows: (rows: number) => ipcRenderer.invoke('nexus:setInputRows', rows),
   readRecentLogs: (maxLines?: number) => ipcRenderer.invoke('nexus:readRecentLogs', maxLines),
 
+  // Resource / session governance (desktop.json + live watchdog).
+  getMaxTabs: () => ipcRenderer.invoke('nexus:getMaxTabs'),
+  setMaxTabs: (n: number) => ipcRenderer.invoke('nexus:setMaxTabs', n),
+  getMemThreshold: () => ipcRenderer.invoke('nexus:getMemThreshold'),
+  setMemThreshold: (n: number) => ipcRenderer.invoke('nexus:setMemThreshold', n),
+  getCpuThreshold: () => ipcRenderer.invoke('nexus:getCpuThreshold'),
+  setCpuThreshold: (n: number) => ipcRenderer.invoke('nexus:setCpuThreshold', n),
+  getMonitorEnabled: () => ipcRenderer.invoke('nexus:getMonitorEnabled'),
+  setMonitorEnabled: (enabled: boolean) => ipcRenderer.invoke('nexus:setMonitorEnabled', enabled),
+  getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
+
+  // Multi-tab: per-session worker lifecycle.
+  openSession: (sessionId: string, cwd?: string) =>
+    ipcRenderer.invoke('nexus:openSession', { sessionId, cwd }),
+  closeSession: (sessionId: string) =>
+    ipcRenderer.invoke('nexus:closeSession', { sessionId }),
+  getOpenTabs: () => ipcRenderer.invoke('nexus:getOpenTabs'),
+  getTabStatus: (sessionId: string) =>
+    ipcRenderer.invoke('nexus:getTabStatus', { sessionId }),
+
   getUpdateState: () => ipcRenderer.invoke('nexus:getUpdateState'),
   getCurrentVersion: () => ipcRenderer.invoke('nexus:getCurrentVersion'),
   checkForUpdate: () => ipcRenderer.invoke('nexus:checkForUpdate'),
@@ -91,6 +116,18 @@ const api = {
   },
   onWorkerRestarted: (cb: () => void) => {
     ipcRenderer.on('nexus:workerRestarted', () => cb());
+  },
+  onResourceState: (cb: (state: unknown) => void) => {
+    ipcRenderer.on('nexus:resourceState', (_e, state) => cb(state));
+  },
+  onTabEvent: (cb: (payload: { sessionId: string; event: unknown }) => void) => {
+    ipcRenderer.on('nexus:tabEvent', (_e, payload) => cb(payload));
+  },
+  onTabEvents: (cb: (payloads: Array<{ sessionId: string; event: unknown }>) => void) => {
+    ipcRenderer.on('nexus:tabEvents', (_e, payloads) => cb(payloads));
+  },
+  onTabsChanged: (cb: (tabs: Array<{ sessionId: string; provider: string; model: string; busy: boolean }>) => void) => {
+    ipcRenderer.on('nexus:tabsChanged', (_e, tabs) => cb(tabs));
   },
   onUpdateState: (cb: (state: Record<string, unknown>) => void) => {
     ipcRenderer.on('nexus:updateState', (_e, state) => cb(state));

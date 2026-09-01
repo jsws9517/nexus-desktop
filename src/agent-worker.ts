@@ -34,6 +34,8 @@ type WorkerRequest =
   | { id: number; method: 'getSessionStats'; params: { sessionId: string } }
   | { id: number; method: 'switchProvider'; params: { name: string } }
   | { id: number; method: 'switchModel'; params: { modelId: string } }
+  | { id: number; method: 'setProviderOverride'; params: { name: string; model?: string } }
+  | { id: number; method: 'setModelOverride'; params: { modelId: string } }
   | { id: number; method: 'getModels'; params?: { providerName?: string } }
   | { id: number; method: 'saveProvider'; params: { name: string; fields: Record<string, unknown> } }
   | { id: number; method: 'setCwd'; params: { cwd: string } }
@@ -67,10 +69,46 @@ function respondError(id: number, error: unknown): void {
   send({ type: 'result', id, ok: false, error: error instanceof Error ? error.message : String(error) });
 }
 
+// Worker -> main request channel (shared MCP hub proxy). The worker issues a
+// request carrying an id + op; the main process's WorkerHost forwards to the
+// hub and replies with { type: 'mcpResult', id, ok, data|error }.
+type McpOp = 'getTools' | 'callTool' | 'status' | 'servers' | 'setServer' | 'setEnabled';
+let mcpNextId = 1e9;
+const mcpPending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+
+function sendMcp(op: McpOp, params?: Record<string, unknown>): Promise<unknown> {
+  const id = mcpNextId++;
+  send({ type: 'mcpRequest', id, op, data: params ?? {} });
+  return new Promise((resolve, reject) => {
+    mcpPending.set(id, { resolve, reject });
+  });
+}
+
+function resolveMcpResult(msg: {
+  id?: number;
+  ok?: boolean;
+  data?: unknown;
+  error?: string;
+}): void {
+  if (msg.id == null) return;
+  const p = mcpPending.get(msg.id);
+  if (!p) return;
+  mcpPending.delete(msg.id);
+  if (msg.ok) p.resolve(msg.data);
+  else p.reject(new Error(msg.error || 'MCP proxy request failed'));
+}
+
 const service = new AgentService();
 service.onEvent = (event: AgentEvent) => send({ type: 'event', event });
 service.onPermission = (req) => { tracePerm(`askPermission id=${req.id}`); send({ type: 'permission', ...req }); };
 service.onLog = (level, message) => send({ type: 'log', level, message });
+// Forward MCP tool discovery + calls to the shared main-process hub (single
+// owner, one OS process per server — no per-tab shadow MCP processes).
+service.onMcpRequest = (op, params) =>
+  sendMcp(op as McpOp, params).catch((e) => {
+    logger.debug(`mcp proxy "${op}" failed: ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
+  });
 
 // The main process un-gates renderer requests after a timeout even when the
 // core is still initializing (init can stall on network fetches), so requests
@@ -255,6 +293,12 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
       case 'switchModel':
         respond(req.id, await service.switchModel(req.params.modelId));
         break;
+      case 'setProviderOverride':
+        respond(req.id, await service.setProviderOverride(req.params.name, req.params.model));
+        break;
+      case 'setModelOverride':
+        respond(req.id, await service.setModelOverride(req.params.modelId));
+        break;
       case 'getModels':
         respond(req.id, await service.getModels(req.params?.providerName));
         break;
@@ -285,10 +329,10 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         respond(req.id, await service.setMcpEnabled(req.params.enabled));
         break;
       case 'getMcpStatus':
-        respond(req.id, service.getMcpStatus());
+        respond(req.id, await service.getMcpStatus());
         break;
       case 'getMcpServers':
-        respond(req.id, service.getMcpServers());
+        respond(req.id, await service.getMcpServers());
         break;
       case 'setMcpServer':
         respond(req.id, await service.setMcpServer(req.params.name, req.params.enabled));
@@ -307,13 +351,26 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
 }
 
 if (useParentPort) {
-  const pp = (process as unknown as { parentPort: { on: (ev: 'message', cb: (e: { data: string }) => void) => void } }).parentPort;
+  const pp = (process as unknown as { parentPort: { on: (ev: 'message', cb: (e: { data: string | { type: string; id?: number; ok?: boolean; data?: unknown; error?: string } }) => void) => void } }).parentPort;
   pp.on('message', (e) => {
-    void handleRequest(e.data);
+    const d = e.data as unknown;
+    if (d && typeof d === 'object' && 'type' in d && (d as { type: string }).type === 'mcpResult') {
+      resolveMcpResult(d as { id?: number; ok?: boolean; data?: unknown; error?: string });
+      return;
+    }
+    void handleRequest(d as string | Record<string, unknown>);
   });
 } else {
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on('line', (line) => {
+    if (!line.trim()) return;
+    try {
+      const msg = JSON.parse(line) as { type?: string };
+      if (msg.type === 'mcpResult') {
+        resolveMcpResult(msg as { id?: number; ok?: boolean; data?: unknown; error?: string });
+        return;
+      }
+    } catch { /* not JSON — fall through */ }
     void handleRequest(line);
   });
 }

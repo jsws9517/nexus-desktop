@@ -122,8 +122,8 @@ type AgentEvent =
 declare global {
   interface Window {
     nexusDesktop: {
-      chat(input: string): Promise<unknown>;
-      abort(): Promise<unknown>;
+      chat(input: string, opts?: { sessionId?: string }): Promise<unknown>;
+      abort(opts?: { sessionId?: string }): Promise<unknown>;
       startSession(name?: string, sessionId?: string): Promise<string>;
       listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: SessionInfo[]; total: number }>;
       getMessages(
@@ -136,7 +136,7 @@ declare global {
       renameSession(id: string, name: string): Promise<unknown>;
       getConfig(): Promise<Record<string, unknown>>;
       getProviders(): Promise<ProviderInfo[]>;
-      getStatus(): Promise<StatusInfo>;
+      getStatus(opts?: { sessionId?: string }): Promise<StatusInfo>;
       getPermissions(): Promise<PermissionsInfo>;
       getLanguage(): Promise<string>;
       reloadConfig(): Promise<{ ok: boolean }>;
@@ -147,10 +147,14 @@ declare global {
       saveSpeechProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
       saveVisionProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
       getSessionStats(sessionId: string): Promise<SessionStats>;
-      switchProvider(name: string): Promise<unknown>;
-      switchModel(modelId: string): Promise<unknown>;
-      getModels(providerName?: string): Promise<string[]>;
+      switchProvider(name: string, opts?: { sessionId?: string }): Promise<unknown>;
+      switchModel(modelId: string, opts?: { sessionId?: string }): Promise<unknown>;
+      getModels(providerName?: string, opts?: { sessionId?: string }): Promise<string[]>;
       saveProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
+      openSession(sessionId: string, cwd?: string): Promise<{ ok: boolean; tab?: TabInfo; reason?: string }>;
+      closeSession(sessionId: string): Promise<{ ok: boolean }>;
+      getOpenTabs(): Promise<TabInfo[]>;
+      getTabStatus(sessionId: string): Promise<TabInfo | null>;
       openConfigWeb(): Promise<{ ok: boolean; port?: number; error?: string }>;
       setCwd(cwd: string): Promise<unknown>;
       getDefaultProjectDir(): Promise<{ dir: string }>;
@@ -178,6 +182,15 @@ declare global {
       getInputRows(): Promise<number>;
       setInputRows(rows: number): Promise<{ ok: boolean }>;
       readRecentLogs(maxLines?: number): Promise<string[]>;
+      getMaxTabs(): Promise<number>;
+      setMaxTabs(n: number): Promise<{ ok: boolean }>;
+      getMemThreshold(): Promise<number>;
+      setMemThreshold(n: number): Promise<{ ok: boolean }>;
+      getCpuThreshold(): Promise<number>;
+      setCpuThreshold(n: number): Promise<{ ok: boolean }>;
+      getMonitorEnabled(): Promise<boolean>;
+      setMonitorEnabled(enabled: boolean): Promise<{ ok: boolean }>;
+      getResourceState(): Promise<ResourceStateInfo>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
       checkForUpdate(): Promise<Record<string, unknown>>;
@@ -189,9 +202,30 @@ declare global {
       onLog(cb: (log: { level: string; message: string }) => void): void;
       onConfigWindowClosed(cb: () => void): void;
       onWorkerRestarted(cb: () => void): void;
+      onResourceState(cb: (state: ResourceStateInfo) => void): void;
+      onTabEvent(cb: (payload: { sessionId: string; event: AgentEvent }) => void): void;
+      onTabEvents(cb: (payloads: Array<{ sessionId: string; event: AgentEvent }>) => void): void;
+      onTabsChanged(cb: (tabs: TabInfo[]) => void): void;
       onUpdateState(cb: (state: Record<string, unknown>) => void): void;
     };
   }
+}
+
+interface ResourceStateInfo {
+  status: 'normal' | 'warning' | 'overloaded';
+  running: boolean;
+  memoryPct: number;
+  cpuPct: number;
+  atMax?: boolean;
+  updatedAt: number;
+}
+
+/** An open multi-session tab: each maps to a per-session agent worker process. */
+interface TabInfo {
+  sessionId: string;
+  provider: string;
+  model: string;
+  busy: boolean;
 }
 
 // ---------- element helpers ----------
@@ -229,11 +263,13 @@ const rsideProvider = $('#rside-provider');
 const rsideModel = $('#rside-model');
 const rsidePerm = $('#rside-perm');
 const rsideMcp = $('#rside-mcp');
+const rsideResourceEl = $('#rside-resource') as HTMLElement;
 const rsideToken = $('#rside-token');
 const rsideSpeech = $('#rside-speech');
 const rsideVision = $('#rside-vision');
 const taskListEl = $('#task-list');
 const taskEmptyEl = $('#task-empty');
+const tabBarEl = $('#tab-bar') as HTMLElement;
 
 // ---------- state ----------
 let currentSessionId = '';
@@ -248,6 +284,12 @@ const pendingQueue: string[] = [];
 let attachments: string[] = [];
 let providers: ProviderInfo[] = [];
 let status: StatusInfo = { cwd: '', busy: false, provider: '', model: '' };
+
+// Open multi-session tabs (each backed by a per-session worker process).
+const tabs = new Map<string, TabInfo>();
+let activeTabId = '';
+// Session id → display name cache for tab chips (kept in sync with sidebar).
+const tabNames = new Map<string, string>();
 
 // 0-based sequence over the session's *displayable* user messages (worker
 // blocks are skipped), kept in sync with AgentService.regenerate(userIndex).
@@ -545,6 +587,8 @@ function handleEvent(event: AgentEvent): void {
       break;
     case 'sessionRenamed':
       // Session was renamed (manually via /rename or auto-named on first message)
+      if (event.sessionId && event.name) tabNames.set(event.sessionId, event.name);
+      renderTabBar();
       void refreshSidebarSession();
       break;
     case 'text':
@@ -729,7 +773,7 @@ function requestStop(): void {
   stopRequested = true;
   (stopBtn as HTMLButtonElement).disabled = true;
   inputStatus.textContent = t('stopping');
-  void window.nexusDesktop.abort();
+  void window.nexusDesktop.abort({ sessionId: currentSessionId || undefined });
 }
 
 /** Append `delta` to the last text node if possible, else create one — avoids
@@ -931,7 +975,7 @@ function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void
   const name = document.createElement('span');
   name.className = 'session-name';
   name.textContent = s.name || s.id;
-  name.addEventListener('click', () => resumeSession(s.id));
+  name.addEventListener('click', () => void openTab(s.id, s.name));
   const meta = document.createElement('span');
   meta.className = 'session-meta';
   meta.textContent = `${s.provider} · ${s.model ?? ''}`;
@@ -1015,6 +1059,9 @@ async function refreshSessions(activeId?: string): Promise<void> {
     ...opts,
   });
   sessionTotal = total;
+  for (const s of [...pinnedItems, ...sessions]) {
+    if (s.name) tabNames.set(s.id, s.name);
+  }
   sessionListEl.innerHTML = '';
   if (pinnedItems.length > 0) {
     const grp = document.createElement('li');
@@ -1402,6 +1449,209 @@ async function startOrResumeLatestSession(): Promise<void> {
   await startNewSession();
 }
 
+// ---------- multi-tab: per-session worker tabs ----------
+// Each open tab maps to an independent agent worker process (main-side
+// SessionWorkers). Chat/abort/provider/model calls are routed to the active
+// tab's session id; events stream in on the tab channel and are only rendered
+// when they belong to the currently visible tab, so a background tab can keep
+// running without corrupting the focused conversation.
+
+function resetViewState(): void {
+  if (curAssistant) curAssistant.stream.classList.remove('streaming');
+  messagesEl.innerHTML = '';
+  toolCards.clear();
+  tasks.clear();
+  renderTasks();
+  curAssistant = null;
+  curThinking = null;
+  curSlash = null;
+  slashLog = [];
+  userMessageSeq = 0;
+  msgItems = [];
+  msgOffset = 0;
+  msgTotal = 0;
+  msgUserBefore = 0;
+  msgWindowStart = 0;
+  running = false;
+}
+
+function tabName(sessionId: string): string {
+  return tabNames.get(sessionId) || sessionId.slice(0, 14);
+}
+
+function tabAddButton(): HTMLElement {
+  const btn = document.createElement('button');
+  btn.className = 'tab-add';
+  btn.textContent = '＋';
+  btn.title = t('tabsAddHint');
+  btn.addEventListener('click', () => void openNewTab());
+  return btn;
+}
+
+function tabChip(tab: TabInfo): HTMLElement {
+  const chip = document.createElement('div');
+  chip.className = 'tab' + (tab.sessionId === activeTabId ? ' active' : '');
+  const busy = document.createElement('span');
+  busy.className = 'tab-busy' + (tab.busy ? ' on' : '');
+  busy.title = tab.busy ? t('tabsBusy') : '';
+  const name = document.createElement('span');
+  name.className = 'tab-name';
+  name.textContent = tabName(tab.sessionId);
+  const close = document.createElement('button');
+  close.className = 'tab-close';
+  close.textContent = '✕';
+  close.title = t('tabsCloseHint');
+  close.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void closeTab(tab.sessionId);
+  });
+  chip.append(busy, name, close);
+  chip.addEventListener('click', () => void switchTab(tab.sessionId));
+  chip.title = tab.sessionId;
+  return chip;
+}
+
+function renderTabBar(): void {
+  tabBarEl.innerHTML = '';
+  if (tabs.size === 0) {
+    const empty = document.createElement('span');
+    empty.className = 'tab-bar-empty';
+    empty.textContent = t('tabsEmpty');
+    empty.title = t('tabsAddHint');
+    tabBarEl.append(empty, tabAddButton());
+    return;
+  }
+  for (const tab of tabs.values()) tabBarEl.appendChild(tabChip(tab));
+  tabBarEl.appendChild(tabAddButton());
+}
+
+/** Create a fresh session and open it in its own tab/worker. */
+async function openNewTab(): Promise<void> {
+  if (busy && activeTabId) {
+    // A new tab is still fine while another tab streams — don't block on busy.
+  }
+  let sid = '';
+  try {
+    sid = await window.nexusDesktop.startSession();
+  } catch (err) {
+    addSystem(`${t('tabsOpenFailed')}${errText(err)}`);
+    return;
+  }
+  tabNames.set(sid, sid);
+  await openTab(sid);
+}
+
+/** Open `sessionId` in its own worker process (or focus it if already open). */
+async function openTab(sessionId: string, name?: string): Promise<void> {
+  if (name) tabNames.set(sessionId, name);
+  if (tabs.has(sessionId)) {
+    await switchTab(sessionId);
+    return;
+  }
+  let res: { ok: boolean; tab?: TabInfo; reason?: string };
+  try {
+    // Bind the session's saved working directory to its worker process so a
+    // tab's chat runs in the session's project dir.
+    let cwd: string | undefined;
+    try {
+      const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
+      const metaCwd = (meta.projectDir ?? meta.cwd ?? '') as string;
+      if (metaCwd) cwd = metaCwd;
+    } catch {}
+    res = await window.nexusDesktop.openSession(sessionId, cwd);
+  } catch (err) {
+    addSystem(`${t('tabsOpenFailed')}${errText(err)}`);
+    return;
+  }
+  if (!res.ok) {
+    if (res.reason === 'max-tabs') addSystem(t('tabsMaxReached'));
+    else if (res.reason === 'overloaded') addSystem(t('tabsOverloaded'));
+    else addSystem(`${t('tabsOpenFailed')}${res.reason ?? ''}`);
+    return;
+  }
+  const tinfo = res.tab!;
+  tabs.set(sessionId, { sessionId, provider: tinfo.provider, model: tinfo.model, busy: tinfo.busy });
+  renderTabBar();
+  await switchTab(sessionId);
+}
+
+/** Activate `sessionId`, rendering its transcript as the visible conversation. */
+async function switchTab(sessionId: string): Promise<void> {
+  activeTabId = sessionId;
+  currentSessionId = sessionId;
+  resetViewState();
+  try {
+    const fresh = await window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
+    applyMsgWindow(fresh);
+    renderMessageWindow();
+    saveMsgCache(sessionId, fresh);
+  } catch {}
+  await refreshSlashLog(sessionId);
+  const tab = tabs.get(sessionId);
+  if (tab) {
+    status = { cwd: status.cwd, busy: tab.busy, provider: tab.provider, model: tab.model };
+  } else {
+    try {
+      status = await window.nexusDesktop.getStatus({ sessionId });
+    } catch {}
+  }
+  setBusy(Boolean(tab?.busy));
+  loadDraft(sessionId);
+  refreshProviderSelect();
+  refreshModelSelect();
+  renderTabBar();
+  void refreshSidebarSession();
+  void refreshSessionStats();
+  void refreshSessions(sessionId);
+}
+
+/** Close a tab/worker and fall back to another tab or a fresh session. */
+async function closeTab(sessionId: string): Promise<void> {
+  if (!tabs.has(sessionId)) return;
+  tabs.delete(sessionId);
+  try {
+    await window.nexusDesktop.closeSession(sessionId);
+  } catch {}
+  if (activeTabId === sessionId) {
+    activeTabId = '';
+    if (tabs.size > 0) {
+      const next = [...tabs.keys()][tabs.size - 1];
+      await switchTab(next);
+    } else {
+      currentSessionId = '';
+      await startNewSession();
+    }
+  } else {
+    renderTabBar();
+  }
+}
+
+/** Keep the tab's busy indicator + status in sync from worker events. */
+function applyTabEvent(sessionId: string, event: AgentEvent): void {
+  const tab = tabs.get(sessionId);
+  if (!tab) return;
+  if (event.type === 'turn_start') tab.busy = true;
+  else if (event.type === 'session_end') tab.busy = false;
+  if (sessionId === activeTabId) {
+    handleEvent(event);
+  } else if (event.type === 'turn_start' || event.type === 'session_end') {
+    renderTabBar();
+  }
+}
+
+/** Restore the tab bar from any workers that are still open (e.g. renderer
+ *  reloaded while the main-process session workers kept running). */
+async function syncOpenTabs(): Promise<void> {
+  let open: TabInfo[] = [];
+  try {
+    open = await window.nexusDesktop.getOpenTabs();
+  } catch {}
+  tabs.clear();
+  for (const t of open) if (t.sessionId) tabs.set(t.sessionId, t);
+  if (currentSessionId && tabs.has(currentSessionId)) activeTabId = currentSessionId;
+  renderTabBar();
+}
+
 // ---------- right sidebar: session info + task progress ----------
 function permLabel(mode: string): string {
   const zh = getUiLang() === 'zh-CN';
@@ -1412,7 +1662,7 @@ function permLabel(mode: string): string {
 
 async function refreshSidebarSession(): Promise<void> {
   const [st, perms, mcp] = await Promise.all([
-    window.nexusDesktop.getStatus(),
+    window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined }),
     window.nexusDesktop.getPermissions(),
     window.nexusDesktop.getMcpStatus(),
   ]);
@@ -1733,7 +1983,7 @@ function drain(): void {
   toolCards.clear();
   void (async () => {
     try {
-      await window.nexusDesktop.chat(text);
+      await window.nexusDesktop.chat(text, { sessionId: currentSessionId || undefined });
       await refreshSessions(currentSessionId);
       await syncMsgCache(currentSessionId);
     } catch (err) {
@@ -2098,6 +2348,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
   }
 
   buildStartupSection();
+  buildResourceSection();
   buildAppearanceSection();
   buildUpdateSection();
   buildLogSection();
@@ -2109,43 +2360,6 @@ function buildStartupSection(): void {
   title.textContent = t('startupSection');
   settingsBody.appendChild(title);
 
-  const buildToggle = (labelText: string, hintText: string, initial: Promise<boolean> | boolean, onToggle: (v: boolean) => void): void => {
-    const row = document.createElement('div');
-    row.className = 'startup-row';
-    const label = document.createElement('label');
-    label.className = 'startup-toggle';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    const text = document.createElement('span');
-    text.textContent = labelText;
-    const hint = document.createElement('div');
-    hint.className = 'startup-hint';
-    hint.textContent = hintText;
-    Promise.resolve(initial).then((v) => {
-      cb.checked = v === true;
-    }).catch(() => {});
-    cb.addEventListener('change', () => {
-      const v = cb.checked;
-      cb.disabled = true;
-      Promise.resolve(onToggle(v))
-        .then(() => {
-          settingsMsg.textContent = '';
-        })
-        .catch((err: unknown) => {
-          settingsMsg.textContent = `⚠️ ${errText(err)}`;
-          cb.checked = !v;
-        })
-        .finally(() => {
-          cb.disabled = false;
-        });
-    });
-    label.appendChild(cb);
-    label.appendChild(text);
-    row.appendChild(label);
-    row.appendChild(hint);
-    settingsBody.appendChild(row);
-  };
-
   buildToggle(t('deferMcpLabel'), t('deferMcpHint'), window.nexusDesktop.getDeferMcp(), (v) => {
     settingsMsg.textContent = v ? t('deferMcpEnabled') : t('deferMcpDisabled');
     return window.nexusDesktop.setDeferMcp(v);
@@ -2153,6 +2367,174 @@ function buildStartupSection(): void {
   buildToggle(t('minimizeToTrayLabel'), t('minimizeToTrayHint'), window.nexusDesktop.getMinimizeToTray(), (v) => {
     return window.nexusDesktop.setMinimizeToTray(v);
   });
+}
+
+/** Render a labeled checkbox settings row that persists immediately on change. */
+function buildToggle(
+  labelText: string,
+  hintText: string,
+  initial: Promise<boolean> | boolean,
+  onToggle: (v: boolean) => Promise<unknown> | void,
+): void {
+  const row = document.createElement('div');
+  row.className = 'startup-row';
+  const label = document.createElement('label');
+  label.className = 'startup-toggle';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  const text = document.createElement('span');
+  text.textContent = labelText;
+  const hint = document.createElement('div');
+  hint.className = 'startup-hint';
+  hint.textContent = hintText;
+  Promise.resolve(initial).then((v) => {
+    cb.checked = v === true;
+  }).catch(() => {});
+  cb.addEventListener('change', () => {
+    const v = cb.checked;
+    cb.disabled = true;
+    Promise.resolve(onToggle(v))
+      .then(() => {
+        settingsMsg.textContent = '';
+      })
+      .catch((err: unknown) => {
+        settingsMsg.textContent = `⚠️ ${errText(err)}`;
+        cb.checked = !v;
+      })
+      .finally(() => {
+        cb.disabled = false;
+      });
+  });
+  label.appendChild(cb);
+  label.appendChild(text);
+  row.appendChild(label);
+  row.appendChild(hint);
+}
+
+/** Resource & session governance (desktop.json — see main/index.ts). Values are
+ *  applied immediately on change (like deferMcp/inputRows), not on Save. */
+function resourceStateText(s: ResourceStateInfo): { text: string; color: string } {
+  const mem = Math.round(s.memoryPct * 100);
+  const cpu = Math.round(s.cpuPct * 100);
+  const val =
+    Number.isFinite(mem) && Number.isFinite(cpu)
+      ? t('resourceStateValue', { mem: Math.max(0, Math.min(100, mem)), cpu: Math.max(0, Math.min(100, cpu)) })
+      : t('resourceStateUnavailable');
+  const status = !s.running
+    ? t('resourceStatusPaused')
+    : s.status === 'overloaded'
+      ? t('resourceStatusOverloaded')
+      : s.status === 'warning'
+        ? t('resourceStatusWarning')
+        : t('resourceStatusNormal');
+  const color =
+    !s.running || s.status === 'normal'
+      ? 'var(--text-dim)'
+      : s.status === 'overloaded'
+        ? 'var(--danger)'
+        : 'var(--warn)';
+  return { text: `${val} · ${status}`, color };
+}
+
+/** Render the live memory/CPU readout into an element (shared by settings + right panel). */
+function renderResourceInto(el: HTMLElement, s: ResourceStateInfo): void {
+  const { text, color } = resourceStateText(s);
+  el.textContent = text;
+  el.style.color = color;
+}
+
+function renderResourcePanel(s: ResourceStateInfo): void {
+  if (rsideResourceEl) renderResourceInto(rsideResourceEl, s);
+}
+
+function buildResourceSection(): void {
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('resourceSection');
+  settingsBody.appendChild(title);
+
+  // Live system-load readout (memory / CPU) fed by the main-process watchdog.
+  const stateWrap = document.createElement('div');
+  stateWrap.className = 'startup-row';
+  const stateLabel = document.createElement('span');
+  stateLabel.className = 'startup-toggle';
+  const stateText = document.createElement('span');
+  stateText.className = 'startup-state';
+  stateLabel.appendChild(stateText);
+  const stateHint = document.createElement('div');
+  stateHint.className = 'startup-hint';
+  stateHint.textContent = t('resourceStateTitle');
+  stateWrap.appendChild(stateLabel);
+  stateWrap.appendChild(stateHint);
+  settingsBody.appendChild(stateWrap);
+
+  const renderState = (s: ResourceStateInfo): void => {
+    if (stateText) renderResourceInto(stateText, s);
+  };
+  window.nexusDesktop.getResourceState().then(renderState).catch(() => {});
+  window.nexusDesktop.onResourceState(renderState);
+
+  // Concurrent session (tab) limit.
+  const maxTabsRow = buildNumberRow(t('maxTabsLabel'), t('maxTabsHint'), 1, 20, window.nexusDesktop.getMaxTabs(), (v) =>
+    window.nexusDesktop.setMaxTabs(v),
+  );
+  settingsBody.appendChild(maxTabsRow);
+
+  // Memory threshold (%).
+  const memRow = buildNumberRow(t('memThresholdLabel'), t('memThresholdHint'), 50, 99, window.nexusDesktop.getMemThreshold(), (v) =>
+    window.nexusDesktop.setMemThreshold(v),
+  );
+  settingsBody.appendChild(memRow);
+
+  // CPU threshold (%).
+  const cpuRow = buildNumberRow(t('cpuThresholdLabel'), t('cpuThresholdHint'), 50, 99, window.nexusDesktop.getCpuThreshold(), (v) =>
+    window.nexusDesktop.setCpuThreshold(v),
+  );
+  settingsBody.appendChild(cpuRow);
+
+  // Resource monitoring toggle.
+  buildToggle(t('monitorEnabledLabel'), t('monitorEnabledHint'), window.nexusDesktop.getMonitorEnabled(), (v) => {
+    return window.nexusDesktop.setMonitorEnabled(v);
+  });
+}
+
+/** Build a labeled number-input settings row that persists immediately on change. */
+function buildNumberRow(
+  labelText: string,
+  hintText: string,
+  min: number,
+  max: number,
+  initial: Promise<number>,
+  onCommit: (v: number) => Promise<unknown>,
+): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'startup-row';
+  const label = document.createElement('label');
+  label.className = 'startup-toggle';
+  const numInput = document.createElement('input');
+  numInput.type = 'number';
+  numInput.min = String(min);
+  numInput.max = String(max);
+  const text = document.createElement('span');
+  text.textContent = labelText;
+  const hint = document.createElement('div');
+  hint.className = 'startup-hint';
+  hint.textContent = hintText;
+  initial.then((v) => { numInput.value = String(v); }).catch(() => {});
+  numInput.addEventListener('change', () => {
+    const val = parseInt(numInput.value, 10);
+    if (isNaN(val)) return;
+    numInput.disabled = true;
+    onCommit(val)
+      .then(() => { settingsMsg.textContent = ''; })
+      .catch((err: unknown) => { settingsMsg.textContent = `⚠️ ${errText(err)}`; })
+      .finally(() => { numInput.disabled = false; });
+  });
+  label.appendChild(numInput);
+  label.appendChild(text);
+  row.appendChild(label);
+  row.appendChild(hint);
+  return row;
 }
 
 function applyInputRows(rows: number): void {
@@ -2463,7 +2845,7 @@ function refreshModelSelect(): void {
   }
   void (async () => {
     try {
-      const models = await window.nexusDesktop.getModels(active);
+      const models = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
       if (!active || active !== status.provider) return;
       modelsCache.set(active, models);
       if (models.length > 0) populateModelOptions(models, current);
@@ -2488,8 +2870,8 @@ function populateModelOptions(models: string[], current: string): void {
 providerSelect.addEventListener('change', async () => {
   const name = providerSelect.value;
   if (!name || name === status.provider) return;
-  await window.nexusDesktop.switchProvider(name);
-  status = await window.nexusDesktop.getStatus();
+  await window.nexusDesktop.switchProvider(name, { sessionId: currentSessionId || undefined });
+  status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
   addSystem(t('switchedProvider', { name, model: status.model }));
   refreshModelSelect();
   await refreshSessions();
@@ -2502,8 +2884,8 @@ modelSelect.addEventListener('change', async () => {
   const from = status.model;
   const providerName = status.provider;
   try {
-    await window.nexusDesktop.switchModel(modelId);
-    status = await window.nexusDesktop.getStatus();
+    await window.nexusDesktop.switchModel(modelId, { sessionId: currentSessionId || undefined });
+    status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
     addSystem(t('switchedModel', { name: providerName, from, to: status.model }));
     await refreshSessions();
     await refreshSidebarSession();
@@ -2529,7 +2911,7 @@ $('#btn-open-folder').addEventListener('click', async () => {
   addSystem(t('projectDir', { cwd: status.cwd }));
 });
 
-$('#btn-new-session').addEventListener('click', () => void startNewSession());
+$('#btn-new-session').addEventListener('click', () => void openNewTab());
 
 // ---------- sidebar collapse/expand ----------
 const SIDEBAR_COLLAPSED_KEY = 'nexus.sidebar.collapsed';
@@ -2688,6 +3070,20 @@ window.nexusDesktop.onWorkerRestarted(async () => {
   await refreshSidebarSession();
 });
 
+// Per-session tab events: route to the focused tab's transcript, or just the
+// busy badge for background tabs (they keep streaming in their own worker).
+window.nexusDesktop.onTabEvent((payload) => applyTabEvent(payload.sessionId, payload.event));
+window.nexusDesktop.onTabEvents((payloads) => {
+  for (const p of payloads) applyTabEvent(p.sessionId, p.event);
+});
+// Main-side tab registry changed (open/close/exit): mirror it in the tab bar.
+window.nexusDesktop.onTabsChanged((open) => {
+  const keep = new Set(open.map((t) => t.sessionId));
+  for (const sid of [...tabs.keys()]) if (!keep.has(sid)) tabs.delete(sid);
+  for (const t of open) if (t.sessionId) tabs.set(t.sessionId, t);
+  renderTabBar();
+});
+
 // ---------- boot ----------
 (async function boot(): Promise<void> {
   try {
@@ -2708,6 +3104,10 @@ window.nexusDesktop.onWorkerRestarted(async () => {
     await startOrResumeLatestSession();
     await refreshSessions();
     await refreshSidebarSession();
+    await syncOpenTabs();
+    // Open the resumed session in its own tab so it runs in a per-session worker.
+    if (currentSessionId && !tabs.has(currentSessionId)) await openTab(currentSessionId);
+    renderTabBar();
   } catch (err) {
     addSystem(`${t('startFailed')}${errText(err)}`);
   }

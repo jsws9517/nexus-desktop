@@ -162,6 +162,32 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   appearanceSection: { 'zh-CN': '外观', en: 'Appearance' },
   inputRowsLabel: { 'zh-CN': '输入框行数', en: 'Input box rows' },
   inputRowsHint: { 'zh-CN': '输入框的默认可见行数（1–20）', en: 'Default visible rows for the input box (1–20)' },
+  resourceSection: { 'zh-CN': '资源与会话', en: 'Resources & Sessions' },
+  resourcePanelTitle: { 'zh-CN': '系统资源', en: 'Resources' },
+  resourceStateTitle: { 'zh-CN': '系统资源占用', en: 'System load' },
+  resourceStateValue: { 'zh-CN': '内存 {mem}% · CPU {cpu}%', en: 'Memory {mem}% · CPU {cpu}%' },
+  resourceStateUnavailable: { 'zh-CN': '不可用（采样中…）', en: 'Unavailable (sampling…)' },
+  resourceStatusNormal: { 'zh-CN': '正常', en: 'Normal' },
+  resourceStatusWarning: { 'zh-CN': '占用升高', en: 'Elevated' },
+  resourceStatusOverloaded: { 'zh-CN': '过载，已暂停新建', en: 'Overloaded, new tabs paused' },
+  resourceStatusPaused: { 'zh-CN': '监控已关闭', en: 'Monitoring disabled' },
+  maxTabsLabel: { 'zh-CN': '并发会话上限', en: 'Concurrent session limit' },
+  maxTabsHint: { 'zh-CN': '同时在线会话（标签页）的最大数量（1–20）', en: 'Max sessions (tabs) online at once (1–20)' },
+  memThresholdLabel: { 'zh-CN': '内存阈值 (%)', en: 'Memory threshold (%)' },
+  memThresholdHint: { 'zh-CN': '系统内存占用超过此值且持续偏高时，暂停创建新会话', en: 'Pause new sessions when system memory stays above this level' },
+  cpuThresholdLabel: { 'zh-CN': 'CPU 阈值 (%)', en: 'CPU threshold (%)' },
+  cpuThresholdHint: { 'zh-CN': '系统 CPU 占用超过此值且持续偏高时，暂停创建新会话', en: 'Pause new sessions when system CPU stays above this level' },
+  monitorEnabledLabel: { 'zh-CN': '启用资源监控', en: 'Enable resource monitoring' },
+  monitorEnabledHint: { 'zh-CN': '高内存/CPU 时提前干预，暂停新建会话以保护系统', en: 'Proactively pause new sessions when memory/CPU load is high' },
+
+  // Multi-tab (per-session worker) UI.
+  tabsEmpty: { 'zh-CN': '无打开的会话标签', en: 'No open session tabs' },
+  tabsAddHint: { 'zh-CN': '新建会话标签', en: 'New session tab' },
+  tabsCloseHint: { 'zh-CN': '关闭此标签', en: 'Close this tab' },
+  tabsBusy: { 'zh-CN': '正在运行', en: 'Running' },
+  tabsMaxReached: { 'zh-CN': '已达并发会话上限，无法新建标签', en: 'Concurrent session limit reached; cannot open another tab' },
+  tabsOverloaded: { 'zh-CN': '系统资源过高，已暂停新建会话', en: 'System overloaded; new sessions paused' },
+  tabsOpenFailed: { 'zh-CN': '无法打开会话标签：', en: 'Failed to open session tab: ' },
 };
 
 export function setUiLang(lang: Lang): void {

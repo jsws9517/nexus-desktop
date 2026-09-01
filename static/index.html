@@ -51,6 +51,7 @@
       </aside>
 
       <main id="chat-panel">
+        <div id="tab-bar" class="tab-bar"></div>
         <button id="btn-freeze" class="freeze-btn hidden" data-i18n="freeze" title="Ctrl+.">❄ 冻结视图</button>
         <div id="messages"></div>
         <div id="input-area">
@@ -83,6 +84,11 @@
       </main>
 
       <aside id="right-sidebar">
+        <div class="rside-section">
+          <div class="rside-title" data-i18n="resourcePanelTitle">系统资源</div>
+          <div id="rside-resource" class="rside-resource">—</div>
+        </div>
+        <div class="rside-divider"></div>
         <div class="rside-section">
           <div class="rside-title" data-i18n="sessionInfo">会话信息</div>
           <div class="info-grid">

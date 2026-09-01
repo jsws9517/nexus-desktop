@@ -10,6 +10,7 @@
   --accent-dim: #2b5cb3;
   --ok: #4caf7d;
   --danger: #e05a5a;
+  --warn: #e0b458;
   --code-bg: #141519;
   --bubble-user: #2b3a55;
   --bubble-assist: #26272b;
@@ -29,6 +30,7 @@ html[data-theme='warm'] {
   --accent-dim: #9c6f33;
   --ok: #7fb069;
   --danger: #d98a6a;
+  --warn: #d9b05a;
   --code-bg: #1f1b16;
   --bubble-user: #4a3a26;
   --bubble-assist: #332d26;
@@ -229,6 +231,71 @@ body {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
 }
+
+/* tab bar — open per-session worker tabs at the top of the chat panel */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 0;
+  overflow-x: auto;
+  flex-shrink: 0;
+  min-height: 36px;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 220px;
+  user-select: none;
+}
+.tab:hover { border-color: var(--accent); color: var(--text); }
+.tab.active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+}
+.tab .tab-name { overflow: hidden; text-overflow: ellipsis; }
+.tab .tab-busy {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  flex-shrink: 0;
+}
+.tab .tab-busy.on { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.tab .tab-close {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.tab .tab-close:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.tab-add {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tab-add:hover { color: var(--accent); border-color: var(--accent); }
+.tab-bar-empty { color: var(--text-dim); font-size: 12px; padding: 0 4px; }
 
 #messages {
   flex: 1;

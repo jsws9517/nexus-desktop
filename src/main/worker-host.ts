@@ -11,7 +11,7 @@ const diag = (s: string): void => {
 };
 
 interface WorkerResponse {
-  type: 'result' | 'event' | 'permission' | 'log';
+  type: 'result' | 'event' | 'permission' | 'log' | 'mcpRequest';
   id?: number;
   ok?: boolean;
   data?: unknown;
@@ -21,6 +21,7 @@ interface WorkerResponse {
   question?: string;
   level?: string;
   message?: string;
+  op?: string;
 }
 
 type WorkerHandle = ChildLike | UtilityProcess;
@@ -53,6 +54,8 @@ export class WorkerHost {
   onPermission?: (req: { id: string; question: string }) => void;
   onLog?: (level: string, message: string) => void;
   onExit?: (code: number | null) => void;
+  /** Worker -> main request handler (currently the shared MCP hub proxy). */
+  onMcpRequest?: (op: string, params?: Record<string, unknown>) => Promise<unknown>;
 
   constructor(private workerPath: string) {}
 
@@ -86,6 +89,15 @@ export class WorkerHost {
         child.stdin.write(JSON.stringify(payload) + '\n');
       }
     });
+  }
+
+  /** Send a raw message to the worker (used to reply to a worker->main request). */
+  post(msg: Record<string, unknown>): void {
+    if (app.isPackaged) {
+      (this.handle as UtilityProcess)?.postMessage(msg);
+    } else {
+      (this.handle as ChildLike | null)?.stdin?.write(JSON.stringify(msg) + '\n');
+    }
   }
 
   stop(): void {
@@ -180,6 +192,23 @@ export class WorkerHost {
       case 'log':
         this.onLog?.(msg.level!, msg.message!);
         break;
+      case 'mcpRequest': {
+        const id = msg.id ?? 0;
+        const op = msg.op ?? '';
+        const params = msg.data as Record<string, unknown> | undefined;
+        // Forward to the shared MCP hub (single owner, one process per server),
+        // then reply to this worker with the result. Await so MCP calls are
+        // serialized through the hub without blocking the main thread.
+        void (async () => {
+          try {
+            const res = this.onMcpRequest ? await this.onMcpRequest(op, params) : undefined;
+            this.post({ type: 'mcpResult', id, ok: true, data: res });
+          } catch (e) {
+            this.post({ type: 'mcpResult', id, ok: false, error: e instanceof Error ? e.message : String(e) });
+          }
+        })();
+        break;
+      }
     }
   }
 

@@ -36,7 +36,14 @@ function dbPath(): string {
 const REQUIRED_COLUMNS = ['id', 'session_id', 'role', 'content'];
 
 /** Returns a working connection or null when the DB/table is missing or the
- *  expected columns are absent (soft failure — callers return empty results). */
+ *  expected columns are absent (soft failure — callers return empty results).
+ *
+ *  Multi-worker concurrency: nexus-desktop can run several session agent
+ *  processes (one per open tab) plus this desktop-side path-authorizer/DB reads
+ *  against the same sessions.db. The core enables journal_mode=WAL; with WAL
+ *  multiple processes can read concurrently and writes take a single writer
+ *  lock, so concurrent regenerate/withdraw writers need a busy_timeout to wait
+ *  instead of failing with SQLITE_BUSY. We mirror that here on every connection. */
 function openDb(readonly = true): Database.Database | null {
   let db: Database.Database;
   try {
@@ -44,6 +51,12 @@ function openDb(readonly = true): Database.Database | null {
   } catch {
     return null;
   }
+  try {
+    // WAL is already enabled by the core; setting busy_timeout makes desktop
+    // writes (deleteMessagesFrom) block briefly instead of erroring when another
+    // session worker holds the writer lock.
+    db.pragma('busy_timeout = 5000');
+  } catch {}
   try {
     const cols = db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
     const names = new Set(cols.map((c) => c.name));

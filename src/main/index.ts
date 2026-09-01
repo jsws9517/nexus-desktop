@@ -6,6 +6,12 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { WorkerHost } from './worker-host.js';
 import { Updater } from './updater.js';
+import { ResourceMonitor } from './resource-monitor.js';
+import type { ResourceState, ResourceThresholds } from './resource-monitor.js';
+import { SessionWorkers } from './session-workers.js';
+import type { OpenTabInfo } from './session-workers.js';
+import { mcpHub } from './mcp-hub.js';
+import type { AgentEvent } from '../agent-service.js';
 import { logger, recentLogLines } from '../shared/logger.js';
 import { EARLY_METHODS } from '../shared/constants.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList } from '../shared/ipc-validation.js';
@@ -55,7 +61,16 @@ if (!gotLock) {
 
 let win: BrowserWindow | null = null;
 let worker: WorkerHost | null = null;
+// Per-session tab workers (true parallelism). The global `worker` above still
+// hosts the shared session/providers/config/MCP surface for the sidebar and
+// the settings UI; each opened tab runs its own WorkerHost via this registry.
+const sessionWorkers = new SessionWorkers();
 const updater = new Updater();
+// System resource watchdog for the multi-session protection (see resource-monitor.ts).
+const resourceMon = new ResourceMonitor({
+  intervalMs: 5000,
+  log: (msg) => logf(`resource: ${msg}`),
+});
 let readyPromise: Promise<void> = Promise.resolve();
 // Phase-1 readiness (Agent constructed): read-only session/config IPC can run
 // while MCP/skills are still connecting in the background (see startWorker()).
@@ -151,6 +166,11 @@ interface DesktopState {
   pinnedIds?: string[];
   minimizeToTray?: boolean;
   inputRows?: number;
+  // Resource/session governance (desktop-only; the core schema strips unknowns).
+  maxTabs?: number;
+  memThresholdPct?: number;
+  cpuThresholdPct?: number;
+  monitorEnabled?: boolean;
 }
 
 function readDesktopState(): DesktopState {
@@ -213,6 +233,59 @@ function getInputRows(): number {
 function setInputRows(rows: number): void {
   const clamped = Math.max(1, Math.min(20, Math.round(rows)));
   writeDesktopState({ inputRows: clamped });
+}
+
+// ---- resource / session governance (desktop.json) ----
+const DEFAULT_MAX_TABS = 5;
+
+function getMaxTabs(): number {
+  const v = readDesktopState().maxTabs;
+  return typeof v === 'number' && v >= 1 && v <= 20 ? Math.round(v) : DEFAULT_MAX_TABS;
+}
+function setMaxTabs(n: number): void {
+  writeDesktopState({ maxTabs: Math.max(1, Math.min(20, Math.round(n))) });
+}
+
+function getMemThresholdPct(): number {
+  const v = readDesktopState().memThresholdPct;
+  return typeof v === 'number' && v >= 50 && v <= 99 ? Math.round(v) : 80;
+}
+function setMemThresholdPct(n: number): void {
+  writeDesktopState({ memThresholdPct: Math.max(50, Math.min(99, Math.round(n))) });
+}
+
+function getCpuThresholdPct(): number {
+  const v = readDesktopState().cpuThresholdPct;
+  return typeof v === 'number' && v >= 50 && v <= 99 ? Math.round(v) : 70;
+}
+function setCpuThresholdPct(n: number): void {
+  writeDesktopState({ cpuThresholdPct: Math.max(50, Math.min(99, Math.round(n))) });
+}
+
+function getMonitorEnabled(): boolean {
+  return readDesktopState().monitorEnabled === true;
+}
+function setMonitorEnabled(enabled: boolean): void {
+  writeDesktopState({ monitorEnabled: enabled });
+}
+
+function applyResourceConfig(monitor: ResourceMonitor): void {
+  monitor.apply({
+    maxTabs: getMaxTabs(),
+    memThresholdPct: getMemThresholdPct(),
+    cpuThresholdPct: getCpuThresholdPct(),
+    monitorEnabled: getMonitorEnabled(),
+  });
+}
+
+/**
+ * Number of concurrently-open session tabs. In the multi-session design this
+ * counts the per-session worker registry; while a single-window/single-worker
+ * build is live it reflects that one active worker. Exposed so the resource
+ * governor can surface atMax and pause new-tab creation before hitting max.
+ */
+function countOpenTabs(): number {
+  return sessionWorkers.size;
 }
 
 function workerPath(): string {
@@ -341,6 +414,48 @@ function forwardEvent(event: { type: string } & Record<string, unknown>): void {
   }
 }
 
+// ---- per-session tab event streaming ----
+// Tab worker events are tagged with their bound sessionId and streamed on their
+// own channels (nexus:tabEvent / nexux:tabEvents) so the renderer can route
+// them to the owning tab without the global worker's events colliding.
+let tabEventBatch: Array<{ sessionId: string; event: AgentEvent }> = [];
+let tabEventBatchTimer: ReturnType<typeof setTimeout> | null = null;
+function flushTabEventBatch(): void {
+  if (tabEventBatchTimer) {
+    clearTimeout(tabEventBatchTimer);
+    tabEventBatchTimer = null;
+  }
+  if (tabEventBatch.length > 0) {
+    const batch = tabEventBatch;
+    tabEventBatch = [];
+    send('nexus:tabEvents', batch);
+  }
+}
+function forwardTabEvent(sessionId: string, event: AgentEvent): void {
+  if (event.type === 'text' || event.type === 'thinking') {
+    tabEventBatch.push({ sessionId, event });
+    if (!tabEventBatchTimer) {
+      tabEventBatchTimer = setTimeout(flushTabEventBatch, STREAM_BATCH_MS);
+    }
+  } else {
+    flushTabEventBatch();
+    send('nexus:tabEvent', { sessionId, event });
+  }
+}
+
+function wireSessionWorkers(): void {
+  sessionWorkers.onEvent = forwardTabEvent;
+  sessionWorkers.onPermission = (sessionId, req) => {
+    send('nexus:permission', { ...req, sessionId });
+  };
+  sessionWorkers.onLog = (level, message) => send('nexus:log', { level, message });
+  sessionWorkers.onChange = () => {
+    // Any tab open/close/hot-swap re-evaluates whether the tab ceiling is hit.
+    resourceMon.setAtMax(countOpenTabs() >= getMaxTabs());
+    send('nexus:tabsChanged', sessionWorkers.tabs());
+  };
+}
+
 async function openConfigWindow(): Promise<void> {
   try {
     // Reuse the already-open window.
@@ -381,6 +496,7 @@ function startWorker(): void {
   worker.onEvent = forwardEvent;
   worker.onPermission = (req) => send('nexus:permission', req);
   worker.onLog = (level, message) => send('nexus:log', { level, message });
+  worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
   worker.onExit = (code) => {
     send('nexus:log', { level: 'warn', message: `Core worker exited (code=${code})` });
     scheduleRestart();
@@ -445,11 +561,42 @@ function registerIpc(): void {
       throw err;
     }
   };
+  // Session-scoped variant: route to the tab's own worker when that session has
+  // one open; otherwise fall back to the global worker (back-compat path).
+  const callForSession = (method: string, sessionParam = 'sessionId') =>
+    async (_e: unknown, params?: Record<string, unknown>) => {
+      const sid = params && typeof params[sessionParam] === 'string' ? params[sessionParam] : '';
+      if (sid && sessionWorkers.has(sid)) {
+        try {
+          return await sessionWorkers.request(sid, method, params);
+        } catch (err) {
+          logf(`session invoke ${method} error: ${err instanceof Error ? err.message : String(err)}`);
+          throw err;
+        }
+      }
+      return call(method)(_e, params);
+    };
 
-  ipcMain.handle('nexus:chat', call('chat'));
-  ipcMain.handle('nexus:regenerate', call('regenerate'));
-  ipcMain.handle('nexus:withdraw', call('withdraw'));
-  ipcMain.handle('nexus:abort', call('abort'));
+  ipcMain.handle('nexus:chat', callForSession('chat'));
+  ipcMain.handle('nexus:regenerate', callForSession('regenerate'));
+  ipcMain.handle('nexus:withdraw', callForSession('withdraw'));
+  ipcMain.handle('nexus:abort', async (_e, params?: Record<string, unknown>) => {
+    // Abort is bound to whichever tab is actively streaming; route to the
+    // specific session if told which one, else abort all session workers + the
+    // global worker (idempotent).
+    const sid = params && typeof params.sessionId === 'string' ? params.sessionId : '';
+    if (sid && sessionWorkers.has(sid)) {
+      await sessionWorkers.request(sid, 'abort', params);
+      await sessionWorkers.refreshState(sid);
+      return;
+    }
+    for (const openId of sessionWorkers.tabs().map((t) => t.sessionId)) {
+      try {
+        await sessionWorkers.request(openId, 'abort', params);
+      } catch {}
+    }
+    await call('abort')(_e, params);
+  });
   ipcMain.handle('nexus:startSession', call('startSession'));
   ipcMain.handle('nexus:listSessions', call('listSessions'));
   ipcMain.handle('nexus:getMessages', call('getMessages'));
@@ -459,7 +606,7 @@ function registerIpc(): void {
   ipcMain.handle('nexus:renameSession', call('renameSession'));
   ipcMain.handle('nexus:getConfig', call('getConfig'));
   ipcMain.handle('nexus:getProviders', call('getProviders'));
-  ipcMain.handle('nexus:getStatus', call('getStatus'));
+  ipcMain.handle('nexus:getStatus', callForSession('getStatus'));
   ipcMain.handle('nexus:getPermissions', call('getPermissions'));
   // Read language straight from config.json instead of routing through the
   // worker: getLanguage is only used to pick the UI language, and the worker is
@@ -484,9 +631,29 @@ function registerIpc(): void {
   ipcMain.handle('nexus:saveSpeechProvider', call('saveSpeechProvider'));
   ipcMain.handle('nexus:saveVisionProvider', call('saveVisionProvider'));
   ipcMain.handle('nexus:getSessionStats', call('getSessionStats'));
-  ipcMain.handle('nexus:switchProvider', call('switchProvider'));
-  ipcMain.handle('nexus:switchModel', call('switchModel'));
-  ipcMain.handle('nexus:getModels', call('getModels'));
+  ipcMain.handle('nexus:switchProvider', async (_e, params?: Record<string, unknown>) => {
+    const sid = params && typeof params.sessionId === 'string' ? params.sessionId : '';
+    const name = params && typeof params.name === 'string' ? params.name : '';
+    if (sid && sessionWorkers.has(sid)) {
+      // Per-session override: never writes the shared global config.json.
+      await sessionWorkers.request(sid, 'setProviderOverride', { name });
+      await sessionWorkers.refreshState(sid);
+      return;
+    }
+    await call('switchProvider')(_e, params);
+  });
+  ipcMain.handle('nexus:switchModel', async (_e, params?: Record<string, unknown>) => {
+    const sid = params && typeof params.sessionId === 'string' ? params.sessionId : '';
+    const modelId = params && typeof params.modelId === 'string' ? params.modelId : '';
+    if (sid && sessionWorkers.has(sid)) {
+      // Per-session override: never writes the shared global config.json.
+      const res = await sessionWorkers.request(sid, 'setModelOverride', { modelId });
+      await sessionWorkers.refreshState(sid);
+      return res;
+    }
+    return call('switchModel')(_e, params);
+  });
+  ipcMain.handle('nexus:getModels', callForSession('getModels'));
   ipcMain.handle('nexus:saveProvider', call('saveProvider'));
   ipcMain.handle('nexus:setCwd', async (_e, params) => {
     const res = await call('setCwd')(_e, params);
@@ -538,6 +705,80 @@ function registerIpc(): void {
   ipcMain.handle('nexus:readRecentLogs', (_e, maxLines: unknown): string[] => {
     const n = isFiniteNumber(maxLines) ? Math.max(1, Math.floor(maxLines)) : 200;
     return recentLogLines(n);
+  });
+
+  // Resource / session governance (desktop.json + live resource watchdog).
+  ipcMain.handle('nexus:getMaxTabs', (): number => getMaxTabs());
+  ipcMain.handle('nexus:setMaxTabs', (_e, n: unknown): { ok: boolean } => {
+    if (!isFiniteNumber(n)) return { ok: false };
+    setMaxTabs(n);
+    resourceMon.setAtMax(countOpenTabs() >= getMaxTabs());
+    return { ok: true };
+  });
+  ipcMain.handle('nexus:getMemThreshold', (): number => getMemThresholdPct());
+  ipcMain.handle('nexus:setMemThreshold', (_e, n: unknown): { ok: boolean } => {
+    if (!isFiniteNumber(n)) return { ok: false };
+    setMemThresholdPct(n);
+    applyResourceConfig(resourceMon);
+    return { ok: true };
+  });
+  ipcMain.handle('nexus:getCpuThreshold', (): number => getCpuThresholdPct());
+  ipcMain.handle('nexus:setCpuThreshold', (_e, n: unknown): { ok: boolean } => {
+    if (!isFiniteNumber(n)) return { ok: false };
+    setCpuThresholdPct(n);
+    applyResourceConfig(resourceMon);
+    return { ok: true };
+  });
+  ipcMain.handle('nexus:getMonitorEnabled', (): boolean => getMonitorEnabled());
+  ipcMain.handle('nexus:setMonitorEnabled', (_e, enabled: unknown): { ok: boolean } => {
+    if (!isBoolean(enabled)) return { ok: false };
+    setMonitorEnabled(enabled);
+    applyResourceConfig(resourceMon);
+    return { ok: true };
+  });
+  ipcMain.handle('nexus:getResourceState', (): ResourceState => resourceMon.getState());
+
+  // ── Multi-tab: per-session worker lifecycle ──
+  // openSession binds (and optionally spawns) a worker to a concrete session.
+  // It honors the tab ceiling — when resourceMon reports overload OR the open
+  // tab count already equals maxTabs, no new process is spawned.
+  ipcMain.handle(
+    'nexus:openSession',
+    async (_e, params: { sessionId?: unknown; cwd?: unknown }): Promise<{ ok: boolean; tab?: OpenTabInfo; reason?: string }> => {
+      const sessionId = typeof params?.sessionId === 'string' ? params.sessionId : '';
+      if (!sessionId) return { ok: false, reason: 'invalid session' };
+      if (sessionWorkers.has(sessionId)) {
+        return { ok: true, tab: sessionWorkers.get(sessionId) };
+      }
+      if (countOpenTabs() >= getMaxTabs()) {
+        return { ok: false, reason: 'max-tabs' };
+      }
+      const state = resourceMon.getState();
+      if (state.status === 'overloaded') {
+        return { ok: false, reason: 'overloaded' };
+      }
+      const cwd = typeof params?.cwd === 'string' && params.cwd ? params.cwd : undefined;
+      try {
+        const tab = await sessionWorkers.open(sessionId, cwd ? { cwd } : undefined);
+        return { ok: true, tab };
+      } catch (err) {
+        logf(`openSession(${sessionId}) failed: ${err instanceof Error ? err.message : String(err)}`);
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+  ipcMain.handle('nexus:closeSession', (_e, params: { sessionId?: unknown }): { ok: boolean } => {
+    const sessionId = typeof params?.sessionId === 'string' ? params.sessionId : '';
+    if (!sessionId) return { ok: false };
+    sessionWorkers.close(sessionId);
+    return { ok: true };
+  });
+  ipcMain.handle('nexus:getOpenTabs', (): OpenTabInfo[] => sessionWorkers.tabs());
+  // Per-session provider/model/status reads for the active tab's override UI.
+  ipcMain.handle('nexus:getTabStatus', async (_e, params: { sessionId?: unknown }) => {
+    const sessionId = typeof params?.sessionId === 'string' ? params.sessionId : '';
+    const tab = sessionId ? sessionWorkers.get(sessionId) : undefined;
+    return tab ?? null;
   });
 
   ipcMain.handle('nexus:openFolder', async (): Promise<{ canceled: boolean; path?: string }> => {
@@ -622,6 +863,13 @@ if (gotLock) {
     updater.onState = (state) => send('nexus:updateState', state);
     createTray();
     startWorker();
+    wireSessionWorkers();
+    // Kick the shared MCP hub (single owner of all MCP server processes).
+    void mcpHub.ensureConnected().catch(() => {});
+    applyResourceConfig(resourceMon);
+    resourceMon.onState = (state) => send('nexus:resourceState', state);
+    resourceMon.setAtMax(countOpenTabs() >= getMaxTabs());
+    resourceMon.start();
     registerIpc();
     createWindow();
 
@@ -641,5 +889,7 @@ app.on('before-quit', () => {
   isQuitting = true;
   intentionallyStopped = true;
   if (restartTimer) clearTimeout(restartTimer);
+  resourceMon.stop();
+  sessionWorkers.closeAll();
   worker?.stop();
 });
