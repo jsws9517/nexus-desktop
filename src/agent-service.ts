@@ -560,11 +560,14 @@ export class AgentService {
       } else if (sub === 'auto') {
         await this.setPermissionsOverride('auto');
         this.emitText('Bypass ON: whitelist active, tools run without prompting.\n');
+      } else if (sub === 'unattended') {
+        await this.setPermissionsOverride('unattended');
+        this.emitText('Unattended mode ON: auto-approve with safety gate (destructive ops hard-blocked).\n');
       } else if (sub === 'off' || sub === 'prompt') {
         await this.setPermissionsOverride('prompt');
         this.emitText('Bypass OFF: reverted to prompt mode (each tool asks).\n');
       } else {
-        this.emitText('Usage: /bypass [auto|off|status]\n');
+        this.emitText('Usage: /bypass [auto|unattended|off|status]\n');
       }
       return true;
     }
