@@ -166,6 +166,7 @@ interface DesktopState {
   pinnedIds?: string[];
   minimizeToTray?: boolean;
   inputRows?: number;
+  restoreSessionOnLaunch?: boolean;
   // Resource/session governance (desktop-only; the core schema strips unknowns).
   maxTabs?: number;
   memThresholdPct?: number;
@@ -223,6 +224,14 @@ function getMinimizeToTray(): boolean {
 
 function setMinimizeToTray(enabled: boolean): void {
   writeDesktopState({ minimizeToTray: enabled });
+}
+
+function getRestoreSessionOnLaunch(): boolean {
+  return readDesktopState().restoreSessionOnLaunch !== false;
+}
+
+function setRestoreSessionOnLaunch(enabled: boolean): void {
+  writeDesktopState({ restoreSessionOnLaunch: enabled });
 }
 
 function getInputRows(): number {
@@ -691,6 +700,12 @@ function registerIpc(): void {
   ipcMain.handle('nexus:setMinimizeToTray', (_e, enabled: unknown): { ok: boolean } => {
     if (!isBoolean(enabled)) return { ok: false };
     setMinimizeToTray(enabled);
+    return { ok: true };
+  });
+  ipcMain.handle('nexus:getRestoreSessionOnLaunch', (): boolean => getRestoreSessionOnLaunch());
+  ipcMain.handle('nexus:setRestoreSessionOnLaunch', (_e, enabled: unknown): { ok: boolean } => {
+    if (!isBoolean(enabled)) return { ok: false };
+    setRestoreSessionOnLaunch(enabled);
     return { ok: true };
   });
 

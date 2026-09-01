@@ -179,6 +179,8 @@ declare global {
       setPinned(ids: string[]): Promise<{ ok: boolean }>;
       getMinimizeToTray(): Promise<boolean>;
       setMinimizeToTray(enabled: boolean): Promise<{ ok: boolean }>;
+      getRestoreSessionOnLaunch(): Promise<boolean>;
+      setRestoreSessionOnLaunch(enabled: boolean): Promise<{ ok: boolean }>;
       getInputRows(): Promise<number>;
       setInputRows(rows: number): Promise<{ ok: boolean }>;
       readRecentLogs(maxLines?: number): Promise<string[]>;
@@ -2323,6 +2325,9 @@ function buildStartupSection(): void {
   buildToggle(t('minimizeToTrayLabel'), t('minimizeToTrayHint'), window.nexusDesktop.getMinimizeToTray(), (v) => {
     return window.nexusDesktop.setMinimizeToTray(v);
   });
+  buildToggle(t('restoreSessionLabel'), t('restoreSessionHint'), window.nexusDesktop.getRestoreSessionOnLaunch(), (v) => {
+    return window.nexusDesktop.setRestoreSessionOnLaunch(v);
+  });
 }
 
 /** Render a labeled checkbox settings row that persists immediately on change. */
@@ -3084,7 +3089,12 @@ window.nexusDesktop.onTabsChanged((open) => {
     refreshModelSelect();
     cwdLabel.textContent = status.cwd || t('noProject');
     cwdLabel.title = status.cwd;
-    await startOrResumeLatestSession();
+    const shouldRestore = await window.nexusDesktop.getRestoreSessionOnLaunch();
+    if (shouldRestore) {
+      await startOrResumeLatestSession();
+    } else {
+      await startNewSession();
+    }
     await refreshSessions();
     await refreshSidebarSession();
     await syncOpenTabs();

@@ -155,6 +155,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   workerRestarted: { 'zh-CN': '核心已重启，正在恢复会话…', en: 'Core restarted, restoring session…' },
   minimizeToTrayLabel: { 'zh-CN': '关闭窗口时最小化到托盘', en: 'Minimize to tray on close' },
   minimizeToTrayHint: { 'zh-CN': '关闭主窗口后应用驻留系统托盘，从托盘菜单退出', en: 'Keep the app in the system tray when the window closes; quit from the tray menu' },
+  restoreSessionLabel: { 'zh-CN': '启动时恢复上次会话', en: 'Restore last session on launch' },
+  restoreSessionHint: { 'zh-CN': '开启后启动时自动恢复关闭前的最新会话，关闭则打开空白新会话', en: 'Automatically resume the latest session when the app starts; when off, opens a blank new session instead' },
   logSection: { 'zh-CN': '日志', en: 'Logs' },
   viewLogs: { 'zh-CN': '查看最近日志', en: 'View recent logs' },
   logsEmpty: { 'zh-CN': '暂无日志', en: 'No logs yet' },
