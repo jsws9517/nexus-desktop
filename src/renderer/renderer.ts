@@ -2342,6 +2342,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
   }
 
   buildStartupSection();
+  buildResourceSection();
   buildAppearanceSection();
   buildUpdateSection();
   buildLogSection();
@@ -2419,6 +2420,17 @@ function resourceStatusInfo(s: ResourceStateInfo): { key: string; cls: 'paused' 
   if (s.status === 'overloaded') return { key: 'resourceStatusOverloaded', cls: 'overloaded' };
   if (s.status === 'warning') return { key: 'resourceStatusWarning', cls: 'warning' };
   return { key: 'resourceStatusNormal', cls: 'normal' };
+}
+
+function buildResourceSection(): void {
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('resourceSection');
+  settingsBody.appendChild(title);
+
+  buildToggle(t('monitorEnabledLabel'), t('monitorEnabledHint'), window.nexusDesktop.getMonitorEnabled(), (v) => {
+    return window.nexusDesktop.setMonitorEnabled(v);
+  });
 }
 
 /**

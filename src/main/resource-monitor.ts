@@ -94,7 +94,15 @@ export class ResourceMonitor {
     if (typeof opts.cpuThresholdPct === 'number' && opts.cpuThresholdPct > 0) {
       this.cpuThreshold = opts.cpuThresholdPct / 100;
     }
-    if (typeof opts.monitorEnabled === 'boolean') this.enabled = opts.monitorEnabled;
+    if (typeof opts.monitorEnabled === 'boolean' && opts.monitorEnabled !== this.enabled) {
+      this.enabled = opts.monitorEnabled;
+      if (this.enabled) {
+        this.start();
+      } else {
+        this.stop();
+      }
+      this.onState?.(this.getState());
+    }
   }
 
   /** Set the "current tabs == max tabs" flag surfaced in state (renderer hint). */
@@ -106,6 +114,7 @@ export class ResourceMonitor {
     // Prime the CPU baseline immediately so the first delta isn't skewed.
     this.lastCpu = sampleCpu();
     if (!this.enabled) return;
+    if (this.timer) return;
     this.timer = setInterval(() => this.sample(), this.intervalMs);
   }
 
