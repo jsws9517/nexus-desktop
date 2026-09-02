@@ -12,7 +12,7 @@ import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.j
 import type { Session } from 'nexus-coder/dist/src/session/types.js';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 /**
  * Headless bridge around the nexus CLI Agent.
@@ -556,6 +556,27 @@ export class AgentService {
           this.emitText(`Depth set: ${level}\n`);
         }
       }
+      return true;
+    }
+    if (cmd === 'setcwd') {
+      // /setcwd [path] — Desktop-friendly rebind of a session's project dir.
+      // The core's remote handler only records metadata; here we ALSO chdir the
+      // worker so the new location takes effect immediately, and persist BOTH
+      // cwd + projectDir so a later resume re-opens in the same place (openTab
+      // prefers projectDir over cwd). This is the explicit, permanent counter
+      // part to the transient folder-button switch (which never rebinds a
+      // session that already owns a project).
+      const rawPath = args.join(' ').trim();
+      const sid = this.agent.getCurrentSessionId?.();
+      if (!sid) {
+        this.emitText('No active session. Open or create a session first.\n');
+        return true;
+      }
+      const target = !rawPath ? process.cwd() : isAbsolute(rawPath) ? rawPath : resolve(process.cwd(), rawPath);
+      await this.setCwd(target);
+      const msg = this.agent.setProjectLocation?.(target, { projectDir: target }) ?? '';
+      this.emitText(`Project directory set to ${target}\n${msg}\n`);
+      this.onEvent?.({ type: 'cwdChanged', cwd: target, sessionId: sid });
       return true;
     }
     if (cmd === 'bypass') {

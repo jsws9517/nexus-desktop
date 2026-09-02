@@ -680,7 +680,10 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getActiveMode', callForSession('getActiveMode'));
   ipcMain.handle('nexus:saveProvider', call('saveProvider'));
   ipcMain.handle('nexus:setCwd', async (_e, params) => {
-    const res = await call('setCwd')(_e, params);
+    // When a session tab is active, route setCwd to that tab's worker so the
+    // agent's process.cwd() matches the opened project dir (not just the shared
+    // global worker used by the sidebar). Fall back to the global worker.
+    const res = await callForSession('setCwd')(_e, params);
     const cwd = (res as { cwd?: unknown } | undefined)?.cwd;
     if (typeof cwd === 'string' && cwd) saveSavedCwd(cwd);
     return res;

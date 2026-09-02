@@ -43,7 +43,8 @@ const api = {
     ipcRenderer.invoke('nexus:getModels', { providerName, ...(opts ?? {}) }),
   saveProvider: (name: string, fields: Record<string, unknown>) =>
     ipcRenderer.invoke('nexus:saveProvider', { name, fields }),
-  setCwd: (cwd: string) => ipcRenderer.invoke('nexus:setCwd', { cwd }),
+  setCwd: (cwd: string, opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:setCwd', { cwd, ...(opts ?? {}) }),
   getDefaultProjectDir: () => ipcRenderer.invoke('nexus:getDefaultProjectDir'),
   getSessionMetadata: (sessionId: string) => ipcRenderer.invoke('nexus:getSessionMetadata', { sessionId }),
   setSessionMetadata: (sessionId: string, metadata: Record<string, unknown>) =>

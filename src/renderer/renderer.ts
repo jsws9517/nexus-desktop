@@ -123,6 +123,7 @@ type AgentEvent =
   | { type: 'task_completed'; taskId: string }
   | { type: 'task_failed'; taskId: string; error: string }
   | { type: 'sessionRenamed'; sessionId: string; name: string }
+  | { type: 'cwdChanged'; sessionId: string; cwd: string }
   | { type: 'slash_start'; command: string; anchorId?: number }
   | { type: 'slash'; text: string }
   | { type: 'slash_end'; anchorId?: number; command: string };
@@ -164,7 +165,7 @@ declare global {
       getOpenTabs(): Promise<TabInfo[]>;
       getTabStatus(sessionId: string): Promise<TabInfo | null>;
       openConfigWeb(): Promise<{ ok: boolean; port?: number; error?: string }>;
-      setCwd(cwd: string): Promise<unknown>;
+      setCwd(cwd: string, opts?: { sessionId?: string }): Promise<unknown>;
       getDefaultProjectDir(): Promise<{ dir: string }>;
       getSessionMetadata(sessionId: string): Promise<Record<string, unknown>>;
       setSessionMetadata(sessionId: string, metadata: Record<string, unknown>): Promise<void>;
@@ -606,6 +607,15 @@ function handleEvent(event: AgentEvent): void {
       if (event.sessionId && event.name) tabNames.set(event.sessionId, event.name);
       renderTabBar();
       void refreshSidebarSession();
+      break;
+    case 'cwdChanged':
+      // Session's working directory changed (e.g. /setcwd): refresh the status
+      // label so the UI reflects where the agent now operates.
+      if (event.sessionId === currentSessionId) {
+        status = { ...status, cwd: event.cwd };
+        cwdLabel.textContent = event.cwd;
+        cwdLabel.title = event.cwd;
+      }
       break;
     case 'text':
       if (event.text) {
@@ -1544,14 +1554,27 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
   let res: { ok: boolean; tab?: TabInfo; reason?: string };
   try {
     // Bind the session's saved working directory to its worker process so a
-    // tab's chat runs in the session's project dir.
+    // tab's chat runs in the session's project dir. For sessions without a
+    // saved project (e.g. a brand-new tab), inherit the currently-open folder
+    // so a fresh conversation still runs in the same project as the UI shows.
     let cwd: string | undefined;
     try {
       const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
       const metaCwd = (meta.projectDir ?? meta.cwd ?? '') as string;
       if (metaCwd) cwd = metaCwd;
     } catch {}
+    if (!cwd && status.cwd) cwd = status.cwd;
     res = await window.nexusDesktop.openSession(sessionId, cwd);
+    // Persist the inherited project dir so a later resume of this session runs
+    // in the same cwd even if the UI's default folder has since changed.
+    if (cwd) {
+      try {
+        const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
+        if (!(meta.projectDir ?? meta.cwd)) {
+          await window.nexusDesktop.setSessionMetadata(sessionId, { projectDir: cwd, cwd });
+        }
+      } catch {}
+    }
   } catch (err) {
     addSystem(`${t('tabsOpenFailed')}${errText(err)}`);
     return;
@@ -2875,14 +2898,23 @@ modelSelect.addEventListener('change', async () => {
 $('#btn-open-folder').addEventListener('click', async () => {
   const res = await window.nexusDesktop.openFolder();
   if (res.canceled || !res.path) return;
-  await window.nexusDesktop.setCwd(res.path);
-  // Persist to session metadata so future resume switches cwd.
+  // Apply to the active session's worker (not just the global worker) so the
+  // agent's cwd immediately matches the opened project dir for the next turn.
+  await window.nexusDesktop.setCwd(res.path, { sessionId: currentSessionId || undefined });
+  // Persist to session metadata so future resume switches cwd — but ONLY for
+  // sessions that have no project binding yet. A session that already points at
+  // its own project (e.g. a restored history session) keeps that binding; a
+  // transient folder switch here must not clobber the session's project cwd.
   if (currentSessionId) {
     try {
-      await window.nexusDesktop.setSessionMetadata(currentSessionId, { projectDir: res.path, cwd: res.path });
+      const meta = (await window.nexusDesktop.getSessionMetadata(currentSessionId)) as Record<string, unknown>;
+      const hasBinding = !!(meta.projectDir ?? meta.cwd);
+      if (!hasBinding) {
+        await window.nexusDesktop.setSessionMetadata(currentSessionId, { projectDir: res.path, cwd: res.path });
+      }
     } catch {}
   }
-  status = await window.nexusDesktop.getStatus();
+  status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
   cwdLabel.textContent = status.cwd;
   cwdLabel.title = status.cwd;
   addSystem(t('projectDir', { cwd: status.cwd }));
