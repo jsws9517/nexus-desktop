@@ -3072,10 +3072,8 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
   await loadLanguage();
   await refreshSidebarSession();
   const provs = await window.nexusDesktop.getProviders();
-  if (provs.length > 0) {
-    providers = provs;
-    refreshProviderSelect();
-  }
+  providers = provs;
+  refreshProviderSelect();
   modelsCache.clear();
   refreshModelSelect();
 });

@@ -139,6 +139,25 @@ export class SessionWorkers {
     }
   }
 
+  /**
+   * Re-read config.json into every open session worker's in-memory ConfigManager.
+   *
+   * After the config Web UI rewrites ~/.nexus/config.json (e.g. a provider was
+   * added/removed), each session worker otherwise keeps a STALE in-memory copy;
+   * its next save() would then silently write the old provider list back to
+   * disk and re-surface deleted providers in the UI. Reloading them all here
+   * prevents that lost-update overwrite.
+   */
+  async reloadAll(): Promise<void> {
+    for (const b of this.map.values()) {
+      try {
+        await b.worker.request('reloadConfig');
+      } catch {
+        /* best-effort — a worker may be mid-turn or already gone */
+      }
+    }
+  }
+
   /** Route a worker method call to the session's own process. */
   request<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>): Promise<T> {
     const b = this.map.get(sessionId);

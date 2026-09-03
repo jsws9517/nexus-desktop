@@ -504,7 +504,15 @@ async function openConfigWindow(): Promise<void> {
       void server?.close().catch(() => {});
       // The config Web UI may have written to ~/.nexus/config.json (language,
       // providers, etc.). Have the renderer reload core config + re-apply i18n.
-      send('nexus:configWindowClosed', {});
+      //
+      // Every session worker keeps its own long-lived in-memory ConfigManager.
+      // If one of them saved a stale copy (e.g. a provider that was just deleted
+      // here), it would silently overwrite the shared file and the deleted entry
+      // would re-appear in the UI. Reload all session workers FIRST so no stale
+      // in-memory provider list is left to clobber disk.
+      void sessionWorkers.reloadAll().finally(() => {
+        send('nexus:configWindowClosed', {});
+      });
     });
   } catch (err) {
     console.error('Failed to open config web UI:', err);
