@@ -514,6 +514,25 @@ export class AgentService {
     // Any slash command cancels a pending bare-/revise prompt.
     this.pendingRevise = false;
     const { cmd, args } = parsed;
+    if (cmd === 'manual' || cmd === 'help') {
+      // /manual is normally rendered by the core registry (getManualText). The
+      // desktop appends a short section for its own commands that are missing
+      // from that registry (desktop-only /chcwd, plus a note clarifying that
+      // /setdir also switches the worker immediately on this client).
+      let text = '';
+      try {
+        const { getManualText } = await import('nexus-coder/dist/src/slash/registry.js');
+        text = getManualText();
+      } catch {
+        text = '';
+      }
+      text += '\n' +
+        'Desktop (Nexus Desktop) only:\n' +
+        '  /chcwd [path]    Temporarily switch runtime working directory (not persisted)\n' +
+        '  /setdir [path]   (desktop) also switches the worker now (core records only projectDir)\n';
+      this.emitText(text + '\n');
+      return true;
+    }
     if (cmd === 'revise') {
       await this.runRevise(args.join(' ').trim());
       return true;
@@ -558,24 +577,36 @@ export class AgentService {
       }
       return true;
     }
-    if (cmd === 'setcwd') {
-      // /setcwd [path] — Desktop-friendly rebind of a session's project dir.
-      // The core's remote handler only records metadata; here we ALSO chdir the
-      // worker so the new location takes effect immediately, and persist BOTH
-      // cwd + projectDir so a later resume re-opens in the same place (openTab
-      // prefers projectDir over cwd). This is the explicit, permanent counter
-      // part to the transient folder-button switch (which never rebinds a
-      // session that already owns a project).
-      const rawPath = args.join(' ').trim();
+    if (cmd === 'setdir' || cmd === 'chcwd') {
+      // Help flags are intercepted before any path resolution (a folder could
+      // legitimately be named "help", but "setdir help" is far more likely to be
+      // someone asking for usage).
+      const isHelp = args.length === 0 && false ||
+        args.some((a) => /^(help|-h|--help|\?)$/i.test(a));
+      if (isHelp) {
+        this.emitText(
+          cmd === 'setdir'
+            ? 'Usage: /setdir [path]\n  Persistently bind this session to a project directory: the worker chdirs now and projectDir is recorded so a later resume re-opens here. With no path, uses the current folder.\n'
+            : 'Usage: /chcwd [path]\n  Temporarily switch this session\'s runtime working directory (does NOT persist to metadata). With no path, uses the current folder.\n',
+        );
+        return true;
+      }
       const sid = this.agent.getCurrentSessionId?.();
       if (!sid) {
         this.emitText('No active session. Open or create a session first.\n');
         return true;
       }
+      const rawPath = args.join(' ').trim();
       const target = !rawPath ? process.cwd() : isAbsolute(rawPath) ? rawPath : resolve(process.cwd(), rawPath);
       await this.setCwd(target);
-      const msg = this.agent.setProjectLocation?.(target, { projectDir: target }) ?? '';
-      this.emitText(`Project directory set to ${target}\n${msg}\n`);
+      if (cmd === 'setdir') {
+        // /setdir — explicit, permanent counter to the transient folder-button
+        // switch (which never rebinds a session that already owns a project).
+        this.agent.setProjectLocation?.(target, { projectDir: target });
+        this.emitText(`Project directory set to ${target} (persisted)\n`);
+      } else {
+        this.emitText(`Working directory switched to ${target} (temporary)\n`);
+      }
       this.onEvent?.({ type: 'cwdChanged', cwd: target, sessionId: sid });
       return true;
     }

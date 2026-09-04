@@ -937,6 +937,9 @@ body {
   min-width: 0;
 }
 .info-value-multiline { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; white-space: normal; }
+.info-value-mono { font-family: monospace; font-size: 11px; }
+.info-value-copy { cursor: pointer; }
+.info-value-copy:hover { text-decoration: underline; }
 .mcp-line {
   display: flex;
   gap: 6px;
@@ -1275,3 +1278,24 @@ html[data-theme='warm'] #fx-vignette {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* Toast for copy feedback etc. */
+.nexus-toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.nexus-toast.show { opacity: 1; }
+

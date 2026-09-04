@@ -278,6 +278,8 @@ const mcpServersEl = $('#mcp-servers');
 
 const rsideProvider = $('#rside-provider');
 const rsideModel = $('#rside-model');
+const rsideSessionId = $('#rside-session-id');
+const rsideCwd = $('#rside-cwd');
 const rsidePerm = $('#rside-perm');
 const rsideMcp = $('#rside-mcp');
 const rsideResourceEl = $('#rside-resource') as HTMLElement;
@@ -609,8 +611,8 @@ function handleEvent(event: AgentEvent): void {
       void refreshSidebarSession();
       break;
     case 'cwdChanged':
-      // Session's working directory changed (e.g. /setcwd): refresh the status
-      // label so the UI reflects where the agent now operates.
+      // Session's working directory changed (e.g. /setdir or /chcwd): refresh
+      // the status label so the UI reflects where the agent now operates.
       if (event.sessionId === currentSessionId) {
         status = { ...status, cwd: event.cwd };
         cwdLabel.textContent = event.cwd;
@@ -1553,25 +1555,26 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
   }
   let res: { ok: boolean; tab?: TabInfo; reason?: string };
   try {
-    // Bind the session's saved working directory to its worker process so a
+    // Bind the session's recorded project directory to its worker process so a
     // tab's chat runs in the session's project dir. For sessions without a
-    // saved project (e.g. a brand-new tab), inherit the currently-open folder
-    // so a fresh conversation still runs in the same project as the UI shows.
+    // saved project dir (e.g. a brand-new tab), inherit the currently-open
+    // folder so a fresh conversation still runs in the same project as the UI
+    // shows.
     let cwd: string | undefined;
     try {
       const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
-      const metaCwd = (meta.projectDir ?? meta.cwd ?? '') as string;
-      if (metaCwd) cwd = metaCwd;
+      const projectDir = (meta.projectDir ?? '') as string;
+      if (projectDir) cwd = projectDir;
     } catch {}
     if (!cwd && status.cwd) cwd = status.cwd;
     res = await window.nexusDesktop.openSession(sessionId, cwd);
     // Persist the inherited project dir so a later resume of this session runs
-    // in the same cwd even if the UI's default folder has since changed.
+    // in the same project even if the UI's default folder has since changed.
     if (cwd) {
       try {
         const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
-        if (!(meta.projectDir ?? meta.cwd)) {
-          await window.nexusDesktop.setSessionMetadata(sessionId, { projectDir: cwd, cwd });
+        if (!meta.projectDir) {
+          await window.nexusDesktop.setSessionMetadata(sessionId, { projectDir: cwd });
         }
       } catch {}
     }
@@ -1669,6 +1672,45 @@ async function syncOpenTabs(): Promise<void> {
 }
 
 // ---------- right sidebar: session info + task progress ----------
+function truncateId(id: string, maxLen = 8): string {
+  return id.length > maxLen ? id.slice(0, maxLen) + '…' : id;
+}
+
+function abbreviatePath(p: string, segments = 2): string {
+  if (!p) return '';
+  const sep = p.includes('\\') ? '\\' : '/';
+  const parts = p.split(sep).filter(Boolean);
+  if (parts.length <= segments) return p;
+  return '…' + sep + parts.slice(-segments).join(sep);
+}
+
+let toastEl: HTMLDivElement | null = null;
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+function showToast(msg: string): void {
+  if (!toastEl) {
+    toastEl = document.createElement('div');
+    toastEl.className = 'nexus-toast';
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl?.classList.remove('show');
+  }, 1600);
+}
+
+function wireCopy(el: HTMLElement, getText: () => string, msg: string): void {
+  el.addEventListener('click', async () => {
+    const text = getText();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(msg);
+    } catch { /* ignore */ }
+  });
+}
+
 function permLabel(mode: string): string {
   const zh = getUiLang() === 'zh-CN';
   if (mode === 'auto') return zh ? 'auto（自动放行）' : 'auto (auto-approve)';
@@ -1686,6 +1728,19 @@ async function refreshSidebarSession(): Promise<void> {
   status = st;
   rsideProvider.textContent = st.provider || '—';
   rsideModel.textContent = st.model || '—';
+  rsideSessionId.textContent = currentSessionId ? truncateId(currentSessionId) : '—';
+  rsideSessionId.title = currentSessionId || '';
+  // Project Directory row reflects the session's recorded projectDir (the
+  // canonical project field), left blank when the session has none.
+  let projDir = '';
+  try {
+    const meta = (await window.nexusDesktop.getSessionMetadata(currentSessionId)) as Record<string, unknown>;
+    projDir = (meta.projectDir ?? '') as string;
+  } catch {
+    projDir = '';
+  }
+  rsideCwd.textContent = projDir ? abbreviatePath(projDir) : '';
+  rsideCwd.title = projDir || '';
   rsidePerm.textContent = permLabel(perms.mode);
   const connected = mcp.servers.filter((s) => s.status !== 'disconnected');
   rsideMcp.innerHTML = '';
@@ -1709,6 +1764,9 @@ async function refreshSidebarSession(): Promise<void> {
   }
   await refreshSidebarModels();
 }
+
+wireCopy(rsideSessionId, () => currentSessionId, t('copiedSessionId'));
+wireCopy(rsideCwd, () => rsideCwd.title || '', t('copiedProjectDir'));
 
 let svConfig: SpeechVisionConfig = {
   activeSpeech: '',
@@ -2904,13 +2962,13 @@ $('#btn-open-folder').addEventListener('click', async () => {
   // Persist to session metadata so future resume switches cwd — but ONLY for
   // sessions that have no project binding yet. A session that already points at
   // its own project (e.g. a restored history session) keeps that binding; a
-  // transient folder switch here must not clobber the session's project cwd.
+  // transient folder switch here must not clobber the session's project dir.
   if (currentSessionId) {
     try {
       const meta = (await window.nexusDesktop.getSessionMetadata(currentSessionId)) as Record<string, unknown>;
-      const hasBinding = !!(meta.projectDir ?? meta.cwd);
+      const hasBinding = !!meta.projectDir;
       if (!hasBinding) {
-        await window.nexusDesktop.setSessionMetadata(currentSessionId, { projectDir: res.path, cwd: res.path });
+        await window.nexusDesktop.setSessionMetadata(currentSessionId, { projectDir: res.path });
       }
     } catch {}
   }
