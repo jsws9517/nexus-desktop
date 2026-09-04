@@ -431,8 +431,10 @@ function addUser(text: string, mid?: number): void {
   regenBtn.textContent = t('regenerate');
   regenBtn.title = text;
   regenBtn.addEventListener('click', () => void regenerateAt(wrap, userIndex));
+  const copyBtn = makeMsgCopyBtn(text);
   actions.appendChild(undoBtn);
   actions.appendChild(regenBtn);
+  actions.appendChild(copyBtn);
   wrap.appendChild(actions);
   messagesEl.appendChild(wrap);
   scrollToBottom();
@@ -449,6 +451,8 @@ function ensureAssistant(): { bubble: HTMLElement; stream: HTMLElement; buffer: 
     stream.style.whiteSpace = 'pre-wrap';
     bubble.appendChild(stream);
     wrap.appendChild(bubble);
+    const copyBtn = makeMsgCopyBtn(() => stream.textContent ?? '');
+    wrap.appendChild(copyBtn);
     messagesEl.appendChild(wrap);
     curAssistant = { bubble, stream, buffer: '', cleaned: false };
   }
@@ -1559,7 +1563,7 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
     // tab's chat runs in the session's project dir. For sessions without a
     // saved project dir (e.g. a brand-new tab), inherit the currently-open
     // folder so a fresh conversation still runs in the same project as the UI
-    // shows.
+    // shows; as a last resort fall back to the default project dir (~/.nexus/tasks).
     let cwd: string | undefined;
     try {
       const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
@@ -1567,6 +1571,12 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
       if (projectDir) cwd = projectDir;
     } catch {}
     if (!cwd && status.cwd) cwd = status.cwd;
+    if (!cwd) {
+      try {
+        const def = (await window.nexusDesktop.getDefaultProjectDir()) as { dir?: string };
+        if (def && def.dir) cwd = def.dir;
+      } catch {}
+    }
     res = await window.nexusDesktop.openSession(sessionId, cwd);
     // Persist the inherited project dir so a later resume of this session runs
     // in the same project even if the UI's default folder has since changed.
@@ -1594,6 +1604,28 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
   await switchTab(sessionId);
 }
 
+/** Refresh the "打开项目" cwd label next to the open-folder button, prioritizing
+ *  the active session's persisted projectDir (canonical per-session project field),
+ *  falling back to the live worker cwd, then to a blank placeholder. */
+async function syncCwdLabel(): Promise<void> {
+  let dir = '';
+  if (currentSessionId) {
+    try {
+      const meta = (await window.nexusDesktop.getSessionMetadata(currentSessionId)) as Record<string, unknown>;
+      dir = (meta.projectDir ?? '') as string;
+    } catch {}
+  }
+  if (!dir && status.cwd) dir = status.cwd;
+  if (!dir) {
+    try {
+      const def = (await window.nexusDesktop.getDefaultProjectDir()) as { dir?: string };
+      if (def && def.dir) dir = def.dir;
+    } catch {}
+  }
+  cwdLabel.textContent = dir || t('noProject');
+  cwdLabel.title = dir || '';
+}
+
 /** Activate `sessionId`, rendering its transcript as the visible conversation. */
 async function switchTab(sessionId: string): Promise<void> {
   activeTabId = sessionId;
@@ -1615,6 +1647,7 @@ async function switchTab(sessionId: string): Promise<void> {
     } catch {}
   }
   setBusy(Boolean(tab?.busy));
+  await syncCwdLabel();
   loadDraft(sessionId);
   refreshProviderSelect();
   refreshModelSelect();
@@ -1709,6 +1742,24 @@ function wireCopy(el: HTMLElement, getText: () => string, msg: string): void {
       showToast(msg);
     } catch { /* ignore */ }
   });
+}
+
+function makeMsgCopyBtn(getText: string | (() => string)): HTMLElement {
+  const btn = document.createElement('button');
+  btn.className = 'msg-copy-btn';
+  btn.type = 'button';
+  btn.title = t('copy');
+  btn.textContent = t('copy');
+  btn.addEventListener('click', async () => {
+    const text = typeof getText === 'function' ? getText() : getText;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = t('copied');
+      setTimeout(() => { btn.textContent = t('copy'); }, 1200);
+    } catch { /* ignore */ }
+  });
+  return btn;
 }
 
 function permLabel(mode: string): string {
@@ -2976,6 +3027,7 @@ $('#btn-open-folder').addEventListener('click', async () => {
   cwdLabel.textContent = status.cwd;
   cwdLabel.title = status.cwd;
   addSystem(t('projectDir', { cwd: status.cwd }));
+  void syncCwdLabel();
 });
 
 $('#btn-new-session').addEventListener('click', () => void openNewTab());

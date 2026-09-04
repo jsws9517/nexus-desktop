@@ -314,7 +314,13 @@ body {
   align-items: flex-end;
   gap: 4px;
 }
-.msg.assistant { align-self: flex-start; }
+.msg.assistant {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
 
 .regen-btn {
   opacity: 0;
@@ -331,6 +337,21 @@ body {
 .regen-btn:hover { color: var(--accent); }
 .undo-btn:hover { color: var(--ok); }
 .regen-btn[disabled] { opacity: 0.4; cursor: default; }
+
+.msg-copy-btn {
+  opacity: 0;
+  align-self: flex-end;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+.msg:hover .msg-copy-btn { opacity: 1; }
+.msg-copy-btn:hover { color: var(--text); border-color: var(--accent); }
 
 .msg .bubble {
   padding: 10px 14px;
