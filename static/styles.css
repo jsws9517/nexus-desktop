@@ -297,6 +297,17 @@ body {
 .tab-add:hover { color: var(--accent); border-color: var(--accent); }
 .tab-bar-empty { color: var(--text-dim); font-size: 12px; padding: 0 4px; }
 
+.chat-empty {
+  position: absolute;
+  inset: 96px 24px auto;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.7;
+  pointer-events: none;
+  user-select: none;
+}
+
 #messages {
   flex: 1;
   overflow-y: auto;

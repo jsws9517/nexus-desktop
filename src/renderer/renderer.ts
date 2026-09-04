@@ -249,6 +249,7 @@ interface TabInfo {
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector(sel) as T;
 
 const messagesEl = $('#messages');
+const chatEmptyEl = $('#chat-empty');
 const inputEl = $('#input') as HTMLTextAreaElement;
 const sendBtn = $('#btn-send');
 const stopBtn = $('#btn-stop');
@@ -1439,6 +1440,16 @@ async function startNewSession(): Promise<void> {
   await openNewTab();
 }
 
+/** Show the blank-slate hint when no session/tab is active (no auto-create). */
+function showChatEmpty(): void {
+  chatEmptyEl.textContent = t('chatEmptyHint');
+  chatEmptyEl.classList.remove('hidden');
+}
+
+function hideChatEmpty(): void {
+  chatEmptyEl.classList.add('hidden');
+}
+
 async function startOrResumeLatestSession(): Promise<void> {
   // Resume the latest session that actually has content — empty-context
   // sessions (CLI scratch / AI-intermediary noise) are excluded, and inner-test
@@ -1455,7 +1466,7 @@ async function startOrResumeLatestSession(): Promise<void> {
     await openTab(latest.id, latest.name);
     return;
   }
-  await startNewSession();
+  showChatEmpty();
 }
 
 // ---------- multi-tab: per-session worker tabs ----------
@@ -1630,6 +1641,7 @@ async function syncCwdLabel(): Promise<void> {
 async function switchTab(sessionId: string): Promise<void> {
   activeTabId = sessionId;
   currentSessionId = sessionId;
+  hideChatEmpty();
   resetViewState();
   try {
     const fresh = await window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
@@ -1671,7 +1683,13 @@ async function closeTab(sessionId: string): Promise<void> {
       await switchTab(next);
     } else {
       currentSessionId = '';
-      await startNewSession();
+      messagesEl.innerHTML = '';
+      toolCards.clear();
+      tasks.clear();
+      renderTasks();
+      curAssistant = null;
+      curThinking = null;
+      showChatEmpty();
     }
   } else {
     renderTabBar();
@@ -2125,6 +2143,12 @@ async function sendMessage(): Promise<void> {
   const text = inputEl.value.trim();
   if (!text && attachments.length === 0) return;
   setFrozen(false);
+  // With no active session/tab (blank slate), the user's first message starts a
+  // real session — creation is still user-triggered, never automatic on boot/close.
+  if (!currentSessionId || tabs.size === 0) {
+    await startNewSession();
+    if (!currentSessionId) return;
+  }
   const attrs = attachments;
   attachments = [];
   renderAttachments();
@@ -3247,10 +3271,11 @@ window.nexusDesktop.onTabsChanged((open) => {
             try { await window.nexusDesktop.setPermissionsOverride('unattended'); } catch {}
           }
         }
-      } else {
-        await startNewSession();
       }
     }
+    // When no session/tab was restored or created (restore off, or on with no
+    // saved tabs), show the blank-slate hint — never auto-create a session here.
+    if (!currentSessionId || tabs.size === 0) showChatEmpty();
     // When shouldRestore is false, stay on blank slate — no session created.
     await refreshSessions();
     await refreshSidebarSession();

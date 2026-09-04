@@ -14,6 +14,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   settings: { 'zh-CN': '⚙️ 设置', en: '⚙️ Settings' },
   sessions: { 'zh-CN': '会话', en: 'Sessions' },
   newSession: { 'zh-CN': '＋ 新建', en: '＋ New' },
+  chatEmptyHint: { 'zh-CN': '点击「＋ 新建」或输入 /new 开始新会话，也可以直接输入第一条消息', en: 'Start with "＋ New" or /new, or just type your first message' },
   collapseSidebar: { 'zh-CN': '折叠侧栏', en: 'Collapse sidebar' },
   expandSidebar: { 'zh-CN': '展开侧栏', en: 'Expand sidebar' },
   attach: { 'zh-CN': '📎', en: '📎' },
