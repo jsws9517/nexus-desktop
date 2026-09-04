@@ -1,4 +1,5 @@
 import { cpus } from 'node:os';
+import { memoryUsage } from 'node:process';
 
 /**
  * System resource monitor for the Nexus Desktop multi-session protection.
@@ -14,6 +15,7 @@ import { cpus } from 'node:os';
  *     it matches the OS "available" intuition better than raw free).
  *   - CPU: two snapshots of os.cpus() taken ~pollMs apart; the delta of
  *     idle/total across all cores yields a system load estimate.
+ *   - Process: main process RSS via process.memoryUsage() + worker count.
  *
  * Debounce: a usage spike is only treated as overload AFTER `debounce` (3)
  * consecutive samples both exceed the thresholds. Once overloaded, a single
@@ -35,6 +37,10 @@ export interface ResourceState {
   cpuPct: number;
   atMax?: boolean;
   updatedAt: number;
+  /** Main process RSS in MB. */
+  processMemoryMb?: number;
+  /** Number of active worker processes. */
+  workerCount?: number;
 }
 
 export interface ResourceThresholds {
@@ -77,14 +83,18 @@ export class ResourceMonitor {
   private lastCpuPct = 0;
   private lastMemPct = 0;
   private lastAtMax = false;
+  private lastProcessMemoryMb = 0;
+  private lastWorkerCount = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private log: (msg: string) => void = () => {};
+  private getWorkerCount?: () => number;
 
   onState?: (state: ResourceState) => void;
 
-  constructor(opts?: { intervalMs?: number; log?: (msg: string) => void }) {
+  constructor(opts?: { intervalMs?: number; log?: (msg: string) => void; getWorkerCount?: () => number }) {
     this.intervalMs = opts?.intervalMs ?? 5000;
     if (opts?.log) this.log = opts.log;
+    this.getWorkerCount = opts?.getWorkerCount;
   }
   /** Apply persisted thresholds/toggle. Idempotent; safe to call before start(). */
   apply(opts: Partial<ResourceThresholds>): void {
@@ -150,6 +160,8 @@ export class ResourceMonitor {
       cpuPct: this.lastCpuPct,
       atMax: this.lastAtMax || undefined,
       updatedAt: Date.now(),
+      processMemoryMb: this.lastProcessMemoryMb || undefined,
+      workerCount: this.lastWorkerCount || undefined,
     };
   }
 
@@ -190,6 +202,17 @@ export class ResourceMonitor {
       }
     }
     this.lastCpu = cur;
+
+    // Process-level metrics
+    try {
+      const procMem = memoryUsage();
+      this.lastProcessMemoryMb = Math.round(procMem.rss / (1024 * 1024));
+    } catch {
+      this.lastProcessMemoryMb = 0;
+    }
+    if (this.getWorkerCount) {
+      this.lastWorkerCount = this.getWorkerCount();
+    }
 
     if (mem !== undefined) this.lastMemPct = mem;
     if (cpu !== undefined) this.lastCpuPct = cpu;

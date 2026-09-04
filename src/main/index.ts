@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { basename, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { access, stat, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { WorkerHost } from './worker-host.js';
 import { Updater } from './updater.js';
@@ -35,13 +36,13 @@ const IMAGE_MIME: Record<string, string> = {
   '.avif': 'image/avif',
 };
 
-function imageDataUrl(path: string): string | undefined {
+async function imageDataUrl(path: string): Promise<string | undefined> {
   try {
-    const st = statSync(path);
+    const st = await stat(path);
     if (st.size > 2 * 1024 * 1024) return undefined;
     const mime = IMAGE_MIME[extname(path).toLowerCase()];
     if (!mime) return undefined;
-    return `data:${mime};base64,${readFileSync(path).toString('base64')}`;
+    return `data:${mime};base64,${(await readFile(path)).toString('base64')}`;
   } catch {
     return undefined;
   }
@@ -70,6 +71,7 @@ const updater = new Updater();
 const resourceMon = new ResourceMonitor({
   intervalMs: 5000,
   log: (msg) => logf(`resource: ${msg}`),
+  getWorkerCount: () => sessionWorkers.size + 1, // +1 for main process
 });
 let readyPromise: Promise<void> = Promise.resolve();
 // Phase-1 readiness (Agent constructed): read-only session/config IPC can run
@@ -175,19 +177,31 @@ interface DesktopState {
   monitorEnabled?: boolean;
 }
 
+// Desktop config cache: avoid per-IPC sync disk reads
+let desktopConfigCache: DesktopState | null = null;
+
 function readDesktopState(): DesktopState {
+  if (desktopConfigCache) return desktopConfigCache;
   try {
-    if (!existsSync(DESKTOP_CONFIG_PATH)) return {};
-    return JSON.parse(readFileSync(DESKTOP_CONFIG_PATH, 'utf-8')) as DesktopState;
+    if (!existsSync(DESKTOP_CONFIG_PATH)) {
+      desktopConfigCache = {};
+      return {};
+    }
+    desktopConfigCache = JSON.parse(readFileSync(DESKTOP_CONFIG_PATH, 'utf-8')) as DesktopState;
+    return desktopConfigCache;
   } catch {
+    desktopConfigCache = {};
     return {};
   }
 }
 
 function writeDesktopState(patch: DesktopState): void {
   try {
-    const next = { ...readDesktopState(), ...patch };
-    writeFileSync(DESKTOP_CONFIG_PATH, JSON.stringify(next, null, 2));
+    const cur = readDesktopState();
+    desktopConfigCache = { ...cur, ...patch };
+    // Async write to disk (non-blocking)
+    const payload = JSON.stringify(desktopConfigCache, null, 2);
+    writeFile(DESKTOP_CONFIG_PATH, payload).catch(() => {});
   } catch {}
 }
 
@@ -371,8 +385,8 @@ function createWindow(): void {
   });
 
   win.loadFile(join(__dirname, '..', 'static', 'index.html'));
-  win.webContents.on('console-message', (_e, level, message) => {
-    logf(`renderer[${level}]: ${message}`);
+  win.webContents.on('console-message', (event) => {
+    logf(`renderer[${event.level}]: ${event.message}`);
   });
   win.on('closed', () => {
     win = null;
@@ -644,8 +658,9 @@ function registerIpc(): void {
   ipcMain.handle('nexus:getLanguage', async (): Promise<string> => {
     try {
       const cfgPath = join(homedir(), '.nexus', 'config.json');
-      if (!existsSync(cfgPath)) return 'en';
-      const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')) as { language?: string };
+      await access(cfgPath);
+      const raw = await readFile(cfgPath, 'utf-8');
+      const cfg = JSON.parse(raw) as { language?: string };
       return typeof cfg.language === 'string' ? cfg.language : 'en';
     } catch {
       return 'en';
@@ -855,12 +870,12 @@ function registerIpc(): void {
   // chips with size and thumbnails without exposing the fs to the renderer.
   ipcMain.handle(
     'nexus:getFileInfos',
-    (_e, paths: unknown): Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }> => {
+    async (_e, paths: unknown): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>> => {
       if (!isValidPathList(paths)) return [];
       const out: Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }> = [];
       for (const p of paths) {
         try {
-          const st = statSync(p);
+          const st = await stat(p);
           const ext = extname(p).toLowerCase();
           const isImage = IMAGE_EXT.has(ext);
           out.push({
@@ -868,7 +883,7 @@ function registerIpc(): void {
             name: basename(p),
             size: st.size,
             isImage,
-            preview: isImage ? imageDataUrl(p) : undefined,
+            preview: isImage ? await imageDataUrl(p) : undefined,
           });
         } catch {}
       }
@@ -877,7 +892,7 @@ function registerIpc(): void {
   );
 
   // Load a local image as a data URL for markdown rendering (hydrateImages).
-  ipcMain.handle('nexus:readImagePreview', (_e, path: unknown): string | undefined => {
+  ipcMain.handle('nexus:readImagePreview', async (_e, path: unknown): Promise<string | undefined> => {
     if (!isString(path) || path.length === 0 || path.length > 4096) return undefined;
     return imageDataUrl(path);
   });

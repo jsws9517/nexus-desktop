@@ -235,6 +235,8 @@ interface ResourceStateInfo {
   cpuPct: number;
   atMax?: boolean;
   updatedAt: number;
+  processMemoryMb?: number;
+  workerCount?: number;
 }
 
 /** An open multi-session tab: each maps to a per-session agent worker process. */
@@ -841,9 +843,15 @@ function appendTextDelta(el: HTMLElement, delta: string): void {
   }
 }
 
+let _scrollRafPending = false;
 function scrollToBottom(): void {
   if (frozen) return;
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (_scrollRafPending) return;
+  _scrollRafPending = true;
+  requestAnimationFrame(() => {
+    _scrollRafPending = false;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
 }
 
 /** Localize a thrown value's message for display (common core/network errors). */
@@ -1144,8 +1152,13 @@ async function refreshSessions(activeId?: string): Promise<void> {
 // ---------- history windowing + cache helpers ----------
 /** Displayable user rows only — worker blocks are skipped everywhere so the
  *  regenerate() user index matches AgentService (same markers). */
+let _curUserRowsRef: StoredMsg[] | null = null;
+let _curUserRowsCount = 0;
 function countUserRows(rows: StoredMsg[]): number {
-  return rows.filter((r) => r.role === 'user' && !isWorkerBlockText(String(r.content ?? ''))).length;
+  if (rows === _curUserRowsRef) return _curUserRowsCount;
+  _curUserRowsRef = rows;
+  _curUserRowsCount = rows.filter((r) => r.role === 'user' && !isWorkerBlockText(String(r.content ?? ''))).length;
+  return _curUserRowsCount;
 }
 
 /** Render one persisted message row into the history view. */
@@ -1877,12 +1890,47 @@ function renderTasks(): void {
   const items = [...tasks.values()];
   const hasTasks = items.length > 0;
   taskEmptyEl.classList.toggle('hidden', hasTasks);
-  taskListEl.innerHTML = '';
-  if (!hasTasks) return;
+  if (!hasTasks) {
+    taskListEl.innerHTML = '';
+    return;
+  }
+
+  // Incremental update: reuse existing DOM nodes where possible
+  const existing = taskListEl.querySelectorAll('.task-item');
+  const existingMap = new Map<string, HTMLDivElement>();
+  for (let i = 0; i < existing.length; i++) {
+    const el = existing[i] as HTMLDivElement;
+    if (el.dataset.taskId) existingMap.set(el.dataset.taskId, el);
+  }
+
+  const fragment = document.createDocumentFragment();
+  const usedIds = new Set<string>();
+
   for (const item of items) {
-    const li = document.createElement('div');
-    li.className = 'task-item';
-    const badge = document.createElement('span');
+    usedIds.add(item.id);
+    let li = existingMap.get(item.id);
+
+    if (!li) {
+      // New task: create node structure
+      li = document.createElement('div');
+      li.className = 'task-item';
+      li.dataset.taskId = item.id;
+      const badge = document.createElement('span');
+      badge.className = 'task-badge';
+      const body = document.createElement('div');
+      body.className = 'task-body';
+      const title = document.createElement('div');
+      title.className = 'task-title';
+      const meta = document.createElement('div');
+      meta.className = 'task-meta';
+      body.appendChild(title);
+      body.appendChild(meta);
+      li.appendChild(badge);
+      li.appendChild(body);
+    }
+
+    // Update content (always, since status may change)
+    const badge = li.querySelector('.task-badge')!;
     badge.className = `task-badge ${item.status}`;
     badge.textContent = item.status === 'running'
       ? '⏳'
@@ -1893,13 +1941,12 @@ function renderTasks(): void {
           : item.status === 'cancelled'
             ? '−'
             : '○';
-    const body = document.createElement('div');
-    body.className = 'task-body';
-    const title = document.createElement('div');
-    title.className = 'task-title';
+
+    const title = li.querySelector('.task-title') as HTMLDivElement;
     title.textContent = item.description || item.id;
     title.title = item.description || '';
-    const meta = document.createElement('div');
+
+    const meta = li.querySelector('.task-meta') as HTMLDivElement;
     meta.className = `task-meta ${item.status}`;
     meta.textContent = item.status === 'running'
       ? t('running', { role: item.role })
@@ -1910,12 +1957,17 @@ function renderTasks(): void {
           : item.status === 'cancelled'
             ? t('cancelled')
             : t('pending');
-    body.appendChild(title);
-    body.appendChild(meta);
-    li.appendChild(badge);
-    li.appendChild(body);
-    taskListEl.appendChild(li);
+
+    fragment.appendChild(li);
   }
+
+  // Remove tasks that no longer exist
+  for (const [id, el] of existingMap) {
+    if (!usedIds.has(id)) el.remove();
+  }
+
+  taskListEl.innerHTML = '';
+  taskListEl.appendChild(fragment);
 }
 
 function handleTaskEvent(event: Extract<AgentEvent, { type: `task_${string}` }>): void {
@@ -2619,6 +2671,18 @@ function renderResourceInto(el: HTMLElement, s: ResourceStateInfo): void {
     const cpuVal = span(`rres-val rres-val-cpu ${loadCls}`, `${Math.max(0, Math.min(100, cpu))}%`);
     const sep = span('rres-sep', '·');
     el.append(memLabel, memVal, sep, cpuLabel, cpuVal);
+
+    // Process-level metrics (optional)
+    if (typeof s.processMemoryMb === 'number' && s.processMemoryMb > 0) {
+      const procLabel = span('rres-label', 'Proc');
+      const procVal = span('rres-val', `${s.processMemoryMb} MB`);
+      el.append(span('rres-sep', '·'), procLabel, procVal);
+    }
+    if (typeof s.workerCount === 'number' && s.workerCount > 1) {
+      const workerLabel = span('rres-label', 'Workers');
+      const workerVal = span('rres-val', String(s.workerCount));
+      el.append(span('rres-sep', '·'), workerLabel, workerVal);
+    }
   } else {
     el.append(span('rres-val rres-invalid', t('resourceStateUnavailable')));
   }

@@ -32,8 +32,51 @@ let running = false;
 let resizeTimer = 0;
 let reducedMotion = false;
 
-function palette(): FxPalette {
-  return document.documentElement.dataset.theme === 'warm' ? WARM : DARK;
+// ---------- palette cache (avoid per-frame DOM read) ----------
+let cachedPalette: FxPalette = DARK;
+function updatePalette(): void {
+  cachedPalette = document.documentElement.dataset.theme === 'warm' ? WARM : DARK;
+}
+
+// ---------- spatial grid for O(N) link detection ----------
+let gridCols = 0;
+let gridCells: FxNode[][] = [];
+
+function rebuildGrid(w: number, h: number, cellSize: number): void {
+  gridCols = Math.ceil(w / cellSize) + 1;
+  const totalCells = gridCols * (Math.ceil(h / cellSize) + 1);
+  if (gridCells.length !== totalCells) {
+    gridCells = new Array(totalCells);
+  }
+  for (let k = 0; k < totalCells; k++) {
+    if (gridCells[k]) gridCells[k].length = 0;
+    else gridCells[k] = [];
+  }
+  for (const n of nodes) {
+    const cx = Math.floor(n.x / cellSize);
+    const cy = Math.floor(n.y / cellSize);
+    if (cx >= 0 && cx < gridCols) {
+      gridCells[cy * gridCols + cx].push(n);
+    }
+  }
+}
+
+function getNeighbors(cx: number, cy: number): FxNode[] {
+  const result: FxNode[] = [];
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx >= 0 && nx < gridCols) {
+        const idx = ny * gridCols + nx;
+        if (idx >= 0 && idx < gridCells.length) {
+          const cell = gridCells[idx];
+          for (let k = 0; k < cell.length; k++) result.push(cell[k]);
+        }
+      }
+    }
+  }
+  return result;
 }
 
 function resize(): void {
@@ -64,7 +107,7 @@ function draw(t: number): void {
   const w = window.innerWidth;
   const h = window.innerHeight;
   ctx.clearRect(0, 0, w, h);
-  const pal = palette();
+  const pal = cachedPalette;
   const time = t / 1000;
 
   for (const n of nodes) {
@@ -76,17 +119,32 @@ function draw(t: number): void {
     else if (n.y > h + 20) n.y = -20;
   }
 
+  // Spatial grid link detection: O(N * avgNeighbors) instead of O(N^2)
+  rebuildGrid(w, h, pal.span);
   ctx.lineWidth = 1;
+  const spanSq = pal.span * pal.span;
+  const drawn = new Set<string>();
+
   for (let i = 0; i < nodes.length; i++) {
     const a = nodes[i];
-    for (let j = i + 1; j < nodes.length; j++) {
-      const b = nodes[j];
+    const cx = Math.floor(a.x / pal.span);
+    const cy = Math.floor(a.y / pal.span);
+    const neighbors = getNeighbors(cx, cy);
+    for (let k = 0; k < neighbors.length; k++) {
+      const b = neighbors[k];
+      if (b === a) continue;
+      // Dedup: ensure each pair drawn once (use stable ordering)
+      const key = a.x < b.x || (a.x === b.x && a.y < b.y)
+        ? `${i}-${nodes.indexOf(b)}`
+        : `${nodes.indexOf(b)}-${i}`;
+      if (drawn.has(key)) continue;
+      drawn.add(key);
+
       const dx = a.x - b.x;
       const dy = a.y - b.y;
       const d2 = dx * dx + dy * dy;
-      const span = pal.span;
-      if (d2 < span * span) {
-        const alpha = (1 - Math.sqrt(d2) / span) * 0.34;
+      if (d2 < spanSq) {
+        const alpha = (1 - Math.sqrt(d2) / pal.span) * 0.34;
         if (alpha <= 0.004) continue;
         ctx.strokeStyle = `rgba(${pal.linkRgb}, ${alpha.toFixed(3)})`;
         ctx.beginPath();
@@ -147,6 +205,7 @@ export function initFx(): void {
     if (!ctx) return;
   }
   reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? true : false;
+  updatePalette(); // Initialize palette cache
   resize();
   window.addEventListener('resize', () => {
     if (resizeTimer) window.clearTimeout(resizeTimer);
@@ -156,6 +215,7 @@ export function initFx(): void {
   // Repaint once when the theme attribute flips (matters for reduced-motion
   // users; live animation already picks up the new palette each frame).
   const mo = new MutationObserver(() => {
+    updatePalette(); // Update palette cache on theme change
     if (reducedMotion) draw(performance.now());
   });
   mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
