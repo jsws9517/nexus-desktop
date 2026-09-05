@@ -40,11 +40,13 @@ function updatePalette(): void {
 
 // ---------- spatial grid for O(N) link detection ----------
 let gridCols = 0;
+let gridRows = 0;
 let gridCells: FxNode[][] = [];
 
 function rebuildGrid(w: number, h: number, cellSize: number): void {
   gridCols = Math.ceil(w / cellSize) + 1;
-  const totalCells = gridCols * (Math.ceil(h / cellSize) + 1);
+  gridRows = Math.ceil(h / cellSize) + 1;
+  const totalCells = gridCols * gridRows;
   if (gridCells.length !== totalCells) {
     gridCells = new Array(totalCells);
   }
@@ -55,7 +57,7 @@ function rebuildGrid(w: number, h: number, cellSize: number): void {
   for (const n of nodes) {
     const cx = Math.floor(n.x / cellSize);
     const cy = Math.floor(n.y / cellSize);
-    if (cx >= 0 && cx < gridCols) {
+    if (cx >= 0 && cx < gridCols && cy >= 0 && cy < gridRows) {
       gridCells[cy * gridCols + cx].push(n);
     }
   }
@@ -67,7 +69,7 @@ function getNeighbors(cx: number, cy: number): FxNode[] {
     for (let dx = -1; dx <= 1; dx++) {
       const nx = cx + dx;
       const ny = cy + dy;
-      if (nx >= 0 && nx < gridCols) {
+      if (nx >= 0 && nx < gridCols && ny >= 0 && ny < gridRows) {
         const idx = ny * gridCols + nx;
         if (idx >= 0 && idx < gridCells.length) {
           const cell = gridCells[idx];
