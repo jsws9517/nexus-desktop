@@ -1784,13 +1784,13 @@ function showToast(msg: string): void {
   }, 1600);
 }
 
-function wireCopy(el: HTMLElement, getText: () => string, msg: string): void {
+function wireCopy(el: HTMLElement, getText: () => string, msg: () => string): void {
   el.addEventListener('click', async () => {
     const text = getText();
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      showToast(msg);
+      showToast(msg());
     } catch { /* ignore */ }
   });
 }
@@ -1867,8 +1867,8 @@ async function refreshSidebarSession(): Promise<void> {
   await refreshSidebarModels();
 }
 
-wireCopy(rsideSessionId, () => currentSessionId, t('copiedSessionId'));
-wireCopy(rsideCwd, () => rsideCwd.title || '', t('copiedProjectDir'));
+wireCopy(rsideSessionId, () => currentSessionId, () => t('copiedSessionId'));
+wireCopy(rsideCwd, () => rsideCwd.title || '', () => t('copiedProjectDir'));
 
 let svConfig: SpeechVisionConfig = {
   activeSpeech: '',
