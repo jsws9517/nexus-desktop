@@ -12,7 +12,7 @@ const nexusDir = join(tmp, '.nexus');
 mkdirSync(nexusDir, { recursive: true });
 process.env.LLMA_DATA_DIR = tmp;
 
-const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph } =
+const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph, estimateSessionTokensCached } =
   await import('../dist/session-db.js');
 
 let db;
@@ -180,4 +180,39 @@ test('getSessionIdsByTaskGraph degrades to id-only when project_name is absent',
   db.prepare('ALTER TABLE task_graphs DROP COLUMN project_name').run();
   assert.deepEqual([...getSessionIdsByTaskGraph('zzz')].sort(), ['sess-2']);
   assert.equal(getSessionIdsByTaskGraph('beta').size, 0);
+});
+
+test('estimateSessionTokensCached computes incrementally and invalidates after truncation', () => {
+  const sid = 'sess-cache';
+  db.prepare('INSERT INTO sessions (id, name, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(sid, 'Cache', 'anthropic', 'claude', Date.now(), Date.now());
+  const ins = db.prepare('INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)');
+  const k = Date.now();
+  ins.run(sid, 'user', 'aaa', k + 1);
+  ins.run(sid, 'user', 'bbb', k + 2);
+  const est = (c) => c.length;
+  // First call: full pass, batchSize=1 exercises cross-batch accumulation.
+  let r = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(r.tokenEstimate, 6);
+  assert.equal(r.messageCount, 2);
+  // New row appended: only the delta is scanned, totals still exact.
+  ins.run(sid, 'user', 'ccccc', k + 3);
+  r = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(r.tokenEstimate, 11);
+  assert.equal(r.messageCount, 3);
+  // Cached result unchanged when nothing changed.
+  r = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(r.tokenEstimate, 11);
+  assert.equal(r.messageCount, 3);
+  // Truncation (delete 'bbb' onward) must be detected and recomputed in full.
+  const target = getMessageRows(sid).find((x) => x.content === 'bbb');
+  assert.ok(target, 'bbb row exists');
+  deleteMessagesFrom(sid, target.id);
+  r = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(r.tokenEstimate, 3); // 'aaa'
+  assert.equal(r.messageCount, 1);
+  // Different cache key (e.g. provider switch) recomputes independently.
+  r = estimateSessionTokensCached(sid, 'v2', est, 1);
+  assert.equal(r.tokenEstimate, 3);
+  assert.equal(r.messageCount, 1);
 });

@@ -35,16 +35,28 @@ function dbPath(): string {
 
 const REQUIRED_COLUMNS = ['id', 'session_id', 'role', 'content'];
 
-/** Returns a working connection or null when the DB/table is missing or the
- *  expected columns are absent (soft failure — callers return empty results).
+/**
+ * Connection lifecycle.
  *
- *  Multi-worker concurrency: nexus-desktop can run several session agent
- *  processes (one per open tab) plus this desktop-side path-authorizer/DB reads
- *  against the same sessions.db. The core enables journal_mode=WAL; with WAL
- *  multiple processes can read concurrently and writes take a single writer
- *  lock, so concurrent regenerate/withdraw writers need a busy_timeout to wait
- *  instead of failing with SQLITE_BUSY. We mirror that here on every connection. */
+ * Read connections are long-lived and shared across every call in this process
+ * (each worker / test process gets its own module instance), so the expensive
+ * open + PRAGMA column-verification cost is paid at most once instead of once
+ * per IPC. Multi-worker concurrency is safe: this module is only imported by
+ * agent workers, and the core enables journal_mode=WAL, so many processes can
+ * read concurrently and writers only take a transient writer lock.
+ *
+ * Deletions keep a fresh short-lived writer connection (rare, and busy_timeout
+ * lets them wait out another process holding the WAL writer lock).
+ *
+ * Schema verification is itself cached: the messages columns can only change on
+ * a core upgrade, which restarts this process. A failed check is re-verified on
+ * the next call (covers a fresh install where the table does not exist yet).
+ */
+let sharedRead: Database.Database | null = null;
+let messagesSchemaOk = false;
+
 function openDb(readonly = true): Database.Database | null {
+  if (readonly && sharedRead) return sharedRead;
   let db: Database.Database;
   try {
     db = new Database(dbPath(), { readonly });
@@ -58,17 +70,21 @@ function openDb(readonly = true): Database.Database | null {
     db.pragma('busy_timeout = 5000');
   } catch {}
   try {
-    const cols = db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
-    const names = new Set(cols.map((c) => c.name));
-    if (!REQUIRED_COLUMNS.every((c) => names.has(c))) {
+    if (!messagesSchemaOk) {
+      const cols = db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+      const names = new Set(cols.map((c) => c.name));
+      messagesSchemaOk = REQUIRED_COLUMNS.every((c) => names.has(c));
+    }
+    if (!messagesSchemaOk) {
       db.close();
       return null;
     }
-    return db;
   } catch {
     db.close();
     return null;
   }
+  if (readonly) sharedRead = db;
+  return db;
 }
 
 function rowOf(r: { id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null }): StoredRow {
@@ -94,8 +110,6 @@ export function getMessageRows(sessionId: string): StoredRow[] {
     return rows.map(rowOf);
   } catch {
     return [];
-  } finally {
-    db.close();
   }
 }
 
@@ -108,8 +122,6 @@ export function getMessageCount(sessionId: string): number {
     return Number(row.n ?? 0);
   } catch {
     return 0;
-  } finally {
-    db.close();
   }
 }
 
@@ -137,8 +149,6 @@ export function getLastUserMessageId(sessionId: string): number | null {
     return row ? row.id : null;
   } catch {
     return null;
-  } finally {
-    db.close();
   }
 }
 
@@ -192,8 +202,6 @@ export function getMessageWindow(
     return { items: rows.map(rowOf), total, userBefore };
   } catch {
     return { items: [], total: 0, userBefore: 0 };
-  } finally {
-    db.close();
   }
 }
 
@@ -221,8 +229,6 @@ export function getMessageLast(
     return { items: rows.map(rowOf), total, userBefore };
   } catch {
     return { items: [], total: 0, userBefore: 0 };
-  } finally {
-    db.close();
   }
 }
 
@@ -258,8 +264,88 @@ export function estimateSessionTokens(
     return total;
   } catch {
     return 0;
-  } finally {
-    db.close();
+  }
+}
+
+/** Per-call result shared by the cached estimate below. */
+export interface TokenEstimate {
+  tokenEstimate: number;
+  messageCount: number;
+}
+
+interface TokenCacheEntry extends TokenEstimate {
+  /** Highest message id already folded into the running totals. */
+  lastId: number;
+}
+
+const tokenCache = new Map<string, TokenCacheEntry>();
+
+/**
+ * Incremental token estimate: after the first full pass, subsequent calls only
+ * scan rows newer than the cached `lastId` and add their tokens to the running
+ * total, so the expensive tokenizer work over a long session is paid once, not
+ * on every status refresh.
+ *
+ * Cache keying: `key` must identify the estimator (e.g. `${provider.name}/$
+ * {provider.model}`), because a different tokenizer yields different per-row
+ * counts and the totals are not interchangeable.
+ *
+ * Deletion detection: `deleteMessagesFrom` truncates a tail (`id >= fromId`) so
+ * it always lowers the session's MAX(id); when the observed max drops below the
+ * cached watermark, the entry is treated as stale and recomputed in full.
+ */
+export function estimateSessionTokensCached(
+  sessionId: string,
+  key: string,
+  estimate: (content: string, thinking?: string) => number,
+  batchSize = 500,
+): TokenEstimate {
+  const db = openDb();
+  if (!db) return { tokenEstimate: 0, messageCount: 0 };
+  const cacheKey = `${key}:${sessionId}`;
+  const scan = (lastId: number): { total: number; count: number; nextId: number } => {
+    let total = 0;
+    let count = 0;
+    for (;;) {
+      const rows = db
+        .prepare(
+          'SELECT id, content, thinking FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?',
+        )
+        .all(sessionId, lastId, batchSize) as Array<{ id: number; content: string; thinking?: string | null }>;
+      if (rows.length === 0) break;
+      for (const r of rows) {
+        total += estimate(r.content, r.thinking ?? undefined);
+        count++;
+      }
+      lastId = rows[rows.length - 1].id;
+      if (rows.length < batchSize) break;
+    }
+    return { total, count, nextId: lastId };
+  };
+  try {
+    const prev = tokenCache.get(cacheKey);
+    let curMax = 0;
+    if (prev) {
+      const maxRow = db
+        .prepare('SELECT MAX(id) AS m FROM messages WHERE session_id = ?')
+        .get(sessionId) as { m: number | null };
+      curMax = Number(maxRow.m ?? 0);
+    }
+    // No new rows and no truncation → cached result is still exact.
+    if (prev && curMax === prev.lastId) {
+      return { tokenEstimate: prev.tokenEstimate, messageCount: prev.messageCount };
+    }
+    const recompute = !prev || curMax < prev.lastId;
+    const { total, count, nextId } = scan(recompute ? 0 : prev.lastId);
+    const entry: TokenCacheEntry = {
+      lastId: nextId,
+      tokenEstimate: recompute ? total : prev.tokenEstimate + total,
+      messageCount: recompute ? count : prev.messageCount + count,
+    };
+    tokenCache.set(cacheKey, entry);
+    return { tokenEstimate: entry.tokenEstimate, messageCount: entry.messageCount };
+  } catch {
+    return { tokenEstimate: 0, messageCount: 0 };
   }
 }
 
@@ -279,6 +365,25 @@ export function deleteMessagesFrom(sessionId: string, fromId: number): { deleted
   }
 }
 
+// task_graphs schema check is cached the same way as the messages one. The
+// project_name presence is kept separate so the query branch can be re-decided
+// cheaply if the column disappears at runtime (schema migration test).
+let taskGraphSchemaOk = false;
+let taskGraphHasProjectName = false;
+
+function checkTaskGraphSchema(db: Database.Database): boolean {
+  if (taskGraphSchemaOk) return true;
+  try {
+    const cols = db.prepare('PRAGMA table_info(task_graphs)').all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    taskGraphHasProjectName = names.has('project_name');
+    taskGraphSchemaOk = names.has('id') && names.has('session_id');
+    return taskGraphSchemaOk;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Session ids whose task graph matches `q` against the graph id (graphId) or
  * its project name. Used by listSessions({ search }) so a query can find
@@ -290,20 +395,25 @@ export function getSessionIdsByTaskGraph(q: string): Set<string> {
   const db = openDb();
   if (!db) return new Set<string>();
   try {
-    const cols = db.prepare('PRAGMA table_info(task_graphs)').all() as Array<{ name: string }>;
-    const names = new Set(cols.map((c) => c.name));
-    if (!names.has('id') || !names.has('session_id')) {
-      return new Set<string>();
-    }
+    if (!checkTaskGraphSchema(db)) return new Set<string>();
     const pattern = `%${likeEscape(q)}%`;
     let rows: Array<{ session_id: string }>;
-    if (names.has('project_name')) {
-      rows = db
-        .prepare(
-          `SELECT session_id FROM task_graphs
-           WHERE id LIKE ? ESCAPE '\\' OR project_name LIKE ? ESCAPE '\\'`,
-        )
-        .all(pattern, pattern) as Array<{ session_id: string }>;
+    if (taskGraphHasProjectName) {
+      try {
+        rows = db
+          .prepare(
+            `SELECT session_id FROM task_graphs
+             WHERE id LIKE ? ESCAPE '\\' OR project_name LIKE ? ESCAPE '\\'`,
+          )
+          .all(pattern, pattern) as Array<{ session_id: string }>;
+      } catch {
+        // project_name dropped at runtime (schema migration test): fall back to
+        // graph-id-only matching and remember it so we stop probing that column.
+        taskGraphHasProjectName = false;
+        rows = db
+          .prepare(`SELECT session_id FROM task_graphs WHERE id LIKE ? ESCAPE '\\'`)
+          .all(pattern) as Array<{ session_id: string }>;
+      }
     } else {
       // Legacy core DB where the ALTER TABLE project_name never ran: degrade to
       // graph-id-only matching so search still works.
@@ -314,8 +424,6 @@ export function getSessionIdsByTaskGraph(q: string): Set<string> {
     return new Set(rows.map((r) => String(r.session_id)));
   } catch {
     return new Set<string>();
-  } finally {
-    db.close();
   }
 }
 
@@ -333,7 +441,5 @@ export function getNonEmptySessionIds(): Set<string> {
     return new Set(rows.map((r) => r.session_id));
   } catch {
     return new Set<string>();
-  } finally {
-    db.close();
   }
 }

@@ -1326,22 +1326,24 @@ export class AgentService {
     cfg.setVisionProvider(name, next as Parameters<typeof cfg.setVisionProvider>[1]);
   }
 
-  /** Cumulative token estimate for a session. Windowed batches over the SQL DB
-   *  keep memory bounded for very long sessions; tokenizer falls back to the
-   *  core's char/4 heuristic when the active provider has no countTokens. */
+  /** Cumulative token estimate for a session. Incremental: after the first full
+   *  scan only new rows are tokenized (provider change invalidates the cache
+   *  via the provider/model cache key). Falls back to the core's char/4
+   *  heuristic when the active provider has no countTokens. */
   async getSessionStats(sessionId: string): Promise<{ tokenEstimate: number; messageCount: number }> {
     if (!this.agent?.session) return { tokenEstimate: 0, messageCount: 0 };
-    const { getMessageCount, estimateSessionTokens } = await import('./session-db.js');
+    const { estimateSessionTokensCached } = await import('./session-db.js');
     const provider = this.agent.provider;
-    const estimate = estimateSessionTokens(
+    const cacheKey = provider ? `${provider.name}/${provider.model}` : 'fallback';
+    return estimateSessionTokensCached(
       sessionId,
+      cacheKey,
       (content, thinking) => {
         const count = (s: string): number => (provider?.countTokens ? provider.countTokens(s) : Math.ceil(s.length / 4)) || 0;
         return count(content ?? '') + (thinking ? count(thinking) : 0);
       },
       500,
     );
-    return { tokenEstimate: estimate, messageCount: getMessageCount(sessionId) };
   }
 
   getConfig(): Record<string, unknown> {
