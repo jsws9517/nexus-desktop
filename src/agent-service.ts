@@ -861,9 +861,31 @@ export class AgentService {
     }
   }
 
-  async startSession(name?: string, sessionId?: string, metadata?: Record<string, unknown>): Promise<string> {
+  async startSession(
+    name?: string,
+    sessionId?: string,
+    metadata?: Record<string, unknown>,
+    prevSessionId?: string,
+  ): Promise<string> {
     if (!this.agent) throw new Error('Agent not initialized');
     this.pendingRevise = false;
+    // Desktop /new: create a derived session inside THIS worker so the core's
+    // injectDerivedContext runs in-process (the inherited memory baseline stays
+    // in this worker's memory, matching CLI /new exactly). First persist the
+    // parent summary (same as core /new does), then point currentSessionId at
+    // the parent so startSession() captures it as prevSessionId. Only applies
+    // to the create-new branch (no sessionId) — a resume must not be moved.
+    if (prevSessionId && !sessionId) {
+      try {
+        await this.agent.persistSessionSummary(prevSessionId);
+      } catch (e) {
+        this.onLog?.('warn', `persistSessionSummary failed: ${(e as Error).message}`);
+      }
+      // Point currentSessionId at the parent (without loading its messages into
+      // context) so startSession() captures it as its prevSessionId and the core
+      // injects the parent's project memory baseline into the fresh session.
+      this.agent.joinSession(prevSessionId);
+    }
     return this.agent.startSession(name, sessionId, metadata);
   }
 

@@ -37,7 +37,10 @@ export const WORKER_METHODS: Record<string, MethodSpec> = {
   regenerate: { fields: { sessionId: S.str(), userIndex: S.num() } },
   withdraw: { fields: { sessionId: S.str(), userIndex: S.num() } },
   abort: { fields: {} },
-  startSession: { fields: { name: S.str(), sessionId: S.str() }, optional: ['name', 'sessionId'] },
+  startSession: {
+    fields: { name: S.str(), sessionId: S.str(), metadata: S.obj(), prevSessionId: S.str() },
+    optional: ['name', 'sessionId', 'metadata', 'prevSessionId'],
+  },
   listSessions: {
     fields: {
       limit: S.num(),

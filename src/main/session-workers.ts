@@ -140,6 +140,59 @@ export class SessionWorkers {
   }
 
   /**
+   * Spawn a FRESH session inside a new worker via the core's create-new path
+   * (no sessionId argument to startSession), optionally carrying the parent
+   * session's project memory forward (Desktop /new). The brand-new session id
+   * is created inside this worker's process, so its derived baseline lives in
+   * the same process that will serve the tab — matching CLI /new exactly.
+   *
+   * Honors the same override map keyed by the NEW session id on success.
+   */
+  async openNew(opts?: { cwd?: string; prevSessionId?: string }): Promise<OpenTabInfo> {
+    const worker = new WorkerHost(workerScriptPath());
+    const bound: BoundWorker = {
+      sessionId: '',
+      provider: '',
+      model: '',
+      busy: false,
+      worker,
+    };
+    this.wire(bound);
+    worker.start();
+    worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
+    try {
+      await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
+      const sid = (await worker.request('startSession', {
+        prevSessionId: opts?.prevSessionId,
+      })) as string;
+      if (!sid || typeof sid !== 'string' || sid.length === 0) {
+        throw new Error('worker startSession returned no session id');
+      }
+      bound.sessionId = sid;
+      const status = (await worker.request('getStatus')) as {
+        provider?: string;
+        model?: string;
+      };
+      bound.provider = typeof status.provider === 'string' ? status.provider : '';
+      bound.model = typeof status.model === 'string' ? status.model : '';
+      this.map.set(sid, bound);
+      this.onChange?.(this.tabs());
+      return {
+        sessionId: sid,
+        provider: bound.provider,
+        model: bound.model,
+        busy: bound.busy,
+      };
+    } catch (err) {
+      try {
+        worker.stop();
+      } catch {}
+      this.map.delete(bound.sessionId);
+      throw err;
+    }
+  }
+
+  /**
    * Re-read config.json into every open session worker's in-memory ConfigManager.
    *
    * After the config Web UI rewrites ~/.nexus/config.json (e.g. a provider was

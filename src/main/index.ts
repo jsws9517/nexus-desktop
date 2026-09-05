@@ -830,6 +830,30 @@ function registerIpc(): void {
       }
     },
   );
+  // Desktop /new: create a brand-new session in a fresh worker, optionally
+  // carrying the parent session's project memory forward (see openNew()).
+  // Shares the same tab ceiling / overload guards as openSession.
+  ipcMain.handle(
+    'nexus:openNewSession',
+    async (_e, params: { cwd?: unknown; prevSessionId?: unknown }): Promise<{ ok: boolean; sessionId?: string; tab?: OpenTabInfo; reason?: string }> => {
+      if (countOpenTabs() >= getMaxTabs()) {
+        return { ok: false, reason: 'max-tabs' };
+      }
+      const state = resourceMon.getState();
+      if (state.status === 'overloaded') {
+        return { ok: false, reason: 'overloaded' };
+      }
+      const cwd = typeof params?.cwd === 'string' && params.cwd ? params.cwd : undefined;
+      const prevSessionId = typeof params?.prevSessionId === 'string' && params.prevSessionId ? params.prevSessionId : undefined;
+      try {
+        const tab = await sessionWorkers.openNew({ cwd, prevSessionId });
+        return { ok: true, sessionId: tab.sessionId, tab };
+      } catch (err) {
+        logf(`openNewSession failed: ${err instanceof Error ? err.message : String(err)}`);
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
   ipcMain.handle('nexus:closeSession', (_e, params: { sessionId?: unknown }): { ok: boolean } => {
     const sessionId = typeof params?.sessionId === 'string' ? params.sessionId : '';
     if (!sessionId) return { ok: false };

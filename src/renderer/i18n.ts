@@ -197,6 +197,10 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   tabsCloseHint: { 'zh-CN': '关闭此标签', en: 'Close this tab' },
   tabsBusy: { 'zh-CN': '正在运行', en: 'Running' },
   tabsMaxReached: { 'zh-CN': '已达并发会话上限，无法新建标签', en: 'Concurrent session limit reached; cannot open another tab' },
+  tabsMaxReachedCloseIdle: {
+    'zh-CN': '已达并发会话上限（{max}），请先关闭其它闲置会话标签，再手工进入新会话',
+    en: 'Concurrent session limit ({max}) reached — close other idle tabs, then start a new session manually',
+  },
   tabsOverloaded: { 'zh-CN': '系统资源过高，已暂停新建会话', en: 'System overloaded; new sessions paused' },
   tabsOpenFailed: { 'zh-CN': '无法打开会话标签：', en: 'Failed to open session tab: ' },
 };

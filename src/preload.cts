@@ -96,6 +96,10 @@ const api = {
   // Multi-tab: per-session worker lifecycle.
   openSession: (sessionId: string, cwd?: string) =>
     ipcRenderer.invoke('nexus:openSession', { sessionId, cwd }),
+  // Create a brand-new session in a fresh worker (/new), optionally carrying
+  // the parent session's project memory forward.
+  openNewSession: (opts?: { cwd?: string; prevSessionId?: string }) =>
+    ipcRenderer.invoke('nexus:openNewSession', opts ?? {}),
   closeSession: (sessionId: string) =>
     ipcRenderer.invoke('nexus:closeSession', { sessionId }),
   getOpenTabs: () => ipcRenderer.invoke('nexus:getOpenTabs'),

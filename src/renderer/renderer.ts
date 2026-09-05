@@ -161,6 +161,7 @@ declare global {
       getModels(providerName?: string, opts?: { sessionId?: string }): Promise<string[]>;
       saveProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
       openSession(sessionId: string, cwd?: string): Promise<{ ok: boolean; tab?: TabInfo; reason?: string }>;
+      openNewSession(opts?: { cwd?: string; prevSessionId?: string }): Promise<{ ok: boolean; sessionId?: string; tab?: TabInfo; reason?: string }>;
       closeSession(sessionId: string): Promise<{ ok: boolean }>;
       getOpenTabs(): Promise<TabInfo[]>;
       getTabStatus(sessionId: string): Promise<TabInfo | null>;
@@ -1583,6 +1584,28 @@ async function openNewTab(): Promise<void> {
   await openTab(sid);
 }
 
+/** Resolve the project directory a tab should run in: the session's recorded
+ *  projectDir first, then the currently-open folder, then the default project dir.
+ *  Sessions with their own projectDir win so a multi-project resume stays put. */
+async function resolveProjectDir(sessionId?: string): Promise<string | undefined> {
+  let cwd: string | undefined;
+  if (sessionId) {
+    try {
+      const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
+      const projectDir = (meta.projectDir ?? '') as string;
+      if (projectDir) cwd = projectDir;
+    } catch {}
+  }
+  if (!cwd && status.cwd) cwd = status.cwd;
+  if (!cwd) {
+    try {
+      const def = (await window.nexusDesktop.getDefaultProjectDir()) as { dir?: string };
+      if (def && def.dir) cwd = def.dir;
+    } catch {}
+  }
+  return cwd;
+}
+
 /** Open `sessionId` in its own worker process (or focus it if already open). */
 async function openTab(sessionId: string, name?: string): Promise<void> {
   if (name) tabNames.set(sessionId, name);
@@ -1597,19 +1620,7 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
     // saved project dir (e.g. a brand-new tab), inherit the currently-open
     // folder so a fresh conversation still runs in the same project as the UI
     // shows; as a last resort fall back to the default project dir (~/.nexus/tasks).
-    let cwd: string | undefined;
-    try {
-      const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
-      const projectDir = (meta.projectDir ?? '') as string;
-      if (projectDir) cwd = projectDir;
-    } catch {}
-    if (!cwd && status.cwd) cwd = status.cwd;
-    if (!cwd) {
-      try {
-        const def = (await window.nexusDesktop.getDefaultProjectDir()) as { dir?: string };
-        if (def && def.dir) cwd = def.dir;
-      } catch {}
-    }
+    let cwd = await resolveProjectDir(sessionId);
     res = await window.nexusDesktop.openSession(sessionId, cwd);
     // Persist the inherited project dir so a later resume of this session runs
     // in the same project even if the UI's default folder has since changed.
@@ -2204,6 +2215,18 @@ async function sendMessage(): Promise<void> {
   const text = inputEl.value.trim();
   if (!text && attachments.length === 0) return;
   setFrozen(false);
+  // /new — desktop shortcut equal to the core command: open a brand-new empty
+  // tab that inherits the current session's project dir + project memory.
+  // Intercepted locally so the fresh session gets its own worker/tab and the
+  // tab ceiling is checked before anything is created (CLI /new is untouched).
+  if (/^\/new\s*$/i.test(text)) {
+    inputEl.value = '';
+    if (currentSessionId) clearDraft(currentSessionId);
+    attachments = [];
+    renderAttachments();
+    await handleNewCommand();
+    return;
+  }
   // With no active session/tab (blank slate), the user's first message starts a
   // real session — creation is still user-triggered, never automatic on boot/close.
   if (!currentSessionId || tabs.size === 0) {
@@ -2216,6 +2239,40 @@ async function sendMessage(): Promise<void> {
   const composed = attrs.map((p) => `@${p}`).concat(text ? [text] : []).join('\n');
   clearDraft(currentSessionId);
   enqueue(composed);
+}
+
+/** Desktop handling for "/new": create a brand-new session in its own worker via
+ *  openNewSession (which inherits the current session's projectDir + project
+ *  memory in the new worker process), then open it as a fresh tab. When the tab
+ *  ceiling is reached, tell the user to close idle tabs instead of creating. */
+async function handleNewCommand(): Promise<void> {
+  let max = 5;
+  try {
+    max = await window.nexusDesktop.getMaxTabs();
+  } catch {}
+  if (tabs.size >= max) {
+    addSystem(t('tabsMaxReachedCloseIdle', { max }));
+    return;
+  }
+  const prevSessionId = currentSessionId || undefined;
+  const cwd = await resolveProjectDir(prevSessionId);
+  let res: { ok: boolean; sessionId?: string; reason?: string };
+  try {
+    res = await window.nexusDesktop.openNewSession({ cwd, prevSessionId });
+  } catch (err) {
+    addSystem(`${t('tabsOpenFailed')}${errText(err)}`);
+    return;
+  }
+  if (!res.ok || !res.sessionId) {
+    if (res.reason === 'max-tabs') addSystem(t('tabsMaxReachedCloseIdle', { max }));
+    else if (res.reason === 'overloaded') addSystem(t('tabsOverloaded'));
+    else addSystem(`${t('tabsOpenFailed')}${res.reason ?? ''}`);
+    return;
+  }
+  // openTab resolves the new session to the worker that openNewSession just
+  // bound, so no second worker is spawned — it just focuses the new tab.
+  tabNames.set(res.sessionId, res.sessionId);
+  await openTab(res.sessionId);
 }
 
 /** Undo a past user message: delete it and everything after it from the core

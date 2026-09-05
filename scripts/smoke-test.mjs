@@ -76,6 +76,23 @@ await expect(
 const msgsLast = await req('getMessages', { sessionId: sid.data, last: 5 });
 await expect(Array.isArray(msgsLast.data?.items) && msgsLast.data.items.length === 0, 'getMessages last');
 
+// Derived session (Desktop /new path): startSession with prevSessionId must
+// create a NEW session id (via the core's create-new branch) and keep the
+// derived session's own transcript empty.
+const sid2 = await req('startSession', { prevSessionId: sid.data });
+await expect(
+  typeof sid2.data === 'string' && sid2.data.length > 0 && sid2.data !== sid.data,
+  'startSession prevSessionId creates distinct id',
+  `parent=${sid.data} derived=${sid2.data}`,
+);
+
+const derivedMsgs = await req('getMessages', { sessionId: sid2.data, last: 5 });
+await expect(
+  Array.isArray(derivedMsgs.data?.items) && derivedMsgs.data.items.length === 0,
+  'derived session starts empty',
+);
+
+await req('deleteSession', { id: sid2.data });
 await req('deleteSession', { id: sid.data });
 
 await req('shutdown');
