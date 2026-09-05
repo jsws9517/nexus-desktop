@@ -799,12 +799,20 @@ function setBusy(value: boolean): void {
   });
   if (value) {
     inputStatus.textContent = t('runningEllipsis');
+    inputStatus.classList.add('running');
   } else {
+    inputStatus.classList.remove('running');
+    inputStatus.classList.remove('stopping');
     // If a stop was requested, surface the completion feedback once — the core
     // always emits session_end in its chat() finally, so any path that leaves
     // busy state funnels through here and resets the stop request.
-    if (stopRequested) inputStatus.textContent = t('stopped');
-    else inputStatus.textContent = '';
+    if (stopRequested) {
+      inputStatus.textContent = t('stopped');
+      inputStatus.classList.add('stopped');
+    } else {
+      inputStatus.textContent = '';
+      inputStatus.classList.remove('stopped');
+    }
   }
   if (!value) {
     stopRequested = false;
@@ -829,6 +837,7 @@ function requestStop(): void {
   stopRequested = true;
   (stopBtn as HTMLButtonElement).disabled = true;
   inputStatus.textContent = t('stopping');
+  inputStatus.classList.add('stopping');
   void window.nexusDesktop.abort({ sessionId: currentSessionId || undefined });
 }
 

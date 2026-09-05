@@ -60,7 +60,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   startFailed: { 'zh-CN': '启动失败: ', en: 'Failed to start: ' },
   error: { 'zh-CN': '⚠️ 错误: ', en: '⚠️ Error: ' },
   attachFailed: { 'zh-CN': '⚠️ 附件失败: ', en: '⚠️ Attach failed: ' },
-  runningEllipsis: { 'zh-CN': '运行中…', en: 'Running…' },
+  runningEllipsis: { 'zh-CN': '运行中', en: 'Running' },
   freeze: { 'zh-CN': '❄ 冻结视图', en: '❄ Freeze' },
   unfreeze: { 'zh-CN': '▶ 恢复视图', en: '▶ Resume' },
   queued: { 'zh-CN': '⏳ 排队：{n} 条待发…', en: '⏳ Queued: {n} pending…' },
