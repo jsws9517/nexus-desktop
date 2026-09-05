@@ -377,10 +377,11 @@ function createWindow(): void {
     title: 'Nexus Desktop',
     backgroundColor: '#1a1b1e',
     webPreferences: {
-      preload: join(__dirname, '..', 'preload.js'),
+      preload: join(__dirname, '..', 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
+      v8CacheOptions: 'bypassHeatCheck' as const,
     },
   });
 

@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "Node16",
+    "moduleResolution": "Node16",
     "lib": ["ES2022", "DOM"],
     "outDir": "./dist",
     "rootDir": "./src",
@@ -13,6 +13,5 @@
     "resolveJsonModule": true,
     "sourceMap": false
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "scripts", "src/preload.cts"]
+  "include": ["src/preload.cts"]
 }

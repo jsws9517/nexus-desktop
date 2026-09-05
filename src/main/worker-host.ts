@@ -10,6 +10,11 @@ const diag = (s: string): void => {
   logger.debug(s);
 };
 
+/** Cap the agent worker's V8 heap (~2GB default is far above what one session needs). */
+const WORKER_V8_FLAG = '--max-old-space-size=1024';
+/** Grace period between sending 'shutdown' RPC and force-killing the worker. */
+const SHUTDOWN_TIMEOUT_MS = 3000;
+
 interface WorkerResponse {
   type: 'result' | 'event' | 'permission' | 'log' | 'mcpRequest';
   id?: number;
@@ -49,6 +54,8 @@ export class WorkerHost {
   private rl: ReturnType<typeof createInterface> | null = null;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private nextId = 1;
+  private stopping = false;
+  private stopTimer: ReturnType<typeof setTimeout> | null = null;
 
   onEvent?: (event: AgentEvent) => void;
   onPermission?: (req: { id: string; question: string }) => void;
@@ -101,16 +108,41 @@ export class WorkerHost {
   }
 
   stop(): void {
-    if (app.isPackaged) {
-      this.handle?.kill();
-    } else {
-      (this.handle as ChildLike | null)?.stdin?.end();
+    if (this.stopping) return;
+    this.stopping = true;
+    const h = this.handle;
+    if (!h) return;
+    // Graceful shutdown: send the 'shutdown' RPC so the worker can flush the
+    // session DB/WAL before exiting. Fall back to a hard kill after a timeout.
+    try {
+      if (app.isPackaged) {
+        (h as UtilityProcess).postMessage({ id: this.nextId++, method: 'shutdown' });
+      } else {
+        (h as ChildLike).stdin?.write(JSON.stringify({ id: this.nextId++, method: 'shutdown' }) + '\n');
+      }
+    } catch {}
+    this.stopTimer = setTimeout(() => {
+      this.stopTimer = null;
+      this.failAllPending(new Error('Worker stopped'));
+      try {
+        if (app.isPackaged) {
+          (h as UtilityProcess).kill();
+        } else {
+          (h as ChildLike)?.stdin?.end();
+        }
+      } catch {}
+    }, SHUTDOWN_TIMEOUT_MS);
+  }
+
+  private clearStopTimer(): void {
+    if (this.stopTimer) {
+      clearTimeout(this.stopTimer);
+      this.stopTimer = null;
     }
-    this.failAllPending(new Error('Worker stopped'));
   }
 
   private startChildProcess(): void {
-    const child = spawn('node', [this.workerPath], {
+    const child = spawn('node', [WORKER_V8_FLAG, this.workerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -140,6 +172,7 @@ export class WorkerHost {
     });
     child.on('exit', (code) => {
       this.onLog?.('warn', `Worker exited (code=${code})`);
+      this.clearStopTimer();
       this.onExit?.(code);
       this.failAllPending(new Error('Worker exited'));
     });
@@ -149,6 +182,7 @@ export class WorkerHost {
     const child = utilityProcess.fork(this.workerPath, [], {
       serviceName: 'nexus-core',
       stdio: 'pipe',
+      execArgv: [WORKER_V8_FLAG],
     });
     this.handle = child;
     diag(`utilityProcess forked pid=${(child as unknown as { pid?: number }).pid}`);
@@ -173,6 +207,7 @@ export class WorkerHost {
     child.on('exit', (code) => {
       diag(`exit code=${code}`);
       this.onLog?.('warn', `Utility worker exited (code=${code})`);
+      this.clearStopTimer();
       this.onExit?.(code);
       this.failAllPending(new Error('Worker exited'));
     });
