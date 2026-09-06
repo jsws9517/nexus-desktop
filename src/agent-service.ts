@@ -287,6 +287,26 @@ export class AgentService {
     const { setPermissionPrompter } = await import('nexus-coder/dist/src/security/path-authorizer.js');
     setPermissionPrompter((question: string) => this.askPermission(question));
 
+    // The audit manager (remember tool / user_info / dangerous-command gates) also
+    // ships an askUser bridge, but the CLI is the only path that wires it. Without
+    // it the worker falls back to a dead-stdin readline here: remember's
+    // requestApproval() never resolves and the agent kills the tool at 60s
+    // ("Tool 'remember' timed out after 60s"). recall has no audit gate, which is
+    // why reads keep working while every remember write times out.
+    // Normalize the UI's 'y' (once) / 'a' (always) to the audit's expected 'y'.
+    this.agent.audit.setAskUser(async (question: string) => {
+      // auto/unattended treat the audit gates as auto-approved: remember only
+      // writes the user's knowledge graph and user_info is a preference note —
+      // both non-destructive, and unattended mode keeps its own safety net for
+      // destructive operations. The audit bridge receives only prompt text (not
+      // the tool name), so gating on mode is the allowlist-equivalent here.
+      const mode = this.getActiveMode();
+      if (mode === 'auto' || mode === 'unattended') return 'y';
+      const answer = await this.askPermission(question);
+      const norm = answer.trim().toLowerCase();
+      return norm === 'y' || norm === 'a' ? 'y' : norm;
+    });
+
     this.agent.onEvent = (event: AgentEvent) => this.onEvent?.(event);
     // onOutput is used by slash-command and non-streaming paths (e.g. runRemoteSlashCommand's
     // /plan /go /tasks). When we are inside a slash turn, route it to the slash
