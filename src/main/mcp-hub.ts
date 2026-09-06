@@ -12,6 +12,26 @@
 import { logger } from '../shared/logger.js';
 import { INTERNAL_MEMORY_TOOLS, MEMORY_TOOL_DEFS, callMemoryTool } from './memory-kg.js';
 
+// MCP server names fully superseded by in-process implementations. The hub
+// must never spawn these (no external process, no npx), and the settings UI
+// should report them as connected with their in-process tool counts.
+const INTERNAL_BUILTIN_SERVERS = new Set([
+  'memory',
+  'memory-internal',
+  'filesystem',
+  'filesystem-internal',
+  'sequential-thinking',
+  'sequential-thinking-internal',
+  'sqlite',
+]);
+
+const BUILTIN_TOOL_COUNTS: Record<string, number> = {
+  memory: MEMORY_TOOL_DEFS.length,
+  filesystem: 3, // read_media_file / list_directory_with_sizes / list_allowed_directories
+  'sequential-thinking': 1, // sequentialthinking
+  sqlite: 10, // query .. transaction
+};
+
 // nexus-coder exports ClientManager (src/mcp/client-manager.js) and
 // ConfigManager (src/config/index.js). Both are plain JS classes with no
 // native bindings; safe to import in the main (Electron) process.
@@ -62,7 +82,7 @@ class McpHubImpl {
     this.manager.silent = true;
     const cfg = this.getConfig().get();
     const entries = Object.entries(cfg.mcpServers ?? {})
-      .filter(([, s]) => s.autoStart !== false);
+      .filter(([name, s]) => s.autoStart !== false && !INTERNAL_BUILTIN_SERVERS.has(name));
     if (entries.length === 0) return;
     const t0 = Date.now();
     const results = await Promise.allSettled(
@@ -128,22 +148,22 @@ class McpHubImpl {
     return Object.entries(cfg.mcpServers ?? {}).map(([name, s]: [string, { autoStart?: boolean }]) => ({
       name,
       autoStart: s.autoStart !== false,
-      connected: connected.has(name),
-      toolCount: connected.get(name)?.toolCount ?? 0,
+      // In-process servers are always "connected" with their injected tool count.
+      connected: INTERNAL_BUILTIN_SERVERS.has(name)
+        ? true
+        : connected.has(name),
+      toolCount: INTERNAL_BUILTIN_SERVERS.has(name)
+        ? BUILTIN_TOOL_COUNTS[name] ?? 0
+        : connected.get(name)?.toolCount ?? 0,
       error: errors.get(name)?.error,
     }));
   }
 
   async setServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {
     await this.ensureConnected();
-    // Knowledge graph is served by the built-in engine; never spawn the
-    // external memory server (it would race the single in-process writer).
-    if (INTERNAL_MEMORY_TOOLS.size > 0 && (name === 'memory' || name === 'memory-internal')) {
-      return { ok: true };
-    }
-    // The filesystem server is intentionally superseded by the built-in
-    // (worker-local) filesystem tools; never spawn the external npx server.
-    if (name === 'filesystem' || name === 'filesystem-internal') {
+    // In-process servers are already served by the built-in engines; never
+    // spawn their external counterparts (they would race the local writer).
+    if (INTERNAL_BUILTIN_SERVERS.has(name)) {
       return { ok: true };
     }
     const connected = (this.manager.listConnections() as Array<{ name: string }>)

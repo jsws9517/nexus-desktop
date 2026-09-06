@@ -14,6 +14,16 @@ import { homedir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './fs-internal.js';
+import { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } from './sequential-think.js';
+import { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool } from './sqlite-tools.js';
+
+// All in-process (non-MCP) tool names served by the worker — used to shadow any
+// same-named tool an external server might advertise.
+const INTERNAL_TOOLS = new Set<string>([
+  ...FILESYSTEM_TOOLS,
+  ...SEQUENTIAL_THINK_TOOLS,
+  ...SQLITE_TOOLS,
+]);
 
 /**
  * Headless bridge around the nexus CLI Agent.
@@ -242,14 +252,32 @@ export class AgentService {
     // local (fast, per-worker), forward only MCP tools to the hub.
     local.getAllTools = () => {
       const builtin = (originalGetAll() as McpToolDef[]).filter((t: McpToolDef) => !(t as McpToolDef).server);
-      // Shadow any external server that advertises the built-in filesystem
-      // tool names, then append the in-process defs (they must appear once).
-      const cache = this.mcpToolCache.filter((t: McpToolDef) => !FILESYSTEM_TOOLS.has(t.name));
-      return [...builtin, ...cache, ...FILESYSTEM_TOOL_DEFS];
+      // Shadow any external server that advertises the built-in tool names,
+      // then append the in-process defs (they must appear exactly once).
+      const cache = this.mcpToolCache.filter((t: McpToolDef) => !INTERNAL_TOOLS.has(t.name));
+      return [...builtin, ...cache, ...FILESYSTEM_TOOL_DEFS, ...SEQUENTIAL_THINK_TOOL_DEFS, ...SQLITE_TOOL_DEFS];
     };
     local.callTool = async (name: string, args: unknown): Promise<unknown> => {
       if (FILESYSTEM_TOOLS.has(name)) {
         return callFsTool(name, args, { getConfig: () => this.agent?.['config']?.get?.() });
+      }
+      if (SEQUENTIAL_THINK_TOOLS.has(name)) {
+        return callSequentialThinkTool(name, args);
+      }
+      if (SQLITE_TOOLS.has(name)) {
+        return callSqliteTool(name, args, {
+          getConfig: () => this.agent?.['config']?.get?.(),
+          requestWriteApproval: async (label: string): Promise<boolean> => {
+            // Mirrors the core's onPermissionRequest semantics: auto mode is
+            // global allow, unattended skips the UI entirely, interactive mode
+            // surfaces an Allow/Deny card.
+            const mode = this.getActiveMode();
+            if (mode === 'auto' || mode === 'unattended') return true;
+            const answer = await this.askPermission(`${label}: write to SQLite database`);
+            const norm = answer.trim().toLowerCase();
+            return norm === 'y' || norm === 'a';
+          },
+        });
       }
       const isBuiltin = (local.builtinTools as Array<{ name: string }>).some((t) => t.name === name);
       if (isBuiltin) return originalCall(name, args);

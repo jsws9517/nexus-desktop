@@ -144,6 +144,53 @@ await expect(denied.isError === true, 'fs-internal out-of-root denied', (denied.
 
 await fsMod.rm(fsTmp, { recursive: true, force: true });
 
+// --- Built-in sequential-thinking (src/sequential-think.ts) ---
+const { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } =
+  await import(pathToFileURL(join(__dirname, '..', 'dist', 'sequential-think.js')));
+await expect(
+  SEQUENTIAL_THINK_TOOL_DEFS.length === 1 && SEQUENTIAL_THINK_TOOLS.has('sequentialthinking'),
+  'seq-thinking tool set',
+);
+const st1 = await callSequentialThinkTool('sequentialthinking', { thought: 'step one', thoughtNumber: 1, totalThoughts: 3, nextThoughtNeeded: true });
+const st1j = JSON.parse(st1.content);
+await expect(
+  st1.isError !== true && st1j.thoughtNumber === 1 && st1j.thoughtHistoryLength === 1,
+  'seq-thinking first thought',
+  st1.content?.slice(0, 60),
+);
+const stBad = await callSequentialThinkTool('sequentialthinking', { thought: '', thoughtNumber: 1, totalThoughts: 3, nextThoughtNeeded: true });
+await expect(stBad.isError === true, 'seq-thinking bad thought rejected');
+const stBranch = await callSequentialThinkTool('sequentialthinking', { thought: 'branch', thoughtNumber: 2, totalThoughts: 4, nextThoughtNeeded: true, branchFromThought: 1, branchId: 'A', isRevision: true, revisesThought: 1 });
+const stBj = JSON.parse(stBranch.content);
+await expect(stBj.branches.includes('A') && stBj.thoughtHistoryLength === 2, 'seq-thinking branch registered', stBranch.content?.slice(0, 60));
+
+// --- Built-in sqlite (src/sqlite-tools.ts) ---
+const { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool, closeSqliteDbs } =
+  await import(pathToFileURL(join(__dirname, '..', 'dist', 'sqlite-tools.js')));
+await expect(
+  SQLITE_TOOLS.size === 10 && SQLITE_TOOL_DEFS.every((d) => d.server === 'sqlite-internal'),
+  'sqlite-internal tool set',
+);
+const sqTmp = pathMod.join(process.cwd(), '.smoke-sqlite-test');
+await fsMod.mkdir(sqTmp, { recursive: true });
+const sqDb = pathMod.join(sqTmp, 'test.db');
+const sqliteCtx = { getConfig: () => ({}), requestWriteApproval: async () => true };
+const created = await callSqliteTool('create-table', { name: 't1', columns: [{ name: 'id', type: 'INTEGER', primaryKey: true }, { name: 'name', type: 'TEXT' }], dbPath: sqDb }, sqliteCtx);
+await expect(created.isError !== true, 'sqlite create-table', created.content?.slice(0, 80));
+const inserted = await callSqliteTool('insert-record', { table: 't1', data: { id: 1, name: 'nexus' }, dbPath: sqDb }, sqliteCtx);
+await expect(inserted.isError !== true, 'sqlite insert-record', inserted.content?.slice(0, 80));
+const q = await callSqliteTool('query', { sql: 'SELECT * FROM t1', dbPath: sqDb }, sqliteCtx);
+const qJson = JSON.parse(q.content);
+await expect(Array.isArray(qJson) && qJson[0]?.name === 'nexus', 'sqlite query', q.content?.slice(0, 80));
+const qBad = await callSqliteTool('query', { sql: 'PRAGMA journal_mode=WAL', dbPath: sqDb }, sqliteCtx);
+await expect(qBad.isError === true, 'sqlite dangerous SQL rejected', (qBad.content || '').slice(0, 60));
+const dropped = await callSqliteTool('drop-table', { name: 't1', dbPath: sqDb }, sqliteCtx);
+await expect(dropped.isError !== true, 'sqlite drop-table', dropped.content?.slice(0, 80));
+const sqDenied = await callSqliteTool('query', { sql: 'SELECT 1', dbPath: pathMod.join(osMod.tmpdir(), 'nexus-no.db') }, sqliteCtx);
+await expect(sqDenied.isError === true, 'sqlite out-of-root dbPath denied', (sqDenied.content || '').slice(0, 60));
+closeSqliteDbs();
+await fsMod.rm(sqTmp, { recursive: true, force: true });
+
 await req('shutdown');
 child.on('exit', () => {
   console.log(ok ? '\nSMOKE TEST: ALL PASS' : '\nSMOKE TEST: FAILED');
