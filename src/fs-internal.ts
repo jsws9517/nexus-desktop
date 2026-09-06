@@ -72,6 +72,27 @@ const denied = (p: string): FsToolResult => ({
   isError: true,
 });
 
+/** Verify file content actually matches a supported image format (magic bytes), not just its extension. */
+function sniffImageMime(buf: Buffer): string | null {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length >= 6) {
+    const gif = buf.subarray(0, 6).toString('ascii');
+    if (gif === 'GIF87a' || gif === 'GIF89a') return 'image/gif';
+  }
+  if (buf.length >= 12 && buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  if (buf.length >= 2 && buf[0] === 0x42 && buf[1] === 0x4d) return 'image/bmp';
+  if (buf.length >= 4 && buf[0] === 0 && buf[1] === 0 && buf[2] === 1 && buf[3] === 0) return 'image/x-icon';
+  if (buf.length >= 4 && ((buf[0] === 0x49 && buf[1] === 0x49 && buf[2] === 0x2a && buf[3] === 0) || (buf[0] === 0x4d && buf[1] === 0x4d && buf[2] === 0 && buf[3] === 0x2a))) return 'image/tiff';
+  if (buf.length >= 12 && buf.subarray(4, 8).toString('ascii') === 'ftyp') {
+    const brand = buf.subarray(8, 12).toString('ascii');
+    if (brand === 'avif' || brand === 'avis' || brand === 'AVIF' || brand === 'AVIS') return 'image/avif';
+  }
+  const head = buf.subarray(0, Math.min(buf.length, 4096)).toString('utf8').replace(/^\uFEFF/, '').trimStart();
+  if (head.startsWith('<svg') || (head.startsWith('<?xml') && head.includes('<svg'))) return 'image/svg+xml';
+  return null;
+}
+
 // ---------------------------------------------------------------- media read
 
 async function readMediaFile(args: Record<string, unknown>): Promise<FsToolResult> {
@@ -99,7 +120,14 @@ async function readMediaFile(args: Record<string, unknown>): Promise<FsToolResul
   } catch (e) {
     return { content: `Failed to read ${p}: ${e instanceof Error ? e.message : String(e)}`, isError: true };
   }
-  const dataUri = `data:${mime};base64,${buf.toString('base64')}`;
+  const sniffed = sniffImageMime(buf);
+  if (!sniffed) {
+    return { content: `File "${basename(p)}" does not match a supported image format (extension says ${ext} but the content is not a known image).`, isError: true };
+  }
+  if (sniffed !== mime) {
+    return { content: `MIME mismatch for "${basename(p)}": extension suggests ${ext} but the file content is ${sniffed}.`, isError: true };
+  }
+  const dataUri = `data:${sniffed};base64,${buf.toString('base64')}`;
   return { content: `![${basename(p)}](${dataUri})` };
 }
 
@@ -111,7 +139,7 @@ interface ListEntry {
   size: number;
 }
 
-async function recursiveSize(dir: string, budget: { n: number; truncated: boolean }): Promise<number> {
+async function recursiveSize(dir: string, budget: { n: number; truncated: boolean }, levels: number): Promise<number> {
   let total = 0;
   let entries: import('node:fs').Dirent[];
   try {
@@ -128,7 +156,10 @@ async function recursiveSize(dir: string, budget: { n: number; truncated: boolea
     budget.n++;
     const full = resolvePath(dir, e.name);
     if (e.isDirectory()) {
-      total += await recursiveSize(full, budget);
+      // Descend only while levels remain (maxDepth semantics). At level 1 the
+      // immediate children of `dir` are still counted for size (the listing
+      // level is the "1-level" case), but their own subdirs are not expanded.
+      if (levels > 1) total += await recursiveSize(full, budget, levels - 1);
     } else if (e.isFile()) {
       try {
         const { stat } = await import('node:fs/promises');
@@ -141,7 +172,7 @@ async function recursiveSize(dir: string, budget: { n: number; truncated: boolea
   return total;
 }
 
-async function listDirectoryWithSizes(args: Record<string, unknown>, depth = 1): Promise<FsToolResult> {
+async function listDirectoryWithSizes(args: Record<string, unknown>): Promise<FsToolResult> {
   const raw = typeof args?.path === 'string' ? args.path.trim() : '';
   if (!raw) return { content: 'Provide a `path` to a directory.', isError: true };
   const rawDepth = Number(args?.maxDepth ?? 1);
@@ -165,7 +196,7 @@ async function listDirectoryWithSizes(args: Record<string, unknown>, depth = 1):
     budget.n++;
     const full = resolvePath(p, e.name);
     if (e.isDirectory()) {
-      const size = depth < maxDepth ? await recursiveSize(full, budget) : 0;
+      const size = await recursiveSize(full, budget, maxDepth);
       out.push({ name: e.name, type: 'directory', size });
     } else if (e.isFile()) {
       let size = 0;

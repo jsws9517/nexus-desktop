@@ -16,6 +16,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './fs-internal.js';
 import { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } from './sequential-think.js';
 import { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool } from './sqlite-tools.js';
+import { MEMORY_WRITE_TOOLS } from './main/memory-kg.js';
 
 // All in-process (non-MCP) tool names served by the worker — used to shadow any
 // same-named tool an external server might advertise.
@@ -281,6 +282,18 @@ export class AgentService {
       }
       const isBuiltin = (local.builtinTools as Array<{ name: string }>).some((t) => t.name === name);
       if (isBuiltin) return originalCall(name, args);
+      // Knowledge-graph WRITE tools get the same approval gate as sqlite writes:
+      // auto/unattended run them directly, interactive mode surfaces a card.
+      if (MEMORY_WRITE_TOOLS.has(name)) {
+        const mode = this.getActiveMode();
+        if (mode !== 'auto' && mode !== 'unattended') {
+          const answer = await this.askPermission(`Write to knowledge-graph memory via "${name}"`);
+          const norm = answer.trim().toLowerCase();
+          if (norm !== 'y' && norm !== 'a') {
+            return { content: 'Write operation denied.', isError: true };
+          }
+        }
+      }
       return this.mcpRequest('callTool', { name, args });
     };
     // Kick off the first prefetch so MCP tools are available (not just builtin)

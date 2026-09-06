@@ -269,6 +269,16 @@ export const INTERNAL_MEMORY_TOOLS = new Set([
   'open_nodes',
 ]);
 
+/** Memory tools that mutate the knowledge graph (need an approval gate). */
+export const MEMORY_WRITE_TOOLS = new Set([
+  'create_entities',
+  'create_relations',
+  'add_observations',
+  'delete_entities',
+  'delete_observations',
+  'delete_relations',
+]);
+
 export interface MemToolDef {
   name: string;
   description: string;

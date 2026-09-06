@@ -35,9 +35,14 @@ const err = (message: string): ThinkingResult => ({
   isError: true,
 });
 
+const MAX_HISTORY = 1000;
+
 class SequentialThinker {
   private thoughtHistory: Array<Record<string, unknown>> = [];
-  private branches: Record<string, Array<Record<string, unknown>>> = {};
+  // Map (not a plain object) so crafted branchId values like `__proto__` /
+  // `constructor` can never touch the prototype chain.
+  private branches = new Map<string, Array<Record<string, unknown>>>();
+  private branchOrder: string[] = [];
 
   process(input: Record<string, unknown>): ThinkingResult {
     try {
@@ -73,11 +78,22 @@ class SequentialThinker {
       // Behavior from dist/lib.js processThought().
       if (thoughtNumber > totalThoughts) totalThoughts = thoughtNumber;
       this.thoughtHistory.push(input);
+      if (this.thoughtHistory.length > MAX_HISTORY) {
+        this.thoughtHistory.splice(0, this.thoughtHistory.length - MAX_HISTORY);
+      }
       const branchFrom = coerceInt(input.branchFromThought);
       const branchId = input.branchId;
       if (branchFrom !== null && typeof branchId === 'string') {
-        if (!this.branches[branchId]) this.branches[branchId] = [];
-        this.branches[branchId].push(input);
+        if (!this.branches.has(branchId)) {
+          this.branches.set(branchId, []);
+          this.branchOrder.push(branchId);
+          // Bounded like history: drop the oldest branch registry when over cap.
+          if (this.branchOrder.length > MAX_HISTORY) {
+            const oldest = this.branchOrder.shift();
+            if (oldest !== undefined) this.branches.delete(oldest);
+          }
+        }
+        this.branches.get(branchId)!.push(input);
       }
 
       return {
@@ -86,7 +102,7 @@ class SequentialThinker {
             thoughtNumber,
             totalThoughts,
             nextThoughtNeeded,
-            branches: Object.keys(this.branches),
+            branches: this.branchOrder,
             thoughtHistoryLength: this.thoughtHistory.length,
           },
           null,

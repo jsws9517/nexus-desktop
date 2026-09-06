@@ -60,17 +60,31 @@ function validateSql(sql: string): { isReadOnly: boolean; error?: string } {
   return { isReadOnly: READ_ONLY_PATTERNS.some((p) => p.test(trimmed)) };
 }
 
+// --- identifier hardening (structured tools) ---
+const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Quote a SQL identifier so a crafted table/column name cannot break out of its position. */
+function quoteIdent(name: string): string {
+  return IDENT_RE.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+}
+/** Only accept conservative column DEFAULT literals (numbers, quoted strings, NULL, CURRENT_*). */
+const SAFE_DEFAULT_RE = /^-?\d+(\.\d+)?$|^'(?:[^']|'')*'$|^NULL$|^CURRENT_(?:TIMESTAMP|DATE|TIME)$/i;
+
 // --- database handles (per-process cache; WAL enables multi-process access) ---
 const dbCache = new Map<string, Database.Database>();
-function openDb(file: string): Database.Database {
-  let db = dbCache.get(file);
+function openDb(file: string, readonly = false): Database.Database {
+  // Read-only calls must never create/inflate a database file — the sole job of
+  // this branch is introspection, so require an existing file and stay RO.
+  const key = readonly ? `ro:${file}` : file;
+  let db = dbCache.get(key);
   if (db) return db;
-  db = new Database(file);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
-  db.pragma('cache_size = 1000000');
-  db.pragma('temp_store = memory');
-  dbCache.set(file, db);
+  db = new Database(file, readonly ? { readonly: true, fileMustExist: true } : {});
+  if (!readonly) {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.pragma('cache_size = 1000000');
+    db.pragma('temp_store = memory');
+  }
+  dbCache.set(key, db);
   return db;
 }
 
@@ -132,7 +146,7 @@ async function toolQuery(args: Record<string, unknown>, ctx?: SqliteToolContext)
   if (v.error) return err(v.error);
   if (!v.isReadOnly) return err('Only read-only queries are allowed. Use `execute` for write operations.');
   try {
-    return ok(openDb(file).prepare(sql).all());
+    return ok(openDb(file, true).prepare(sql).all());
   } catch (e) {
     return err(`Database error: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -164,9 +178,9 @@ function toolListTables(args: Record<string, unknown>, ctx?: SqliteToolContext):
   const file = resolveDbPath(args, ctx);
   if (args.dbPath !== undefined) return guardCustomDb(file).then(async (p) => (p === null
     ? err(`Database path denied by permissions system: ${file}`)
-    : ok(openDb(p).prepare(`SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all())));
+    : ok(openDb(p, true).prepare(`SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all())));
   try {
-    return ok(openDb(file).prepare(`SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all());
+    return ok(openDb(file, true).prepare(`SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all());
   } catch (e) {
     return err(`Database error: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -174,12 +188,13 @@ function toolListTables(args: Record<string, unknown>, ctx?: SqliteToolContext):
 
 function describeTable(file: string, tableName: string): SqliteToolResult {
   try {
-    const db = openDb(file);
+    const db = openDb(file, true);
     const exists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(tableName);
     if (!exists) return err(`Table '${tableName}' does not exist`);
-    const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
-    const indexes = db.prepare(`PRAGMA index_list(${tableName})`).all();
-    const foreignKeys = db.prepare(`PRAGMA foreign_key_list(${tableName})`).all();
+    const q = quoteIdent(tableName);
+    const columns = db.prepare(`PRAGMA table_info(${q})`).all();
+    const indexes = db.prepare(`PRAGMA index_list(${q})`).all();
+    const foreignKeys = db.prepare(`PRAGMA foreign_key_list(${q})`).all();
     const formatted = (columns as Array<{ name: string; type: string; notnull: number; pk: number; dflt_value?: string | null }>)
       .map((c) => `${c.name}: ${c.type}${c.notnull ? ' NOT NULL' : ''}${c.pk ? ' PRIMARY KEY' : ''}${c.dflt_value ? ` DEFAULT ${c.dflt_value}` : ''}`)
       .join('\n');
@@ -204,16 +219,26 @@ async function toolCreateTable(args: Record<string, unknown>, ctx?: SqliteToolCo
   const columns = Array.isArray(args.columns) ? (args.columns as Array<Record<string, unknown>>) : [];
   if (!name || columns.length === 0) return err('`name` and a non-empty `columns` array are required.');
   if (!(await writeGate(ctx, 'create-table'))) return err('Write operation denied.');
-  const defs = columns.map((col) => {
-    let def = `${col.name ?? ''} ${col.type ?? ''}`;
-    if (col.primaryKey) def += ' PRIMARY KEY';
-    if (col.notNull) def += ' NOT NULL';
-    if (col.unique) def += ' UNIQUE';
-    if (col.defaultValue) def += ` DEFAULT ${col.defaultValue}`;
-    return def;
-  });
+  let defs: string[];
+  try {
+    const spans = columns.map((col) => {
+      let def = `${quoteIdent(String(col.name ?? ''))} ${String(col.type ?? '')}`;
+      if (col.primaryKey) def += ' PRIMARY KEY';
+      if (col.notNull) def += ' NOT NULL';
+      if (col.unique) def += ' UNIQUE';
+      if (col.defaultValue !== undefined && col.defaultValue !== null) {
+        const lit = String(col.defaultValue);
+        if (!SAFE_DEFAULT_RE.test(lit)) throw new Error(`Unsafe defaultValue literal: ${lit}`);
+        def += ` DEFAULT ${lit}`;
+      }
+      return def;
+    });
+    defs = spans;
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
   const ifNotExists = args.ifNotExists === false ? false : true;
-  const statement = `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${name} (${defs.join(', ')})`;
+  const statement = `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quoteIdent(name)} (${defs.join(', ')})`;
   const file = resolveDbPath(args, ctx);
   if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
@@ -230,7 +255,7 @@ async function toolDropTable(args: Record<string, unknown>, ctx?: SqliteToolCont
   const name = typeof args.name === 'string' ? args.name : '';
   if (!name) return err('Provide a `name`.');
   if (!(await writeGate(ctx, 'drop-table'))) return err('Write operation denied.');
-  const statement = `DROP TABLE ${args.ifExists === false ? '' : 'IF EXISTS '}${name}`;
+  const statement = `DROP TABLE ${args.ifExists === false ? '' : 'IF EXISTS '}${quoteIdent(name)}`;
   const file = resolveDbPath(args, ctx);
   if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
@@ -251,7 +276,7 @@ async function toolInsertRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   const columns = Object.keys(data);
   const values = Object.values(data);
   const placeholders = columns.map(() => '?').join(', ');
-  const statement = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
+  const statement = `INSERT INTO ${quoteIdent(table)} (${columns.map(quoteIdent).join(', ')}) VALUES (${placeholders})`;
   const file = resolveDbPath(args, ctx);
   if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
@@ -270,8 +295,8 @@ async function toolUpdateRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   const where = typeof args.where === 'string' ? args.where : '';
   if (!table || Object.keys(data).length === 0 || where.trim() === '') return err('`table`, `data` and `where` are required.');
   if (!(await writeGate(ctx, 'update-record'))) return err('Write operation denied.');
-  const setClause = Object.keys(data).map((k) => `${k} = ?`).join(', ');
-  const statement = `UPDATE ${table} SET ${setClause} WHERE ${where}`;
+  const setClause = Object.keys(data).map((k) => `${quoteIdent(k)} = ?`).join(', ');
+  const statement = `UPDATE ${quoteIdent(table)} SET ${setClause} WHERE ${where}`;
   const file = resolveDbPath(args, ctx);
   if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
@@ -289,7 +314,7 @@ async function toolDeleteRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   const where = typeof args.where === 'string' ? args.where : '';
   if (!table || where.trim() === '') return err('`table` and `where` are required.');
   if (!(await writeGate(ctx, 'delete-record'))) return err('Write operation denied.');
-  const statement = `DELETE FROM ${table} WHERE ${where}`;
+  const statement = `DELETE FROM ${quoteIdent(table)} WHERE ${where}`;
   const file = resolveDbPath(args, ctx);
   if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
