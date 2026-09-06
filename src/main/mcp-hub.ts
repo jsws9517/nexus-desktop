@@ -10,6 +10,7 @@
  */
 
 import { logger } from '../shared/logger.js';
+import { INTERNAL_MEMORY_TOOLS, MEMORY_TOOL_DEFS, callMemoryTool } from './memory-kg.js';
 
 // nexus-coder exports ClientManager (src/mcp/client-manager.js) and
 // ConfigManager (src/config/index.js). Both are plain JS classes with no
@@ -81,15 +82,26 @@ class McpHubImpl {
    * Return MCP-only tool definitions (no builtin tools). Each tool carries a
    * `server` tag so callers can distinguish MCP from builtin. Empty before
    * `ensureConnected()` resolves.
+   *
+   * The knowledge-graph tools (remember/recall backing) are ALWAYS injected
+   * from the built-in engine, regardless of whether the external memory server
+   * is configured/connected. Any same-named tools advertised by an external
+   * server are shadowed so writes never race the built-in single writer.
    */
   getTools(): McpToolDef[] {
     // `getAllTools()` returns builtin + MCP; builtin tools do NOT have `server`.
-    return this.manager.getAllTools()
+    const remote = this.manager.getAllTools()
       .filter((t: McpToolDef) => !!t.server)
       .map((t: McpToolDef) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, server: t.server }));
+    const injected = MEMORY_TOOL_DEFS.map((t) => ({ ...t }));
+    const shadowed = new Set(MEMORY_TOOL_DEFS.map((t) => t.name));
+    return [...remote.filter((t) => !shadowed.has(t.name)), ...injected];
   }
 
   async callTool(name: string, args: unknown): Promise<{ content: string; isError?: boolean }> {
+    if (INTERNAL_MEMORY_TOOLS.has(name)) {
+      return callMemoryTool(name, (args ?? {}) as Record<string, unknown>);
+    }
     await this.ensureConnected();
     const res = await this.manager.callTool(name, (args ?? {}) as Record<string, unknown>);
     return { content: res.content ?? '', isError: res.isError };
@@ -124,6 +136,11 @@ class McpHubImpl {
 
   async setServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {
     await this.ensureConnected();
+    // Knowledge graph is served by the built-in engine; never spawn the
+    // external memory server (it would race the single in-process writer).
+    if (INTERNAL_MEMORY_TOOLS.size > 0 && (name === 'memory' || name === 'memory-internal')) {
+      return { ok: true };
+    }
     const connected = (this.manager.listConnections() as Array<{ name: string }>)
       .some((c) => c.name === name);
     if (enabled && !connected) {
