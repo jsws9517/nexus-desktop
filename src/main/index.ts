@@ -386,7 +386,22 @@ function createWindow(): void {
   });
 
   win.loadFile(join(__dirname, '..', 'static', 'index.html'));
-  win.webContents.on('console-message', (event) => {
+  // Navigation hardening: the window only ever loads the bundled index.html.
+  // Block any navigation away from it (the renderer has no legitimate new-doc
+  // navigation) and deny all window.open() / target=_blank popups, which would
+  // otherwise inherit the privileged preload bridge.
+  const mainWin = win;
+  mainWin.webContents.on('will-navigate', (event, url) => {
+    if (url !== mainWin.webContents.getURL()) {
+      event.preventDefault();
+      logf(`blocked main-window navigation to ${url}`);
+    }
+  });
+  mainWin.webContents.setWindowOpenHandler(({ url }) => {
+    logf(`blocked window.open to ${url}`);
+    return { action: 'deny' };
+  });
+  mainWin.webContents.on('console-message', (event) => {
     logf(`renderer[${event.level}]: ${event.message}`);
   });
   win.on('closed', () => {
@@ -511,6 +526,20 @@ async function openConfigWindow(): Promise<void> {
     });
     const port = configServer!.port;
     void configWin.loadURL(`http://localhost:${port}`);
+    // Navigation hardening: the config window only ever loads the localhost
+    // config server bound to this process. Block navigation to any other origin
+    // and deny popups, which would otherwise inherit the app's IPC surface.
+    const configOrigin = `http://localhost:${port}`;
+    configWin.webContents.on('will-navigate', (event, url) => {
+      if (!url.startsWith(configOrigin)) {
+        event.preventDefault();
+        console.error(`blocked config-window navigation to ${url}`);
+      }
+    });
+    configWin.webContents.setWindowOpenHandler(({ url }) => {
+      console.error(`blocked config-window popup to ${url}`);
+      return { action: 'deny' };
+    });
     configWin.on('closed', () => {
       configWin = null;
       // Free the port immediately when the settings window is closed.
