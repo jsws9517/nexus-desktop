@@ -3,7 +3,8 @@
  *
  * Zero dependencies: everything is drawn on the local #fx-canvas, so the CSP
  * in static/index.html (`script-src 'self'`) stays valid. The palette follows
- * `document.documentElement.dataset.theme` (dark | warm) automatically.
+ * `document.documentElement.dataset.theme` (dark | warm | light | cartoon | tech)
+ * automatically.
  */
 
 interface FxNode {
@@ -23,6 +24,9 @@ interface FxPalette {
 
 const DARK: FxPalette = { node: '#9cc0ff', linkRgb: '79, 140, 255', span: 150 };
 const WARM: FxPalette = { node: '#e8c98a', linkRgb: '224, 164, 88', span: 150 };
+const LIGHT: FxPalette = { node: '#6cb4ee', linkRgb: '108, 180, 238', span: 120 };
+const CARTOON: FxPalette = { node: '#ff9f43', linkRgb: '255, 159, 67', span: 180 };
+const TECH: FxPalette = { node: '#00f5ff', linkRgb: '0, 245, 255', span: 200 };
 
 let canvas: HTMLCanvasElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
@@ -35,7 +39,13 @@ let reducedMotion = false;
 // ---------- palette cache (avoid per-frame DOM read) ----------
 let cachedPalette: FxPalette = DARK;
 function updatePalette(): void {
-  cachedPalette = document.documentElement.dataset.theme === 'warm' ? WARM : DARK;
+  const theme = document.documentElement.dataset.theme;
+  cachedPalette =
+    theme === 'warm' ? WARM :
+    theme === 'light' ? LIGHT :
+    theme === 'cartoon' ? CARTOON :
+    theme === 'tech' ? TECH :
+    DARK;
 }
 
 // ---------- spatial grid for O(N) link detection ----------

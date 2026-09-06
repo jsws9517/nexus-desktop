@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } from 'electron';
 import { createRequire } from 'node:module';
 import { basename, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -375,7 +375,7 @@ function createWindow(): void {
     minWidth: 940,
     minHeight: 600,
     title: 'Nexus Desktop',
-    backgroundColor: '#1a1b1e',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a1b1e' : '#f5f5f7',
     webPreferences: {
       preload: join(__dirname, '..', 'preload.cjs'),
       contextIsolation: true,

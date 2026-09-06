@@ -373,26 +373,62 @@ let msgWindowStart = 0;
 
 // ---------- theme ----------
 const THEME_KEY = 'nexus.theme';
-type ThemeName = 'dark' | 'warm';
+type ThemeName = 'system' | 'dark' | 'warm' | 'light' | 'cartoon' | 'tech';
+
+const VALID_THEMES: ThemeName[] = ['system', 'dark', 'warm', 'light', 'cartoon', 'tech'];
+
+/** Resolve the effective CSS theme name from a saved preference. */
+function resolveTheme(preference: ThemeName): 'dark' | 'warm' | 'light' | 'cartoon' | 'tech' {
+  if (preference !== 'system') return preference;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
 
 function applyTheme(theme: ThemeName): void {
-  document.documentElement.dataset.theme = theme === 'warm' ? 'warm' : 'dark';
+  const effective = resolveTheme(theme);
+  document.documentElement.dataset.theme = effective;
   themeSelect.value = theme;
   try {
     localStorage.setItem(THEME_KEY, theme);
   } catch {}
+  syncSystemThemeListener(theme);
 }
 
-function loadTheme(): void {
+function loadTheme(): ThemeName {
   let theme: ThemeName = 'dark';
   try {
     const saved = localStorage.getItem(THEME_KEY);
-    if (saved === 'warm') theme = 'warm';
+    if (saved && VALID_THEMES.includes(saved as ThemeName)) {
+      theme = saved as ThemeName;
+    }
   } catch {}
   applyTheme(theme);
+  return theme;
 }
+
+/** Listen / unlisten to OS dark-mode changes when theme is "system". */
+let systemMql: MediaQueryList | null = null;
+let systemMqlHandler: (() => void) | null = null;
+
+function syncSystemThemeListener(theme: ThemeName): void {
+  if (theme === 'system') {
+    if (systemMql) return; // already listening
+    systemMql = window.matchMedia('(prefers-color-scheme: dark)');
+    systemMqlHandler = () => {
+      const effective = resolveTheme('system');
+      document.documentElement.dataset.theme = effective;
+    };
+    systemMql.addEventListener('change', systemMqlHandler);
+  } else if (systemMql && systemMqlHandler) {
+    systemMql.removeEventListener('change', systemMqlHandler);
+    systemMql = null;
+    systemMqlHandler = null;
+  }
+}
+
+const savedTheme = loadTheme();
 themeSelect.addEventListener('change', () => {
-  applyTheme(themeSelect.value === 'warm' ? 'warm' : 'dark');
+  const val = themeSelect.value as ThemeName;
+  applyTheme(VALID_THEMES.includes(val) ? val : 'dark');
 });
 
 // ---------- markdown ---------- (moved to markdown.ts; see imports above)
