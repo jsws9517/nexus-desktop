@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const workerPath = join(__dirname, '..', 'dist', 'agent-worker.js');
@@ -94,6 +94,55 @@ await expect(
 
 await req('deleteSession', { id: sid2.data });
 await req('deleteSession', { id: sid.data });
+
+// --- Built-in filesystem tools (src/fs-internal.ts) ---
+const fsMod = await import('node:fs/promises');
+const osMod = await import('node:os');
+const pathMod = await import('node:path');
+const { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } = await import(pathToFileURL(join(__dirname, '..', 'dist', 'fs-internal.js')));
+// Non-interactive: any out-of-allow path must be DENIED (never a dead prompt).
+(await import(pathToFileURL(join(__dirname, '..', 'node_modules', 'nexus-coder', 'dist', 'src', 'security', 'path-authorizer.js'))))
+  .setPermissionPrompter(() => 'n');
+
+await expect(
+  FILESYSTEM_TOOLS.size === 3 &&
+    ['read_media_file', 'list_directory_with_sizes', 'list_allowed_directories'].every((n) => FILESYSTEM_TOOLS.has(n)),
+  'fs-internal tool set',
+);
+await expect(FILESYSTEM_TOOL_DEFS.every((d) => d.server === 'filesystem-internal'), 'fs-internal defs tagged');
+
+const fsTmp = pathMod.join(process.cwd(), '.smoke-fs-test');
+await fsMod.mkdir(fsTmp, { recursive: true });
+await fsMod.writeFile(pathMod.join(fsTmp, 'one.png'), Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64',
+));
+await fsMod.writeFile(pathMod.join(fsTmp, 'a.txt'), 'hello');
+
+const list = await callFsTool('list_directory_with_sizes', { path: fsTmp });
+const listJson = JSON.parse(list.content);
+await expect(
+  list.isError !== true && Array.isArray(listJson.entries) && listJson.entries.find((e) => e.name === 'a.txt')?.size === 5,
+  'list_directory_with_sizes sizes',
+);
+
+const media = await callFsTool('read_media_file', { path: pathMod.join(fsTmp, 'one.png') });
+await expect(
+  media.isError !== true && media.content.startsWith('![one.png](data:image/png;base64,'),
+  'read_media_file data-URI',
+  media.content?.slice(0, 60),
+);
+
+const allowed = await callFsTool('list_allowed_directories');
+const allowedJson = JSON.parse(allowed.content);
+await expect(
+  allowedJson.cwd === process.cwd() && typeof allowedJson.sandboxActive === 'boolean' && Array.isArray(allowedJson.grantedRoots),
+  'list_allowed_directories boundary report',
+);
+
+const denied = await callFsTool('list_directory_with_sizes', { path: osMod.tmpdir() });
+await expect(denied.isError === true, 'fs-internal out-of-root denied', (denied.content || '').slice(0, 60));
+
+await fsMod.rm(fsTmp, { recursive: true, force: true });
 
 await req('shutdown');
 child.on('exit', () => {

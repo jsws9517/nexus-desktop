@@ -141,6 +141,11 @@ class McpHubImpl {
     if (INTERNAL_MEMORY_TOOLS.size > 0 && (name === 'memory' || name === 'memory-internal')) {
       return { ok: true };
     }
+    // The filesystem server is intentionally superseded by the built-in
+    // (worker-local) filesystem tools; never spawn the external npx server.
+    if (name === 'filesystem' || name === 'filesystem-internal') {
+      return { ok: true };
+    }
     const connected = (this.manager.listConnections() as Array<{ name: string }>)
       .some((c) => c.name === name);
     if (enabled && !connected) {

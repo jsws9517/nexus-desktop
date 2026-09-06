@@ -13,6 +13,7 @@ import type { Session } from 'nexus-coder/dist/src/session/types.js';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './fs-internal.js';
 
 /**
  * Headless bridge around the nexus CLI Agent.
@@ -241,9 +242,15 @@ export class AgentService {
     // local (fast, per-worker), forward only MCP tools to the hub.
     local.getAllTools = () => {
       const builtin = (originalGetAll() as McpToolDef[]).filter((t: McpToolDef) => !(t as McpToolDef).server);
-      return [...builtin, ...this.mcpToolCache];
+      // Shadow any external server that advertises the built-in filesystem
+      // tool names, then append the in-process defs (they must appear once).
+      const cache = this.mcpToolCache.filter((t: McpToolDef) => !FILESYSTEM_TOOLS.has(t.name));
+      return [...builtin, ...cache, ...FILESYSTEM_TOOL_DEFS];
     };
     local.callTool = async (name: string, args: unknown): Promise<unknown> => {
+      if (FILESYSTEM_TOOLS.has(name)) {
+        return callFsTool(name, args, { getConfig: () => this.agent?.['config']?.get?.() });
+      }
       const isBuiltin = (local.builtinTools as Array<{ name: string }>).some((t) => t.name === name);
       if (isBuiltin) return originalCall(name, args);
       return this.mcpRequest('callTool', { name, args });
