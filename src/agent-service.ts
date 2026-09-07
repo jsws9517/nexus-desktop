@@ -17,6 +17,7 @@ import { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './fs-interna
 import { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } from './sequential-think.js';
 import { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool } from './sqlite-tools.js';
 import { MEMORY_WRITE_TOOLS } from './main/memory-kg.js';
+import { logger } from './shared/logger.js';
 
 // All in-process (non-MCP) tool names served by the worker — used to shadow any
 // same-named tool an external server might advertise.
@@ -295,6 +296,36 @@ export class AgentService {
         }
       }
       return this.mcpRequest('callTool', { name, args });
+    };
+    // The core's `getToolsForContext` applies a per-turn keyword filter to keep
+    // the LLM tool list small (tokens/bigrams from the user message must match a
+    // tool's name+description). That silently strips user-configured MCP tools
+    // whenever the message does not literally name them (e.g. Chinese asks about
+    // "LSP/语法检查" never match the English pyright_* descriptions). Re-append
+    // any connected MCP tool the filter dropped so explicitly-configured servers
+    // stay callable. Plan mode and role-scoped allowlists are respected: those
+    // intentionally restrict the toolset and must not be widened here.
+    const patchedGetAllTools = local.getAllTools.bind(local);
+    const originalGetTools = (agent as unknown as {
+      getToolsForContext: (input?: string) => Promise<Array<{ name: string }>>;
+    }).getToolsForContext.bind(agent);
+    (agent as unknown as {
+      getToolsForContext: (input?: string) => Promise<Array<{ name: string }>>;
+    }).getToolsForContext = async (input?: string) => {
+      const tools = await originalGetTools(input);
+      if (agent.planMode || (agent.toolAllowlist?.size ?? 0) > 0) return tools;
+      const mcpTools = (patchedGetAllTools() as McpToolDef[]).filter((t) => t.server);
+      if (mcpTools.length === 0) return tools;
+      const have = new Set(tools.map((t) => t.name));
+      const missing = mcpTools.filter((t) => !have.has(t.name));
+      if (missing.length > 0) {
+        logger.info(
+          `[mcp-bridge] getToolsForContext re-appended ${missing.length}/${mcpTools.length} MCP tools ` +
+            `(base=${tools.length}, input=${(input ?? '').length}): ${missing.map((t) => t.name).join(', ')}`,
+        );
+        return [...tools, ...missing];
+      }
+      return tools;
     };
     // Kick off the first prefetch so MCP tools are available (not just builtin)
     // on the first turn without blocking synchronous tool-list assembly.
