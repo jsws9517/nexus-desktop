@@ -149,6 +149,22 @@ export class SessionWorkers {
    * Honors the same override map keyed by the NEW session id on success.
    */
   async openNew(opts?: { cwd?: string; prevSessionId?: string }): Promise<OpenTabInfo> {
+    // The parent's memory must be finalized in its OWN process (which holds the
+    // real in-memory conversation): compress + persist a structured summary so
+    // the derived session inherits substance instead of a blank baseline. Best
+    // effort — a failure here must not block the new session (the core's
+    // injectDerivedContext falls back to the stored transcript).
+    const parentId = opts?.prevSessionId;
+    if (parentId) {
+      const parent = this.map.get(parentId);
+      if (parent && !parent.busy) {
+        try {
+          await parent.worker.request('prepareParentMemory', {});
+        } catch (err) {
+          this.onLog?.('warn', `prepareParentMemory failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
     const worker = new WorkerHost(workerScriptPath());
     const bound: BoundWorker = {
       sessionId: '',

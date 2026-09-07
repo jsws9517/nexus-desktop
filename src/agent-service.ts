@@ -939,22 +939,59 @@ export class AgentService {
     this.pendingRevise = false;
     // Desktop /new: create a derived session inside THIS worker so the core's
     // injectDerivedContext runs in-process (the inherited memory baseline stays
-    // in this worker's memory, matching CLI /new exactly). First persist the
-    // parent summary (same as core /new does), then point currentSessionId at
-    // the parent so startSession() captures it as prevSessionId. Only applies
-    // to the create-new branch (no sessionId) — a resume must not be moved.
+    // in this worker's memory, matching CLI /new exactly). The parent's memory
+    // was already summarized/compressed by prepareParentMemory() in the PARENT's
+    // worker (which owns the real in-memory conversation); persisting it again
+    // here would run against THIS worker's empty context and poison the parent
+    // with a degenerate "[待续/下一步] 无" summary. So we only point
+    // currentSessionId at the parent — startSession() then captures it as
+    // prevSessionId and injects the (already real) baseline. Only applies to
+    // the create-new branch (no sessionId) — a resume must not be moved.
     if (prevSessionId && !sessionId) {
-      try {
-        await this.agent.persistSessionSummary(prevSessionId);
-      } catch (e) {
-        this.onLog?.('warn', `persistSessionSummary failed: ${(e as Error).message}`);
-      }
-      // Point currentSessionId at the parent (without loading its messages into
-      // context) so startSession() captures it as its prevSessionId and the core
-      // injects the parent's project memory baseline into the fresh session.
       this.agent.joinSession(prevSessionId);
     }
     return this.agent.startSession(name, sessionId, metadata);
+  }
+
+  /**
+   * Finalize the CURRENT session's memory in its OWN process before it spawns a
+   * derived /new session: compress the real in-memory context when it is large
+   * enough (same guard as core /new), then persist a real structured summary.
+   * Degenerate parent memory (non-empty but lacking the '[决策/约束]' marker —
+   * e.g. written by an earlier buggy /new against an empty worker context) is
+   * cleared first so persistSessionSummary regenerates a genuine baseline that
+   * the derived session can carry forward. Runs best-effort; failures are logged
+   * and reported via the result object, never thrown.
+   */
+  async prepareParentMemory(): Promise<{ msgs: number; compressed: boolean; summary: boolean; cleared: boolean }> {
+    if (!this.agent) throw new Error('Agent not initialized');
+    const msgs = this.agent.context.getMessages();
+    let compressed = false;
+    if (msgs.length >= 4) {
+      try {
+        await this.agent.context.compress();
+        compressed = true;
+      } catch (e) {
+        this.onLog?.('warn', `parent context compress failed: ${(e as Error).message}`);
+      }
+    }
+    const sid = this.agent.getCurrentSessionId();
+    let summary = false;
+    let cleared = false;
+    if (sid) {
+      try {
+        const existing = this.agent.sessionMemory.load(sid) || '';
+        if (existing.trim() && !existing.includes('[决策/约束]')) {
+          this.agent.sessionMemory.remove(sid);
+          cleared = true;
+        }
+        await this.agent.persistSessionSummary(sid);
+        summary = true;
+      } catch (e) {
+        this.onLog?.('warn', `prepareParentMemory persist failed: ${(e as Error).message}`);
+      }
+    }
+    return { msgs: msgs.length, compressed, summary, cleared };
   }
 
   async listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: Session[]; total: number }> {

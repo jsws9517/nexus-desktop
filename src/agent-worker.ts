@@ -13,6 +13,7 @@ type WorkerRequest =
   | { id: number; method: 'withdraw'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'abort' }
   | { id: number; method: 'startSession'; params?: { name?: string; sessionId?: string; metadata?: Record<string, unknown>; prevSessionId?: string } }
+  | { id: number; method: 'prepareParentMemory' }
   | { id: number; method: 'listSessions'; params?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean } }
   | { id: number; method: 'getMessages'; params: { sessionId: string; last?: number; limit?: number; offset?: number } }
   | { id: number; method: 'getSlashLog'; params: { sessionId: string } }
@@ -220,6 +221,9 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         break;
       case 'startSession':
         respond(req.id, await service.startSession(req.params?.name, req.params?.sessionId, req.params?.metadata, req.params?.prevSessionId));
+        break;
+      case 'prepareParentMemory':
+        respond(req.id, await service.prepareParentMemory());
         break;
       case 'listSessions':
         respond(req.id, await service.listSessions(req.params ?? {}));

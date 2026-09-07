@@ -41,6 +41,7 @@ export const WORKER_METHODS: Record<string, MethodSpec> = {
     fields: { name: S.str(), sessionId: S.str(), metadata: S.obj(), prevSessionId: S.str() },
     optional: ['name', 'sessionId', 'metadata', 'prevSessionId'],
   },
+  prepareParentMemory: { fields: {} },
   listSessions: {
     fields: {
       limit: S.num(),
