@@ -6,13 +6,18 @@
  * approval gates as every other built-in tool.
  *
  * - Default database = the one configured in `mcpServers.sqlite.args`
- *   (config grant). A custom `dbPath` must pass authorizePath first.
+ *   (config grant; opens rw so the very first query can create it, matching the
+ *   original mcp-server-sqlite behavior).
+ * - A custom `dbPath` must pass authorizePath first and is opened READ-ONLY with
+ *   fileMustExist — a missing file yields a hint to create it via a write tool,
+ *   never a silent file creation from a read tool.
  * - Read-only tools never prompt. Write tools ask for approval in prompt mode
  *   and go straight through in auto/unattended (mirrors the core's
  *   onPermissionRequest / audit-gate semantics).
  */
 
 import Database from 'better-sqlite3';
+import { existsSync } from 'node:fs';
 import { isAbsolute, normalize, resolve as resolvePath } from 'node:path';
 import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
 
@@ -120,12 +125,31 @@ function resolveDbPath(args: unknown, ctx?: SqliteToolContext): string {
   return normalize(isAbsolute(p) ? p : resolvePath(process.cwd(), p));
 }
 
+/** True when the caller explicitly passed a `dbPath` argument (vs. the configured default). */
+function isCustomDbArg(args: unknown): boolean {
+  const a = (args ?? {}) as { dbPath?: unknown };
+  return typeof a.dbPath === 'string' && a.dbPath.trim() !== '';
+}
+
 /** Custom dbPath must pass the interactive path authorization. */
 async function guardCustomDb(dbPath: string): Promise<string | null> {
   const authorized = await authorizePath(dbPath);
   if (!authorized) return null;
   if (!revalidateSymlinkGuard(dbPath)) return null;
   return dbPath;
+}
+
+/**
+ * A custom dbPath is discretionary path use, so read tools stay strict:
+ * they open readonly and NEVER create a file. Give a clear hint instead of a
+ * bare "unable to open database file" so users know to create it via a write
+ * tool first.
+ */
+function missingDbHint(file: string): SqliteToolResult {
+  return err(
+    `No SQLite database at ${file}. Point dbPath at an existing database file, ` +
+      'or create the database first with `execute` / `create-table` (e.g. "CREATE TABLE x (id INTEGER PRIMARY KEY)")',
+  );
 }
 
 async function writeGate(ctx: SqliteToolContext | undefined, label: string): Promise<boolean> {
@@ -139,14 +163,16 @@ async function toolQuery(args: Record<string, unknown>, ctx?: SqliteToolContext)
   const sql = typeof args.sql === 'string' ? args.sql : '';
   if (!sql.trim()) return err('Provide a `sql` query.');
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  const custom = isCustomDbArg(args);
+  if (custom && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
+  if (custom && !existsSync(file)) return missingDbHint(file);
   const v = validateSql(sql);
   if (v.error) return err(v.error);
   if (!v.isReadOnly) return err('Only read-only queries are allowed. Use `execute` for write operations.');
   try {
-    return ok(openDb(file, true).prepare(sql).all());
+    return ok(openDb(file, custom).prepare(sql).all());
   } catch (e) {
     return err(`Database error: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -156,7 +182,7 @@ async function toolExecute(args: Record<string, unknown>, ctx?: SqliteToolContex
   const sql = typeof args.sql === 'string' ? args.sql : '';
   if (!sql.trim()) return err('Provide a `sql` statement.');
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  if (isCustomDbArg(args) && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
   const v = validateSql(sql);
@@ -174,21 +200,23 @@ async function toolExecute(args: Record<string, unknown>, ctx?: SqliteToolContex
   }
 }
 
-function toolListTables(args: Record<string, unknown>, ctx?: SqliteToolContext): SqliteToolResult | Promise<SqliteToolResult> {
+async function toolListTables(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined) return guardCustomDb(file).then(async (p) => (p === null
-    ? err(`Database path denied by permissions system: ${file}`)
-    : ok(openDb(p, true).prepare(`SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all())));
+  const custom = isCustomDbArg(args);
+  if (custom && (await guardCustomDb(file)) === null) {
+    return err(`Database path denied by permissions system: ${file}`);
+  }
+  if (custom && !existsSync(file)) return missingDbHint(file);
   try {
-    return ok(openDb(file, true).prepare(`SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all());
+    return ok(openDb(file, custom).prepare(`SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all());
   } catch (e) {
     return err(`Database error: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
-function describeTable(file: string, tableName: string): SqliteToolResult {
+function describeTable(file: string, tableName: string, custom: boolean): SqliteToolResult {
   try {
-    const db = openDb(file, true);
+    const db = openDb(file, custom);
     const exists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(tableName);
     if (!exists) return err(`Table '${tableName}' does not exist`);
     const q = quoteIdent(tableName);
@@ -208,10 +236,12 @@ async function toolDescribeTable(args: Record<string, unknown>, ctx?: SqliteTool
   const tableName = typeof args.tableName === 'string' ? args.tableName : '';
   if (!tableName) return err('Provide a `tableName`.');
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  const custom = isCustomDbArg(args);
+  if (custom && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
-  return describeTable(file, tableName);
+  if (custom && !existsSync(file)) return missingDbHint(file);
+  return describeTable(file, tableName, custom);
 }
 
 async function toolCreateTable(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
@@ -240,7 +270,7 @@ async function toolCreateTable(args: Record<string, unknown>, ctx?: SqliteToolCo
   const ifNotExists = args.ifNotExists === false ? false : true;
   const statement = `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${quoteIdent(name)} (${defs.join(', ')})`;
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  if (isCustomDbArg(args) && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
   try {
@@ -257,7 +287,7 @@ async function toolDropTable(args: Record<string, unknown>, ctx?: SqliteToolCont
   if (!(await writeGate(ctx, 'drop-table'))) return err('Write operation denied.');
   const statement = `DROP TABLE ${args.ifExists === false ? '' : 'IF EXISTS '}${quoteIdent(name)}`;
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  if (isCustomDbArg(args) && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
   try {
@@ -278,7 +308,7 @@ async function toolInsertRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   const placeholders = columns.map(() => '?').join(', ');
   const statement = `INSERT INTO ${quoteIdent(table)} (${columns.map(quoteIdent).join(', ')}) VALUES (${placeholders})`;
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  if (isCustomDbArg(args) && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
   try {
@@ -298,7 +328,7 @@ async function toolUpdateRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   const setClause = Object.keys(data).map((k) => `${quoteIdent(k)} = ?`).join(', ');
   const statement = `UPDATE ${quoteIdent(table)} SET ${setClause} WHERE ${where}`;
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  if (isCustomDbArg(args) && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
   try {
@@ -316,7 +346,7 @@ async function toolDeleteRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   if (!(await writeGate(ctx, 'delete-record'))) return err('Write operation denied.');
   const statement = `DELETE FROM ${quoteIdent(table)} WHERE ${where}`;
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  if (isCustomDbArg(args) && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
   try {
@@ -336,7 +366,7 @@ async function toolTransaction(args: Record<string, unknown>, ctx?: SqliteToolCo
     if (v.error) return err(`Invalid SQL: ${v.error}`);
   }
   const file = resolveDbPath(args, ctx);
-  if (args.dbPath !== undefined && (await guardCustomDb(file)) === null) {
+  if (isCustomDbArg(args) && (await guardCustomDb(file)) === null) {
     return err(`Database path denied by permissions system: ${file}`);
   }
   try {

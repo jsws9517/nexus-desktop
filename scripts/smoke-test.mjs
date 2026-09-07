@@ -76,9 +76,18 @@ await expect(
 const msgsLast = await req('getMessages', { sessionId: sid.data, last: 5 });
 await expect(Array.isArray(msgsLast.data?.items) && msgsLast.data.items.length === 0, 'getMessages last');
 
-// Derived session (Desktop /new path): startSession with prevSessionId must
-// create a NEW session id (via the core's create-new branch) and keep the
-// derived session's own transcript empty.
+// Derived session (Desktop /new path): the parent's memory is finalized in its
+// own process first, then startSession with prevSessionId must create a NEW
+// session id (via the core's create-new branch) AND keep the derived session's
+// own transcript empty (inherited baseline is injected as system context, not
+// replayed into the transcript).
+const prep = await req('prepareParentMemory');
+await expect(
+  prep.ok === true && typeof prep.data?.msgs === 'number' && typeof prep.data?.summary === 'boolean',
+  'prepareParentMemory finalizes parent memory in-process',
+  JSON.stringify(prep.data),
+);
+
 const sid2 = await req('startSession', { prevSessionId: sid.data });
 await expect(
   typeof sid2.data === 'string' && sid2.data.length > 0 && sid2.data !== sid.data,
@@ -188,6 +197,21 @@ const dropped = await callSqliteTool('drop-table', { name: 't1', dbPath: sqDb },
 await expect(dropped.isError !== true, 'sqlite drop-table', dropped.content?.slice(0, 80));
 const sqDenied = await callSqliteTool('query', { sql: 'SELECT 1', dbPath: pathMod.join(osMod.tmpdir(), 'nexus-no.db') }, sqliteCtx);
 await expect(sqDenied.isError === true, 'sqlite out-of-root dbPath denied', (sqDenied.content || '').slice(0, 60));
+const sqMiss = await callSqliteTool('query', { sql: 'SELECT 1', dbPath: pathMod.join(sqTmp, 'no-such.db') }, sqliteCtx);
+await expect(
+  sqMiss.isError === true && (sqMiss.content || '').includes('create the database first'),
+  'sqlite missing custom dbPath hints to create',
+  (sqMiss.content || '').slice(0, 80),
+);
+const sqMissingUncreated = !(await fsMod.access(pathMod.join(sqTmp, 'no-such.db')).then(() => true).catch(() => false));
+await expect(sqMissingUncreated, 'sqlite read never creates a custom db file');
+// Default (config-granted) database is still create-on-first-open, like before hardening.
+const defDb = pathMod.join(sqTmp, 'default.db');
+const defCtx = { getConfig: () => ({ mcpServers: { sqlite: { args: ['node', defDb] } } }), requestWriteApproval: async () => true };
+const listTablesDefault = await callSqliteTool('list-tables', {}, defCtx);
+await expect(listTablesDefault.isError !== true, 'sqlite config-default db still opens', listTablesDefault.content?.slice(0, 60));
+const defaultCreated = (await fsMod.access(defDb).then(() => true).catch(() => false));
+await expect(defaultCreated, 'sqlite config-default db is created on first read');
 closeSqliteDbs();
 await fsMod.rm(sqTmp, { recursive: true, force: true });
 
