@@ -861,6 +861,18 @@ body {
   box-shadow: 0 -12px 36px rgba(0, 0, 0, 0.45);
 }
 .mcp-popover-title { font-size: 12px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
+.mcp-section {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 7px 6px 3px;
+}
+.mcp-section--shaded {
+  margin-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+}
 .mcp-server-row {
   display: flex;
   align-items: center;

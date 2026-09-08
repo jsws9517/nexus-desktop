@@ -48,6 +48,10 @@ Additional bridge: knowledge-graph writes (`remember`/`user_info` …) go throug
 
   Builtin sqlite / memory / git **write** tools: card in `prompt`; pass-through in `auto` and `unattended` (`src/agent-service.ts:276,289,299`). The git write set covers 26 mutating tools (commit/stage/reset/push/checkout/merge/rebase …).
 
+- 内置 fetch / time 为只读能力（无写门）：`fetch` 会访问网络并遵循 robots.txt，`time` 纯计算；两者在 `prompt` 下均不弹卡。
+
+  Builtin `fetch` / `time` are read-only (no write gate): `fetch` performs network access honoring robots.txt (from `src/main/fetch-tools.ts`, aligned with mcp-server-fetch); `time` is pure computation (`src/main/time-tools.ts`, aligned with mcp-server-time).
+
 - 知识图谱写桥（`audit.setAskUser`）：`auto` / `unattended` 自动批准（返回 `'y'`），`prompt` 弹卡（`src/agent-service.ts:376-387`）。
 
   Knowledge-graph write bridge (`audit.setAskUser`): auto-approved in `auto`/`unattended`, card in `prompt` (`src/agent-service.ts:376-387`).

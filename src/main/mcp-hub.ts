@@ -12,6 +12,8 @@
 import { logger } from '../shared/logger.js';
 import { INTERNAL_MEMORY_TOOLS, MEMORY_TOOL_DEFS, callMemoryTool } from './memory-kg.js';
 import { GIT_INTERNAL_TOOLS, GIT_TOOL_DEFS, callGitTool } from './git-internal.js';
+import { FETCH_TOOLS, FETCH_TOOL_DEFS, callFetchTool } from './fetch-tools.js';
+import { TIME_TOOLS, TIME_TOOL_DEFS, callTimeTool } from './time-tools.js';
 
 // MCP server names fully superseded by in-process implementations. The hub
 // must never spawn these (no external process, no npx), and the settings UI
@@ -26,6 +28,8 @@ const INTERNAL_BUILTIN_SERVERS = new Set([
   'sqlite',
   'git',
   'git-internal',
+  'fetch',
+  'time',
 ]);
 
 const BUILTIN_TOOL_COUNTS: Record<string, number> = {
@@ -34,6 +38,8 @@ const BUILTIN_TOOL_COUNTS: Record<string, number> = {
   'sequential-thinking': 1, // sequentialthinking
   sqlite: 10, // query .. transaction
   git: GIT_TOOL_DEFS.length, // the 36 git_* tools
+  fetch: FETCH_TOOL_DEFS.length, // fetch
+  time: TIME_TOOL_DEFS.length, // get_current_time / convert_time
 };
 
 // nexus-coder exports ClientManager (src/mcp/client-manager.js) and
@@ -119,7 +125,7 @@ class McpHubImpl {
     const remote = this.manager.getAllTools()
       .filter((t: McpToolDef) => !!t.server)
       .map((t: McpToolDef) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, server: t.server }));
-    const injected = [...MEMORY_TOOL_DEFS, ...GIT_TOOL_DEFS].map((t) => ({ ...t }));
+    const injected = [...MEMORY_TOOL_DEFS, ...GIT_TOOL_DEFS, ...FETCH_TOOL_DEFS, ...TIME_TOOL_DEFS].map((t) => ({ ...t }));
     const shadowed = new Set(injected.map((t) => t.name));
     return [...remote.filter((t) => !shadowed.has(t.name)), ...injected];
   }
@@ -130,6 +136,12 @@ class McpHubImpl {
     }
     if (GIT_INTERNAL_TOOLS.has(name)) {
       return callGitTool(name, args);
+    }
+    if (FETCH_TOOLS.has(name)) {
+      return callFetchTool(name, args);
+    }
+    if (TIME_TOOLS.has(name)) {
+      return callTimeTool(name, args);
     }
     await this.ensureConnected();
     const res = await this.manager.callTool(name, (args ?? {}) as Record<string, unknown>);
@@ -154,19 +166,24 @@ class McpHubImpl {
       (this.manager.getServerErrors?.() as Array<{ name: string; error?: string }> ?? [])
         .map((e) => [e.name, { error: e.error }]),
     );
-    return Object.entries(cfg.mcpServers ?? {}).map(([name, s]: [string, { autoStart?: boolean }]) => ({
-      name,
-      autoStart: s.autoStart !== false,
-      // In-process servers are always "connected" with their injected tool count.
-      connected: INTERNAL_BUILTIN_SERVERS.has(name)
-        ? true
-        : connected.has(name),
-      toolCount: INTERNAL_BUILTIN_SERVERS.has(name)
-        ? BUILTIN_TOOL_COUNTS[name] ?? 0
-        : connected.get(name)?.toolCount ?? 0,
-      error: errors.get(name)?.error,
-      internal: INTERNAL_BUILTIN_SERVERS.has(name),
-    }));
+    const configured = new Set(Object.keys(cfg.mcpServers ?? {}));
+    const internal = Array.from(INTERNAL_BUILTIN_SERVERS)
+      .filter((n) => n.endsWith('-internal'))
+      .map((n) => n.slice(0, -'-internal'.length));
+    const listed = [...configured, ...internal.filter((n) => !configured.has(n))];
+    return listed.map((name) => {
+      const s = (cfg.mcpServers ?? {})[name] as { autoStart?: boolean } | undefined;
+      const isInternal = INTERNAL_BUILTIN_SERVERS.has(name);
+      return {
+        name,
+        autoStart: s ? s.autoStart !== false : false,
+        // In-process servers are always "connected" with their injected tool count.
+        connected: isInternal ? true : connected.has(name),
+        toolCount: isInternal ? BUILTIN_TOOL_COUNTS[name] ?? 0 : connected.get(name)?.toolCount ?? 0,
+        error: errors.get(name)?.error,
+        internal: isInternal,
+      };
+    });
   }
 
   async setServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {

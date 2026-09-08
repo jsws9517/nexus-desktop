@@ -2122,62 +2122,77 @@ function setMcpPopover(open: boolean): void {
 async function loadMcpServersList(): Promise<void> {
   try {
     const servers = await window.nexusDesktop.getMcpServers();
-    const prefs = currentSessionId ? sessionPrefs(currentSessionId) : {};
     if (servers.length === 0) {
       mcpServersEl.innerHTML = `<div class="mcp-empty">${t('noMcpServers')}</div>`;
       return;
     }
     mcpServersEl.innerHTML = '';
-    for (const s of servers) {
-      const internal = s.internal === true;
-      const row = document.createElement('label');
-      row.className = 'mcp-server-row' + (internal ? ' mcp-server-row--internal' : '');
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = internal ? true : prefs[s.name] ?? s.autoStart;
-      // Built-in servers are always active and cannot be disabled; render them
-      // as a permanently-checked, non-interactive row.
-      cb.disabled = internal;
-      cb.addEventListener('change', async () => {
-        prefs[s.name] = cb.checked;
-        saveMcpPrefs();
-        const res = await window.nexusDesktop.setMcpServer(s.name, cb.checked);
-        if (res && res.ok === false) {
-          addSystem(`⚠️ MCP "${s.name}": ${res.error}`);
-          cb.checked = !cb.checked;
-        }
-        await refreshMcpStatus();
-        await loadMcpServersList();
-        void refreshSidebarSession();
-      });
-      const name = document.createElement('span');
-      name.className = 'mcp-server-name';
-      name.textContent = s.name;
-      if (internal) {
-        const badge = document.createElement('span');
-        badge.className = 'mcp-badge';
-        badge.textContent = t('builtinMcp');
-        name.appendChild(badge);
-      }
-      const meta = document.createElement('span');
-      meta.className = 'mcp-server-meta';
-      if (s.connected) {
-        meta.textContent = t('toolsCount', { n: s.toolCount });
-      } else if (s.error) {
-        meta.textContent = t('mcpFailed');
-        meta.style.color = 'var(--danger)';
-        meta.title = `${s.error}${s.stderr ? `\n${s.stderr}` : ''}`;
-      } else {
-        meta.textContent = t('mcpNotConnected');
-      }
-      row.appendChild(cb);
-      row.appendChild(name);
-      row.appendChild(meta);
-      mcpServersEl.appendChild(row);
-    }
+    // Built-in (in-process) servers are grouped into their own area so they
+    // read as one coherent block instead of being scattered among external ones.
+    const builtin = servers.filter((s) => s.internal === true).sort((a, b) => a.name.localeCompare(b.name));
+    const external = servers.filter((s) => s.internal !== true).sort((a, b) => a.name.localeCompare(b.name));
+    const renderSection = (label: string, list: typeof servers, maybeBg = false) => {
+      if (list.length === 0) return;
+      const head = document.createElement('div');
+      head.className = 'mcp-section' + (maybeBg ? ' mcp-section--shaded' : '');
+      head.textContent = label;
+      mcpServersEl.appendChild(head);
+      for (const s of list) mcpServersEl.appendChild(renderMcpServerRow(s));
+    };
+    renderSection(t('builtinMcp'), builtin);
+    renderSection(t('mcpSection'), external, true);
   } catch {
     mcpServersEl.innerHTML = `<div class="mcp-loading">${t('mcpLoadFailed')}</div>`;
   }
+}
+
+function renderMcpServerRow(s: NonNullable<Awaited<ReturnType<typeof window.nexusDesktop.getMcpServers>>>[number]): HTMLElement {
+  const internal = s.internal === true;
+  const prefs = currentSessionId ? sessionPrefs(currentSessionId) : {};
+  const row = document.createElement('label');
+  row.className = 'mcp-server-row' + (internal ? ' mcp-server-row--internal' : '');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = internal ? true : prefs[s.name] ?? s.autoStart;
+  // Built-in servers are always active and cannot be disabled; render them
+  // as a permanently-checked, non-interactive row.
+  cb.disabled = internal;
+  cb.addEventListener('change', async () => {
+    prefs[s.name] = cb.checked;
+    saveMcpPrefs();
+    const res = await window.nexusDesktop.setMcpServer(s.name, cb.checked);
+    if (res && res.ok === false) {
+      addSystem(`⚠️ MCP "${s.name}": ${res.error}`);
+      cb.checked = !cb.checked;
+    }
+    await refreshMcpStatus();
+    await loadMcpServersList();
+    void refreshSidebarSession();
+  });
+  const name = document.createElement('span');
+  name.className = 'mcp-server-name';
+  name.textContent = s.name;
+  if (internal) {
+    const badge = document.createElement('span');
+    badge.className = 'mcp-badge';
+    badge.textContent = t('builtinMcp');
+    name.appendChild(badge);
+  }
+  const meta = document.createElement('span');
+  meta.className = 'mcp-server-meta';
+  if (s.connected) {
+    meta.textContent = t('toolsCount', { n: s.toolCount });
+  } else if (s.error) {
+    meta.textContent = t('mcpFailed');
+    meta.style.color = 'var(--danger)';
+    meta.title = `${s.error}${s.stderr ? `\n${s.stderr}` : ''}`;
+  } else {
+    meta.textContent = t('mcpNotConnected');
+  }
+  row.appendChild(cb);
+  row.appendChild(name);
+  row.appendChild(meta);
+  return row;
 }
 mcpServersBtn.addEventListener('click', (e) => {
   e.stopPropagation();
