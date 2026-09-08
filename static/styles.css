@@ -873,6 +873,21 @@ body {
 }
 .mcp-server-row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .mcp-server-row input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+.mcp-server-row--internal { opacity: 0.85; cursor: default; }
+.mcp-server-row--internal:hover { background: transparent; }
+.mcp-server-row--internal input { cursor: default; }
+.mcp-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 10px;
+  line-height: 1.4;
+  border-radius: 6px;
+  vertical-align: middle;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 15%, transparent);
+  white-space: nowrap;
+}
 .mcp-server-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-server-meta { font-size: 11px; color: var(--text-dim); }
 .mcp-empty { font-size: 12px; color: var(--text-dim); padding: 6px; }

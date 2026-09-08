@@ -54,6 +54,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   mcpLoadFailed: { 'zh-CN': '加载失败', en: 'Failed to load' },
   mcpFailed: { 'zh-CN': '失败', en: 'Failed' },
   mcpNotConnected: { 'zh-CN': '未连接', en: 'Not connected' },
+  builtinMcp: { 'zh-CN': '内置', en: 'built-in' },
   sessionCreated: { 'zh-CN': '新会话已创建。发送消息开始对话。', en: 'New session created. Send a message to start.' },
   sessionRestored: { 'zh-CN': '已恢复会话', en: 'Session restored' },
   noProviderConfigured: { 'zh-CN': '未配置 Provider。点击右上角 ⚙️ 设置填写 API Key。', en: 'No provider configured. Click ⚙️ Settings to add an API key.' },

@@ -11,6 +11,7 @@
 
 import { logger } from '../shared/logger.js';
 import { INTERNAL_MEMORY_TOOLS, MEMORY_TOOL_DEFS, callMemoryTool } from './memory-kg.js';
+import { GIT_INTERNAL_TOOLS, GIT_TOOL_DEFS, callGitTool } from './git-internal.js';
 
 // MCP server names fully superseded by in-process implementations. The hub
 // must never spawn these (no external process, no npx), and the settings UI
@@ -23,6 +24,8 @@ const INTERNAL_BUILTIN_SERVERS = new Set([
   'sequential-thinking',
   'sequential-thinking-internal',
   'sqlite',
+  'git',
+  'git-internal',
 ]);
 
 const BUILTIN_TOOL_COUNTS: Record<string, number> = {
@@ -30,6 +33,7 @@ const BUILTIN_TOOL_COUNTS: Record<string, number> = {
   filesystem: 3, // read_media_file / list_directory_with_sizes / list_allowed_directories
   'sequential-thinking': 1, // sequentialthinking
   sqlite: 10, // query .. transaction
+  git: GIT_TOOL_DEFS.length, // the 36 git_* tools
 };
 
 // nexus-coder exports ClientManager (src/mcp/client-manager.js) and
@@ -54,6 +58,8 @@ export interface McpServerInfo {
   connected: boolean;
   toolCount: number;
   error?: string;
+  /** True for in-process built-in servers (always active, cannot be disabled). */
+  internal: boolean;
 }
 
 class McpHubImpl {
@@ -113,14 +119,17 @@ class McpHubImpl {
     const remote = this.manager.getAllTools()
       .filter((t: McpToolDef) => !!t.server)
       .map((t: McpToolDef) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, server: t.server }));
-    const injected = MEMORY_TOOL_DEFS.map((t) => ({ ...t }));
-    const shadowed = new Set(MEMORY_TOOL_DEFS.map((t) => t.name));
+    const injected = [...MEMORY_TOOL_DEFS, ...GIT_TOOL_DEFS].map((t) => ({ ...t }));
+    const shadowed = new Set(injected.map((t) => t.name));
     return [...remote.filter((t) => !shadowed.has(t.name)), ...injected];
   }
 
   async callTool(name: string, args: unknown): Promise<{ content: string; isError?: boolean }> {
     if (INTERNAL_MEMORY_TOOLS.has(name)) {
       return callMemoryTool(name, (args ?? {}) as Record<string, unknown>);
+    }
+    if (GIT_INTERNAL_TOOLS.has(name)) {
+      return callGitTool(name, args);
     }
     await this.ensureConnected();
     const res = await this.manager.callTool(name, (args ?? {}) as Record<string, unknown>);
@@ -156,6 +165,7 @@ class McpHubImpl {
         ? BUILTIN_TOOL_COUNTS[name] ?? 0
         : connected.get(name)?.toolCount ?? 0,
       error: errors.get(name)?.error,
+      internal: INTERNAL_BUILTIN_SERVERS.has(name),
     }));
   }
 

@@ -181,7 +181,7 @@ declare global {
       respondPermission(id: string, answer: string, sessionId?: string): Promise<unknown>;
       setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       getMcpStatus(): Promise<{ enabled: boolean; servers: McpServerStatus[] }>;
-      getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string }>>;
+      getMcpServers(): Promise<Array<{ name: string; autoStart: boolean; connected: boolean; toolCount: number; error?: string; stderr?: string; internal?: boolean }>>;
       setMcpServer(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       getDeferMcp(): Promise<boolean>;
       setDeferMcp(enabled: boolean): Promise<{ ok: boolean }>;
@@ -2129,11 +2129,15 @@ async function loadMcpServersList(): Promise<void> {
     }
     mcpServersEl.innerHTML = '';
     for (const s of servers) {
+      const internal = s.internal === true;
       const row = document.createElement('label');
-      row.className = 'mcp-server-row';
+      row.className = 'mcp-server-row' + (internal ? ' mcp-server-row--internal' : '');
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = prefs[s.name] ?? s.autoStart;
+      cb.checked = internal ? true : prefs[s.name] ?? s.autoStart;
+      // Built-in servers are always active and cannot be disabled; render them
+      // as a permanently-checked, non-interactive row.
+      cb.disabled = internal;
       cb.addEventListener('change', async () => {
         prefs[s.name] = cb.checked;
         saveMcpPrefs();
@@ -2149,6 +2153,12 @@ async function loadMcpServersList(): Promise<void> {
       const name = document.createElement('span');
       name.className = 'mcp-server-name';
       name.textContent = s.name;
+      if (internal) {
+        const badge = document.createElement('span');
+        badge.className = 'mcp-badge';
+        badge.textContent = t('builtinMcp');
+        name.appendChild(badge);
+      }
       const meta = document.createElement('span');
       meta.className = 'mcp-server-meta';
       if (s.connected) {

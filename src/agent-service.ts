@@ -17,6 +17,7 @@ import { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './fs-interna
 import { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } from './sequential-think.js';
 import { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool } from './sqlite-tools.js';
 import { MEMORY_WRITE_TOOLS } from './main/memory-kg.js';
+import { GIT_WRITE_TOOLS } from './main/git-internal.js';
 import { logger } from './shared/logger.js';
 
 // All in-process (non-MCP) tool names served by the worker — used to shadow any
@@ -289,6 +290,17 @@ export class AgentService {
         const mode = this.getActiveMode();
         if (mode !== 'auto' && mode !== 'unattended') {
           const answer = await this.askPermission(`Write to knowledge-graph memory via "${name}"`);
+          const norm = answer.trim().toLowerCase();
+          if (norm !== 'y' && norm !== 'a') {
+            return { content: 'Write operation denied.', isError: true };
+          }
+        }
+      }
+      // Git write tools (commit/stage/reset/push/...) get the same approval gate.
+      if (GIT_WRITE_TOOLS.has(name)) {
+        const mode = this.getActiveMode();
+        if (mode !== 'auto' && mode !== 'unattended') {
+          const answer = await this.askPermission(`Run git operation "${name}"`);
           const norm = answer.trim().toLowerCase();
           if (norm !== 'y' && norm !== 'a') {
             return { content: 'Write operation denied.', isError: true };

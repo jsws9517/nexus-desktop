@@ -44,9 +44,9 @@ Additional bridge: knowledge-graph writes (`remember`/`user_info` …) go throug
 
 ### 例外说明（桌面特有） / Desktop-specific exceptions
 
-- 内置 sqlite / memory **写**工具：`prompt` 下弹卡（与 core 行为一致）；`auto` 与 `unattended` 直通（`src/agent-service.ts:276,289`）。
+- 内置 sqlite / memory / git **写**工具：`prompt` 下弹卡（与 core 行为一致）；`auto` 与 `unattended` 直通（`src/agent-service.ts:276,289,299`）。git 写集含 commit/stage/reset/push/checkout/merge/rebase 等 26 个变更类工具。
 
-  Builtin sqlite / memory **write** tools: card in `prompt`; pass-through in `auto` and `unattended` (`src/agent-service.ts:276,289`).
+  Builtin sqlite / memory / git **write** tools: card in `prompt`; pass-through in `auto` and `unattended` (`src/agent-service.ts:276,289,299`). The git write set covers 26 mutating tools (commit/stage/reset/push/checkout/merge/rebase …).
 
 - 知识图谱写桥（`audit.setAskUser`）：`auto` / `unattended` 自动批准（返回 `'y'`），`prompt` 弹卡（`src/agent-service.ts:376-387`）。
 
@@ -95,6 +95,7 @@ When an MCP tool name matches a high-risk prefix (`delete/remove/drop/truncate/e
 | 工具授权桥 `onPermissionRequest` | `src/agent-service.ts:400` |
 | 授权卡 `askPermission()` | `src/agent-service.ts:1523` |
 | 知识图谱写桥 `audit.setAskUser` | `src/agent-service.ts:376` |
-| sqlite 写批准门 | `src/agent-service.ts:276-280` |
-| memory 写批准门 | `src/agent-service.ts:289-295` |
+| sqlite 写批准门 | `src/agent-service.ts:273-280` |
+| memory 写批准门 | `src/agent-service.ts:289-296` |
+| git 写批准门 | `src/agent-service.ts:300-308` |
 | 授权答案处理（y/a/n） | `src/agent-service.ts:415-421` |
