@@ -29,6 +29,10 @@ import { logger } from '../shared/logger.js';
 import type { AgentEvent, PermissionRequest, ProviderInfo } from './types.js';
 import { extractTopic } from './topic.js';
 import { redactConfig } from './config-read.js';
+let sessionDbPromise: Promise<typeof import('../session-db.js')> | null = null;
+function loadSessionDb(): Promise<typeof import('../session-db.js')> {
+  return (sessionDbPromise ??= import('../session-db.js'));
+}
 
 
 /** A tool definition surfaced by the MCP hub (MCP tools carry a `server` tag). */
@@ -741,7 +745,7 @@ export class AgentService {
     if (this.agent.getCurrentSessionId() !== sessionId) {
       throw new Error('Session mismatch: target session is not the active one');
     }
-    const { getMessageRows, deleteMessagesFrom } = await import('../session-db.js');
+    const { getMessageRows, deleteMessagesFrom } = await loadSessionDb();
     const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerPrompt(r));
     const target = userRows[userIndex];
     if (!target) throw new Error(`Regenerate: no user message at index ${userIndex}`);
@@ -767,7 +771,7 @@ export class AgentService {
     if (this.agent.getCurrentSessionId() !== sessionId) {
       throw new Error('Session mismatch: target session is not the active one');
     }
-    const { getMessageRows, deleteMessagesFrom } = await import('../session-db.js');
+    const { getMessageRows, deleteMessagesFrom } = await loadSessionDb();
     const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerPrompt(r));
     const target = userRows[userIndex];
     if (!target) throw new Error(`Withdraw: no user message at index ${userIndex}`);
@@ -920,7 +924,7 @@ export class AgentService {
     }
     if (options?.excludeEmpty) {
       // Skip empty-context sessions (CLI scratch / AI-intermediary noise).
-      const { getNonEmptySessionIds } = await import('../session-db.js');
+      const { getNonEmptySessionIds } = await loadSessionDb();
       const nonEmpty = getNonEmptySessionIds();
       items = items.filter((s) => nonEmpty.has(String(s.id)));
     }
@@ -928,7 +932,7 @@ export class AgentService {
       // Session-name/id search plus task-graph matching: a query that is (or
       // contains) a graphId or project name from task_graphs resolves to the
       // sessions that own those graphs.
-      const { getSessionIdsByTaskGraph } = await import('../session-db.js');
+      const { getSessionIdsByTaskGraph } = await loadSessionDb();
       const byTaskGraph = getSessionIdsByTaskGraph(q);
       items = items.filter((s) => {
         const name = String(s.name ?? '').toLowerCase();
@@ -959,7 +963,7 @@ export class AgentService {
     if (!this.agent) throw new Error('Agent not initialized');
     // SQL-windowed reads (src/session-db.ts) so a long session never loads
     // every row into memory just to paginate.
-    const { getMessageWindow, getMessageLast } = await import('../session-db.js');
+    const { getMessageWindow, getMessageLast } = await loadSessionDb();
     if (options?.last !== undefined) {
       const w = getMessageLast(sessionId, options.last);
       return { items: w.items, total: w.total, userBefore: w.userBefore };
@@ -1344,7 +1348,7 @@ export class AgentService {
    *  heuristic when the active provider has no countTokens. */
   async getSessionStats(sessionId: string): Promise<{ tokenEstimate: number; messageCount: number }> {
     if (!this.agent?.session) return { tokenEstimate: 0, messageCount: 0 };
-    const { estimateSessionTokensCached } = await import('../session-db.js');
+    const { estimateSessionTokensCached } = await loadSessionDb();
     const provider = this.agent.provider;
     const cacheKey = provider ? `${provider.name}/${provider.model}` : 'fallback';
     return estimateSessionTokensCached(
