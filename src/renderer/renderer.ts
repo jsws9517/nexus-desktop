@@ -661,11 +661,14 @@ function handleEvent(event: AgentEvent): void {
       break;
     case 'cwdChanged':
       // Session's working directory changed (e.g. /setdir or /chcwd): refresh
-      // the status label so the UI reflects where the agent now operates.
+      // the status label + sidebar so the UI reflects where the agent operates.
+      // projectDir persistence happens in the service (/setdir only); /chcwd is
+      // transient and never touches metadata.
       if (event.sessionId === currentSessionId) {
         status = { ...status, cwd: event.cwd };
         cwdLabel.textContent = event.cwd;
         cwdLabel.title = event.cwd;
+        void refreshSidebarSession();
       }
       break;
     case 'text':
@@ -1650,9 +1653,10 @@ async function openNewTab(): Promise<void> {
   await openTab(sid);
 }
 
-/** Resolve the project directory a tab should run in: the session's recorded
- *  projectDir first, then the currently-open folder, then the default project dir.
- *  Sessions with their own projectDir win so a multi-project resume stays put. */
+/** Resolve the project directory a tab's worker process should run in: ONLY the
+ *  session's recorded projectDir is authoritative. A session WITHOUT a project
+ *  binding gets the default project dir — it must never silently inherit another
+ *  session's project folder (before, status.cwd leaked the parent project in). */
 async function resolveProjectDir(sessionId?: string): Promise<string | undefined> {
   let cwd: string | undefined;
   if (sessionId) {
@@ -1662,7 +1666,6 @@ async function resolveProjectDir(sessionId?: string): Promise<string | undefined
       if (projectDir) cwd = projectDir;
     } catch {}
   }
-  if (!cwd && status.cwd) cwd = status.cwd;
   if (!cwd) {
     try {
       const def = (await window.nexusDesktop.getDefaultProjectDir()) as { dir?: string };
@@ -1684,20 +1687,11 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
     // Bind the session's recorded project directory to its worker process so a
     // tab's chat runs in the session's project dir. For sessions without a
     // saved project dir (e.g. a brand-new tab), inherit the currently-open
-    // folder so a fresh conversation still runs in the same project as the UI
-    // shows; as a last resort fall back to the default project dir (~/.nexus/tasks).
+    // folder as the worker cwd so the agent can run; but do NOT persist it as
+    // projectDir — a new session stays projectDir-less until the user
+    // explicitly sets one via Open Project or /setdir.
     let cwd = await resolveProjectDir(sessionId);
     res = await window.nexusDesktop.openSession(sessionId, cwd);
-    // Persist the inherited project dir so a later resume of this session runs
-    // in the same project even if the UI's default folder has since changed.
-    if (cwd) {
-      try {
-        const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
-        if (!meta.projectDir) {
-          await window.nexusDesktop.setSessionMetadata(sessionId, { projectDir: cwd });
-        }
-      } catch {}
-    }
   } catch (err) {
     addSystem(`${t('tabsOpenFailed')}${errText(err)}`);
     return;
@@ -1714,22 +1708,16 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
   await switchTab(sessionId);
 }
 
-/** Refresh the "打开项目" cwd label next to the open-folder button, prioritizing
- *  the active session's persisted projectDir (canonical per-session project field),
- *  falling back to the live worker cwd, then to a blank placeholder. */
+/** Refresh the "打开项目" cwd label next to the open-folder button. It reflects
+ *  ONLY the active session's persisted projectDir (canonical per-session project
+ *  field); a session without a binding shows "无项目" instead of inheriting the
+ *  live worker cwd / default dir, so a brand-new session is visibly project-less. */
 async function syncCwdLabel(): Promise<void> {
   let dir = '';
   if (currentSessionId) {
     try {
       const meta = (await window.nexusDesktop.getSessionMetadata(currentSessionId)) as Record<string, unknown>;
       dir = (meta.projectDir ?? '') as string;
-    } catch {}
-  }
-  if (!dir && status.cwd) dir = status.cwd;
-  if (!dir) {
-    try {
-      const def = (await window.nexusDesktop.getDefaultProjectDir()) as { dir?: string };
-      if (def && def.dir) dir = def.dir;
     } catch {}
   }
   cwdLabel.textContent = dir || t('noProject');
@@ -3255,15 +3243,15 @@ $('#btn-open-folder').addEventListener('click', async () => {
   // Apply to the active session's worker (not just the global worker) so the
   // agent's cwd immediately matches the opened project dir for the next turn.
   await window.nexusDesktop.setCwd(res.path, { sessionId: currentSessionId || undefined });
-  // Persist to session metadata so future resume switches cwd — but ONLY for
-  // sessions that have no project binding yet. A session that already points at
-  // its own project (e.g. a restored history session) keeps that binding; a
-  // transient folder switch here must not clobber the session's project dir.
+  // Persist the user-selected folder as the session's projectDir — but ONLY for
+  // sessions that have no project binding yet. Once projectDir is set, the only
+  // way to rebind is the explicit /setdir <path> command; a folder pick here
+  // still switches the worker cwd now, but must not silently clobber the
+  // session's canonical project binding.
   if (currentSessionId) {
     try {
       const meta = (await window.nexusDesktop.getSessionMetadata(currentSessionId)) as Record<string, unknown>;
-      const hasBinding = !!meta.projectDir;
-      if (!hasBinding) {
+      if (!meta.projectDir) {
         await window.nexusDesktop.setSessionMetadata(currentSessionId, { projectDir: res.path });
       }
     } catch {}
@@ -3272,6 +3260,9 @@ $('#btn-open-folder').addEventListener('click', async () => {
   cwdLabel.textContent = status.cwd;
   cwdLabel.title = status.cwd;
   addSystem(t('projectDir', { cwd: status.cwd }));
+  // Force the right-side panel (project row rsideCwd) to refresh immediately;
+  // without this the newly-bound projectDir only shows after switching workers.
+  void refreshSidebarSession();
   void syncCwdLabel();
 });
 

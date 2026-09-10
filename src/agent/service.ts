@@ -582,6 +582,12 @@ export class AgentService {
         // /setdir — explicit, permanent counter to the transient folder-button
         // switch (which never rebinds a session that already owns a project).
         this.agent.setProjectLocation?.(target, { projectDir: target });
+        // Persist projectDir into session metadata so the desktop renderer's
+        // sidebar project row and a later resume / resolveProjectDir can read it
+        // (setProjectLocation only records it in the agent's own project state).
+        try {
+          this.setSessionMetadata(sid, { projectDir: target });
+        } catch {}
         this.emitText(`Project directory set to ${target} (persisted)\n`);
       } else {
         this.emitText(`Working directory switched to ${target} (temporary)\n`);
@@ -861,7 +867,20 @@ export class AgentService {
     if (prevSessionId && !sessionId) {
       this.agent.joinSession(prevSessionId);
     }
-    return this.agent.startSession(name, sessionId, metadata);
+    const newSessionId = await this.agent.startSession(name, sessionId, metadata);
+    // The core ALWAYS stamps projectDir: process.cwd() onto a freshly created
+    // session (agent.startSession), which on Desktop leaks the parent worker's
+    // project directory into every new session. A brand-new session must stay
+    // projectDir-less until the user explicitly binds one via Open Project or
+    // /setdir. We normalize it here: store an empty-string sentinel (the key
+    // then EXISTS, so the core's resume-time ensureMetadata sees it and never
+    // auto-fills a real path). An explicitly passed metadata.projectDir wins.
+    if (!sessionId && newSessionId && !(metadata && typeof metadata.projectDir === 'string' && metadata.projectDir)) {
+      try {
+        this.setSessionMetadata(newSessionId, { projectDir: '' });
+      } catch {}
+    }
+    return newSessionId;
   }
 
   /**
