@@ -21,6 +21,7 @@ type WorkerRequest =
   | { id: number; method: 'getSlashLogPath'; params: { sessionId: string } }
   | { id: number; method: 'deleteSession'; params: { id: string } }
   | { id: number; method: 'renameSession'; params: { id: string; name: string } }
+  | { id: number; method: 'renameProject'; params: { newName: string } }
   | { id: number; method: 'getConfig' }
   | { id: number; method: 'getProviders' }
   | { id: number; method: 'getStatus' }
@@ -186,6 +187,9 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   },
   renameSession: async (req: WorkerRequest & { method: 'renameSession' }) => {
     await service.renameSession(req.params.id, req.params.name);
+  },
+  renameProject: async (req: WorkerRequest & { method: 'renameProject' }) => {
+    await service.renameProject(req.params.newName);
   },
   getConfig: () => service.getConfig(),
   getProviders: () => service.getProviders(),

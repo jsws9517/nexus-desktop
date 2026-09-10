@@ -443,3 +443,18 @@ export function getNonEmptySessionIds(): Set<string> {
     return new Set<string>();
   }
 }
+
+/**
+ * Update the project_name column in task_graphs for a given graph id.
+ * Used by /rename-project to sync the DB after renaming directories.
+ */
+export function updateTaskGraphProjectName(graphId: string, newName: string): void {
+  const db = openDb(false);
+  if (!db) return;
+  try {
+    db.prepare('UPDATE task_graphs SET project_name = ?, updated_at = ? WHERE id = ?')
+      .run(newName, Date.now(), graphId);
+  } catch {
+    // table may not exist yet on fresh install
+  }
+}

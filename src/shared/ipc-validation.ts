@@ -58,6 +58,7 @@ export const WORKER_METHODS = {
   },
   deleteSession: { fields: { id: S.str() } },
   renameSession: { fields: { id: S.str(), name: S.str(500) } },
+  renameProject: { fields: { newName: S.str(200) } },
   getConfig: { fields: {} },
   getProviders: { fields: {} },
   getStatus: { fields: {} },

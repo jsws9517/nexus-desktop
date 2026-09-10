@@ -27,6 +27,7 @@ export const CHANNELS = {
   getSlashLogPath: 'nexus:getSlashLogPath',
   deleteSession: 'nexus:deleteSession',
   renameSession: 'nexus:renameSession',
+  renameProject: 'nexus:renameProject',
   getConfig: 'nexus:getConfig',
   getProviders: 'nexus:getProviders',
   getStatus: 'nexus:getStatus',

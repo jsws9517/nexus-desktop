@@ -123,6 +123,7 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle(CHANNELS.getSlashLogPath, call('getSlashLogPath'));
   ipcMain.handle(CHANNELS.deleteSession, call('deleteSession'));
   ipcMain.handle(CHANNELS.renameSession, call('renameSession'));
+  ipcMain.handle(CHANNELS.renameProject, call('renameProject'));
   ipcMain.handle(CHANNELS.getConfig, call('getConfig'));
   ipcMain.handle(CHANNELS.getProviders, call('getProviders'));
   ipcMain.handle(CHANNELS.getStatus, callForSession('getStatus'));

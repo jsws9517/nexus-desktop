@@ -12,7 +12,7 @@
 
 import { isWorkerPrompt, KEY_MASK } from '../shared/constants.js';
 import type { StoredRow } from '../session-db.js';
-import { getLastUserMessageId } from '../session-db.js';
+import { getLastUserMessageId, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
 import type { SlashLogEntry } from '../slash-log.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
@@ -20,7 +20,7 @@ import { createProvider } from 'nexus-coder/dist/src/llm/provider.js';
 import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.js';
 import type { Session } from 'nexus-coder/dist/src/session/types.js';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { INTERNAL_TOOLS, ALL_TOOL_DEFS, callBuiltinTool } from '../tools/index.js';
 import { MEMORY_WRITE_TOOLS } from '../main/memory-kg.js';
@@ -588,8 +588,9 @@ export class AgentService {
       }
       text += '\n' +
         'Desktop (Nexus Desktop) only:\n' +
-        '  /chcwd [path]    Temporarily switch runtime working directory (not persisted)\n' +
-        '  /setdir [path]   (desktop) also switches the worker now (core records only projectDir)\n';
+        '  /chcwd [path]        Temporarily switch runtime working directory (not persisted)\n' +
+        '  /setdir [path]       (desktop) also switches the worker now (core records only projectDir)\n' +
+        '  /rename-project <name>  Rename project across dirs, DB, and metadata (lowercase+hyphens)\n';
       this.emitText(text + '\n');
       return true;
     }
@@ -616,6 +617,15 @@ export class AgentService {
         }
       } else {
         this.emitText('Usage: /rename <new name>\n');
+      }
+      return true;
+    }
+    if (cmd === 'rename-project') {
+      const newName = args.join(' ').trim();
+      if (newName) {
+        await this.renameProject(newName);
+      } else {
+        this.emitText('Usage: /rename-project <new-name>\n');
       }
       return true;
     }
@@ -1121,6 +1131,160 @@ export class AgentService {
   async renameSession(id: string, name: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     this.agent.session.rename(id, name);
+  }
+
+  /**
+   * Rename project: copy dirs to new name, update references, delete old dirs.
+   *
+   * Order matters on Windows:
+   * 1. cwd away from old dir (releases file locks)
+   * 2. Copy old dirs → new name
+   * 3. Update references in new dirs
+   * 4. Delete old dirs
+   * 5. Update DB + session metadata
+   * 6. cwd into new dir
+   */
+  async renameProject(newName: string): Promise<void> {
+    if (!this.agent) throw new Error('Agent not initialized');
+
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(newName)) {
+      this.emitText('Invalid project name. Use lowercase letters, digits, and hyphens only (e.g. "my-project").\n');
+      return;
+    }
+
+    const plan = this.agent.currentPlan;
+    if (!plan || !plan.projectName) {
+      this.emitText('No active project to rename. Use /plan first.\n');
+      return;
+    }
+
+    const oldName = plan.projectName;
+    if (oldName === newName) {
+      this.emitText(`Project is already named "${oldName}".\n`);
+      return;
+    }
+
+    const nexusDir = join(homedir(), '.nexus', 'tasks');
+    const outputsDir = join(nexusDir, 'outputs');
+    const projectDir = join(nexusDir, 'project');
+    const oldOutputsPath = join(outputsDir, oldName);
+    const newOutputsPath = join(outputsDir, newName);
+    const oldProjectPath = join(projectDir, oldName);
+    const newProjectPath = join(projectDir, newName);
+
+    const errors: string[] = [];
+
+    // 1. cwd away from old dir to release file locks
+    try {
+      await this.setCwd(homedir());
+    } catch {}
+
+    // 2. Copy outputs dir → new name
+    if (existsSync(oldOutputsPath)) {
+      try {
+        const { cpSync } = await import('node:fs');
+        cpSync(oldOutputsPath, newOutputsPath, { recursive: true });
+      } catch (err) {
+        errors.push(`copy outputs: ${(err as Error).message}`);
+      }
+    }
+
+    // 3. Copy project dir → new name
+    if (existsSync(oldProjectPath)) {
+      try {
+        const { cpSync } = await import('node:fs');
+        cpSync(oldProjectPath, newProjectPath, { recursive: true });
+      } catch (err) {
+        errors.push(`copy project: ${(err as Error).message}`);
+      }
+    }
+
+    // 4. Update graph.json in NEW project dir
+    try {
+      const graphPath = join(newProjectPath, 'graph.json');
+      if (existsSync(graphPath)) {
+        const graphContent = readFileSync(graphPath, 'utf-8');
+        const graph = JSON.parse(graphContent);
+        graph.projectName = newName;
+        writeFileSync(graphPath, JSON.stringify(graph, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      errors.push(`graph.json: ${(err as Error).message}`);
+    }
+
+    // 5. Update REQUIREMENTS.md in NEW project dir
+    try {
+      const reqPath = join(newProjectPath, 'REQUIREMENTS.md');
+      if (existsSync(reqPath)) {
+        let content = readFileSync(reqPath, 'utf-8');
+        content = content.replace(
+          new RegExp(`\\*\\*Project\\*\\*:\\s*${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+          `**Project**: ${newName}`
+        );
+        writeFileSync(reqPath, content, 'utf-8');
+      }
+    } catch (err) {
+      errors.push(`REQUIREMENTS.md: ${(err as Error).message}`);
+    }
+
+    // 6. Update .task-complete.json in NEW outputs dir
+    try {
+      const tcPath = join(newOutputsPath, '.task-complete.json');
+      if (existsSync(tcPath)) {
+        const tcContent = readFileSync(tcPath, 'utf-8');
+        const tc = JSON.parse(tcContent);
+        tc.projectName = newName;
+        writeFileSync(tcPath, JSON.stringify(tc, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      errors.push(`.task-complete.json: ${(err as Error).message}`);
+    }
+
+    // 7. Delete old dirs
+    try {
+      const { rmSync } = await import('node:fs');
+      if (existsSync(oldOutputsPath)) rmSync(oldOutputsPath, { recursive: true, force: true });
+    } catch (err) {
+      errors.push(`delete old outputs: ${(err as Error).message}`);
+    }
+    try {
+      const { rmSync } = await import('node:fs');
+      if (existsSync(oldProjectPath)) rmSync(oldProjectPath, { recursive: true, force: true });
+    } catch (err) {
+      errors.push(`delete old project: ${(err as Error).message}`);
+    }
+
+    // 8. Update task_graphs.project_name in SQLite
+    try {
+      if (plan.id) {
+        updateTaskGraphProjectName(plan.id, newName);
+      }
+    } catch (err) {
+      errors.push(`task_graphs DB: ${(err as Error).message}`);
+    }
+
+    // 9. Update in-memory plan
+    plan.projectName = newName;
+    plan.updatedAt = Date.now();
+
+    // 10. Update session metadata + cwd into new dir
+    const sid = this.agent.getCurrentSessionId?.();
+    if (sid) {
+      try {
+        this.setSessionMetadata(sid, { projectDir: newOutputsPath });
+        await this.setCwd(newOutputsPath);
+        this.agent?.setProjectLocation?.(newOutputsPath, { projectDir: newOutputsPath });
+        this.onEvent?.({ type: 'cwdChanged', cwd: newOutputsPath, sessionId: sid });
+      } catch (err) {
+        errors.push(`session metadata: ${(err as Error).message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      this.emitText(`Project renamed to "${newName}" with some warnings:\n${errors.map((e) => `  - ${e}`).join('\n')}\n`);
+    } else {
+      this.emitText(`Project renamed: "${oldName}" → "${newName}"\n`);
+    }
   }
 
   async switchProvider(name: string): Promise<void> {
