@@ -239,6 +239,49 @@ export class AgentService {
     const { Agent } = await import('nexus-coder/dist/src/agent.js');
     this.agent = new Agent();
 
+    // Raise the session's bound projectDir to the TOP of the system prompt
+    // (message 0) before every LLM call. The core's own [Project Directory]
+    // block (agent.js chat()) is appended to the END of the message list via
+    // context.add(), where the model reads it too late to guide path focus —
+    // that is why the model drifts to cwd / ~/.nexus when analyzing architecture.
+    // prependToSystem() lands our block inside the first system message (the real
+    // prompt), the highest-priority position. We reuse the core's exact marker so
+    // its alreadyInjected guard (agent.js) skips re-adding the low-priority one.
+    this.agent.hooks = {
+      ...this.agent.hooks,
+      preLlmCall: async () => {
+        try {
+          const sid = this.agent?.getCurrentSessionId?.();
+          if (!sid) return;
+          const meta = this.getSessionMetadata(sid);
+          const projectDir =
+            typeof meta.projectDir === 'string' && meta.projectDir ? meta.projectDir : undefined;
+          if (!projectDir) return;
+          const ctx = this.agent!.context;
+          const first = ctx.getMessages()[0];
+          const firstContent = first?.role === 'system' && typeof first.content === 'string' ? first.content : '';
+          const marker = '[Project Directory]';
+          // Idempotent per system-prompt lifetime: resume rebuilds message 0 from
+          // the stored transcript (no injected system blocks), so it re-injects.
+          if (firstContent.includes(marker) && firstContent.includes(projectDir)) return;
+          // Drop the core's stale tail block the moment message 0 is still clean
+          // (only safe while OUR block is not yet the match target).
+          if (!firstContent.includes(marker)) {
+            ctx.replaceSystemByMarker(marker, null);
+          }
+          ctx.prependToSystem(
+            `\n\n${marker}\n${projectDir}\n` +
+              'The user\'s active project lives EXCLUSIVELY under this directory — it is the ' +
+              'FIRST-PRIORITY directory for all project analysis, reads and writes. Prefer ' +
+              'absolute paths under this directory over cwd and over ~/.nexus, even if a ' +
+              'same-named folder exists elsewhere.\n',
+          );
+        } catch {
+          // Prompt decoration must never break a turn.
+        }
+      },
+    };
+
     // Route ALL permission prompts to the UI — both the MCP/tool prompt and the
     // path authorization (read_text_file etc.) use this single bridge. The CLI
     // wires the same via setPermissionPrompter; without it the path prompter
@@ -875,9 +918,25 @@ export class AgentService {
     // /setdir. We normalize it here: store an empty-string sentinel (the key
     // then EXISTS, so the core's resume-time ensureMetadata sees it and never
     // auto-fills a real path). An explicitly passed metadata.projectDir wins.
-    if (!sessionId && newSessionId && !(metadata && typeof metadata.projectDir === 'string' && metadata.projectDir)) {
+    // Distinguish two create-new sources:
+    //   - Desktop /new (prevSessionId set): the derived session INHERITS the
+    //     parent session's metadata.projectDir so the new worker's cwd (resolved
+    //     from that same dir by the renderer) stays authoritative and a bound
+    //     project continues across the derived tab. An unbound parent -> ''.
+    //   - Brand-new empty session (no prevSessionId): '' so no project leaks in.
+    if (!sessionId && newSessionId) {
+      let inherited = '';
+      if (prevSessionId) {
+        try {
+          const pd = this.agent.session.get(prevSessionId)?.metadata?.projectDir;
+          inherited = typeof pd === 'string' && pd ? pd : '';
+        } catch {
+          inherited = '';
+        }
+      }
+      if (metadata && typeof metadata.projectDir === 'string') inherited = metadata.projectDir;
       try {
-        this.setSessionMetadata(newSessionId, { projectDir: '' });
+        this.setSessionMetadata(newSessionId, { projectDir: inherited });
       } catch {}
     }
     return newSessionId;
