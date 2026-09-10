@@ -42,6 +42,7 @@ export function mountChart(container: HTMLElement, artifactBody: unknown): Chart
     host.textContent = '';
     try {
       const res = await vegaEmbed(host, spec, {
+        mode: 'vega' as const,
         actions: false,
         width: 'container',
         theme: 'light',
