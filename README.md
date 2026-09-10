@@ -17,24 +17,62 @@ replaces the terminal UI layer.
   copy of the core's configuration Web UI.
 - Message queueing: messages sent while the agent is busy are shown immediately
   and auto-submitted one-by-one after the current turn completes.
+- Multi-tab sessions: every open tab runs in its own worker process, so
+  streaming one tab never blocks another and each tab keeps its own workspace
+  (`cwd`) and provider/model overrides.
+- Fast tab opening: a pre-warmed, session-unbound spare worker is kept ready when
+  system resources allow, so the common open-tab path skips a cold process
+  spawn + Agent construction (gated on the resource monitor + tab ceiling).
+- Clipboard image pasting: `Alt+V` (mirroring coder-core) attaches a clipboard
+  screenshot / image to the input; native image pastes are detected too.
 - Windows installer with a branded icon.
 
 ## Architecture
 
 ```
 renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utilityProcess──▶ worker (Node AgentService)
-   preload.ts                    index.ts / worker-host.ts                 agent-worker.ts + nexus-coder
+   preload (sandboxed)          index.ts / ipc/register.ts            agent-worker.ts + nexus-coder
+                                    │  ├─ global worker ........... shared sessions/config/providers/MCP surface
+                                    │  ├─ session worker per tab ... multi-tab parallelism (own process + cwd)
+                                    │  ├─ pre-warmed spare ......... session-unbound, binds on next tab open
+                                    └────── mcp-hub.ts ............. one OS process per MCP server, shared by all
 ```
 
-- The core **Agent** always runs in a separate Node child process — never inside
+- The core **Agent** always runs in a separate worker process — never inside
   Electron's main process — keeping native modules (`better-sqlite3`) on a stable
   ABI and isolating core crashes from the UI.
 - **Dev / npm-install** transport: worker is spawned as a system `node` child,
   JSON-RPC over stdio.
 - **Packaged exe** transport: worker is an Electron `utilityProcess` using
   `parentPort`, line-based JSON-RPC.
+- **Tab workers**: each open session tab owns its own `WorkerHost` process
+  (same `agent-worker.js`, bound to one concrete session via `startSession`).
+  Playing/streaming one tab never blocks another.
+- **Pre-warmed spare**: a session-unbound worker pre-created when the resource
+  monitor reports healthy and tabs are below the ceiling. It is never attached to
+  a session until a tab actually opens, so it can never be mistaken for an idle
+  process carrying an in-flight turn. Taken atomically by `open()`/`openNew()`;
+  refilled on tab close.
+- **MCP hub**: all MCP server connections/spawning are owned by a single
+  main-process `mcp-hub`; every worker proxies tool calls through it (one OS
+  process per server — no per-tab shadow processes). Built-in tools
+  (filesystem / sqlite / sequential-thinking) run in-process via a unified
+  registry (`src/tools/`).
 - The app shares `~/.nexus` (sessions DB + session config) with the CLI; it does
   **not** depend on the CLI binary.
+
+## Source layout
+
+```
+src/
+  main/        Electron bootstrap (index.ts), WorkerHost, per-tab SessionWorkers,
+               MCP hub, desktop state store (src/main/desktop-state.ts)
+  ipc/         channel constants (channels.ts) + registerIpc handlers (register.ts)
+  agent/       AgentService + shared bridge types (facade re-export: src/agent-service.ts)
+  tools/       built-in MCP tool registry (filesystem / sqlite / sequential-thinking)
+  renderer/    renderer UI, i18n, markdown streaming
+  shared/      IPC validation spec + runtime constants
+```
 
 ## Dependencies
 
@@ -68,6 +106,7 @@ npm start            # build + launch in dev mode
 | `npm run build`     | compile TS, copy static assets                        |
 | `npm start`         | build + run Electron in dev                          |
 | `npm run typecheck` | type-check                                           |
+| `npm run test:unit` | headless unit suite (`node --test`, incl. IPC + tools) |
 | `npm run test:smoke`| headless RPC smoke test (no GUI, no LLM)             |
 | `npm run test:chat` | headless end-to-end chat through the worker          |
 | `npm run dist:win`  | build the Windows `.exe` installer                 |
