@@ -108,7 +108,7 @@ await req('deleteSession', { id: sid.data });
 const fsMod = await import('node:fs/promises');
 const osMod = await import('node:os');
 const pathMod = await import('node:path');
-const { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } = await import(pathToFileURL(join(__dirname, '..', 'dist', 'fs-internal.js')));
+const { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } = await import(pathToFileURL(join(__dirname, '..', 'dist', 'tools', 'index.js')));
 // Non-interactive: any out-of-allow path must be DENIED (never a dead prompt).
 (await import(pathToFileURL(join(__dirname, '..', 'node_modules', 'nexus-coder', 'dist', 'src', 'security', 'path-authorizer.js'))))
   .setPermissionPrompter(() => 'n');
@@ -155,7 +155,7 @@ await fsMod.rm(fsTmp, { recursive: true, force: true });
 
 // --- Built-in sequential-thinking (src/sequential-think.ts) ---
 const { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } =
-  await import(pathToFileURL(join(__dirname, '..', 'dist', 'sequential-think.js')));
+  await import(pathToFileURL(join(__dirname, '..', 'dist', 'tools', 'index.js')));
 await expect(
   SEQUENTIAL_THINK_TOOL_DEFS.length === 1 && SEQUENTIAL_THINK_TOOLS.has('sequentialthinking'),
   'seq-thinking tool set',
@@ -175,7 +175,7 @@ await expect(stBj.branches.includes('A') && stBj.thoughtHistoryLength === 2, 'se
 
 // --- Built-in sqlite (src/sqlite-tools.ts) ---
 const { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool, closeSqliteDbs } =
-  await import(pathToFileURL(join(__dirname, '..', 'dist', 'sqlite-tools.js')));
+  await import(pathToFileURL(join(__dirname, '..', 'dist', 'tools', 'index.js')));
 await expect(
   SQLITE_TOOLS.size === 10 && SQLITE_TOOL_DEFS.every((d) => d.server === 'sqlite-internal'),
   'sqlite-internal tool set',
