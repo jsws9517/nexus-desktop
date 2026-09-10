@@ -253,29 +253,58 @@ export class AgentService {
         try {
           const sid = this.agent?.getCurrentSessionId?.();
           if (!sid) return;
+          const ctx = this.agent!.context;
+          const msgs = ctx.getMessages();
+
+          // --- Project directory injection (existing) ---
           const meta = this.getSessionMetadata(sid);
           const projectDir =
             typeof meta.projectDir === 'string' && meta.projectDir ? meta.projectDir : undefined;
-          if (!projectDir) return;
-          const ctx = this.agent!.context;
-          const first = ctx.getMessages()[0];
-          const firstContent = first?.role === 'system' && typeof first.content === 'string' ? first.content : '';
-          const marker = '[Project Directory]';
-          // Idempotent per system-prompt lifetime: resume rebuilds message 0 from
-          // the stored transcript (no injected system blocks), so it re-injects.
-          if (firstContent.includes(marker) && firstContent.includes(projectDir)) return;
-          // Drop the core's stale tail block the moment message 0 is still clean
-          // (only safe while OUR block is not yet the match target).
-          if (!firstContent.includes(marker)) {
-            ctx.replaceSystemByMarker(marker, null);
+          if (projectDir) {
+            const first = msgs[0];
+            const firstContent = first?.role === 'system' && typeof first.content === 'string' ? first.content : '';
+            const marker = '[Project Directory]';
+            if (!(firstContent.includes(marker) && firstContent.includes(projectDir))) {
+              if (!firstContent.includes(marker)) {
+                ctx.replaceSystemByMarker(marker, null);
+              }
+              ctx.prependToSystem(
+                `\n\n${marker}\n${projectDir}\n` +
+                  'The user\'s active project lives EXCLUSIVELY under this directory — it is the ' +
+                  'FIRST-PRIORITY directory for all project analysis, reads and writes. Prefer ' +
+                  'absolute paths under this directory over cwd and over ~/.nexus, even if a ' +
+                  'same-named folder exists elsewhere.\n',
+              );
+            }
           }
-          ctx.prependToSystem(
-            `\n\n${marker}\n${projectDir}\n` +
-              'The user\'s active project lives EXCLUSIVELY under this directory — it is the ' +
-              'FIRST-PRIORITY directory for all project analysis, reads and writes. Prefer ' +
-              'absolute paths under this directory over cwd and over ~/.nexus, even if a ' +
-              'same-named folder exists elsewhere.\n',
-          );
+
+          // --- Work-mode skill enforcement ---
+          // When the user message references data files or analysis tasks,
+          // inject a system prompt that FORCES the model to use deterministic
+          // skills (sheet.read / sheet.analyze / bi.chart) instead of narrating.
+          const WORK_MARKER = '[Work Mode: Skill Enforcement]';
+          const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+          const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
+          const hasDataFile = /\.(csv|xlsx?|tsv)\b/i.test(lastUserText);
+          const hasAnalysisKeyword = /分析|统计|图表|chart|analyze|data|visualiz/i.test(lastUserText);
+          if ((hasDataFile || hasAnalysisKeyword) && !lastUserText.startsWith('/')) {
+            const first = msgs[0];
+            const firstContent = first?.role === 'system' && typeof first.content === 'string' ? first.content : '';
+            if (!firstContent.includes(WORK_MARKER)) {
+              ctx.prependToSystem(
+                `\n\n${WORK_MARKER}\n` +
+                  'CRITICAL WORK-MODE RULES — you MUST follow these exactly:\n' +
+                  '1. When the user provides or references a data file (CSV, Excel, TSV), you MUST call `sheet.read` to load it. NEVER narrate or summarize file contents from memory.\n' +
+                  '2. When the user asks for statistics (sum, mean, min, max, count, etc.), you MUST call `sheet.analyze`. NEVER compute statistics manually.\n' +
+                  '3. When the user asks for a chart or visualization, you MUST call `bi.chart`. NEVER describe a chart in text.\n' +
+                  '4. NEVER skip tool calls. Every data operation MUST go through the corresponding skill tool.\n' +
+                  '5. After all tool calls complete, provide a brief summary of the results.\n',
+              );
+            }
+          } else if (!hasDataFile && !hasAnalysisKeyword) {
+            // Non-work-mode: remove the enforcement prompt if present
+            ctx.replaceSystemByMarker(WORK_MARKER, null);
+          }
         } catch {
           // Prompt decoration must never break a turn.
         }
@@ -453,6 +482,15 @@ export class AgentService {
     }
 
     await this.agent.chat(input);
+    // Plain /go is run by the core's own slash handling (its executePlan stamps
+    // the session metadata.projectDir with the sandbox ~/.nexus/tasks/outputs/<name>).
+    // Mirror the /setdir side effects so the worker chdirs and the UI refresh
+    // follows — /go --loop and /commit are already bridged separately in
+    // runPlanExecution, which calls applyPlanProjectDir() itself.
+    if (/^\/go(?:\s|$)/i.test(input.trim())) {
+      const sid = this.agent.getCurrentSessionId?.();
+      if (sid) await this.applyPlanProjectDir(sid);
+    }
     this.finalizeSlashTurn();
   }
 
@@ -735,6 +773,10 @@ export class AgentService {
     } catch (err) {
       this.emitText(`? Execution failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
+    // executePlan() stamped metadata.projectDir with the sandbox outputs dir;
+    // finish the implicit setdir: chdir the worker, sync agent project state and
+    // refresh the UI (rside project row + the open-project dir label).
+    if (sid) await this.applyPlanProjectDir(sid);
   }
 
   /**
@@ -1206,6 +1248,42 @@ export class AgentService {
     } catch {}
     process.chdir(cwd);
     this.onLog?.('info', `Project directory set to ${cwd}`);
+  }
+
+  /**
+   * Finish the "implicit /setdir" after /go: executePlan() has already stamped
+   * session metadata.projectDir with the plan sandbox (~/.nexus/tasks/outputs/<name>),
+   * but the worker cwd, the agent's own project state and the UI are untouched.
+   * Only act when the bound dir differs from the worker's live cwd (so a session
+   * whose projectDir was never set — the /plan case — binds once, and repeats
+   * are no-ops). Mirrors the /setdir side effects: chdir, setProjectLocation,
+   * persist a redundant-but-consistent metadata write, then emit cwdChanged so
+   * the renderer refreshes the right-side project row AND the open-project label.
+   */
+  private async applyPlanProjectDir(sessionId: string): Promise<void> {
+    if (!this.agent) return;
+    const meta = this.getSessionMetadata(sessionId);
+    const projectDir = typeof meta.projectDir === 'string' && meta.projectDir ? meta.projectDir : undefined;
+    if (!projectDir) return;
+    // Only re-bind when the worker is not already sitting in that dir.
+    let liveCwd: string;
+    try {
+      liveCwd = process.cwd();
+    } catch {
+      liveCwd = '';
+    }
+    if (liveCwd === projectDir) return;
+    try {
+      await this.setCwd(projectDir);
+      this.agent?.setProjectLocation?.(projectDir, { projectDir });
+    } catch (err) {
+      this.onLog?.('warn', `applyPlanProjectDir chdir failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      this.setSessionMetadata(sessionId, { projectDir });
+    } catch {}
+    this.onEvent?.({ type: 'cwdChanged', cwd: projectDir, sessionId });
+    this.onLog?.('info', `Implicit setdir after /go: ${projectDir}`);
   }
 
   getCwd(): string {
