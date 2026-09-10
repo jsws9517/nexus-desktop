@@ -54,6 +54,8 @@ const api = {
   revealFile: (path: string) => ipcRenderer.invoke('nexus:revealFile', path),
   getFileInfos: (paths: string[]) => ipcRenderer.invoke('nexus:getFileInfos', paths),
   readImagePreview: (path: string) => ipcRenderer.invoke('nexus:readImagePreview', path),
+  // Paste image from system clipboard (consistent with coder-core ALT+V).
+  pasteImage: () => ipcRenderer.invoke('nexus:pasteImage') as Promise<{ path: string; preview: string } | null>,
   // Resolve a dropped/pasted File to its real path (Electron webUtils).
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   openConfigWeb: () => ipcRenderer.invoke('nexus:openConfigWeb'),

@@ -175,6 +175,8 @@ declare global {
       revealFile(path: string): Promise<{ ok: boolean }>;
       getFileInfos(paths: string[]): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>>;
       readImagePreview(path: string): Promise<string | undefined>;
+      // Paste image from system clipboard (consistent with coder-core ALT+V).
+      pasteImage(): Promise<{ path: string; preview: string } | null>;
       getPathForFile(file: File): string;
       regenerate(sessionId: string, userIndex: number): Promise<unknown>;
       withdraw(sessionId: string, userIndex: number): Promise<string>;
@@ -3300,6 +3302,30 @@ inputEl.addEventListener('keydown', (e) => {
   }
 });
 
+// Alt+V (matches coder-core): paste the system clipboard image as an attachment.
+// A keyboard shortcut — NOT a DOM paste event — so it needs its own keydown hook.
+let lastImagePasteAt = 0;
+const IMAGE_PASTE_DEBOUNCE_MS = 1500;
+
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() !== 'v' || !e.altKey || e.ctrlKey || e.shiftKey) return;
+  e.preventDefault();
+  const now = Date.now();
+  if (now - lastImagePasteAt < IMAGE_PASTE_DEBOUNCE_MS) return;
+  lastImagePasteAt = now;
+  void window.nexusDesktop
+    .pasteImage()
+    .then((result) => {
+      if (result) {
+        void attachFiles([result.path]);
+        showToast(t('clipboardImageAdded'));
+      } else {
+        showToast(t('clipboardImageMissing'));
+      }
+    })
+    .catch(() => {});
+});
+
 // ---------- session search (E3) ----------
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 searchEl.addEventListener('input', () => {
@@ -3361,10 +3387,26 @@ dropZone.addEventListener('drop', (e) => {
 });
 inputEl.addEventListener('paste', (e) => {
   const files = Array.from(e.clipboardData?.files ?? []);
-  if (files.length === 0) return;
-  e.preventDefault();
-  const paths = files.map((f) => window.nexusDesktop.getPathForFile(f)).filter(Boolean);
-  if (paths.length > 0) void attachFiles(paths);
+  if (files.length > 0) {
+    e.preventDefault();
+    const paths = files.map((f) => window.nexusDesktop.getPathForFile(f)).filter(Boolean);
+    if (paths.length > 0) void attachFiles(paths);
+    return;
+  }
+  // Native clipboard image (e.g. screenshots via Win+Shift+S) isn't exposed as
+  // clipboardData.files, so poll the clipboard via the main process. Matches
+  // coder-core's ALT+V behavior. No preventDefault: an image-only clipboard has
+  // no text to insert anyway, and a text paste must keep its default flow.
+  const types = Array.from(e.clipboardData?.types ?? []);
+  const looksLikeImage = types.length === 0 || types.some((t) => t.startsWith('image/'));
+  if (looksLikeImage) {
+    void window.nexusDesktop
+      .pasteImage()
+      .then((result) => {
+        if (result) void attachFiles([result.path]);
+      })
+      .catch(() => {});
+  }
 });
 
 // ---------- wire events ----------

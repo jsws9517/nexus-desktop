@@ -62,6 +62,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   startFailed: { 'zh-CN': '启动失败: ', en: 'Failed to start: ' },
   error: { 'zh-CN': '⚠️ 错误: ', en: '⚠️ Error: ' },
   attachFailed: { 'zh-CN': '⚠️ 附件失败: ', en: '⚠️ Attach failed: ' },
+  clipboardImageAdded: { 'zh-CN': '已添加剪切板图片', en: 'Clipboard image added' },
+  clipboardImageMissing: { 'zh-CN': '剪切板没有图片', en: 'No image on clipboard' },
   runningEllipsis: { 'zh-CN': '运行中', en: 'Running' },
   freeze: { 'zh-CN': '❄ 冻结视图', en: '❄ Freeze' },
   unfreeze: { 'zh-CN': '▶ 恢复视图', en: '▶ Resume' },
