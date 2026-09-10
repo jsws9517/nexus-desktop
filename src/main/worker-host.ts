@@ -56,6 +56,12 @@ export class WorkerHost {
   private nextId = 1;
   private stopping = false;
   private stopTimer: ReturnType<typeof setTimeout> | null = null;
+  private exited = false;
+
+  /** True while the underlying process is present and not shutdown-in-progress. */
+  get alive(): boolean {
+    return !this.exited && !this.stopping && this.handle !== null;
+  }
 
   onEvent?: (event: AgentEvent) => void;
   onPermission?: (req: { id: string; question: string }) => void;
@@ -171,6 +177,7 @@ export class WorkerHost {
       this.onLog?.('error', `Worker spawn failed: ${err.message}`);
     });
     child.on('exit', (code) => {
+      this.exited = true;
       this.onLog?.('warn', `Worker exited (code=${code})`);
       this.clearStopTimer();
       this.onExit?.(code);
@@ -205,6 +212,7 @@ export class WorkerHost {
       this.onLog?.('error', `Utility worker failed: ${(err as unknown as Error).message ?? String(err)}`);
     });
     child.on('exit', (code) => {
+      this.exited = true;
       diag(`exit code=${code}`);
       this.onLog?.('warn', `Utility worker exited (code=${code})`);
       this.clearStopTimer();

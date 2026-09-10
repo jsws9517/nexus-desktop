@@ -43,7 +43,8 @@ const updater = new Updater();
 const resourceMon = new ResourceMonitor({
   intervalMs: 5000,
   log: (msg) => logf(`resource: ${msg}`),
-  getWorkerCount: () => sessionWorkers.size + 1, // +1 for main process
+  // Session tabs + the pre-warmed spare (+1 for the main process).
+  getWorkerCount: () => sessionWorkers.residentCount + 1,
 });
 // Desktop-only settings store (~/.nexus/desktop.json). Single owner of the
 // read/write cache; IPC handlers and the bootstrap share this same instance.
@@ -431,7 +432,14 @@ if (gotLock) {
     desktopState.applyResourceConfig(resourceMon);
     resourceMon.onState = (state) => send(CHANNELS.resourceState, state);
     resourceMon.setAtMax(countOpenTabs() >= desktopState.getMaxTabs());
+    // Pre-warmed spare worker: a session-unbound process ready to become the next
+    // tab (avoids a cold spawn + Agent construction on open). Never attached to a
+    // session until bound, so it cannot carry an in-flight turn. Gated on resource
+    // health + tab headroom; reused by the open()/close() top-up paths.
+    sessionWorkers.canWarm = () =>
+      resourceMon.getState().status !== 'overloaded' && sessionWorkers.size < desktopState.getMaxTabs();
     resourceMon.start();
+    void sessionWorkers.warmSpare();
     registerIpc({
       worker,
       sessionWorkers,

@@ -40,6 +40,24 @@ interface BoundWorker {
 export class SessionWorkers {
   private map = new Map<string, BoundWorker>();
 
+  /**
+   * Health gate for the pre-warmed spare. Wired by main/index.ts (needs the
+   * resource monitor + tab ceiling). Absent = never warm.
+   */
+  canWarm?: () => boolean;
+  private spare: WorkerHost | null = null;
+  private warming = false;
+
+  /** True while a pre-warmed (session-unbound) spare process exists. */
+  get hasSpare(): boolean {
+    return this.spare !== null;
+  }
+
+  /** Bound tabs + spare, for the resource monitor's real process count. */
+  get residentCount(): number {
+    return this.size + (this.spare ? 1 : 0);
+  }
+
   onEvent?: (sessionId: string, event: AgentEvent) => void;
   onPermission?: (sessionId: string, req: { id: string; question: string }) => void;
   onLog?: (level: string, message: string) => void;
@@ -91,13 +109,84 @@ export class SessionWorkers {
     };
   }
 
+  /**
+   * Pre-warm a spare, SESSION-UNBOUND worker so the next openSession can bind it
+   * instead of paying a cold spawn + earlyInit. Because the spare is never
+   * attached to a user session until it is handed to an open()/openNew(), it can
+   * never be misidentified as an idle, recyclable process carrying an in-flight
+   * turn — the failure mode a bound-worker pool would have to guard against.
+   * Gated by `canWarm` (resource health + tab headroom) and single-flight.
+   */
+  async warmSpare(): Promise<void> {
+    if (this.spare || this.warming) return;
+    if (!this.canWarm || !this.canWarm()) return;
+    this.warming = true;
+    const worker = new WorkerHost(workerScriptPath());
+    worker.onLog = (level, message) => this.onLog?.(level, message);
+    worker.onExit = (code) => {
+      this.onLog?.('warn', `Spare worker exited (code=${code})`);
+      if (this.spare === worker) this.spare = null;
+    };
+    worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
+    try {
+      worker.start();
+      // earlyInit only — the MCP/skills connect stays with the global worker,
+      // matching how open() warms a fresh tab (fast path). cwd is applied at
+      // bind time via setCwd (earlyInit without a cwd leaves the process cwd).
+      await worker.request('earlyInit');
+      if (worker.alive) {
+        this.spare = worker;
+        this.onLog?.('info', 'Spare worker warmed');
+      } else {
+        // Died mid warm-up — discard.
+        try {
+          worker.stop();
+        } catch {}
+      }
+    } catch (err) {
+      this.onLog?.(
+        'warn',
+        `Spare worker warm-up failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      try {
+        worker.stop();
+      } catch {}
+    } finally {
+      this.warming = false;
+    }
+  }
+
+  /** Hand a warmed spare to the caller, or null to spawn fresh. Synchronous lease. */
+  private async takeSpare(): Promise<WorkerHost | null> {
+    const worker = this.spare;
+    if (!worker) return null;
+    this.spare = null; // single-threaded main: no other open() can grab it now
+    if (!worker.alive) {
+      try {
+        worker.stop();
+      } catch {}
+      return null;
+    }
+    return worker;
+  }
+
   /** Spawn + bind a worker to `sessionId`. Resolves once the session is loaded. */
   async open(sessionId: string, opts?: { cwd?: string }): Promise<OpenTabInfo> {
     const existing = this.map.get(sessionId);
     if (existing) {
       return { sessionId, provider: existing.provider, model: existing.model, busy: existing.busy };
     }
-    const worker = new WorkerHost(workerScriptPath());
+    // Take the pre-warmed spare when available (skips spawn + Agent construction);
+    // a fresh spawn otherwise.
+    let worker: WorkerHost | null = await this.takeSpare();
+    const fromSpare = worker !== null;
+    if (!worker) {
+      worker = new WorkerHost(workerScriptPath());
+      worker.start();
+      // Every tab proxies MCP through the single main-process hub (one OS process
+      // per MCP server, shared by all tabs — no per-tab shadow processes).
+      worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
+    }
     const bound: BoundWorker = {
       sessionId,
       provider: '',
@@ -106,12 +195,13 @@ export class SessionWorkers {
       worker,
     };
     this.wire(bound);
-    worker.start();
-    // Every tab proxies MCP through the single main-process hub (one OS process
-    // per MCP server, shared by all tabs — no per-tab shadow processes).
-    worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
     try {
-      await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
+      if (fromSpare) {
+        // Spare already ran earlyInit (no cwd) — apply this tab's working directory.
+        if (opts?.cwd) await worker.request('setCwd', { cwd: opts.cwd });
+      } else {
+        await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
+      }
       const sid = (await worker.request('startSession', { sessionId })) as string;
       bound.sessionId = sid || sessionId;
       const status = (await worker.request('getStatus')) as {
@@ -124,6 +214,8 @@ export class SessionWorkers {
       bound.busy = !!status.busy;
       this.map.set(bound.sessionId, bound);
       this.onChange?.(this.tabs());
+      // Keep one spare warm for the next open (gated on resource health).
+      void this.warmSpare();
       return {
         sessionId: bound.sessionId,
         provider: bound.provider,
@@ -165,7 +257,13 @@ export class SessionWorkers {
         }
       }
     }
-    const worker = new WorkerHost(workerScriptPath());
+    let worker: WorkerHost | null = await this.takeSpare();
+    const fromSpare = worker !== null;
+    if (!worker) {
+      worker = new WorkerHost(workerScriptPath());
+      worker.start();
+      worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
+    }
     const bound: BoundWorker = {
       sessionId: '',
       provider: '',
@@ -174,10 +272,12 @@ export class SessionWorkers {
       worker,
     };
     this.wire(bound);
-    worker.start();
-    worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
     try {
-      await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
+      if (fromSpare) {
+        if (opts?.cwd) await worker.request('setCwd', { cwd: opts.cwd });
+      } else {
+        await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
+      }
       const sid = (await worker.request('startSession', {
         prevSessionId: opts?.prevSessionId,
       })) as string;
@@ -193,6 +293,8 @@ export class SessionWorkers {
       bound.model = typeof status.model === 'string' ? status.model : '';
       this.map.set(sid, bound);
       this.onChange?.(this.tabs());
+      // Keep one spare warm for the next open (gated on resource health).
+      void this.warmSpare();
       return {
         sessionId: sid,
         provider: bound.provider,
@@ -258,9 +360,18 @@ export class SessionWorkers {
       b.worker.stop();
     } catch {}
     this.onChange?.(this.tabs());
+    // Closing a tab is idle time — refill the spare so the next open is warm.
+    void this.warmSpare();
   }
 
   closeAll(): void {
     for (const sessionId of [...this.map.keys()]) this.close(sessionId);
+    if (this.spare) {
+      const w = this.spare;
+      this.spare = null;
+      try {
+        w.stop();
+      } catch {}
+    }
   }
 }
