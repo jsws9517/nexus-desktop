@@ -1,249 +1,248 @@
-﻿# Nexus Desktop 开发需求清单 / Development Requirements
+﻿# Nexus Desktop Development Requirements
 
-> 来源：桌面端架构评审（2026-08-19）。每项统一字段：编号 / 优先级 / 状态 / 问题 / 方案 / 验收。
-> 状态：🟡 待做 · 🔵 进行中 · 🟢 已完成
 > Source: Desktop architecture review (2026-08-19). Each item: ID / Priority / Status / Problem / Solution / Acceptance.
+> Status: 🟡 Pending · 🔵 In Progress · 🟢 Done
 
-## 优先级说明 / Priority Legend
+## Priority Legend
 
-- **P0** 发布质量：影响其他用户可用性或发布整洁度，优先做
-- **P1** 性能/安全/健壮性：量级中等，随版本迭代推进
-- **P2** 架构/工程/体验：可持续演进，按阶段落地
-
----
-
-## A. 正确性 / 发布质量 · Correctness & Release Quality
-
-### A1. 硬编码日志路径清理 / Hardcoded Log Path Cleanup · [P0] 🟢
-
-**问题 / Problem**
-- `src/main/index.ts`、`src/main/worker-host.ts`、`src/agent-worker.ts` 写死 `C:/Users/pgw/AppData/Local/Temp/opencode/`（作者本人 Windows 临时目录）。
-- 字符串会编译进 `dist/**/*` 并随 `app.asar` 打包（package.json `build.files`）；其他用户/CI 机器上该目录不存在 → 被 `try{}catch{}` 吞掉 → 日志静默丢失。
-- 硬编码作者机器用户名泄露进开源仓库源码；且为绝对 Windows 路径，macOS/Linux 无效。
-
-**方案 / Solution**
-1. 新建 `src/shared/logger.ts`：`logsDir = join(homedir(), '.nexus', 'logs')`，`mkdirSync(recursive)`，按日期/级别追加写；提供 `debug/info/warn/error` 分级，`NEXUS_DEBUG=1` 控制 debug 级。
-2. 4 处调用点（`logf`、`DIAG`、`writeDiag`、`tracePerm`）全部改走该模块。
-
-**验收 / Acceptance** ✅ 已达成
-- `npm run typecheck && npm run test:smoke` 通过。
-- 仓库内 `rg "C:/Users" src/ dist/` 无命中。
-- 日志目录与 `~/.nexus` 数据目录一致，跨平台可写。
-
-### A2. 附件功能不完整 / Incomplete Attachment Support · [P0] 🟢
-
-**问题 / Problem**
-- `nexus:openFile` 声明 `multiSelections` 却只返回第一个路径，多选失效。
-- `file_ready` 点击是空操作，无打开/定位文件能力。
-- 附件仅文件对话框，无拖拽/粘贴、无图片预览。
-
-**方案 / Solution** ✅
-1. `nexus:openFile` 返回 `{ canceled, paths: string[] }`；preload/renderer 同步数组。
-2. 新增 `nexus:revealFile`（`shell.showItemInFolder`）与 `nexus:getFileInfos`（大小 + ≤2MiB 图片 dataURL 预览）IPC。
-3. 附件区渲染缩略图 + 大小，点击在资源管理器中定位；`file_ready` 点击 reveal。
-4. 拖拽/粘贴文件经 `webUtils.getPathForFile` 入附件（见 E3）。
-
-**验收 / Acceptance** ✅
-- 一次选择多个文件全部进入附件区；图片显示缩略图。
-- `file_ready` 芯片点击可在资源管理器定位。
-
-### A3. Worker 崩溃自动重启 / Auto-Restart on Worker Crash · [P0] 🟢
-
-**问题 / Problem**
-- `onExit` 仅发一条日志；核心崩溃后所有 IPC 永久挂起，UI 无恢复路径。
-
-**方案 / Solution** ✅
-1. `startWorker()` 改为可重建；`onExit` 触发指数退避（1s/2s/4s…上限 30s，最多 3 次）重启 worker 并重跑 `earlyInit` + `init`。
-2. 新增独立 `initOkPromise` 区分 init 成功/失败/超时，避免重启判定永远等待。
-3. 重启成功发 `nexus:workerRestarted`，renderer 显示提示并自动重挂最近会话。
-4. `before-quit` 置 `intentionallyStopped`，防止退出时触发重启。
-
-**验收 / Acceptance** ✅
-- kill worker 进程后应用自动重启并恢复会话；重启期间请求统一 reject 不挂死。
+- **P0** Release Quality: affects user-facing usability or release polish; ship first
+- **P1** Performance / Security / Robustness: medium scope; advance with each iteration
+- **P2** Architecture / Engineering / UX: continuous evolution; land incrementally
 
 ---
 
-## B. 性能 · Performance
+## A. Correctness & Release Quality
 
-### B1. 消息/会话读取 SQL 分页 / SQL Windowing for Messages & Sessions · [P1] 🟢
+### A1. Hardcoded Log Path Cleanup · [P0] 🟢
 
-**问题 / Problem**
-- `getMessages` 全量 `session.getMessages` 再 JS 切片；`getSessionStats` 全量拉取估算。长会话 O(n)。
+**Problem**
+- `src/main/index.ts`, `src/main/worker-host.ts`, `src/agent-worker.ts` hardcode `C:/Users/pgw/AppData/Local/Temp/opencode/` (the author's Windows temp directory).
+- The string compiles into `dist/**/*` and ships inside `app.asar` (`package.json` `build.files`); on other users/CI machines the directory does not exist → swallowed by `try{}catch{}` → logs silently lost.
+- The hardcoded username leaks into open-source source code; absolute Windows path is invalid on macOS/Linux.
 
-**方案 / Solution** ✅
-1. 原 `session-truncate.ts` 重构为 `src/session-db.ts`：新增 `getMessageWindow`/`getMessageLast`/`getMessageCount`/`estimateSessionTokens`（500 行批量估算），全部 SQL 分页。
-2. `AgentService.getMessages` / `getSessionStats` 改走窗口查询；`userBefore` 用 SQL COUNT + worker-marker `substr+LIKE` 排除。
-3. `regenerate/withdraw` 继续基于 `getMessageRows` + `deleteMessagesFrom`（语义不变）。
+**Solution**
+1. New `src/shared/logger.ts`: `logsDir = join(homedir(), '.nexus', 'logs')`, `mkdirSync(recursive)`, date/level-based append; provides `debug/info/warn/error` levels, `NEXUS_DEBUG=1` enables debug.
+2. All 4 call sites (`logf`, `DIAG`, `writeDiag`, `tracePerm`) routed through the new module.
 
-**验收 / Acceptance** ✅
-- 分页响应时间与窗口大小相关而非总量；`regenerate/withdraw` 的 userIndex 语义不变。
-- `npm run test:smoke` 覆盖 getMessages / getMessages last 通过。
+**Acceptance** ✅ Done
+- `npm run typecheck && npm run test:smoke` pass.
+- `rg "C:/Users" src/ dist/` returns zero hits.
+- Log directory consistent with `~/.nexus` data directory; cross-platform writable.
 
-### B2. renderer 单文件拆分 + 常量去重 / Renderer Split & Constant Dedup · [P1] 🔵
+### A2. Incomplete Attachment Support · [P0] 🟢
 
-**问题 / Problem**
-- `renderer.ts` 2200+ 行单文件；`WORKER_MARKERS`/`KEY_MASK`/`EARLY_METHODS` 多处重复，已现漂移。
+**Problem**
+- `nexus:openFile` declares `multiSelections` but only returns the first path; multi-select broken.
+- `file_ready` click is a no-op; no open/reveal capability.
+- Attachments limited to file dialog; no drag-and-drop/paste, no image preview.
 
-**方案 / Solution** 🔵（阶段一已完成，阶段二延后）
-- ✅ 阶段一：新建 `src/shared/constants.ts`（`EARLY_METHODS`/`WORKER_MARKERS`/`isWorkerPrompt`/`isWorkerBlockText`/`KEY_MASK`），main / worker / agent-service / renderer 统一引用（renderer 直接 ESM import `../shared/constants.js`，无需 preload 注入）。
-- ✅ 阶段一：抽取 `src/renderer/i18n.ts`（STR 字典 + `t/fmtNum/applyI18n/loadLanguage`）与 `src/renderer/markdown.ts`（`renderBlocks/attachCodeCopy/hydrateImages`），成为可单测纯函数模块。
-- ⏳ 阶段二（延后）：把 `sessions.ts` / `mcp.ts` / `settings.ts` 组件从 renderer.ts 完整拆出——因共享可变状态多、无 DOM 单测基础，留待 D3 测试体系落地后推进。
+**Solution** ✅
+1. `nexus:openFile` returns `{ canceled, paths: string[] }`; preload/renderer sync the array.
+2. New IPC: `nexus:revealFile` (`shell.showItemInFolder`) and `nexus:getFileInfos` (size + ≤2 MiB image dataURL preview).
+3. Attachment area renders thumbnails + size; click reveals in Explorer; `file_ready` click reveals.
+4. Drag-and-drop/paste files enter attachments via `webUtils.getPathForFile` (see E3).
 
-**验收 / Acceptance** ✅ 阶段一达成
-- `npm run typecheck` 通过；`WORKER_MARKERS` 等单点定义。
-- 冒烟 + 会话恢复/重生成/撤回路径手动回归正常。
+**Acceptance** ✅
+- Multi-file selection all enters attachment area; images show thumbnails.
+- `file_ready` chip click reveals in Explorer.
 
----
+### A3. Auto-Restart on Worker Crash · [P0] 🟢
 
-## C. 安全 / 健壮性 · Security & Robustness
+**Problem**
+- `onExit` only emits a log line; after a core crash all IPC hangs permanently with no UI recovery path.
 
-### C1. IPC 参数校验 / IPC Parameter Validation · [P1] 🟢
+**Solution** ✅
+1. `startWorker()` rebuilt as restorable; `onExit` triggers exponential backoff (1s/2s/4s… cap 30s, max 3 attempts) to restart the worker and re-run `earlyInit` + `init`.
+2. New standalone `initOkPromise` distinguishes init success/failure/timeout to avoid infinite wait on restart.
+3. Restart success emits `nexus:workerRestarted`; renderer shows a notice and auto-reconnects the recent session.
+4. `before-quit` sets `intentionallyStopped` to prevent restart during shutdown.
 
-**问题 / Problem**
-- `main/index.ts` `call()` 把任意 `params` 直通 worker；`chat`/`setCwd` 无类型/长度限制，`resolvePermission` 的 answer 未约束；A/B/E 新增了 7 个 main 直通 IPC（revealFile/getFileInfos/readImagePreview/pin/tray/日志）同样无校验。
-
-**方案 / Solution** ✅
-1. 新建 `src/shared/ipc-validation.ts` 单一校验表（与 `EARLY_METHODS` 同源模式）：worker 每方法声明字段类型/枚举/长度上限（`chat.input` ≤64KB、`answer ∈ {y,a,n}`、`setCwd.cwd` ≤4096 等）。
-2. `agent-worker.handleRequest` 分发前统一校验，非法即 `respondError('invalid request: …')`。
-3. main 侧直通 IPC 用 `isString/isBoolean/isFiniteNumber/isValidPathList`（paths ≤50 且单条 ≤4096）守卫。
-
-**验收 / Acceptance** ✅
-- 非法参数返回结构化错误而非透传异常；`npm run test:smoke` 通过。
-
-### C2. 权限弹窗支持「始终允许」/ Always Allow in Permission Modal · [P1] 🟢
-
-**问题 / Problem**
-- core `path-authorizer` 已支持 `'a'`（全局持久 allowlist），但 `askPermission` 只返回 `'y'|''`；UI 只有 Allow/Deny。
-
-**方案 / Solution** ✅
-1. `static/index.html` 权限弹窗加第三按钮「始终允许」（i18n `allowAlways`/`allowAlwaysHint` 已在 B2 就绪）→ renderer `answerPermission('a')`。
-2. `agent-service.onPermissionRequest` 对 `'y'|'a'` 判 allow（工具路径无 always 语义，等同 once）。
-3. worker 校验白名单 `['y','a','n']`；`cleanQuestion` 保留。
-
-**验收 / Acceptance** ✅
-- 路径类授权 Always 后按 core GLOBAL_SCOPE 语义持久；工具调用 Always 等同 once 放行。
-
-### C3. 主窗口 sandbox 评估 / Enable Main-Window Sandbox · [P2] 🟡
-
-**方案 / Solution** ⚠️ 已回退
-- `createWindow` 开 `sandbox: true` 会与 ESM preload 冲突：`"type": "module"` 下 `dist/preload.js` 为 ESM（含 `import`），而 sandbox 化 preload 仅支持 CommonJS，导致 preload 加载失败（`SyntaxError: Cannot use import statement outside a module`）、`window.nexusDesktop` 未注入、会话列表无法渲染。
-- 已回退主窗口 `sandbox: false`（配置窗口无 preload，保持 `sandbox: true` 不受影响）。如需保留加固，须将 preload 单独编译为 CJS 再启用。
-
-**验收 / Acceptance** ⚠️ 待办
-- [ ] preload 编译为 CommonJS（`dist/preload.cjs` + 更新引用）后重开 `sandbox: true`，重跑 `npm run build && npm run test:smoke` 并人工验证会话列表/A2 拖拽/E3 粘贴。
-
-### C4. 配置 WebUI 安全复核 / Config WebUI Security Review · [P3] 🟡
-
-**方案 / Solution**
-- 复核 core `config/web.js` loopback 绑定 + token 防护；补充文档说明。
-
-**验收 / Acceptance**
-- 复核记录写入本项状态；无 loopback/鉴权缺口。
+**Acceptance** ✅
+- Kill the worker process → app auto-restarts and recovers the session; requests uniformly reject during restart instead of hanging.
 
 ---
 
-## D. 架构 / 工程 · Architecture & Engineering
+## B. Performance
 
-### D1. session-db schema 耦合加固 / Schema-Coupling Hardening · [P1] 🟢
+### B1. SQL Windowing for Messages & Sessions · [P1] 🟢
 
-**问题 / Problem**
-- 原 `session-truncate.ts` 自注 TODO「core 改列名/路径需同步」；直接复制 core `messages` 表结构。
+**Problem**
+- `getMessages` loads the full `session.getMessages` then slices in JS; `getSessionStats` fetches all rows to estimate. Long sessions = O(n).
 
-**方案 / Solution** ✅（随 B1 一并完成）
-1. 打开 DB 后 `PRAGMA table_info(messages)` 校验必需列，缺失则软失败（返回空结果 + 日志），不崩溃。
-2. 收敛为 `src/session-db.ts`，对外只暴露语义化 API（`getMessageWindow/getMessageLast/getMessageRows/deleteMessagesFrom/getNonEmptySessionIds/estimateSessionTokens`）。
-3. 路径派生逻辑与 core 保持一致并加锚点注释。
+**Solution** ✅
+1. Original `session-truncate.ts` refactored into `src/session-db.ts`: new `getMessageWindow`/`getMessageLast`/`getMessageCount`/`estimateSessionTokens` (500-row batch estimation), all SQL-paginated.
+2. `AgentService.getMessages` / `getSessionStats` use windowed queries; `userBefore` uses SQL COUNT + worker-marker `substr+LIKE` exclusion.
+3. `regenerate/withdraw` continue using `getMessageRows` + `deleteMessagesFrom` (unchanged semantics).
 
-**验收 / Acceptance** ✅
-- core 表结构变更时桌面不崩溃（降级日志可查）；`test:smoke` 通过。
+**Acceptance** ✅
+- Response time proportional to window size, not total size; `regenerate/withdraw` userIndex semantics unchanged.
+- `npm run test:smoke` covers getMessages / getMessages last.
 
-### D2. `agent: any` 类型化 / Type the Agent Surface · [P2] 🟢
+### B2. Renderer Split & Constant Dedup · [P1] 🔵
 
-**方案 / Solution** ✅
-- 核心依赖已带官方类型：`agent-service.ts` 直接用 `Agent`（`nexus-coder/dist/src/agent.js`）、`Config`/`ProviderConfig`（`config/types.js`）、`Session`（`session/types.js`），`private agent: Agent | null`。
-- 替换 3 处 `agent.currentSessionId`（private）为公开 `getCurrentSessionId()`；`getSessionStats` 移除 `as { countTokens }` 强转，直接用 `LLMProvider.countTokens`。
-- `redactConfig`/`saveProvider`/`saveSpeechProvider`/`saveVisionProvider` 收敛为类型化 cast（`Parameters<typeof cfg.setProvider>[1]` 等）。
+**Problem**
+- `renderer.ts` is a 2200+ line monolith; `WORKER_MARKERS`/`KEY_MASK`/`EARLY_METHODS` duplicated across multiple locations, drift already observed.
 
-**验收 / Acceptance** ✅
-- `npm run typecheck` 通过；`agent-service.ts` 无裸 `any`/`as any`（grep 清零）。
+**Solution** 🔵 (Phase 1 done, Phase 2 deferred)
+- ✅ Phase 1: new `src/shared/constants.ts` (`EARLY_METHODS`/`WORKER_MARKERS`/`isWorkerPrompt`/`isWorkerBlockText`/`KEY_MASK`), main / worker / agent-service / renderer all import from a single source (renderer directly uses ESM `../shared/constants.js`, no preload injection needed).
+- ✅ Phase 1: extracted `src/renderer/i18n.ts` (STR dictionary + `t/fmtNum/applyI18n/loadLanguage`) and `src/renderer/markdown.ts` (`renderBlocks/attachCodeCopy/hydrateImages`), both as pure-function modules testable in isolation.
+- ⏳ Phase 2 (deferred): extract `sessions.ts` / `mcp.ts` / `settings.ts` components from renderer.ts — blocked on shared mutable state and lack of DOM test infrastructure; advance after D3 test framework is stable.
 
-### D3. 测试体系 / Test Infrastructure · [P2] 🟢
-
-**方案 / Solution** ✅（B2/D1 纯函数就绪后直接落地）
-- `test/` 目录 + Node `node:test`（零新依赖）：
-  - `constants.test.mjs`：`isWorkerPrompt`/markers/`EARLY_METHODS`。
-  - `markdown.test.mjs`：转义/围栏/diff/表格/任务列表/图片（顺带修复 `renderInline` 未转义与表格首列 `<th>` 问题）。
-  - `session-db.test.mjs`：临时 DB（`LLMA_DATA_DIR`）+ 镜像 messages schema，验证窗口/删除/userBefore/估算。
-  - `i18n.test.mjs`：132 个 key 双语完备 + 新增 key 断言。
-- `package.json` 加 `test:unit`（`npm run build && node --test "test/*.test.mjs"`）；CI 追加 Unit tests 步骤。
-
-**验收 / Acceptance** ✅
-- `npm run test:unit` 30/30 通过；CI 已包含该步骤。
-
-### D4. i18n 提取与 core 错误本地化 / i18n Extraction & Error Localization · [P2] 🟢
-
-**方案 / Solution** ✅
-- STR 字典已随 B2 拆到 `i18n.ts`（✅）。
-- 新增 `scripts/check-i18n.mjs`：断言每 key 双语非空 + `index.html` 引用的 `data-i18n*` 全部存在 → `npm run check:i18n`（132 keys / 40 used OK），CI 已追加。
-- 新增 `localizeError()` 常见 core/网络错误中英映射（401/429/超时/网络/Provider 等），renderer 错误展示路径（`errText`）统一应用。
-
-**验收 / Acceptance** ✅
-- `npm run check:i18n` 通过；新增文案漏配任一语言时 CI 报错；常见错误显示本地化提示。
+**Acceptance** ✅ Phase 1 done
+- `npm run typecheck` pass; `WORKER_MARKERS` etc. single-point definitions.
+- Smoke + session restore/regenerate/withdraw manual regression pass.
 
 ---
 
-## E. 体验 · UX (可分期)
+## C. Security & Robustness
 
-### E1. 窗口/项目目录/草稿持久化 / Persistence: Window, CWD, Draft · [P2] 🟢
+### C1. IPC Parameter Validation · [P1] 🟢
 
-**方案 / Solution** ✅
-1. 窗口 bounds：`main` 监听 move/resize（防抖 500ms）写入 `~/.nexus/desktop.json`，`createWindow` 恢复。
-2. 上次 cwd：`setCwd` 成功后在主进程记录，启动时 `earlyInit` 自动应用（目录不存在则忽略）。
-3. 输入草稿：`localStorage('nexus.draft.<sessionId>')` 防抖保存，切会话/重启恢复，发送后清除。
+**Problem**
+- `main/index.ts` `call()` forwards arbitrary `params` to worker; `chat`/`setCwd` have no type/length constraints; `resolvePermission` answer unconstrained; A/B/E introduced 7 additional pass-through IPCs (revealFile/getFileInfos/readImagePreview/pin/tray/logs) also without validation.
 
-**验收 / Acceptance** ✅
-- 重启后窗口位置、项目目录、当前会话草稿均恢复。
+**Solution** ✅
+1. New `src/shared/ipc-validation.ts` single validation table (same-origin pattern as `EARLY_METHODS`): each worker method declares field types/enums/upper bounds (`chat.input` ≤64 KB, `answer ∈ {y,a,n}`, `setCwd.cwd` ≤4096, etc.).
+2. `agent-worker.handleRequest` validates uniformly before dispatch; invalid → `respondError('invalid request: …')`.
+3. Main-side pass-through IPCs guarded with `isString/isBoolean/isFiniteNumber/isValidPathList` (paths ≤50, single path ≤4096).
 
-### E2. Markdown 渲染增强 / Markdown Rendering Upgrade · [P2] 🟢
+**Acceptance** ✅
+- Invalid parameters return structured errors instead of forwarding exceptions; `npm run test:smoke` pass.
 
-**方案 / Solution** ✅
-1. 抽取独立 `markdown.ts`：表格、任务列表（`- [ ]`）、代码块语言角标 + 复制按钮、图片（data:/blob:/本地路径 dataURL 水合）。
-2. 流式期间 300ms 防抖增量渲染（≤12K 字符内），`turn_end` 最终渲染。
-3. `renderAssistantStream` 统一在渲染后挂复制按钮 + 水合图片。
+### C2. Always Allow in Permission Modal · [P1] 🟢
 
-**验收 / Acceptance** ✅
-- 表格/任务列表/图片/代码复制可用；流式预览无卡顿（长输出回退纯文本流式）。
+**Problem**
+- Core `path-authorizer` already supports `'a'` (persistent global allowlist), but `askPermission` only returned `'y'|''`; UI only had Allow/Deny.
 
-### E3. 会话搜索 / 置顶 / 托盘 / 拖拽粘贴 / Search, Pin, Tray, Drag & Paste · [P3] 🟢
+**Solution** ✅
+1. `static/index.html` permission modal adds a third button "Always Allow" (i18n `allowAlways`/`allowAlwaysHint` already ready from B2) → renderer calls `answerPermission('a')`.
+2. `agent-service.onPermissionRequest` treats both `'y'|'a'` as allow (tool-path semantics lack "always" meaning, equivalent to once).
+3. Worker validates allowlist `['y','a','n']`; `cleanQuestion` preserved.
 
-**方案 / Solution** ✅
-1. 搜索：侧栏输入框 → `listSessions({ search })`（名称/ID 包含匹配，防抖 250ms）。
-2. 置顶：`~/.nexus/desktop.json` 存 `pinnedIds`，侧栏置顶分组 + 每行 📌 按钮。
-3. 托盘：`Tray`（内嵌 16×16 图标，无文件依赖）+ 菜单（打开/退出），设置中「关闭时最小化到托盘」开关（默认关）。
-4. 拖拽/粘贴：composer `drop` + textarea `paste` → `webUtils.getPathForFile` 入附件，与 A2 缩略图联动。
+**Acceptance** ✅
+- Path authorization "Always" persists per core GLOBAL_SCOPE semantics; tool-call "Always" is equivalent to once.
 
-**验收 / Acceptance** ✅
-- 搜索命中、置顶生效、托盘可用、拖拽/粘贴图片可附加。
+### C3. Main-Window Sandbox Evaluation · [P2] 🟡
 
-### E4. 日志查看面板 / In-App Log Viewer · [P3] 🟢
+**Solution** ⚠️ Rolled back
+- Enabling `sandbox: true` in `createWindow` conflicts with ESM preload: `"type": "module"` makes `dist/preload.js` an ESM file (containing `import`), while sandboxed preload only supports CommonJS, causing preload load failure (`SyntaxError: Cannot use import statement outside a module`), `window.nexusDesktop` injection failure, and session list render failure.
+- Rolled back main window to `sandbox: false` (config window has no preload, remains `sandbox: true`). To retain the hardening, preload must be compiled separately as CJS before re-enabling.
 
-**方案 / Solution** ✅
-- 设置弹窗「日志」区：读取 `~/.nexus/logs/` 最近 300 行（`recentLogLines`）渲染 `<pre>`，可刷新。
+**Acceptance** ⚠️ Pending
+- [ ] Compile preload to CommonJS (`dist/preload.cjs` + update references), re-enable `sandbox: true`, re-run `npm run build && npm run test:smoke` and manually verify session list / A2 drag-and-drop / E3 paste.
 
-**验收 / Acceptance** ✅
-- 无需外部工具即可查看/导出最近日志用于排障。
+### C4. Config WebUI Security Review · [P3] 🟡
+
+**Solution**
+- Review core `config/web.js` loopback binding + token protection; supplement documentation.
+
+**Acceptance**
+- Review notes recorded in this item's status; no loopback/auth gaps.
 
 ---
 
-## 实施顺序 / Implementation Order
+## D. Architecture & Engineering
 
-| 阶段 | 内容 | 依赖 | 状态 |
+### D1. Schema-Coupling Hardening · [P1] 🟢
+
+**Problem**
+- Original `session-truncate.ts` had self-authored TODO "core column/path change requires sync"; directly copied core `messages` table structure.
+
+**Solution** ✅ (completed alongside B1)
+1. After opening DB, `PRAGMA table_info(messages)` validates required columns; missing columns trigger soft-fail (empty result + log), no crash.
+2. Consolidated into `src/session-db.ts`, exposing only semantic APIs (`getMessageWindow/getMessageLast/getMessageRows/deleteMessagesFrom/getNonEmptySessionIds/estimateSessionTokens`).
+3. Path derivation logic consistent with core plus anchor comments.
+
+**Acceptance** ✅
+- Desktop does not crash on core schema changes (degraded logs observable); `test:smoke` pass.
+
+### D2. Type the Agent Surface · [P2] 🟢
+
+**Solution** ✅
+- Core dependencies already carry official types: `agent-service.ts` uses `Agent` (`nexus-coder/dist/src/agent.js`), `Config`/`ProviderConfig` (`config/types.js`), `Session` (`session/types.js`), `private agent: Agent | null`.
+- Replaced 3 occurrences of `agent.currentSessionId` (private) with public `getCurrentSessionId()`; `getSessionStats` removed `as { countTokens }` cast, using `LLMProvider.countTokens` directly.
+- `redactConfig`/`saveProvider`/`saveSpeechProvider`/`saveVisionProvider` consolidated to typed casts (`Parameters<typeof cfg.setProvider>[1]` etc.).
+
+**Acceptance** ✅
+- `npm run typecheck` pass; `agent-service.ts` has no bare `any`/`as any` (grep clean).
+
+### D3. Test Infrastructure · [P2] 🟢
+
+**Solution** ✅ (landed after B2/D1 pure functions were ready)
+- `test/` directory + Node `node:test` (zero new dependencies):
+  - `constants.test.mjs`: `isWorkerPrompt`/markers/`EARLY_METHODS`.
+  - `markdown.test.mjs`: escaping / fenced / diff / tables / task lists / images (also fixed `renderInline` escaping and table `<th>` first-column issue).
+  - `session-db.test.mjs`: temp DB (`LLMA_DATA_DIR`) + mirrored messages schema, validates windowing / deletion / userBefore / estimation.
+  - `i18n.test.mjs`: 132 keys bilingual completeness + new-key assertions.
+- `package.json` adds `test:unit` (`npm run build && node --test "test/*.test.mjs"`); CI adds Unit tests step.
+
+**Acceptance** ✅
+- `npm run test:unit` 30/30 pass; CI includes this step.
+
+### D4. i18n Extraction & Error Localization · [P2] 🟢
+
+**Solution** ✅
+- STR dictionary extracted to `i18n.ts` (✅ alongside B2).
+- New `scripts/check-i18n.mjs`: asserts every key is non-empty in both languages + all `data-i18n*` attributes in `index.html` resolve → `npm run check:i18n` (132 keys / 40 used OK), CI added.
+- New `localizeError()` maps common core/network errors (401/429/timeout/network/provider etc.); renderer error display path (`errText`) unified.
+
+**Acceptance** ✅
+- `npm run check:i18n` pass; new copy missing either language triggers CI error; common errors display localized messages.
+
+---
+
+## E. UX (Incrimental Delivery)
+
+### E1. Persistence: Window, CWD, Draft · [P2] 🟢
+
+**Solution** ✅
+1. Window bounds: `main` listens to move/resize (500 ms debounce), writes to `~/.nexus/desktop.json`; `createWindow` restores.
+2. Last cwd: `setCwd` success recorded in main process; `earlyInit` applies on startup (silently ignored if directory no longer exists).
+3. Input draft: `localStorage('nexus.draft.<sessionId>')` debounce-saved, restored on session switch / restart, cleared on send.
+
+**Acceptance** ✅
+- After restart, window position, project directory, and current session draft all restore.
+
+### E2. Markdown Rendering Upgrade · [P2] 🟢
+
+**Solution** ✅
+1. Extracted standalone `markdown.ts`: tables, task lists (`- [ ]`), code block language badge + copy button, images (data:/blob:/local-path dataURL hydration).
+2. Streaming mode: 300 ms debounce incremental render (≤12 K chars), `turn_end` final render.
+3. `renderAssistantStream` unified post-render attachment of copy buttons + image hydration.
+
+**Acceptance** ✅
+- Tables / task lists / images / code copy all functional; streaming preview smooth (long output falls back to plain-text streaming).
+
+### E3. Search, Pin, Tray, Drag & Paste · [P3] 🟢
+
+**Solution** ✅
+1. Search: sidebar input → `listSessions({ search })` (name/ID contains match, 250 ms debounce).
+2. Pin: `~/.nexus/desktop.json` stores `pinnedIds`; sidebar pinned group + per-row 📌 button.
+3. Tray: `Tray` (inline 16×16 icon, no file dependency) + menu (Open / Quit); settings toggle "Minimize to tray on close" (default off).
+4. Drag-and-drop / paste: composer `drop` + textarea `paste` → `webUtils.getPathForFile` enters attachments, linked with A2 thumbnails.
+
+**Acceptance** ✅
+- Search hits, pin effective, tray functional, drag-and-drop / paste images attachable.
+
+### E4. In-App Log Viewer · [P3] 🟢
+
+**Solution** ✅
+- Settings modal "Logs" section: reads `~/.nexus/logs/` last 300 lines (`recentLogLines`), renders `<pre>`, refreshable.
+
+**Acceptance** ✅
+- View / export recent logs without external tools for troubleshooting.
+
+---
+
+## Implementation Order
+
+| Phase | Scope | Dependencies | Status |
 |---|---|---|---|
-| ① 发布质量 | A1 · A2 · A3 | - | ✅ 已完成 |
-| ② 性能+工程 | B1 + D1（session-db）· B2 | D1 | ✅ 已完成（B2 阶段一） |
-| ③ 安全 | C1 · C2 · C3 | - | ✅ 已完成（C3 已回退待 CJS preload） |
-| ④ 测试/工程 | D2 · D3 · D4 | ② | ✅ 已完成 |
-| ⑤ 体验 | E1 → E2 → E3 → E4 | ② | ✅ 已完成 |
+| ① Release Quality | A1 · A2 · A3 | — | ✅ Done |
+| ② Performance + Engineering | B1 + D1 (session-db) · B2 | D1 | ✅ Done (B2 Phase 1) |
+| ③ Security | C1 · C2 · C3 | — | ✅ Done (C3 rolled back pending CJS preload) |
+| ④ Testing / Engineering | D2 · D3 · D4 | ② | ✅ Done |
+| ⑤ UX | E1 → E2 → E3 → E4 | ② | ✅ Done |
 
-> 本次迭代范围：**A/B/C/E 组全部完成，D1-D4 完成（D1 随 B1、D4 部分随 B2）**；仅剩 C4（配置 WebUI 低优先级复核）、C3 回退待 CJS preload 后重开、B2 阶段二（renderer 组件拆分，待 D3 基础稳定后推进）。
-> 每项完成后更新对应「状态」标记；`docs/development-requirements.md` 为单一事实来源。
+> Current iteration scope: **All A/B/C/E groups completed; D1–D4 completed** (D1 alongside B1, D4 partly alongside B2). Remaining items: C4 (Config WebUI low-priority review), C3 rolled back pending CJS preload, B2 Phase 2 (renderer component split, awaiting D3 test infrastructure stability).
+> Update the corresponding status marker after each item is completed; `docs/development-requirements.md` is the single source of truth.
