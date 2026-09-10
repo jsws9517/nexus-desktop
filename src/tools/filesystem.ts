@@ -18,6 +18,7 @@
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, normalize, resolve as resolvePath } from 'node:path';
 import { authorizePath, getAuthorizedRoots, getSandboxRoots, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
+import type { ToolDef, ToolResult, ToolContext } from './types.js';
 
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png',
@@ -37,22 +38,7 @@ const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 const MAX_LIST_ENTRIES = 5000;
 const MAX_DEPTH = 3;
 
-export interface McpToolDef {
-  name: string;
-  description: string;
-  inputSchema: unknown;
-  server?: string;
-}
-
-export interface FsToolResult {
-  content: string;
-  isError?: boolean;
-}
-
-export interface FsToolContext {
-  /** Reads the live config (~/.nexus/config.json view); shape is duck-typed. */
-  getConfig?: () => Record<string, unknown> | undefined;
-}
+export type { ToolDef as McpToolDef, ToolResult as FsToolResult, ToolContext as FsToolContext };
 
 function denormalize(p: string, cwd: string): string {
   return normalize(isAbsolute(p) ? p : resolvePath(cwd, p));
@@ -67,7 +53,7 @@ async function guardPath(relOrAbs: string): Promise<string | null> {
   return p;
 }
 
-const denied = (p: string): FsToolResult => ({
+const denied = (p: string): ToolResult => ({
   content: `Access to this path has been denied by your permissions system: ${p}`,
   isError: true,
 });
@@ -95,7 +81,7 @@ function sniffImageMime(buf: Buffer): string | null {
 
 // ---------------------------------------------------------------- media read
 
-async function readMediaFile(args: Record<string, unknown>): Promise<FsToolResult> {
+async function readMediaFile(args: Record<string, unknown>): Promise<ToolResult> {
   const raw = typeof args?.path === 'string' ? args.path.trim() : '';
   if (!raw) return { content: 'Provide a `path` to a media file.', isError: true };
   const p = await guardPath(raw);
@@ -172,7 +158,7 @@ async function recursiveSize(dir: string, budget: { n: number; truncated: boolea
   return total;
 }
 
-async function listDirectoryWithSizes(args: Record<string, unknown>): Promise<FsToolResult> {
+async function listDirectoryWithSizes(args: Record<string, unknown>): Promise<ToolResult> {
   const raw = typeof args?.path === 'string' ? args.path.trim() : '';
   if (!raw) return { content: 'Provide a `path` to a directory.', isError: true };
   const rawDepth = Number(args?.maxDepth ?? 1);
@@ -212,7 +198,7 @@ async function listDirectoryWithSizes(args: Record<string, unknown>): Promise<Fs
 }
 // ------------------------------------------------------ allowed directories
 
-function listAllowedDirectories(ctx?: FsToolContext): FsToolResult {
+function listAllowedDirectories(ctx?: ToolContext): ToolResult {
   const cfg = ctx?.getConfig?.();
   const allowedRoots = (cfg as { acp?: { allowedRoots?: string[] } })?.acp?.allowedRoots ?? [];
   const fsServerArgs = (cfg as { mcpServers?: Record<string, { args?: string[] }> })?.mcpServers?.filesystem?.args ?? [];
@@ -259,8 +245,8 @@ function listAllowedDirectories(ctx?: FsToolContext): FsToolResult {
 export function callFsTool(
   name: string,
   args: unknown,
-  ctx?: FsToolContext,
-): Promise<FsToolResult> | FsToolResult {
+  ctx?: ToolContext,
+): Promise<ToolResult> | ToolResult {
   const a = (args ?? {}) as Record<string, unknown>;
   switch (name) {
     case 'read_media_file':
@@ -274,7 +260,7 @@ export function callFsTool(
   }
 }
 
-export const FILESYSTEM_TOOL_DEFS: McpToolDef[] = [
+export const FILESYSTEM_TOOL_DEFS: ToolDef[] = [
   {
     name: 'read_media_file',
     description:

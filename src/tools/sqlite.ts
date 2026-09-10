@@ -20,25 +20,16 @@ import Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { isAbsolute, normalize, resolve as resolvePath } from 'node:path';
 import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
+import type { ToolResult, ToolContext } from './types.js';
 
-export interface SqliteToolResult {
-  content: string;
-  isError?: boolean;
-}
+export type { ToolResult as SqliteToolResult, ToolContext as SqliteToolContext };
 
-export interface SqliteToolContext {
-  /** Reads the live config view (for mcpServers.sqlite.args). */
-  getConfig?: () => Record<string, unknown> | undefined;
-  /** Ask approval for a write statement. Returns true when allowed. */
-  requestWriteApproval?: (label: string) => Promise<boolean>;
-}
-
-const err = (message: string, isError = true): SqliteToolResult => ({
+const err = (message: string, isError = true): ToolResult => ({
   content: JSON.stringify({ error: message }, null, 2),
   isError,
 });
 
-const ok = (payload: unknown, isError = false): SqliteToolResult => ({
+const ok = (payload: unknown, isError = false): ToolResult => ({
   content: JSON.stringify(payload, null, 2),
   isError,
 });
@@ -103,7 +94,7 @@ export function closeSqliteDbs(): void {
   dbCache.clear();
 }
 
-function resolveDbPath(args: unknown, ctx?: SqliteToolContext): string {
+function resolveDbPath(args: unknown, ctx?: ToolContext): string {
   const a = (args ?? {}) as { dbPath?: unknown };
   if (typeof a.dbPath === 'string' && a.dbPath.trim()) {
     return normalize(isAbsolute(a.dbPath) ? a.dbPath : resolvePath(process.cwd(), a.dbPath));
@@ -145,21 +136,21 @@ async function guardCustomDb(dbPath: string): Promise<string | null> {
  * bare "unable to open database file" so users know to create it via a write
  * tool first.
  */
-function missingDbHint(file: string): SqliteToolResult {
+function missingDbHint(file: string): ToolResult {
   return err(
     `No SQLite database at ${file}. Point dbPath at an existing database file, ` +
       'or create the database first with `execute` / `create-table` (e.g. "CREATE TABLE x (id INTEGER PRIMARY KEY)")',
   );
 }
 
-async function writeGate(ctx: SqliteToolContext | undefined, label: string): Promise<boolean> {
+async function writeGate(ctx: ToolContext | undefined, label: string): Promise<boolean> {
   if (!ctx?.requestWriteApproval) return true;
   return ctx.requestWriteApproval(label);
 }
 
 // --- tools ---
 
-async function toolQuery(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolQuery(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const sql = typeof args.sql === 'string' ? args.sql : '';
   if (!sql.trim()) return err('Provide a `sql` query.');
   const file = resolveDbPath(args, ctx);
@@ -178,7 +169,7 @@ async function toolQuery(args: Record<string, unknown>, ctx?: SqliteToolContext)
   }
 }
 
-async function toolExecute(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolExecute(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const sql = typeof args.sql === 'string' ? args.sql : '';
   if (!sql.trim()) return err('Provide a `sql` statement.');
   const file = resolveDbPath(args, ctx);
@@ -200,7 +191,7 @@ async function toolExecute(args: Record<string, unknown>, ctx?: SqliteToolContex
   }
 }
 
-async function toolListTables(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolListTables(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const file = resolveDbPath(args, ctx);
   const custom = isCustomDbArg(args);
   if (custom && (await guardCustomDb(file)) === null) {
@@ -214,7 +205,7 @@ async function toolListTables(args: Record<string, unknown>, ctx?: SqliteToolCon
   }
 }
 
-function describeTable(file: string, tableName: string, custom: boolean): SqliteToolResult {
+function describeTable(file: string, tableName: string, custom: boolean): ToolResult {
   try {
     const db = openDb(file, custom);
     const exists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(tableName);
@@ -232,7 +223,7 @@ function describeTable(file: string, tableName: string, custom: boolean): Sqlite
   }
 }
 
-async function toolDescribeTable(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolDescribeTable(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const tableName = typeof args.tableName === 'string' ? args.tableName : '';
   if (!tableName) return err('Provide a `tableName`.');
   const file = resolveDbPath(args, ctx);
@@ -244,7 +235,7 @@ async function toolDescribeTable(args: Record<string, unknown>, ctx?: SqliteTool
   return describeTable(file, tableName, custom);
 }
 
-async function toolCreateTable(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolCreateTable(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const name = typeof args.name === 'string' ? args.name : '';
   const columns = Array.isArray(args.columns) ? (args.columns as Array<Record<string, unknown>>) : [];
   if (!name || columns.length === 0) return err('`name` and a non-empty `columns` array are required.');
@@ -281,7 +272,7 @@ async function toolCreateTable(args: Record<string, unknown>, ctx?: SqliteToolCo
   }
 }
 
-async function toolDropTable(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolDropTable(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const name = typeof args.name === 'string' ? args.name : '';
   if (!name) return err('Provide a `name`.');
   if (!(await writeGate(ctx, 'drop-table'))) return err('Write operation denied.');
@@ -298,7 +289,7 @@ async function toolDropTable(args: Record<string, unknown>, ctx?: SqliteToolCont
   }
 }
 
-async function toolInsertRecord(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolInsertRecord(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const table = typeof args.table === 'string' ? args.table : '';
   const data = (args.data ?? {}) as Record<string, unknown>;
   if (!table || Object.keys(data).length === 0) return err('`table` and `data` are required.');
@@ -319,7 +310,7 @@ async function toolInsertRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   }
 }
 
-async function toolUpdateRecord(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolUpdateRecord(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const table = typeof args.table === 'string' ? args.table : '';
   const data = (args.data ?? {}) as Record<string, unknown>;
   const where = typeof args.where === 'string' ? args.where : '';
@@ -339,7 +330,7 @@ async function toolUpdateRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   }
 }
 
-async function toolDeleteRecord(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolDeleteRecord(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const table = typeof args.table === 'string' ? args.table : '';
   const where = typeof args.where === 'string' ? args.where : '';
   if (!table || where.trim() === '') return err('`table` and `where` are required.');
@@ -357,7 +348,7 @@ async function toolDeleteRecord(args: Record<string, unknown>, ctx?: SqliteToolC
   }
 }
 
-async function toolTransaction(args: Record<string, unknown>, ctx?: SqliteToolContext): Promise<SqliteToolResult> {
+async function toolTransaction(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
   const statements = Array.isArray(args.statements) ? (args.statements as string[]) : [];
   if (statements.length === 0) return err('`statements` must be a non-empty array of SQL.');
   if (!(await writeGate(ctx, 'transaction'))) return err('Write operation denied.');
@@ -386,8 +377,8 @@ async function toolTransaction(args: Record<string, unknown>, ctx?: SqliteToolCo
 export function callSqliteTool(
   name: string,
   args: unknown,
-  ctx?: SqliteToolContext,
-): Promise<SqliteToolResult> | SqliteToolResult {
+  ctx?: ToolContext,
+): Promise<ToolResult> | ToolResult {
   const a = (args ?? {}) as Record<string, unknown>;
   switch (name) {
     case 'query':

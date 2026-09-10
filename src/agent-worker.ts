@@ -4,6 +4,7 @@ import type { AgentEvent } from './agent-service.js';
 import { logger } from './shared/logger.js';
 import { EARLY_METHODS } from './shared/constants.js';
 import { validateWorkerParams } from './shared/ipc-validation.js';
+import type { WorkerMethod } from './ipc/channels.js';
 
 type WorkerRequest =
   | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
@@ -139,6 +140,115 @@ function writeDiag(data: unknown): void {
 function tracePerm(msg: string): void {
   logger.debug(`perm ${msg}`);
 }
+
+// Single dispatch table replacing the historic switch. Each handler mirrors its
+// old case body 1:1: it returns the value to respond with (or throws), and the
+// dispatcher in handleRequest performs the actual respond/respondError. earlyInit
+// stays on its own fast path (handled before dispatch).
+type DispatchMethod = Exclude<WorkerMethod, 'earlyInit'>;
+// Uniform handler signature: `req` is cast at the single dispatch site. Each
+// literal entry re-narrows it (WorkerRequest & { method: 'X' }) so bodies keep
+// full param typing without paying a giant per-key union at lookup time.
+type DispatchHandler = (req: never) => unknown;
+const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
+  init: async (req: WorkerRequest & { method: 'init' }) => {
+    const t0 = Date.now();
+    try {
+      initPromise = service.init(req.params?.cwd, { deferMcp: req.params?.deferMcp });
+      await initPromise;
+      initDone = true;
+      writeDiag({ ok: true, ms: Date.now() - t0, cwd: service.getCwd() });
+      return { ok: true, cwd: service.getCwd() };
+    } catch (e) {
+      initDone = false;
+      writeDiag({ ok: false, ms: -1, error: e instanceof Error ? `${e.message}\n${e.stack}` : String(e) });
+      throw e;
+    }
+  },
+  chat: async (req: WorkerRequest & { method: 'chat' }) => {
+    await service.chat(req.params.input);
+  },
+  regenerate: async (req: WorkerRequest & { method: 'regenerate' }) => {
+    await service.regenerate(req.params.sessionId, req.params.userIndex);
+  },
+  withdraw: async (req: WorkerRequest & { method: 'withdraw' }) => service.withdraw(req.params.sessionId, req.params.userIndex),
+  abort: () => {
+    service.abort();
+  },
+  startSession: async (req: WorkerRequest & { method: 'startSession' }) => service.startSession(req.params?.name, req.params?.sessionId, req.params?.metadata, req.params?.prevSessionId),
+  prepareParentMemory: () => service.prepareParentMemory(),
+  listSessions: (req: WorkerRequest & { method: 'listSessions' }) => service.listSessions(req.params ?? {}),
+  getMessages: (req: WorkerRequest & { method: 'getMessages' }) => service.getMessages(req.params.sessionId, req.params),
+  getSlashLog: (req: WorkerRequest & { method: 'getSlashLog' }) => service.getSlashLog(req.params.sessionId),
+  getSlashLogPath: (req: WorkerRequest & { method: 'getSlashLogPath' }) => service.getSlashLogPath(req.params.sessionId),
+  deleteSession: async (req: WorkerRequest & { method: 'deleteSession' }) => {
+    await service.deleteSession(req.params.id);
+  },
+  renameSession: async (req: WorkerRequest & { method: 'renameSession' }) => {
+    await service.renameSession(req.params.id, req.params.name);
+  },
+  getConfig: () => service.getConfig(),
+  getProviders: () => service.getProviders(),
+  getStatus: () => ({
+    cwd: service.getCwd(),
+    busy: service.busy,
+    provider: service.getActiveProvider(),
+    model: service.getActiveModel(),
+  }),
+  getPermissions: () => service.getPermissions(),
+  getLanguage: () => service.getLanguage(),
+  reloadConfig: () => service.reloadConfig(),
+  getSpeechVisionConfig: () => service.getSpeechVisionConfig(),
+  setActiveSpeechProvider: (req: WorkerRequest & { method: 'setActiveSpeechProvider' }) => {
+    service.setActiveSpeechProvider(req.params.name);
+  },
+  setActiveTtsProvider: (req: WorkerRequest & { method: 'setActiveTtsProvider' }) => {
+    service.setActiveTtsProvider(req.params.name);
+  },
+  setActiveVisionProvider: (req: WorkerRequest & { method: 'setActiveVisionProvider' }) => {
+    service.setActiveVisionProvider(req.params.name);
+  },
+  saveSpeechProvider: (req: WorkerRequest & { method: 'saveSpeechProvider' }) => {
+    service.saveSpeechProvider(req.params.name, req.params.fields);
+  },
+  saveVisionProvider: (req: WorkerRequest & { method: 'saveVisionProvider' }) => {
+    service.saveVisionProvider(req.params.name, req.params.fields);
+  },
+  getSessionStats: (req: WorkerRequest & { method: 'getSessionStats' }) => service.getSessionStats(req.params.sessionId),
+  switchProvider: async (req: WorkerRequest & { method: 'switchProvider' }) => {
+    await service.switchProvider(req.params.name);
+  },
+  switchModel: (req: WorkerRequest & { method: 'switchModel' }) => service.switchModel(req.params.modelId),
+  setProviderOverride: (req: WorkerRequest & { method: 'setProviderOverride' }) => service.setProviderOverride(req.params.name, req.params.model),
+  setModelOverride: (req: WorkerRequest & { method: 'setModelOverride' }) => service.setModelOverride(req.params.modelId),
+  setDepthOverride: (req: WorkerRequest & { method: 'setDepthOverride' }) => service.setDepthOverride(req.params.level),
+  getActiveDepth: () => service.getActiveDepth(),
+  setPermissionsOverride: (req: WorkerRequest & { method: 'setPermissionsOverride' }) => service.setPermissionsOverride(req.params.mode),
+  getActiveMode: () => service.getActiveMode(),
+  getModels: (req: WorkerRequest & { method: 'getModels' }) => service.getModels(req.params?.providerName),
+  saveProvider: (req: WorkerRequest & { method: 'saveProvider' }) => {
+    service.saveProvider(req.params.name, req.params.fields);
+  },
+  setCwd: async (req: WorkerRequest & { method: 'setCwd' }) => {
+    await service.setCwd(req.params.cwd);
+    return { cwd: service.getCwd() };
+  },
+  getDefaultProjectDir: () => ({ dir: service.getDefaultProjectDir() }),
+  getSessionMetadata: (req: WorkerRequest & { method: 'getSessionMetadata' }) => service.getSessionMetadata(req.params.sessionId),
+  setSessionMetadata: (req: WorkerRequest & { method: 'setSessionMetadata' }) => {
+    service.setSessionMetadata(req.params.sessionId, req.params.metadata);
+  },
+  resolvePermission: async (req: WorkerRequest & { method: 'resolvePermission' }) => {
+    tracePerm(`resolvePermission id=${req.params.id} answer=${req.params.answer}`);
+    await service.resolvePermission(req.params.id, req.params.answer);
+  },
+  setMcpEnabled: (req: WorkerRequest & { method: 'setMcpEnabled' }) => service.setMcpEnabled(req.params.enabled),
+  getMcpStatus: () => service.getMcpStatus(),
+  getMcpServers: () => service.getMcpServers(),
+  setMcpServer: (req: WorkerRequest & { method: 'setMcpServer' }) => service.setMcpServer(req.params.name, req.params.enabled),
+  shutdown: () => service.shutdown(),
+};
+
 async function handleRequest(line: string | Record<string, unknown>): Promise<void> {
   let req: WorkerRequest;
   if (typeof line === 'string') {
@@ -188,185 +298,17 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
   if (req.method !== 'init' && !EARLY_METHODS.has(req.method) && initPromise !== null && !initDone) {
     await initPromise.catch(() => {});
   }
+  const handler = HANDLERS[req.method as DispatchMethod];
+  if (!handler) {
+    respondError(req.id, `Unknown method: ${(req as { method: string }).method}`);
+    return;
+  }
   try {
-    switch (req.method) {
-      case 'init':
-        try {
-          const t0 = Date.now();
-          initPromise = service.init(req.params?.cwd, { deferMcp: req.params?.deferMcp });
-          await initPromise;
-          initDone = true;
-          writeDiag({ ok: true, ms: Date.now() - t0, cwd: service.getCwd() });
-          respond(req.id, { ok: true, cwd: service.getCwd() });
-        } catch (e) {
-          initDone = false;
-          writeDiag({ ok: false, ms: -1, error: e instanceof Error ? `${e.message}\n${e.stack}` : String(e) });
-          respondError(req.id, e);
-        }
-        break;
-      case 'chat':
-        await service.chat(req.params.input);
-        respond(req.id);
-        break;
-      case 'regenerate':
-        await service.regenerate(req.params.sessionId, req.params.userIndex);
-        respond(req.id);
-        break;
-      case 'withdraw':
-        respond(req.id, await service.withdraw(req.params.sessionId, req.params.userIndex));
-        break;
-      case 'abort':
-        service.abort();
-        respond(req.id);
-        break;
-      case 'startSession':
-        respond(req.id, await service.startSession(req.params?.name, req.params?.sessionId, req.params?.metadata, req.params?.prevSessionId));
-        break;
-      case 'prepareParentMemory':
-        respond(req.id, await service.prepareParentMemory());
-        break;
-      case 'listSessions':
-        respond(req.id, await service.listSessions(req.params ?? {}));
-        break;
-      case 'getMessages':
-        respond(req.id, await service.getMessages(req.params.sessionId, req.params));
-        break;
-      case 'getSlashLog':
-        respond(req.id, await service.getSlashLog(req.params.sessionId));
-        break;
-      case 'getSlashLogPath':
-        respond(req.id, await service.getSlashLogPath(req.params.sessionId));
-        break;
-      case 'deleteSession':
-        await service.deleteSession(req.params.id);
-        respond(req.id);
-        break;
-      case 'renameSession':
-        await service.renameSession(req.params.id, req.params.name);
-        respond(req.id);
-        break;
-      case 'getConfig':
-        respond(req.id, service.getConfig());
-        break;
-      case 'getProviders':
-        respond(req.id, service.getProviders());
-        break;
-      case 'getStatus':
-        respond(req.id, {
-          cwd: service.getCwd(),
-          busy: service.busy,
-          provider: service.getActiveProvider(),
-          model: service.getActiveModel(),
-        });
-        break;
-      case 'getPermissions':
-        respond(req.id, service.getPermissions());
-        break;
-      case 'getLanguage':
-        respond(req.id, service.getLanguage());
-        break;
-      case 'reloadConfig':
-        respond(req.id, service.reloadConfig());
-        break;
-      case 'getSpeechVisionConfig':
-        respond(req.id, service.getSpeechVisionConfig());
-        break;
-      case 'setActiveSpeechProvider':
-        service.setActiveSpeechProvider(req.params.name);
-        respond(req.id);
-        break;
-      case 'setActiveTtsProvider':
-        service.setActiveTtsProvider(req.params.name);
-        respond(req.id);
-        break;
-      case 'setActiveVisionProvider':
-        service.setActiveVisionProvider(req.params.name);
-        respond(req.id);
-        break;
-      case 'saveSpeechProvider':
-        service.saveSpeechProvider(req.params.name, req.params.fields);
-        respond(req.id);
-        break;
-      case 'saveVisionProvider':
-        service.saveVisionProvider(req.params.name, req.params.fields);
-        respond(req.id);
-        break;
-      case 'getSessionStats':
-        respond(req.id, await service.getSessionStats(req.params.sessionId));
-        break;
-      case 'switchProvider':
-        await service.switchProvider(req.params.name);
-        respond(req.id);
-        break;
-      case 'switchModel':
-        respond(req.id, await service.switchModel(req.params.modelId));
-        break;
-      case 'setProviderOverride':
-        respond(req.id, await service.setProviderOverride(req.params.name, req.params.model));
-        break;
-      case 'setModelOverride':
-        respond(req.id, await service.setModelOverride(req.params.modelId));
-        break;
-      case 'setDepthOverride':
-        respond(req.id, await service.setDepthOverride(req.params.level));
-        break;
-      case 'getActiveDepth':
-        respond(req.id, service.getActiveDepth());
-        break;
-      case 'setPermissionsOverride':
-        respond(req.id, await service.setPermissionsOverride(req.params.mode));
-        break;
-      case 'getActiveMode':
-        respond(req.id, service.getActiveMode());
-        break;
-      case 'getModels':
-        respond(req.id, await service.getModels(req.params?.providerName));
-        break;
-      case 'saveProvider':
-        service.saveProvider(req.params.name, req.params.fields);
-        respond(req.id);
-        break;
-      case 'setCwd':
-        await service.setCwd(req.params.cwd);
-        respond(req.id, { cwd: service.getCwd() });
-        break;
-      case 'getDefaultProjectDir':
-        respond(req.id, { dir: service.getDefaultProjectDir() });
-        break;
-      case 'getSessionMetadata':
-        respond(req.id, service.getSessionMetadata(req.params.sessionId));
-        break;
-      case 'setSessionMetadata':
-        service.setSessionMetadata(req.params.sessionId, req.params.metadata);
-        respond(req.id);
-        break;
-      case 'resolvePermission':
-        tracePerm(`resolvePermission id=${req.params.id} answer=${req.params.answer}`);
-        await service.resolvePermission(req.params.id, req.params.answer);
-        respond(req.id);
-        break;
-      case 'setMcpEnabled':
-        respond(req.id, await service.setMcpEnabled(req.params.enabled));
-        break;
-      case 'getMcpStatus':
-        respond(req.id, await service.getMcpStatus());
-        break;
-      case 'getMcpServers':
-        respond(req.id, await service.getMcpServers());
-        break;
-      case 'setMcpServer':
-        respond(req.id, await service.setMcpServer(req.params.name, req.params.enabled));
-        break;
-      case 'shutdown':
-        await service.shutdown();
-        respond(req.id);
-        process.exit(0);
-        break;
-      default:
-        respondError((req as { id: number }).id, `Unknown method: ${(req as { method: string }).method}`);
-    }
+    const data = await handler(req as never);
+    respond(req.id, data);
+    if (req.method === 'shutdown') process.exit(0);
   } catch (e) {
-    respondError((req as { id: number }).id, e);
+    respondError(req.id, e);
   }
 }
 

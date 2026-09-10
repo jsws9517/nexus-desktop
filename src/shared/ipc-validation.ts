@@ -30,7 +30,7 @@ const S = {
 export const PERMISSION_ANSWERS = ['y', 'a', 'n'] as const;
 export const MAX_CHAT_INPUT = 65536;
 
-export const WORKER_METHODS: Record<string, MethodSpec> = {
+export const WORKER_METHODS = {
   earlyInit: { fields: { cwd: S.str() }, optional: ['cwd'] },
   init: { fields: { cwd: S.str(), deferMcp: S.bool() }, optional: ['cwd', 'deferMcp'] },
   chat: { fields: { input: S.str(MAX_CHAT_INPUT) } },
@@ -93,7 +93,7 @@ export const WORKER_METHODS: Record<string, MethodSpec> = {
   getSlashLog: { fields: { sessionId: S.str() } },
   getSlashLogPath: { fields: { sessionId: S.str() } },
   shutdown: { fields: {} },
-};
+} satisfies Record<string, MethodSpec>;
 
 function checkField(value: unknown, spec: FieldSpec, path: string): string | null {
   switch (spec.kind) {
@@ -120,7 +120,7 @@ function checkField(value: unknown, spec: FieldSpec, path: string): string | nul
 
 /** Validate a worker-routed request's params. Returns an error message or null. */
 export function validateWorkerParams(method: string, params?: Record<string, unknown>): string | null {
-  const spec = WORKER_METHODS[method];
+  const spec = (WORKER_METHODS as Record<string, MethodSpec>)[method];
   if (!spec) return `unknown method: ${method}`;
   if (!params) return null;
   for (const [key, fieldSpec] of Object.entries(spec.fields)) {

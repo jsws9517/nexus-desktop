@@ -16,9 +16,9 @@ process.env.HOME = tmp;
 process.env.USERPROFILE = tmp;
 process.env.LLMA_DATA_DIR = tmp;
 
-const { callSqliteTool, SQLITE_TOOLS, closeSqliteDbs } = await import(pathToFileURL(join(dist, 'sqlite-tools.js')));
-const { callFsTool, FILESYSTEM_TOOLS } = await import(pathToFileURL(join(dist, 'fs-internal.js')));
-const { callSequentialThinkTool, SEQUENTIAL_THINK_TOOLS } = await import(pathToFileURL(join(dist, 'sequential-think.js')));
+const { callSqliteTool, SQLITE_TOOLS, closeSqliteDbs } = await import(pathToFileURL(join(dist, 'tools', 'sqlite.js')));
+const { callFsTool, FILESYSTEM_TOOLS } = await import(pathToFileURL(join(dist, 'tools', 'filesystem.js')));
+const { callSequentialThinkTool, SEQUENTIAL_THINK_TOOLS } = await import(pathToFileURL(join(dist, 'tools', 'sequential-think.js')));
 const { callMemoryTool, MEMORY_WRITE_TOOLS, MEMORY_TOOL_DEFS, INTERNAL_MEMORY_TOOLS } =
   await import(pathToFileURL(join(dist, 'main', 'memory-kg.js')));
 const { WORKER_METHODS, validateWorkerParams, PERMISSION_ANSWERS } =
@@ -196,7 +196,7 @@ test('fs: list_directory_with_sizes bounds maxDepth and entry budget', async () 
 // ---------------------------------------------------------------- sequential-think
 
 test('seq: branchId prototype-pollution keys are contained (Map, not object)', async () => {
-  const thinker = (await import(pathToFileURL(join(dist, 'sequential-think.js'))));
+  const thinker = (await import(pathToFileURL(join(dist, 'tools', 'sequential-think.js'))));
   // Construct a fresh thinker-reachable call; branchId __proto__ must not reach
   // the prototype chain — the earlier shell already proves the pure function
   // path; here assert the branch registry does not break globals.

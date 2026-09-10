@@ -10,10 +10,9 @@
  * thought history + branch registry to report how the reasoning chain evolved.
  */
 
-export interface ThinkingResult {
-  content: string;
-  isError?: boolean;
-}
+import type { ToolResult } from './types.js';
+
+export type { ToolResult as ThinkingResult };
 
 function coerceInt(v: unknown): number | null {
   const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : Number.NaN;
@@ -30,7 +29,7 @@ function coerceBool(v: unknown): boolean | null {
   return null;
 }
 
-const err = (message: string): ThinkingResult => ({
+const err = (message: string): ToolResult => ({
   content: JSON.stringify({ error: message, status: 'failed' }, null, 2),
   isError: true,
 });
@@ -44,7 +43,7 @@ class SequentialThinker {
   private branches = new Map<string, Array<Record<string, unknown>>>();
   private branchOrder: string[] = [];
 
-  process(input: Record<string, unknown>): ThinkingResult {
+  process(input: Record<string, unknown>): ToolResult {
     try {
       // Required args (mirror the server's zod coercions / validation layer).
       const thought = input.thought;
@@ -119,7 +118,7 @@ class SequentialThinker {
 // matching the per-process singleton nature of the external stdio server.
 const thinker = new SequentialThinker();
 
-export function callSequentialThinkTool(name: string, args: unknown): ThinkingResult {
+export function callSequentialThinkTool(name: string, args: unknown): ToolResult {
   if (name !== 'sequentialthinking') {
     return err(`Tool "${name}" not found`);
   }
