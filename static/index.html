@@ -5,6 +5,11 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; script-src 'self'" />
   <title>Nexus Desktop</title>
   <link rel="stylesheet" href="./styles.css" />
+    <!-- Vega chart runtime (vendored bundles, loaded as classic scripts; the
+         renderer has no bundler, so these feed window.vegaEmbed for charts) -->
+    <script src="./vega.min.js"></script>
+    <script src="./vega-lite.min.js"></script>
+    <script src="./vega-embed.min.js"></script>
 </head>
 <body>
   <!-- Ambient sci-fi background layer (canvas particles + CSS grid/vignette) -->

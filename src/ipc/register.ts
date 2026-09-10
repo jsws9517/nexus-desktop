@@ -367,6 +367,35 @@ export function registerIpc(ctx: IpcContext): void {
     return { ok: true };
   });
 
+  // Write user-facing export bytes (chart PNG base64 / CSV text) to a
+  // user-picked location via a save dialog. The renderer encodes the payload,
+  // so the fs stays opaque to it and the target dir is user-chosen.
+  ipcMain.handle(
+    CHANNELS.saveArtifact,
+    async (_e, params: unknown): Promise<{ ok: boolean; path?: string; error?: string }> => {
+      const p = params as { defaultName?: unknown; data?: unknown; encoding?: unknown } | null;
+      if (!p || typeof p.data !== 'string') return { ok: false, error: 'Missing data' };
+      const defaultName =
+        typeof p.defaultName === 'string' && p.defaultName
+          ? p.defaultName.replace(/[\\/:*?"<>|]/g, '_').slice(0, 200)
+          : 'artifact';
+      const encoding = p.encoding === 'text' ? 'text' : 'base64';
+      const result = await dialog.showSaveDialog(ctx.getBrowserWindow()!, {
+        title: encoding === 'text' ? '导出文本' : '导出产物',
+        defaultPath: join(homedir(), defaultName),
+      });
+      if (result.canceled || !result.filePath) return { ok: false };
+      try {
+        const buffer =
+          encoding === 'text' ? Buffer.from(p.data, 'utf8') : Buffer.from(p.data, 'base64');
+        writeFileSync(result.filePath, buffer);
+        return { ok: true, path: result.filePath };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  );
+
   // Attachment metadata + inline image preview (≤2 MiB) so the UI can render
   // chips with size and thumbnails without exposing the fs to the renderer.
   ipcMain.handle(

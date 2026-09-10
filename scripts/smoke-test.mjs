@@ -215,6 +215,52 @@ await expect(defaultCreated, 'sqlite config-default db is created on first read'
 closeSqliteDbs();
 await fsMod.rm(sqTmp, { recursive: true, force: true });
 
+// --- P2 skills (src/skills/*): artifact envelope over the tool loop ---
+const { parseArtifactContent } = await import(pathToFileURL(join(__dirname, '..', 'dist', 'shared', 'artifact.js')));
+const { SHEET_TOOLS, SHEET_TOOL_DEFS, callSheetTool, CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } =
+  await import(pathToFileURL(join(__dirname, '..', 'dist', 'tools', 'index.js')));
+await expect(
+  SHEET_TOOLS.size === 2 && SHEET_TOOL_DEFS.every((d) => d.server === 'sheet-internal'),
+  'sheet-internal tool set',
+);
+await expect(CHART_TOOLS.has('bi.chart') && CHART_TOOL_DEFS[0].server === 'chart-internal', 'chart-internal tool set');
+const sheetTmp = pathMod.join(process.cwd(), '.smoke-sheet-test');
+await fsMod.mkdir(sheetTmp, { recursive: true });
+const csvPath = pathMod.join(sheetTmp, 'sales.csv');
+await fsMod.writeFile(csvPath, 'month,amount\nJan,120\nFeb,260\nMar,90\n', 'utf8');
+const sheetCtx = { getConfig: () => ({}), requestWriteApproval: async () => true };
+const sheetRead = await callSheetTool('sheet.read', { path: csvPath }, sheetCtx);
+const sheetArt = sheetRead.isError ? null : parseArtifactContent(sheetRead.content);
+await expect(
+  !sheetRead.isError && sheetArt?.type === 'sheet' && sheetArt.body.columns?.length === 2 && sheetArt.body.rowCount === 3,
+  'sheet.read parses CSV into a sheet artifact',
+  sheetRead.content?.slice(0, 60),
+);
+const chartRes = await callChartTool(
+  'bi.chart',
+  {
+    data: { columns: ['month', 'amount'], rows: [['Jan', 120], ['Feb', 260], ['Mar', 90]] },
+    mark: 'bar',
+    x: 'month',
+    y: 'amount',
+    title: 'Sales',
+  },
+  sheetCtx,
+);
+const chartArt = chartRes.isError ? null : parseArtifactContent(chartRes.content);
+await expect(
+  !chartRes.isError && chartArt?.type === 'chart' && chartArt.body.spec?.marks?.[0]?.type === 'rect',
+  'bi.chart compiles a Vega spec into a chart artifact',
+  chartRes.content?.slice(0, 60),
+);
+const chartBad = await callChartTool(
+  'bi.chart',
+  { data: { columns: ['a'], rows: [[1]] }, mark: 'bar', encoding: { gradient: { field: 'a', type: 'quantitative' } } },
+  sheetCtx,
+);
+await expect(chartBad.isError === true, 'bi.chart rejects untracked encoding channels', (chartBad.content || '').slice(0, 80));
+await fsMod.rm(sheetTmp, { recursive: true, force: true });
+
 await req('shutdown');
 child.on('exit', () => {
   console.log(ok ? '\nSMOKE TEST: ALL PASS' : '\nSMOKE TEST: FAILED');

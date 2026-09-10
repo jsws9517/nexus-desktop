@@ -12,18 +12,26 @@ import { registryNames, registryDefs } from './types.js';
 import { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './filesystem.js';
 import { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } from './sequential-think.js';
 import { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool, closeSqliteDbs } from './sqlite.js';
+import { SKILL_REGISTRIES } from '../skills/index.js';
 
 export type { ToolDef, ToolResult, ToolContext, ToolRegistry };
 export { registryNames, registryDefs };
 export { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './filesystem.js';
 export { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } from './sequential-think.js';
 export { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool, closeSqliteDbs } from './sqlite.js';
+export { SKILL_REGISTRIES } from '../skills/index.js';
+export { SHEET_TOOLS, SHEET_TOOL_DEFS, callSheetTool } from '../skills/sheet.js';
+export { CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } from '../skills/chart.js';
 
-/** Every in-process tool family served by the worker. */
+/**
+ * Every in-process tool family served by the worker — utility tools first,
+ * then the artifact-producing office skills (which share the same loop).
+ */
 export const TOOL_REGISTRIES: ToolRegistry[] = [
   { id: 'filesystem', defs: FILESYSTEM_TOOL_DEFS, call: callFsTool },
   { id: 'sequential-thinking', defs: SEQUENTIAL_THINK_TOOL_DEFS, call: callSequentialThinkTool },
   { id: 'sqlite', defs: SQLITE_TOOL_DEFS, call: callSqliteTool },
+  ...SKILL_REGISTRIES,
 ];
 
 /** Flat name set across all registries — used to shadow same-named MCP tools. */

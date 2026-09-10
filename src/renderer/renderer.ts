@@ -4,6 +4,7 @@ import { initFx } from './fx.js';
 import { isWorkerBlockText } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
+import { tryMountArtifact } from './artifacts/index.js';
 
 interface SessionInfo {
   id: string;
@@ -177,6 +178,8 @@ declare global {
       readImagePreview(path: string): Promise<string | undefined>;
       // Paste image from system clipboard (consistent with coder-core ALT+V).
       pasteImage(): Promise<{ path: string; preview: string } | null>;
+      // Export an artifact payload (base64 bytes or text) via a save dialog.
+      saveArtifact(defaultName: string, data: string, encoding?: 'base64' | 'text'): Promise<{ ok: boolean; path?: string; error?: string }>;
       getPathForFile(file: File): string;
       regenerate(sessionId: string, userIndex: number): Promise<unknown>;
       withdraw(sessionId: string, userIndex: number): Promise<string>;
@@ -744,6 +747,25 @@ function handleEvent(event: AgentEvent): void {
     case 'tool_result': {
       const rec = toolCards.get(event.index);
       if (rec) {
+        // Artifact skills return an envelope — mount the preview card directly
+        // (no truncation, no collapse) so the product is visible immediately.
+        if (!event.isError) {
+          const artifactEl = tryMountArtifact(event.content);
+          if (artifactEl) {
+            rec.card.classList.remove('collapsed');
+            const chevronEl = rec.card.querySelector('.tool-chevron');
+            if (chevronEl) chevronEl.textContent = '▾';
+            const argsEl = rec.card.querySelector('.tool-args');
+            if (argsEl) argsEl.classList.remove('hidden');
+            const resultEl = rec.resultEl ?? document.createElement('div');
+            resultEl.className = 'tool-result';
+            resultEl.appendChild(artifactEl);
+            rec.card.appendChild(resultEl);
+            rec.resultEl = resultEl;
+            scrollToBottom();
+            break;
+          }
+        }
         rec.resultText = event.isError
           ? `❌ ${event.content}`
           : event.content.length > 4000
@@ -1228,8 +1250,14 @@ function renderHistoryRow(m: StoredMsg): void {
 }
 
 /** Collapsed tool-result card for restored history rows (name isn't persisted
- *  on tool rows, so label them generically). Content hydrates on first expand. */
+ *  on tool rows, so label them generically). Content hydrates on first expand.
+ *  Artifact envelopes skip the collapse entirely and render the preview card. */
 function addToolResultBlock(content: string): void {
+  const artifactEl = tryMountArtifact(content);
+  if (artifactEl) {
+    messagesEl.appendChild(artifactEl);
+    return;
+  }
   const card = document.createElement('div');
   card.className = 'tool-card collapsed';
   const header = document.createElement('button');

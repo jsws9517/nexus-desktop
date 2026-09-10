@@ -211,6 +211,13 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   },
   tabsOverloaded: { 'zh-CN': '系统资源过高，已暂停新建会话', en: 'System overloaded; new sessions paused' },
   tabsOpenFailed: { 'zh-CN': '无法打开会话标签：', en: 'Failed to open session tab: ' },
+
+  // P2 WorkBuddy artifact previews.
+  artifactExportCsv: { 'zh-CN': '导出 CSV', en: 'Export CSV' },
+  artifactExportPng: { 'zh-CN': '导出 PNG', en: 'Export PNG' },
+  artifactError: { 'zh-CN': '产物生成失败', en: 'Artifact generation failed' },
+  artifactEmptyData: { 'zh-CN': '（空数据）', en: '(empty data)' },
+  artifactTruncated: { 'zh-CN': '已截断', en: 'truncated' },
 };
 
 export function setUiLang(lang: Lang): void {

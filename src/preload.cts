@@ -56,6 +56,9 @@ const api = {
   readImagePreview: (path: string) => ipcRenderer.invoke('nexus:readImagePreview', path),
   // Paste image from system clipboard (consistent with coder-core ALT+V).
   pasteImage: () => ipcRenderer.invoke('nexus:pasteImage') as Promise<{ path: string; preview: string } | null>,
+  // Export an artifact payload (base64 bytes or text) via a save dialog.
+  saveArtifact: (defaultName: string, data: string, encoding?: 'base64' | 'text') =>
+    ipcRenderer.invoke('nexus:saveArtifact', { defaultName, data, encoding }) as Promise<{ ok: boolean; path?: string; error?: string }>,
   // Resolve a dropped/pasted File to its real path (Electron webUtils).
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   openConfigWeb: () => ipcRenderer.invoke('nexus:openConfigWeb'),

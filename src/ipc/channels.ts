@@ -95,6 +95,7 @@ export const CHANNELS = {
   getFileInfos: 'nexus:getFileInfos',
   readImagePreview: 'nexus:readImagePreview',
   pasteImage: 'nexus:pasteImage',
+  saveArtifact: 'nexus:saveArtifact',
   openConfigWeb: 'nexus:openConfigWeb',
   getUpdateState: 'nexus:getUpdateState',
   getCurrentVersion: 'nexus:getCurrentVersion',
