@@ -1239,9 +1239,10 @@ function countUserRows(rows: StoredMsg[]): number {
 interface ToolCallInfo {
   id: string;
   name: string;
+  args: Record<string, unknown>;
 }
 
-/** Parse toolCalls JSON from an assistant row into id→name pairs. */
+/** Parse toolCalls JSON from an assistant row into id→name→args triples. */
 function parseToolCalls(json: string | undefined): ToolCallInfo[] {
   if (!json) return [];
   try {
@@ -1249,21 +1250,57 @@ function parseToolCalls(json: string | undefined): ToolCallInfo[] {
     if (!Array.isArray(arr)) return [];
     return arr
       .filter((tc: any) => tc?.id && (tc?.function?.name || tc?.name))
-      .map((tc: any) => ({
-        id: tc.id,
-        name: tc.function?.name ?? tc.name ?? 'unknown'
-      }));
+      .map((tc: any) => {
+        const rawArgs = tc.function?.args ?? tc.input ?? {};
+        const args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+        return {
+          id: tc.id,
+          name: tc.function?.name ?? tc.name ?? 'unknown',
+          args: args ?? {}
+        };
+      });
   } catch {
     return [];
   }
 }
 
 /** Render one persisted message row into the history view. */
-function renderHistoryRow(m: StoredMsg, toolNameMap?: Map<string, string>): void {
+function renderHistoryRow(m: StoredMsg, toolCallInfoMap?: Map<string, ToolCallInfo>): void {
   if (m.role === 'user') {
     addUser(String(m.content ?? ''), m.id);
   } else if (m.role === 'assistant') {
     if (m.thinking) addThinkingBlock(String(m.thinking));
+    const toolCalls = parseToolCalls(m.toolCalls);
+    if (toolCalls.length > 0) {
+      for (const tc of toolCalls) {
+        const card = document.createElement('div');
+        card.className = 'tool-card collapsed';
+        card.dataset.toolCallId = tc.id;
+        const header = document.createElement('button');
+        header.className = 'tool-header';
+        const chevron = document.createElement('span');
+        chevron.className = 'tool-chevron';
+        chevron.textContent = '▸';
+        const name = document.createElement('span');
+        name.className = 'tool-name';
+        name.textContent = `🔧 ${tc.name}`;
+        header.appendChild(chevron);
+        header.appendChild(name);
+        const args = document.createElement('div');
+        args.className = 'tool-args hidden';
+        args.textContent = JSON.stringify(tc.args ?? {}, null, 2);
+        card.appendChild(header);
+        card.appendChild(args);
+        messagesEl.appendChild(card);
+        header.addEventListener('click', () => {
+          const collapsed = card.classList.toggle('collapsed');
+          chevron.textContent = collapsed ? '▸' : '▾';
+          args.classList.toggle('hidden', collapsed);
+          const resultEl = card.querySelector('.tool-result');
+          if (resultEl) resultEl.classList.toggle('hidden', collapsed);
+        });
+      }
+    }
     if (m.content) {
       const asst = ensureAssistant();
       asst.buffer = String(m.content).replace(/^[\s\u00a0]+/, '');
@@ -1272,8 +1309,22 @@ function renderHistoryRow(m: StoredMsg, toolNameMap?: Map<string, string>): void
       curAssistant = null;
     }
   } else if (m.role === 'tool' && m.content) {
-    const toolName = toolNameMap?.get(String(m.toolCallId ?? '')) ?? undefined;
-    addToolResultBlock(String(m.content), toolName);
+    const tcId = String(m.toolCallId ?? '');
+    const existingCard = tcId ? messagesEl.querySelector(`[data-tool-call-id="${tcId}"]`) : null;
+    if (existingCard) {
+      existingCard.classList.remove('collapsed');
+      const chevronEl = existingCard.querySelector('.tool-chevron');
+      if (chevronEl) chevronEl.textContent = '▾';
+      const argsEl = existingCard.querySelector('.tool-args');
+      if (argsEl) argsEl.classList.remove('hidden');
+      const resultEl = document.createElement('div');
+      resultEl.className = 'tool-result';
+      resultEl.textContent = String(m.content);
+      existingCard.appendChild(resultEl);
+    } else {
+      const tcInfo = toolCallInfoMap?.get(tcId);
+      addToolResultBlock(String(m.content), tcInfo?.name);
+    }
   }
 }
 
@@ -1449,15 +1500,15 @@ function renderMessageWindow(scroll = true): void {
     bar.appendChild(btn);
     messagesEl.appendChild(bar);
   }
-  const toolNameMap = new Map<string, string>();
+  const toolCallInfoMap = new Map<string, ToolCallInfo>();
   for (const row of msgItems) {
     if (row.role === 'assistant') {
       for (const tc of parseToolCalls(row.toolCalls)) {
-        toolNameMap.set(tc.id, tc.name);
+        toolCallInfoMap.set(tc.id, tc);
       }
     }
   }
-  for (let i = msgWindowStart; i < msgItems.length; i++) renderHistoryRow(msgItems[i], toolNameMap);
+  for (let i = msgWindowStart; i < msgItems.length; i++) renderHistoryRow(msgItems[i], toolCallInfoMap);
   if (scroll) scrollToBottom();
 }
 
