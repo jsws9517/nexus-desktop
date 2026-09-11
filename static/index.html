@@ -18,11 +18,11 @@
     <div id="fx-grid"></div>
     <div id="fx-vignette"></div>
   </div>
-  <div id="app">
-    <header id="toolbar">
+  <div id="app" role="application" data-i18n-aria-label="appLabel" aria-label="Nexus Desktop">
+    <header id="toolbar" role="toolbar" aria-label="主工具栏">
       <div class="toolbar-left">
         <button id="btn-open-folder" class="btn ghost" title="Open project folder" data-i18n="openProject">📁 打开项目</button>
-        <span id="cwd-label" class="cwd" title="Current project directory"></span>
+        <span id="cwd-label" class="cwd" title="Current project directory" aria-live="polite"></span>
       </div>
       <div class="toolbar-right">
         <label class="field-label" data-i18n="themeLabel">主题</label>
@@ -44,13 +44,13 @@
     </header>
 
     <div id="layout">
-      <aside id="sidebar">
+      <aside id="sidebar" role="complementary" aria-label="会话侧边栏">
         <div class="sidebar-head">
           <span class="sidebar-title" data-i18n="sessions">会话</span>
           <button id="btn-new-session" class="btn primary small" title="New session" data-i18n="newSession">＋ 新建</button>
         </div>
-        <input id="session-search" class="session-search" type="text" data-i18n-placeholder="searchSessions" placeholder="搜索会话…" autocomplete="off" />
-        <ul id="session-list"></ul>
+        <input id="session-search" class="session-search" type="text" data-i18n-placeholder="searchSessions" placeholder="搜索会话…" autocomplete="off" aria-label="搜索会话" />
+        <ul id="session-list" role="listbox" aria-label="会话列表"></ul>
         <div id="session-pager" class="session-pager hidden">
           <button id="pager-prev" class="btn ghost small" data-i18n="pagerPrev">‹ 上一页</button>
           <span id="pager-info"></span>
@@ -59,20 +59,20 @@
         <button id="btn-collapse-sidebar" class="sidebar-toggle" title="折叠侧栏" data-i18n-title="collapseSidebar">◀</button>
       </aside>
 
-      <main id="chat-panel">
-        <div id="tab-bar" class="tab-bar"></div>
+      <main id="chat-panel" role="main" aria-label="聊天面板">
+        <div id="tab-bar" class="tab-bar" role="tablist" aria-label="会话标签页"></div>
         <button id="btn-freeze" class="freeze-btn hidden" data-i18n="freeze" title="Ctrl+.">❄ 冻结视图</button>
         <div id="chat-empty" class="chat-empty hidden" data-i18n="chatEmptyHint">点击「＋ 新建」或输入 /new 开始新会话，也可以直接输入第一条消息</div>
-        <div id="messages"></div>
-        <div id="input-area">
-          <div id="attachments" class="attachments hidden"></div>
+        <div id="messages" role="log" aria-label="消息历史" aria-live="polite"></div>
+        <div id="input-area" role="region" aria-label="消息输入区域">
+          <div id="attachments" class="attachments hidden" aria-label="附件列表"></div>
           <div class="input-card">
             <div class="composer">
-              <textarea id="input" rows="4" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
+              <textarea id="input" rows="4" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息，Enter 发送，Shift+Enter 换行…" aria-label="消息输入框"></textarea>
             </div>
-            <div class="input-actions">
+            <div class="input-actions" role="toolbar" aria-label="输入操作">
               <div class="input-left">
-                <button id="btn-attach" class="btn icon" data-i18n-title="attachTitle" title="添加附件">＋</button>
+                <button id="btn-attach" class="btn icon" data-i18n-title="attachTitle" title="添加附件" aria-label="添加附件">＋</button>
                 <div id="mcp-box" class="mcp-box">
                   <label id="mcp-toggle" class="mcp-toggle" data-i18n-title="mcpMasterTitle">
                     <input type="checkbox" checked />
@@ -93,15 +93,15 @@
         </div>
       </main>
 
-      <aside id="right-sidebar">
+      <aside id="right-sidebar" role="complementary" aria-label="信息面板">
         <div class="rside-section">
           <div class="rside-title" data-i18n="resourcePanelTitle">系统资源</div>
-          <div id="rside-resource" class="rside-resource">—</div>
+          <div id="rside-resource" class="rside-resource" aria-live="polite">—</div>
         </div>
         <div class="rside-divider"></div>
         <div class="rside-section">
           <div class="rside-title" data-i18n="sessionInfo">会话信息</div>
-          <div class="info-grid">
+          <div class="info-grid" role="list" aria-label="会话详情">
             <div class="info-row"><span class="info-label">Provider</span><span class="info-value" id="rside-provider">—</span></div>
             <div class="info-row"><span class="info-label">Model</span><span class="info-value" id="rside-model">—</span></div>
             <div class="info-row"><span class="info-label" data-i18n="sessionId">会话 ID</span><span class="info-value info-value-mono info-value-copy" id="rside-session-id">—</span></div>
@@ -124,9 +124,9 @@
   </div>
 
   <!-- Permission modal -->
-  <div id="perm-overlay" class="overlay hidden">
+  <div id="perm-overlay" class="overlay hidden" role="dialog" aria-labelledby="perm-title" aria-modal="true">
     <div class="modal">
-      <h3 data-i18n="permRequired">权限确认</h3>
+      <h3 id="perm-title" data-i18n="permRequired">权限确认</h3>
       <pre id="perm-count" class="hidden"></pre>
       <pre id="perm-question"></pre>
       <div class="modal-actions">
@@ -138,11 +138,11 @@
   </div>
 
   <!-- Settings modal -->
-  <div id="settings-overlay" class="overlay hidden">
+  <div id="settings-overlay" class="overlay hidden" role="dialog" aria-labelledby="settings-title" aria-modal="true">
     <div class="modal settings">
       <div class="modal-head">
-        <h3 data-i18n="settings">设置</h3>
-        <button id="settings-close" class="btn ghost small">✕</button>
+        <h3 id="settings-title" data-i18n="settings">设置</h3>
+        <button id="settings-close" class="btn ghost small" aria-label="关闭设置">✕</button>
       </div>
       <div id="settings-body"></div>
       <div class="modal-actions">
@@ -154,9 +154,9 @@
   </div>
 
   <!-- Confirm modal -->
-  <div id="confirm-overlay" class="overlay hidden">
+  <div id="confirm-overlay" class="overlay hidden" role="dialog" aria-labelledby="confirm-title" aria-modal="true">
     <div class="modal small">
-      <h3 data-i18n="confirm">确认</h3>
+      <h3 id="confirm-title" data-i18n="confirm">确认</h3>
       <p id="confirm-msg"></p>
       <div class="modal-actions">
         <button id="confirm-cancel" class="btn ghost" data-i18n="cancel">取消</button>
@@ -166,10 +166,10 @@
   </div>
 
   <!-- Rename modal -->
-  <div id="rename-overlay" class="overlay hidden">
+  <div id="rename-overlay" class="overlay hidden" role="dialog" aria-labelledby="rename-title" aria-modal="true">
     <div class="modal small">
-      <h3 data-i18n="renameSession">重命名会话</h3>
-      <input id="rename-input" class="modal-input" data-i18n-placeholder="sessionNamePh" placeholder="会话名称" />
+      <h3 id="rename-title" data-i18n="renameSession">重命名会话</h3>
+      <input id="rename-input" class="modal-input" data-i18n-placeholder="sessionNamePh" placeholder="会话名称" aria-label="会话名称" />
       <div class="modal-actions">
         <button id="rename-cancel" class="btn ghost" data-i18n="cancel">取消</button>
         <button id="rename-ok" class="btn primary" data-i18n="ok">确定</button>

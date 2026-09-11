@@ -377,6 +377,141 @@ let msgTotal = 0;
 let msgUserBefore = 0;
 let msgWindowStart = 0;
 
+// ---------- Accessibility & UX utilities ----------
+
+/** Trap focus within a modal dialog for keyboard navigation */
+function trapFocus(modal: HTMLElement): void {
+  const focusableElements = modal.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  );
+  const firstFocusable = focusableElements[0];
+  const lastFocusable = focusableElements[focusableElements.length - 1];
+
+  modal.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+
+    if (e.shiftKey) {
+      if (document.activeElement === firstFocusable) {
+        lastFocusable?.focus();
+        e.preventDefault();
+      }
+    } else {
+      if (document.activeElement === lastFocusable) {
+        firstFocusable?.focus();
+        e.preventDefault();
+      }
+    }
+  });
+
+  firstFocusable?.focus();
+}
+
+/** Create a skeleton loader element */
+function createSkeleton(type: 'text' | 'session' | 'avatar' = 'text'): HTMLElement {
+  const el = document.createElement('div');
+  el.className = type === 'session' ? 'session-skeleton' : `skeleton skeleton-${type}`;
+  el.setAttribute('aria-hidden', 'true');
+  if (type === 'session') {
+    el.innerHTML = '<div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div>';
+  }
+  return el;
+}
+
+/** Add skip link for background animation */
+function addSkipLink(): void {
+  const skipLink = document.createElement('a');
+  skipLink.href = '#input';
+  skipLink.className = 'skip-link';
+  skipLink.textContent = '跳转到输入框';
+  skipLink.setAttribute('data-i18n', 'skipToInput');
+  document.body.insertBefore(skipLink, document.body.firstChild);
+}
+
+/** Show onboarding overlay for first-time users */
+const ONBOARDING_KEY = 'nexus.onboarding.completed';
+function showOnboarding(): void {
+  const completed = localStorage.getItem(ONBOARDING_KEY);
+  if (completed) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay onboarding-overlay';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-label', '新手引导');
+
+  const modal = document.createElement('div');
+  modal.className = 'modal onboarding-modal';
+
+  const steps = [
+    { icon: '💬', title: '开始对话', desc: '在下方输入框输入消息，按 Enter 发送' },
+    { icon: '📁', title: '打开项目', desc: '点击左上角「打开项目」选择工作目录' },
+    { icon: '⚙️', title: '配置模型', desc: '点击右上角「设置」配置 AI 模型和 API Key' },
+    { icon: '🔑', title: '权限控制', desc: '工具执行前会请求权限，可选择「始终允许」' },
+  ];
+
+  let currentStep = 0;
+
+  const renderStep = () => {
+    modal.innerHTML = '';
+    const step = steps[currentStep];
+
+    const icon = document.createElement('div');
+    icon.className = 'onboarding-icon';
+    icon.textContent = step.icon;
+
+    const title = document.createElement('h3');
+    title.textContent = step.title;
+
+    const desc = document.createElement('p');
+    desc.textContent = step.desc;
+
+    const progress = document.createElement('div');
+    progress.className = 'onboarding-progress';
+    progress.textContent = `${currentStep + 1} / ${steps.length}`;
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+
+    if (currentStep > 0) {
+      const prevBtn = document.createElement('button');
+      prevBtn.className = 'btn ghost';
+      prevBtn.textContent = '上一步';
+      prevBtn.addEventListener('click', () => { currentStep--; renderStep(); });
+      actions.appendChild(prevBtn);
+    }
+
+    if (currentStep < steps.length - 1) {
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'btn primary';
+      nextBtn.textContent = '下一步';
+      nextBtn.addEventListener('click', () => { currentStep++; renderStep(); });
+      actions.appendChild(nextBtn);
+    } else {
+      const finishBtn = document.createElement('button');
+      finishBtn.className = 'btn primary';
+      finishBtn.textContent = '开始使用';
+      finishBtn.addEventListener('click', () => { overlay.remove(); localStorage.setItem(ONBOARDING_KEY, 'true'); });
+      actions.appendChild(finishBtn);
+    }
+
+    const skipBtn = document.createElement('button');
+    skipBtn.className = 'btn ghost';
+    skipBtn.textContent = '跳过引导';
+    skipBtn.addEventListener('click', () => { overlay.remove(); localStorage.setItem(ONBOARDING_KEY, 'true'); });
+
+    modal.appendChild(icon);
+    modal.appendChild(title);
+    modal.appendChild(desc);
+    modal.appendChild(progress);
+    modal.appendChild(actions);
+    modal.appendChild(skipBtn);
+  };
+
+  renderStep();
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  trapFocus(modal);
+}
+
 // ---------- i18n ---------- (moved to i18n.ts; see imports above)
 
 // ---------- theme ----------
@@ -950,9 +1085,15 @@ function errText(e: unknown): string {
 let streamRenderTimer: ReturnType<typeof setTimeout> | null = null;
 const STREAM_MD_MAX = 12000;
 function renderAssistantStream(asst: { stream: HTMLElement; buffer: string }): void {
-  asst.stream.innerHTML = renderBlocks(asst.buffer);
-  attachCodeCopy(asst.stream);
-  hydrateImages(asst.stream);
+  try {
+    asst.stream.innerHTML = renderBlocks(asst.buffer);
+    attachCodeCopy(asst.stream);
+    hydrateImages(asst.stream);
+  } catch (err) {
+    console.error('Markdown render error:', err);
+    asst.stream.textContent = asst.buffer;
+    showToast('渲染出错，已切换到纯文本模式', 'warning');
+  }
 }
 function scheduleStreamRender(asst: { stream: HTMLElement; buffer: string }): void {
   if (streamRenderTimer) return;
@@ -1057,6 +1198,7 @@ function confirmDialog(msg: string): Promise<boolean> {
     const msgEl = $('#confirm-msg') as HTMLElement;
     msgEl.textContent = msg;
     overlay.classList.remove('hidden');
+    trapFocus(overlay.querySelector('.modal')!);
     const cleanup = (val: boolean) => {
       overlay.classList.add('hidden');
       overlay.querySelectorAll('button').forEach((b) => b.replaceWith(b.cloneNode(true)));
@@ -1077,6 +1219,7 @@ function promptDialog(title: string, initial: string): Promise<string | null> {
     h3.textContent = title;
     input.value = initial;
     overlay.classList.remove('hidden');
+    trapFocus(overlay.querySelector('.modal')!);
     input.focus();
     input.select();
     const cleanup = (val: string | null) => {
@@ -1151,32 +1294,38 @@ function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void
     e.stopPropagation();
     const ok = await confirmDialog(t('deleteConfirm', { name: s.name }));
     if (!ok) return;
-    await window.nexusDesktop.deleteSession(s.id);
-    delete mcpPrefs[s.id];
-    saveMcpPrefs();
-    clearMsgCache(s.id);
-    pinnedIds = pinnedIds.filter((x) => x !== s.id);
-    if (currentSessionId === s.id) {
-      // Deleting the active session must NOT create a new one. Clear the
-      // view; the core agent's current session is unset by deleteSession,
-      // so the next message lazily starts a fresh session (chat()).
-      currentSessionId = '';
-      messagesEl.innerHTML = '';
-      toolCards.clear();
-      tasks.clear();
-      renderTasks();
-      curAssistant = null;
-      curThinking = null;
-      msgItems = [];
-      msgOffset = 0;
-      msgTotal = 0;
-      msgUserBefore = 0;
-      msgWindowStart = 0;
-      rsideToken.textContent = '—';
-      rsideToken.title = '';
+    try {
+      await window.nexusDesktop.deleteSession(s.id);
+      delete mcpPrefs[s.id];
+      saveMcpPrefs();
+      clearMsgCache(s.id);
+      pinnedIds = pinnedIds.filter((x) => x !== s.id);
+      showToast(`会话「${s.name}」已删除`, 'success');
+      if (currentSessionId === s.id) {
+        // Deleting the active session must NOT create a new one. Clear the
+        // view; the core agent's current session is unset by deleteSession,
+        // so the next message lazily starts a fresh session (chat()).
+        currentSessionId = '';
+        messagesEl.innerHTML = '';
+        toolCards.clear();
+        tasks.clear();
+        renderTasks();
+        curAssistant = null;
+        curThinking = null;
+        msgItems = [];
+        msgOffset = 0;
+        msgTotal = 0;
+        msgUserBefore = 0;
+        msgWindowStart = 0;
+        rsideToken.textContent = '—';
+        rsideToken.title = '';
+      }
+      await refreshSessions();
+      if (currentSessionId === '') await refreshSidebarSession();
+    } catch (err) {
+      showToast('删除会话失败', 'error');
+      console.error('Delete session error:', err);
     }
-    await refreshSessions();
-    if (currentSessionId === '') await refreshSidebarSession();
   });
   actions.appendChild(pinBtn);
   actions.appendChild(renameBtn);
@@ -1188,6 +1337,12 @@ function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void
 }
 
 async function refreshSessions(activeId?: string): Promise<void> {
+  // Show skeleton loading state
+  sessionListEl.innerHTML = '';
+  for (let i = 0; i < 5; i++) {
+    sessionListEl.appendChild(createSkeleton('session'));
+  }
+
   try {
     pinnedIds = await window.nexusDesktop.getPinned();
   } catch {}
@@ -1915,18 +2070,20 @@ function abbreviatePath(p: string, segments = 2): string {
 
 let toastEl: HTMLDivElement | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-function showToast(msg: string): void {
+function showToast(msg: string, type?: 'success' | 'error' | 'warning', duration = 3000): void {
   if (!toastEl) {
     toastEl = document.createElement('div');
     toastEl.className = 'nexus-toast';
     document.body.appendChild(toastEl);
   }
   toastEl.textContent = msg;
+  toastEl.className = 'nexus-toast';
+  if (type) toastEl.classList.add(type);
   toastEl.classList.add('show');
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     toastEl?.classList.remove('show');
-  }, 1600);
+  }, duration);
 }
 
 function wireCopy(el: HTMLElement, getText: () => string, msg: () => string): void {
@@ -1952,8 +2109,11 @@ function makeMsgCopyBtn(getText: string | (() => string)): HTMLElement {
     try {
       await navigator.clipboard.writeText(text);
       btn.textContent = t('copied');
+      showToast('已复制到剪贴板');
       setTimeout(() => { btn.textContent = t('copy'); }, 1200);
-    } catch { /* ignore */ }
+    } catch {
+      showToast('复制失败');
+    }
   });
   return btn;
 }
@@ -2519,6 +2679,7 @@ function showPermission(req: { id: string; question: string; sessionId?: string 
   permBatch.push(req);
   if (permOverlay.classList.contains('hidden')) {
     permOverlay.classList.remove('hidden');
+    trapFocus(permOverlay.querySelector('.modal')!);
   }
   if (permTimer !== null) clearTimeout(permTimer);
   permTimer = setTimeout(flushPermBatch, BATCH_WINDOW_MS);
@@ -2636,6 +2797,7 @@ interface ModelRowOptions {
   providers: Array<{ name: string; model: string; baseUrl: string; hasKey: boolean }>;
   activeName: string;
   showCategory?: boolean;
+  container?: HTMLElement;
 }
 
 function buildModelRow(opts: ModelRowOptions): void {
@@ -2732,19 +2894,113 @@ function buildModelRow(opts: ModelRowOptions): void {
       settingsMsg.textContent = '';
     });
   });
-  settingsBody.appendChild(row);
+  (opts.container || settingsBody).appendChild(row);
 }
 
 function buildSettings(providersList: ProviderInfo[]): void {
   settingsBody.innerHTML = '';
+
+  // Create settings navigation tabs
+  const nav = document.createElement('div');
+  nav.className = 'settings-nav';
+  nav.setAttribute('role', 'tablist');
+  nav.setAttribute('aria-label', '设置导航');
+
+  const sections = [
+    { id: 'providers', label: t('providers') || '模型' },
+    { id: 'speech', label: t('speechSection') || '语音' },
+    { id: 'vision', label: t('visionSection') || '视觉' },
+    { id: 'startup', label: t('startupSection') || '启动' },
+    { id: 'resource', label: t('resourceSection') || '资源' },
+    { id: 'appearance', label: t('appearanceSection') || '外观' },
+    { id: 'update', label: t('updateSection') || '更新' },
+  ];
+
+  const contentArea = document.createElement('div');
+  contentArea.className = 'settings-content';
+  contentArea.style.flex = '1';
+
+  const sectionElements: Record<string, HTMLElement> = {};
+
+  sections.forEach((section, index) => {
+    const navItem = document.createElement('button');
+    navItem.className = `settings-nav-item ${index === 0 ? 'active' : ''}`;
+    navItem.textContent = section.label;
+    navItem.setAttribute('role', 'tab');
+    navItem.setAttribute('aria-selected', index === 0 ? 'true' : 'false');
+    navItem.dataset.section = section.id;
+
+    const sectionEl = document.createElement('div');
+    sectionEl.className = 'settings-section';
+    sectionEl.id = `settings-section-${section.id}`;
+    sectionEl.setAttribute('role', 'tabpanel');
+    sectionEl.style.display = index === 0 ? 'block' : 'none';
+    sectionElements[section.id] = sectionEl;
+
+    navItem.addEventListener('click', () => {
+      Object.values(sectionElements).forEach((el) => (el.style.display = 'none'));
+      nav.querySelectorAll('.settings-nav-item').forEach((item) => {
+        item.classList.remove('active');
+        item.setAttribute('aria-selected', 'false');
+      });
+      navItem.classList.add('active');
+      navItem.setAttribute('aria-selected', 'true');
+      sectionEl.style.display = 'block';
+    });
+
+    nav.appendChild(navItem);
+    contentArea.appendChild(sectionEl);
+  });
+
+  settingsBody.appendChild(nav);
+  settingsBody.appendChild(contentArea);
+
+  // Build providers section
+  const providersSection = sectionElements['providers'];
   for (const p of providersList) {
-    buildProviderRow(p);
+    const row = document.createElement('div');
+    row.className = 'provider-row';
+    row.dataset.kind = p.name;
+    const title = document.createElement('div');
+    title.className = 'provider-title';
+    title.textContent = p.name;
+    row.appendChild(title);
+    const fields = document.createElement('div');
+    fields.className = 'provider-fields';
+
+    const baseUrlLabel = document.createElement('label');
+    baseUrlLabel.textContent = 'Base URL';
+    const baseUrlInput = document.createElement('input');
+    baseUrlInput.type = 'text';
+    baseUrlInput.className = 'provider-field';
+    baseUrlInput.dataset.field = 'baseUrl';
+    baseUrlInput.value = p.baseUrl || '';
+    baseUrlInput.placeholder = 'https://api.example.com/v1';
+
+    const apiKeyLabel = document.createElement('label');
+    apiKeyLabel.textContent = 'API Key';
+    const apiKeyInput = document.createElement('input');
+    apiKeyInput.type = 'password';
+    apiKeyInput.className = 'provider-field';
+    apiKeyInput.dataset.field = 'apiKey';
+    apiKeyInput.value = p.hasKey ? '••••••••' : '';
+    apiKeyInput.placeholder = p.hasKey ? '已设置' : '输入 API Key';
+
+    fields.appendChild(baseUrlLabel);
+    fields.appendChild(baseUrlInput);
+    fields.appendChild(apiKeyLabel);
+    fields.appendChild(apiKeyInput);
+    row.appendChild(fields);
+    providersSection.appendChild(row);
   }
 
+  // Build speech section
+  const speechSection = sectionElements['speech'];
   const speechTitle = document.createElement('div');
   speechTitle.className = 'settings-section-title';
   speechTitle.textContent = t('speechSection');
-  settingsBody.appendChild(speechTitle);
+  speechSection.appendChild(speechTitle);
+
   const sttProviders = svConfig.speechProviders.filter((p) => p.category === 'stt');
   const ttsProviders = svConfig.speechProviders.filter((p) => p.category === 'tts');
   if (sttProviders.length > 0) {
@@ -2756,6 +3012,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
       providers: sttProviders,
       activeName: svConfig.activeSpeech,
       showCategory: true,
+      container: speechSection,
     });
   }
   if (ttsProviders.length > 0) {
@@ -2767,13 +3024,16 @@ function buildSettings(providersList: ProviderInfo[]): void {
       providers: ttsProviders,
       activeName: svConfig.activeTts,
       showCategory: true,
+      container: speechSection,
     });
   }
 
+  // Build vision section
+  const visionSection = sectionElements['vision'];
   const visionTitle = document.createElement('div');
   visionTitle.className = 'settings-section-title';
   visionTitle.textContent = t('visionSection');
-  settingsBody.appendChild(visionTitle);
+  visionSection.appendChild(visionTitle);
   if (svConfig.visionProviders.length > 0) {
     buildModelRow({
       className: 'vision-row',
@@ -2782,33 +3042,45 @@ function buildSettings(providersList: ProviderInfo[]): void {
       title: t('visionLabel'),
       providers: svConfig.visionProviders,
       activeName: svConfig.activeVision,
+      container: visionSection,
     });
   }
 
-  buildStartupSection();
-  buildResourceSection();
-  buildAppearanceSection();
-  buildUpdateSection();
-  buildLogSection();
+  // Build startup section
+  const startupSection = sectionElements['startup'];
+  buildStartupSection(startupSection);
+
+  // Build resource section
+  const resourceSection = sectionElements['resource'];
+  buildResourceSection(resourceSection);
+
+  // Build appearance section
+  const appearanceSection = sectionElements['appearance'];
+  buildAppearanceSection(appearanceSection);
+
+  // Build update section
+  const updateSection = sectionElements['update'];
+  buildUpdateSection(updateSection);
 }
 
-function buildStartupSection(): void {
+function buildStartupSection(container?: HTMLElement): void {
+  const target = container || settingsBody;
   const title = document.createElement('div');
   title.className = 'settings-section-title';
   title.textContent = t('startupSection');
-  settingsBody.appendChild(title);
+  target.appendChild(title);
 
   buildToggle(t('deferMcpLabel'), t('deferMcpHint'), window.nexusDesktop.getDeferMcp(), (v) => {
     settingsMsg.textContent = v ? t('deferMcpEnabled') : t('deferMcpDisabled');
     return window.nexusDesktop.setDeferMcp(v);
-  });
+  }, target);
   buildToggle(t('minimizeToTrayLabel'), t('minimizeToTrayHint'), window.nexusDesktop.getMinimizeToTray(), (v) => {
     return window.nexusDesktop.setMinimizeToTray(v);
-  });
+  }, target);
   buildToggle(t('restoreSessionLabel'), t('restoreSessionHint'), window.nexusDesktop.getRestoreSessionOnLaunch(), (v) => {
     settingsMsg.textContent = v ? t('restoreSessionEnabled') : t('restoreSessionDisabled');
     return window.nexusDesktop.setRestoreSessionOnLaunch(v);
-  });
+  }, target);
 }
 
 /** Render a labeled checkbox settings row that persists immediately on change. */
@@ -2817,6 +3089,7 @@ function buildToggle(
   hintText: string,
   initial: Promise<boolean> | boolean,
   onToggle: (v: boolean) => Promise<unknown> | void,
+  container?: HTMLElement,
 ): void {
   const row = document.createElement('div');
   row.className = 'startup-row';
@@ -2851,7 +3124,7 @@ function buildToggle(
   label.appendChild(text);
   row.appendChild(label);
   row.appendChild(hint);
-  settingsBody.appendChild(row);
+  (container || settingsBody).appendChild(row);
 }
 
 /** Resource & session governance (desktop.json — see main/index.ts). Values are
@@ -2866,15 +3139,16 @@ function resourceStatusInfo(s: ResourceStateInfo): { key: string; cls: 'paused' 
   return { key: 'resourceStatusNormal', cls: 'normal' };
 }
 
-function buildResourceSection(): void {
+function buildResourceSection(container?: HTMLElement): void {
+  const target = container || settingsBody;
   const title = document.createElement('div');
   title.className = 'settings-section-title';
   title.textContent = t('resourceSection');
-  settingsBody.appendChild(title);
+  target.appendChild(title);
 
   buildToggle(t('monitorEnabledLabel'), t('monitorEnabledHint'), window.nexusDesktop.getMonitorEnabled(), (v) => {
     return window.nexusDesktop.setMonitorEnabled(v);
-  });
+  }, target);
 }
 
 /**
@@ -2978,11 +3252,12 @@ function applyInputRows(rows: number): void {
   inputEl.style.setProperty('--input-min-h', `${clamped * lineHeight + padding}px`);
 }
 
-function buildAppearanceSection(): void {
+function buildAppearanceSection(container?: HTMLElement): void {
+  const target = container || settingsBody;
   const title = document.createElement('div');
   title.className = 'settings-section-title';
   title.textContent = t('appearanceSection');
-  settingsBody.appendChild(title);
+  target.appendChild(title);
 
   const row = document.createElement('div');
   row.className = 'startup-row';
@@ -3024,7 +3299,7 @@ function buildAppearanceSection(): void {
   label.appendChild(text);
   row.appendChild(label);
   row.appendChild(hint);
-  settingsBody.appendChild(row);
+  target.appendChild(row);
 }
 
 function buildLogSection(): void {
@@ -3076,11 +3351,12 @@ type UpdateStateType =
   | { status: 'error'; message?: string };
 
 let updateVersion = '';
-function buildUpdateSection(): void {
+function buildUpdateSection(container?: HTMLElement): void {
+  const target = container || settingsBody;
   const title = document.createElement('div');
   title.className = 'settings-section-title';
   title.textContent = t('updateSection');
-  settingsBody.appendChild(title);
+  target.appendChild(title);
 
   const wrap = document.createElement('div');
   wrap.className = 'update-row';
@@ -3100,7 +3376,7 @@ function buildUpdateSection(): void {
   btn.addEventListener('click', () => void runUpdateCheck(btn));
   wrap.appendChild(info);
   wrap.appendChild(btn);
-  settingsBody.appendChild(wrap);
+  target.appendChild(wrap);
   renderUpdateStatus({ status: 'idle' });
 }
 
@@ -3162,6 +3438,7 @@ async function runUpdateCheck(btn: HTMLButtonElement): Promise<void> {
 async function openSettings(): Promise<void> {
   settingsOverlay.classList.remove('hidden');
   settingsMsg.textContent = '';
+  trapFocus(settingsOverlay.querySelector('.modal')!);
   try {
     providers = await window.nexusDesktop.getProviders();
     svConfig = await window.nexusDesktop.getSpeechVisionConfig();
@@ -3585,7 +3862,9 @@ window.nexusDesktop.onTabsChanged((open) => {
   try {
     loadTheme();
     initFx();
+    addSkipLink();
     await loadLanguage();
+    showOnboarding();
     void window.nexusDesktop.getInputRows().then((r) => applyInputRows(r)).catch(() => {});
     status = await window.nexusDesktop.getStatus();
     providers = await window.nexusDesktop.getProviders();
