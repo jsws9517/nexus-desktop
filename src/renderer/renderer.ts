@@ -1443,6 +1443,10 @@ function insertSlashCards(): void {
     if (!isNaN(mid)) visibleMids.push({ mid, el });
   }
   for (const e of slashLog) {
+    // /clear entries have no anchorId and must never render as a card — they
+    // are pure state mutations. Old log files may still contain them; skip them
+    // here to avoid the "append at end" fallback dumping them at the conversation tail.
+    if (/^\/clear(?:\s|$)/i.test(e.command)) continue;
     const rec = makeSlashCardEl(e.command, e.content);
     if (e.anchorId != null) {
       // Fast path: exact anchor in the visible DOM → insert right after it.

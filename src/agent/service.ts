@@ -522,11 +522,19 @@ export class AgentService {
     // chat() resolves pending askUser with the next user input, otherwise runs a turn
     const isSlash = input.trim().startsWith('/');
     const isClear = /^\/clear(?:\s|$)/i.test(input.trim());
+    const anchorId = (isSlash && !isClear) ? this.persistSlashInput(input) : null;
     // /clear must NOT be persisted: the clear action itself is not a meaningful
     // conversation turn, and writing it to the DB would add a stale row that a
     // tab reopen would reload back into context — defeating the whole purpose.
-    const anchorId = (isSlash && !isClear) ? this.persistSlashInput(input) : null;
-    this.slashTurn = isSlash ? { cmd: input.trim(), anchorId: anchorId ?? undefined, buf: '' } : null;
+    // Also: /clear must NOT use the slash-channel (slashTurn). If it did, the
+    // core's emit("Context cleared.") would open a collapsible slash card, and
+    // finalizeSlashTurn() would write an anchorId=null entry into the per-session
+    // slash-log file. On every subsequent tab-switch / reload, insertSlashCards()
+    // hits the "no anchorId → appendChild at end" fallback (renderer.ts:1639),
+    // which is why the /clear card keeps reappearing at the conversation tail.
+    // Route /clear through the plain-text channel instead so the output renders
+    // as an ordinary message and no log entry is written.
+    this.slashTurn = isSlash && !isClear ? { cmd: input.trim(), anchorId: anchorId ?? undefined, buf: '' } : null;
     const bridged = await this.handleDagCommand(input);
     if (bridged) {
       this.finalizeSlashTurn();
