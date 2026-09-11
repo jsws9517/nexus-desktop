@@ -278,6 +278,37 @@ export class AgentService {
             }
           }
 
+          // --- Desktop prompt fixes ---
+          // Override outdated/incorrect prompts from the core package and add Desktop-specific info
+          const FIX_MARKER = '[Desktop Prompt Fixes]';
+          const first = msgs[0];
+          const firstContent = first?.role === 'system' && typeof first.content === 'string' ? first.content : '';
+          if (!firstContent.includes(FIX_MARKER)) {
+            ctx.prependToSystem(
+              `\n\n${FIX_MARKER}\n` +
+                'IMPORTANT CORRECTIONS — override any conflicting instructions above:\n' +
+                '1. DO NOT use text2image-free-CogView_single — this tool does NOT exist. If the user asks to generate images, ' +
+                'explain that image generation is not available in this Desktop environment, or suggest using an external tool/service.\n' +
+                '2. Cross-platform file operations:\n' +
+                '   - To empty/truncate a file: use Node.js `fs.truncateSync(path, 0)` or `writeFileSync(path, "")` via exec_command\n' +
+                '   - On Windows: use `fs.truncateSync()` or `echo. > file` in cmd\n' +
+                '   - On Unix: `cp /dev/null file` or `> file` or `truncate -s 0 file`\n' +
+                '   - Preferred universal method: write a one-line script `require("fs").truncateSync("path", 0)` and run it\n' +
+                '3. When the user asks about image generation capabilities, say this Desktop app does not have built-in image generation.\n' +
+                '\nDesktop-specific tools (not in core):\n' +
+                '  - sequentialthinking: Structured reasoning tool for complex problems (thought branches, revisions, hypotheses)\n' +
+                '  - query: Read-only SQL queries on SQLite databases\n' +
+                '  - execute: Write SQL (INSERT/UPDATE/DELETE) with approval gate\n' +
+                '  - list-tables / describe-table / create-table / drop-table: SQLite schema management\n' +
+                '  - insert-record / update-record / delete-record: SQLite row operations\n' +
+                '  - list_directory_with_sizes: Directory listing with recursive size info\n' +
+                '  - read_media_file: Read images/media as inline Markdown data-URIs\n' +
+                '  - get_current_time / convert_time: Timezone-aware time utilities\n' +
+                '  - fetch: HTTP requests with content extraction\n' +
+                '  - 36 git_* tools: Full git operations (commit, branch, merge, etc.)\n',
+            );
+          }
+
           // --- Work-mode skill enforcement ---
           // When the user message references data files or analysis tasks,
           // inject a system prompt that FORCES the model to use deterministic
@@ -288,8 +319,6 @@ export class AgentService {
           const hasDataFile = /\.(csv|xlsx?|tsv)\b/i.test(lastUserText);
           const hasAnalysisKeyword = /分析|统计|图表|chart|analyze|data|visualiz/i.test(lastUserText);
           if ((hasDataFile || hasAnalysisKeyword) && !lastUserText.startsWith('/')) {
-            const first = msgs[0];
-            const firstContent = first?.role === 'system' && typeof first.content === 'string' ? first.content : '';
             if (!firstContent.includes(WORK_MARKER)) {
               ctx.prependToSystem(
                 `\n\n${WORK_MARKER}\n` +
