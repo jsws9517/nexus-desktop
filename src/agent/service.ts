@@ -105,6 +105,17 @@ export class AgentService {
   private overrideDepth = '';
   private overrideMode = '';
 
+  /**
+   * Track compression events per session so we can warn the user when
+   * compression fires too frequently — a strong signal that the configured
+   * context limit is wrong (default 128k but the model actually has more or
+   * less). The ring is keyed by sessionId; entries older than 5 minutes are
+   * pruned on each call. `compressionWarned` tracks whether we already
+   * emitted the user-facing hint for the current session to avoid spam.
+   */
+  private compressionLog = new Map<string, number[]>();
+  private compressionWarned = new Set<string>();
+
   /** Active slash-command turn accumulation. Non-null only while a `/cmd` is
    *  being executed; its buffered output is appended to the per-session log
    *  file and surfaced to the UI as a collapsible card. Null for normal turns. */
@@ -446,6 +457,33 @@ export class AgentService {
       return { verdict: ['y', 'a'].includes(answer.trim().toLowerCase()) ? 'allow' : 'deny' };
     };
     this.applyMcpProxy(this.agent);
+    // Watch context-manager progress callbacks to detect repeated compressions.
+    // When the same session triggers ≥ 3 compresses within 5 minutes, inform
+    // the user that their model's context limit may need an explicit entry in
+    // config.json's modelContextLimits map.
+    const ctx = this.agent.context;
+    const origOnProgress = ctx.onProgress;
+    ctx.onProgress = (...args: Parameters<NonNullable<typeof origOnProgress>>) => {
+      origOnProgress?.(...args);
+      const msg = typeof args[0] === 'string' ? args[0] : String(args[0]);
+      if (!msg.toLowerCase().includes('compress')) return;
+      const sid = this.agent?.getCurrentSessionId?.() ?? '';
+      if (!sid) return;
+      const log = this.compressionLog.get(sid) ?? [];
+      const now = Date.now();
+      // Prune entries older than 5 minutes.
+      const recent = log.filter((t) => now - t < 5 * 60_000);
+      recent.push(now);
+      this.compressionLog.set(sid, recent);
+      if (recent.length >= 3 && !this.compressionWarned.has(sid)) {
+        this.compressionWarned.add(sid);
+        this.onLog?.('warn',
+          `Session "${sid}" was compressed ${recent.length} times in 5 min. ` +
+          `The model's context limit may not match reality — add it to config.json's ` +
+          `"modelContextLimits" map (e.g. "agnes-2.5-flash": 524288) to fix.`,
+        );
+      }
+    };
     this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
