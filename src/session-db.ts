@@ -408,11 +408,47 @@ export function deleteMessagesFrom(sessionId: string, fromId: number): { deleted
     const info = db
       .prepare('DELETE FROM messages WHERE session_id = ? AND id >= ?')
       .run(sessionId, fromId);
+    // Keep the token caches honest: a truncation drops MAX(id), but delete the
+    // entries outright so a subsequent read cannot serve a stale estimate.
+    invalidateTokenCaches(sessionId);
     return { deleted: info.changes };
   } catch {
     return { deleted: 0 };
   } finally {
     db.close();
+  }
+}
+
+/**
+ * Delete EVERY persisted message for a session. Used by `/clear` on the desktop:
+ * the core's clearCommand only wipes the in-memory context (see
+ * context-manager.js clear()), leaving the DB transcript intact — which a later
+ * tab reopen / worker restart reloads straight back into context (agent.js
+ * startSession → setMessages), resurrecting the oversized-context failure that
+ * /clear was supposed to fix. Clearing the rows makes the clear durable.
+ */
+export function deleteAllSessionMessages(sessionId: string): { deleted: number } {
+  const db = openDb(false);
+  if (!db) return { deleted: 0 };
+  try {
+    const info = db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
+    invalidateTokenCaches(sessionId);
+    return { deleted: info.changes };
+  } catch {
+    return { deleted: 0 };
+  } finally {
+    db.close();
+  }
+}
+
+/** Drop any token-cache / baseline entries for a session (all cache keys). */
+function invalidateTokenCaches(sessionId: string): void {
+  const suffix = `:${sessionId}`;
+  for (const key of tokenCache.keys()) {
+    if (key.endsWith(suffix)) tokenCache.delete(key);
+  }
+  for (const key of tokenBaselines.keys()) {
+    if (key.endsWith(suffix)) tokenBaselines.delete(key);
   }
 }
 

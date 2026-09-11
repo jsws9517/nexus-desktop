@@ -12,7 +12,7 @@
 
 import { isWorkerPrompt, KEY_MASK } from '../shared/constants.js';
 import type { StoredRow } from '../session-db.js';
-import { getLastUserMessageId, updateTaskGraphProjectName } from '../session-db.js';
+import { deleteAllSessionMessages, getLastUserMessageId, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
 import type { SlashLogEntry } from '../slash-log.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
@@ -48,6 +48,42 @@ interface ClientManagerLike {
   getAllTools(): Promise<McpToolDef[]> | McpToolDef[];
   callTool(name: string, args: unknown): Promise<unknown>;
   builtinTools: Array<{ name: string }>;
+}
+
+/**
+ * Cap the size of a single tool result before it enters the LLM context and the
+ * session store. A bash/python/read command can legitimately return hundreds of
+ * KB (the core exec_command tool has no output cap; a 10MB maxBuffer), and one
+ * such message — e.g. 511k chars ≈ 128k tokens for CJK content — silently fills
+ * the entire context window and re-triggers "Context too large" right after a
+ * /clear. Truncating at the source keeps both the live context and the persisted
+ * transcript lean, and prompts the model to use targeted tools for details.
+ *
+ * Media embeddings are left untouched (data: URIs carry binary images). Results
+ * whose `content` is not a plain string (structured MCP payloads) pass through.
+ */
+const MAX_TOOL_RESULT_CHARS = 30_000;
+const TOOL_RESULT_HEAD_CHARS = 24_000;
+const TOOL_RESULT_TAIL_CHARS = 6_000;
+const TOOL_RESULT_TRUNCATED =
+  '\n… [output truncated: original %d chars; showing head %d + tail %d. Use targeted tools (grep/head/tail/SQL aggregation) for specific parts] …\n';
+
+function capToolResult<T>(res: T): T {
+  if (!res || typeof res !== 'object') return res;
+  const r = res as { content?: unknown; isError?: boolean; kind?: string };
+  if (typeof r.content !== 'string') return res;
+  const content = r.content;
+  if (content.length <= MAX_TOOL_RESULT_CHARS) return res;
+  // Never truncate binary image data (data URI markdown) — the provider needs
+  // the full payload and the vision path handles it separately.
+  if (content.slice(0, 300).includes('data:image/')) return res;
+  const head = content.slice(0, TOOL_RESULT_HEAD_CHARS);
+  const tail = content.slice(-TOOL_RESULT_TAIL_CHARS);
+  const marker = TOOL_RESULT_TRUNCATED
+    .replace('%d', String(content.length))
+    .replace('%d', String(TOOL_RESULT_HEAD_CHARS))
+    .replace('%d', String(TOOL_RESULT_TAIL_CHARS));
+  return { ...res, content: `${head}${marker}${tail}` };
 }
 
 export class AgentService {
@@ -135,8 +171,9 @@ export class AgentService {
       return [...builtin, ...cache, ...ALL_TOOL_DEFS];
     };
     local.callTool = async (name: string, args: unknown): Promise<unknown> => {
+      let result: unknown;
       if (INTERNAL_TOOLS.has(name)) {
-        return callBuiltinTool(name, args, {
+        result = await callBuiltinTool(name, args, {
           getConfig: () => this.agent?.['config']?.get?.(),
           requestWriteApproval: async (label: string): Promise<boolean> => {
             // Mirrors the core's onPermissionRequest semantics: auto mode is
@@ -149,33 +186,40 @@ export class AgentService {
             return norm === 'y' || norm === 'a';
           },
         });
-      }
-      const isBuiltin = (local.builtinTools as Array<{ name: string }>).some((t) => t.name === name);
-      if (isBuiltin) return originalCall(name, args);
-      // Knowledge-graph WRITE tools get the same approval gate as sqlite writes:
-      // auto/unattended run them directly, interactive mode surfaces a card.
-      if (MEMORY_WRITE_TOOLS.has(name)) {
-        const mode = this.getActiveMode();
-        if (mode !== 'auto' && mode !== 'unattended') {
-          const answer = await this.askPermission(`Write to knowledge-graph memory via "${name}"`);
-          const norm = answer.trim().toLowerCase();
-          if (norm !== 'y' && norm !== 'a') {
-            return { content: 'Write operation denied.', isError: true };
+      } else {
+        const isBuiltin = (local.builtinTools as Array<{ name: string }>).some((t) => t.name === name);
+        if (isBuiltin) {
+          result = await originalCall(name, args);
+        } else {
+          // Knowledge-graph WRITE tools get the same approval gate as sqlite writes:
+          // auto/unattended run them directly, interactive mode surfaces a card.
+          if (MEMORY_WRITE_TOOLS.has(name)) {
+            const mode = this.getActiveMode();
+            if (mode !== 'auto' && mode !== 'unattended') {
+              const answer = await this.askPermission(`Write to knowledge-graph memory via "${name}"`);
+              const norm = answer.trim().toLowerCase();
+              if (norm !== 'y' && norm !== 'a') {
+                return { content: 'Write operation denied.', isError: true };
+              }
+            }
           }
+          // Git write tools (commit/stage/reset/push/...) get the same approval gate.
+          if (GIT_WRITE_TOOLS.has(name)) {
+            const mode = this.getActiveMode();
+            if (mode !== 'auto' && mode !== 'unattended') {
+              const answer = await this.askPermission(`Run git operation "${name}"`);
+              const norm = answer.trim().toLowerCase();
+              if (norm !== 'y' && norm !== 'a') {
+                return { content: 'Write operation denied.', isError: true };
+              }
+            }
+          }
+          result = await this.mcpRequest('callTool', { name, args });
         }
       }
-      // Git write tools (commit/stage/reset/push/...) get the same approval gate.
-      if (GIT_WRITE_TOOLS.has(name)) {
-        const mode = this.getActiveMode();
-        if (mode !== 'auto' && mode !== 'unattended') {
-          const answer = await this.askPermission(`Run git operation "${name}"`);
-          const norm = answer.trim().toLowerCase();
-          if (norm !== 'y' && norm !== 'a') {
-            return { content: 'Write operation denied.', isError: true };
-          }
-        }
-      }
-      return this.mcpRequest('callTool', { name, args });
+      // Cap oversized output (bash / file reads / remote tools) so one result
+      // cannot blow the entire context window (see capToolResult above).
+      return capToolResult(result);
     };
     // The core's `getToolsForContext` applies a per-turn keyword filter to keep
     // the LLM tool list small (tokens/bigrams from the user message must match a
@@ -477,7 +521,11 @@ export class AgentService {
     if (this.agent.isBusy()) throw new Error('Agent is busy');
     // chat() resolves pending askUser with the next user input, otherwise runs a turn
     const isSlash = input.trim().startsWith('/');
-    const anchorId = isSlash ? this.persistSlashInput(input) : null;
+    const isClear = /^\/clear(?:\s|$)/i.test(input.trim());
+    // /clear must NOT be persisted: the clear action itself is not a meaningful
+    // conversation turn, and writing it to the DB would add a stale row that a
+    // tab reopen would reload back into context — defeating the whole purpose.
+    const anchorId = (isSlash && !isClear) ? this.persistSlashInput(input) : null;
     this.slashTurn = isSlash ? { cmd: input.trim(), anchorId: anchorId ?? undefined, buf: '' } : null;
     const bridged = await this.handleDagCommand(input);
     if (bridged) {
@@ -514,9 +562,19 @@ export class AgentService {
     // /clear wipes the in-memory context but DB rows persist; snapshot a token
     // baseline so the side-panel counter restarts from ~0 instead of continuing
     // to show the cumulative total, then tell the UI to refresh immediately.
-    if (/^\/clear(?:\s|$)/i.test(input.trim())) {
+    if (isClear) {
       const clearedSid = this.agent.getCurrentSessionId?.();
-      if (clearedSid) await this.recordContextClearBaseline(clearedSid);
+      if (clearedSid) {
+        // Snapshot the raw total BEFORE deletion so the baseline remains valid
+        // (it is keyed on the pre-delete MAX(id); after deletion the raw counter
+        // drops to 0 and max(0, 0 − baseline) = 0, which is correct).
+        await this.recordContextClearBaseline(clearedSid);
+        // Now actually delete every persisted row so a tab reopen does not
+        // reload the old transcript back into context (the core's startSession
+        // calls setMessages with every DB row — without this deletion the clear
+        // would be undone the moment the user switches tabs).
+        deleteAllSessionMessages(clearedSid);
+      }
     }
     // Plain /go is run by the core's own slash handling (its executePlan stamps
     // the session metadata.projectDir with the sandbox ~/.nexus/tasks/outputs/<name>).
@@ -738,6 +796,24 @@ export class AgentService {
         this.emitText('Bypass OFF: reverted to prompt mode (each tool asks).\n');
       } else {
         this.emitText('Usage: /bypass [auto|unattended|off|status]\n');
+      }
+      return true;
+    }
+    if (cmd === 'compact') {
+      // /compact is CLI_ONLY in the core registry (remote channels get
+      // "Command /compact is not available over a remote channel"), so the
+      // desktop intercepts it here and drives the core's own compression engine
+      // directly — same behaviour, no core registry change needed.
+      const msgs = this.agent.context.getMessages();
+      const before = msgs.length;
+      const tokensBefore = this.agent.context.getTokenCount();
+      if (before < 4) {
+        this.emitText('Not enough history to compress.\n');
+      } else {
+        await this.agent.context.compress();
+        const after = this.agent.context.getMessages().length;
+        const tokensAfter = this.agent.context.getTokenCount();
+        this.emitText(`Compressed ${before} → ${after} messages (${tokensBefore} → ${tokensAfter} tokens).\n`);
       }
       return true;
     }
@@ -999,6 +1075,26 @@ export class AgentService {
       this.agent.joinSession(prevSessionId);
     }
     const newSessionId = await this.agent.startSession(name, sessionId, metadata);
+    // The core's startSession (resume path) calls context.setMessages with every
+    // DB row but performs NO compression — unlike resumeSession which summarises
+    // when the transcript exceeds the context window. A bloated session tab
+    // reloaded after an app restart therefore fires the "Context too large" guard
+    // on the very next LLM turn. Compress here if the freshly-loaded context
+    // already overshoots the budget, so the user can keep working without an
+    // explicit /clear.
+    if (sessionId && !name) {
+      try {
+        const tokenCount = this.agent.context.getTokenCount();
+        const modelLimit = this.agent.config.getModelContextLimit();
+        const msgs = this.agent.context.getMessages();
+        if (tokenCount > modelLimit * 0.95 && msgs.length >= 4) {
+          this.onLog?.('info', `Session ${sessionId} resumes with ${tokenCount} tokens (>95% of ${modelLimit}); compressing…`);
+          await this.agent.context.compress();
+        }
+      } catch (e) {
+        this.onLog?.('warn', `Post-resume compress failed: ${(e as Error).message}`);
+      }
+    }
     // The core ALWAYS stamps projectDir: process.cwd() onto a freshly created
     // session (agent.startSession), which on Desktop leaks the parent worker's
     // project directory into every new session. A brand-new session must stay
@@ -1723,8 +1819,10 @@ export class AgentService {
   }
 
   /** Snapshot the running token totals right after `/clear` so the side panel
-   *  restarts from ~0. DB rows are not deleted by /clear (the transcript is
-   *  runtime-only), so without a baseline the estimate would keep growing. */
+   *  restarts from ~0. Rows are deleted by deleteAllSessionMessages below, but
+   *  the baseline is recorded BEFORE deletion so the cache key (which includes
+   *  the pre-delete MAX(id)) remains valid; once rows vanish the raw counter
+   *  drops to 0 and max(0, 0 − snapshot) = 0. */
   private async recordContextClearBaseline(sessionId: string): Promise<void> {
     try {
       const { recordTokenBaseline } = await loadSessionDb();
