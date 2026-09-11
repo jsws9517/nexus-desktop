@@ -23,6 +23,8 @@ export interface StoredRow {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   thinking?: string;
+  toolCalls?: string;
+  toolCallId?: string;
 }
 
 /** Mirrors core src/session/store.ts: LLMA_DATA_DIR overrides the data root. */
@@ -87,13 +89,15 @@ function openDb(readonly = true): Database.Database | null {
   return db;
 }
 
-function rowOf(r: { id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null }): StoredRow {
+function rowOf(r: { id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null; tool_calls?: string | null; tool_call_id?: string | null }): StoredRow {
   return {
     id: r.id,
     sessionId: r.session_id,
     role: r.role,
     content: r.content,
     ...(r.thinking ? { thinking: r.thinking } : {}),
+    ...(r.tool_calls ? { toolCalls: r.tool_calls } : {}),
+    ...(r.tool_call_id ? { toolCallId: r.tool_call_id } : {}),
   };
 }
 
@@ -104,9 +108,9 @@ export function getMessageRows(sessionId: string): StoredRow[] {
   try {
     const rows = db
       .prepare(
-        'SELECT id, session_id, role, content, thinking FROM messages WHERE session_id = ? ORDER BY id ASC',
+        'SELECT id, session_id, role, content, thinking, tool_calls, tool_call_id FROM messages WHERE session_id = ? ORDER BY id ASC',
       )
-      .all(sessionId) as Array<{ id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null }>;
+      .all(sessionId) as Array<{ id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null; tool_calls?: string | null; tool_call_id?: string | null }>;
     return rows.map(rowOf);
   } catch {
     return [];
@@ -196,9 +200,9 @@ export function getMessageWindow(
     const userBefore = countUserBefore(db, sessionId, beforeId);
     const rows = db
       .prepare(
-        'SELECT id, session_id, role, content, thinking FROM messages WHERE session_id = ? ORDER BY id ASC LIMIT ? OFFSET ?',
+        'SELECT id, session_id, role, content, thinking, tool_calls, tool_call_id FROM messages WHERE session_id = ? ORDER BY id ASC LIMIT ? OFFSET ?',
       )
-      .all(sessionId, lim, off) as Array<{ id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null }>;
+      .all(sessionId, lim, off) as Array<{ id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null; tool_calls?: string | null; tool_call_id?: string | null }>;
     return { items: rows.map(rowOf), total, userBefore };
   } catch {
     return { items: [], total: 0, userBefore: 0 };
@@ -219,11 +223,11 @@ export function getMessageLast(
     const rows = db
       .prepare(
         `SELECT * FROM (
-           SELECT id, session_id, role, content, thinking FROM messages
+           SELECT id, session_id, role, content, thinking, tool_calls, tool_call_id FROM messages
            WHERE session_id = ? ORDER BY id DESC LIMIT ?
          ) ORDER BY id ASC`,
       )
-      .all(sessionId, lim) as Array<{ id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null }>;
+      .all(sessionId, lim) as Array<{ id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null; tool_calls?: string | null; tool_call_id?: string | null }>;
     const beforeId = rows.length > 0 ? rows[0].id : null;
     const userBefore = countUserBefore(db, sessionId, beforeId);
     return { items: rows.map(rowOf), total, userBefore };

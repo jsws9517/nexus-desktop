@@ -86,6 +86,8 @@ interface StoredMsg {
   role: string;
   content?: string;
   thinking?: string;
+  toolCalls?: string;
+  toolCallId?: string;
 }
 
 /** A slash-command execution restored from the per-session log file. */
@@ -1234,8 +1236,27 @@ function countUserRows(rows: StoredMsg[]): number {
   return _curUserRowsCount;
 }
 
+interface ToolCallInfo {
+  id: string;
+  name: string;
+}
+
+/** Parse toolCalls JSON from an assistant row into id→name pairs. */
+function parseToolCalls(json: string | undefined): ToolCallInfo[] {
+  if (!json) return [];
+  try {
+    const arr = JSON.parse(json);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((tc: any) => tc?.id && tc?.function?.name)
+      .map((tc: any) => ({ id: tc.id, name: tc.function.name }));
+  } catch {
+    return [];
+  }
+}
+
 /** Render one persisted message row into the history view. */
-function renderHistoryRow(m: StoredMsg): void {
+function renderHistoryRow(m: StoredMsg, toolNameMap?: Map<string, string>): void {
   if (m.role === 'user') {
     addUser(String(m.content ?? ''), m.id);
   } else if (m.role === 'assistant') {
@@ -1247,15 +1268,50 @@ function renderHistoryRow(m: StoredMsg): void {
       asst.stream.classList.remove('streaming');
       curAssistant = null;
     }
+    const calls = parseToolCalls(m.toolCalls);
+    if (calls.length > 0 && !m.content) {
+      const label = calls.map((c) => c.name).join(', ');
+      const summary = document.createElement('div');
+      summary.className = 'tool-card collapsed';
+      const header = document.createElement('button');
+      header.className = 'tool-header';
+      const chevron = document.createElement('span');
+      chevron.className = 'tool-chevron';
+      chevron.textContent = '▸';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'tool-name';
+      nameEl.textContent = `🔧 ${label}`;
+      header.appendChild(chevron);
+      header.appendChild(nameEl);
+      const body = document.createElement('div');
+      body.className = 'tool-result hidden';
+      body.textContent = calls.map((c) => `${c.name}(${c.id})`).join('\n');
+      summary.appendChild(header);
+      summary.appendChild(body);
+      messagesEl.appendChild(summary);
+      let filled = false;
+      header.addEventListener('click', () => {
+        const collapsed = summary.classList.toggle('collapsed');
+        chevron.textContent = collapsed ? '▸' : '▾';
+        if (!collapsed) {
+          if (!filled) { filled = true; } else {}
+          body.classList.remove('hidden');
+        } else {
+          body.classList.add('hidden');
+        }
+      });
+      curAssistant = null;
+    }
   } else if (m.role === 'tool' && m.content) {
-    addToolResultBlock(String(m.content));
+    const toolName = toolNameMap?.get(String(m.toolCallId ?? '')) ?? undefined;
+    addToolResultBlock(String(m.content), toolName);
   }
 }
 
-/** Collapsed tool-result card for restored history rows (name isn't persisted
- *  on tool rows, so label them generically). Content hydrates on first expand.
+/** Collapsed tool-result card for restored history rows.
+ *  Content hydrates on first expand.
  *  Artifact envelopes skip the collapse entirely and render the preview card. */
-function addToolResultBlock(content: string): void {
+function addToolResultBlock(content: string, toolName?: string): void {
   const artifactEl = tryMountArtifact(content);
   if (artifactEl) {
     messagesEl.appendChild(artifactEl);
@@ -1270,7 +1326,7 @@ function addToolResultBlock(content: string): void {
   chevron.textContent = '▸';
   const name = document.createElement('span');
   name.className = 'tool-name';
-  name.textContent = '🔧 tool result';
+  name.textContent = toolName ? `🔧 ${toolName}` : '🔧 tool result';
   header.appendChild(chevron);
   header.appendChild(name);
   const result = document.createElement('div');
@@ -1424,7 +1480,15 @@ function renderMessageWindow(scroll = true): void {
     bar.appendChild(btn);
     messagesEl.appendChild(bar);
   }
-  for (let i = msgWindowStart; i < msgItems.length; i++) renderHistoryRow(msgItems[i]);
+  const toolNameMap = new Map<string, string>();
+  for (const row of msgItems) {
+    if (row.role === 'assistant') {
+      for (const tc of parseToolCalls(row.toolCalls)) {
+        toolNameMap.set(tc.id, tc.name);
+      }
+    }
+  }
+  for (let i = msgWindowStart; i < msgItems.length; i++) renderHistoryRow(msgItems[i], toolNameMap);
   if (scroll) scrollToBottom();
 }
 
@@ -1500,7 +1564,7 @@ function sameTail(a: StoredMsg[], b: StoredMsg[]): boolean {
   const la = a[a.length - 1];
   const lb = b[b.length - 1];
   if (!la || !lb) return a.length === b.length;
-  return la.content === lb.content && (la.thinking ?? '') === (lb.thinking ?? '');
+  return la.content === lb.content && (la.thinking ?? '') === (lb.thinking ?? '') && (la.toolCalls ?? '') === (lb.toolCalls ?? '');
 }
 
 function applyMsgWindow(fresh: { items: StoredMsg[]; total: number; userBefore: number }): void {
