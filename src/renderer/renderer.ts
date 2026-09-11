@@ -1248,8 +1248,11 @@ function parseToolCalls(json: string | undefined): ToolCallInfo[] {
     const arr = JSON.parse(json);
     if (!Array.isArray(arr)) return [];
     return arr
-      .filter((tc: any) => tc?.id && tc?.function?.name)
-      .map((tc: any) => ({ id: tc.id, name: tc.function.name }));
+      .filter((tc: any) => tc?.id && (tc?.function?.name || tc?.name))
+      .map((tc: any) => ({
+        id: tc.id,
+        name: tc.function?.name ?? tc.name ?? 'unknown'
+      }));
   } catch {
     return [];
   }
