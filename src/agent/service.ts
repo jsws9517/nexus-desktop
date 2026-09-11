@@ -684,7 +684,8 @@ export class AgentService {
         'Desktop (Nexus Desktop) only:\n' +
         '  /chcwd [path]        Temporarily switch runtime working directory (not persisted)\n' +
         '  /setdir [path]       (desktop) also switches the worker now (core records only projectDir)\n' +
-        '  /rename-project <name>  Rename project across dirs, DB, and metadata (lowercase+hyphens)\n';
+        '  /rename-project <name>  Rename project across dirs, DB, and metadata (lowercase+hyphens)\n' +
+        '  /compact             Compress the current context (summarize/truncate) to free window space\n';
       this.emitText(text + '\n');
       return true;
     }
