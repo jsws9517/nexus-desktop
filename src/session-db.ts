@@ -284,21 +284,24 @@ interface TokenCacheEntry extends TokenEstimate {
 
 const tokenCache = new Map<string, TokenCacheEntry>();
 
+interface TokenBaselineEntry extends TokenEstimate {}
+
 /**
- * Incremental token estimate: after the first full pass, subsequent calls only
- * scan rows newer than the cached `lastId` and add their tokens to the running
- * total, so the expensive tokenizer work over a long session is paid once, not
- * on every status refresh.
- *
- * Cache keying: `key` must identify the estimator (e.g. `${provider.name}/$
- * {provider.model}`), because a different tokenizer yields different per-row
- * counts and the totals are not interchangeable.
- *
- * Deletion detection: `deleteMessagesFrom` truncates a tail (`id >= fromId`) so
- * it always lowers the session's MAX(id); when the observed max drops below the
- * cached watermark, the entry is treated as stale and recomputed in full.
+ * Per-session "cleared at" snapshots. When the user runs `/clear` the in-memory
+ * context is wiped but the DB rows stay (the transcript is only runtime, not
+ * persisted), so to make the standalone counter restart from zero we record the
+ * cumulative estimate at clear time and subtract it from later results. Keyed by
+ * the same `${provider}:${sessionId}` as tokenCache so a model switch (which
+ * invalidates the estimator) simply shows the raw total again.
  */
-export function estimateSessionTokensCached(
+const tokenBaselines = new Map<string, TokenBaselineEntry>();
+
+/**
+ * Raw cumulative estimate (ignores baselines). Callers that must see absolute
+ * totals — `recordTokenBaseline`, regenerates, etc. — use this so a baseline
+ * never feeds back into itself.
+ */
+export function estimateSessionTokensRaw(
   sessionId: string,
   key: string,
   estimate: (content: string, thinking?: string) => number,
@@ -351,6 +354,50 @@ export function estimateSessionTokensCached(
   } catch {
     return { tokenEstimate: 0, messageCount: 0 };
   }
+}
+
+/**
+ * Baseline-aware estimate for display. Delegates to `estimateSessionTokensRaw`
+ * then subtracts the `/clear` snapshot (if any) so the counter restarts near
+ * zero and only grows with messages produced after the clear.
+ */
+export function estimateSessionTokensCached(
+  sessionId: string,
+  key: string,
+  estimate: (content: string, thinking?: string) => number,
+  batchSize = 500,
+): TokenEstimate {
+  const raw = estimateSessionTokensRaw(sessionId, key, estimate, batchSize);
+  const cacheKey = `${key}:${sessionId}`;
+  const base = tokenBaselines.get(cacheKey);
+  if (!base) return raw;
+  return {
+    tokenEstimate: Math.max(0, raw.tokenEstimate - base.tokenEstimate),
+    messageCount: Math.max(0, raw.messageCount - base.messageCount),
+  };
+}
+
+/**
+ * Snapshot the current raw running totals as the "start of a fresh context"
+ * marker. Called when the user runs `/clear`: from this point the reported
+ * estimate is `max(0, raw - snapshot)`, so the side panel resets towards zero
+ * and only counts messages arriving after the clear. Re-entrant: taking a new
+ * snapshot simply moves the offset forward (messages before it are never
+ * double-subtracted because the snapshot always targets the raw total).
+ */
+export function recordTokenBaseline(
+  sessionId: string,
+  key: string,
+  estimate: (content: string, thinking?: string) => number,
+  batchSize = 500,
+): TokenEstimate {
+  const raw = estimateSessionTokensRaw(sessionId, key, estimate, batchSize);
+  const cacheKey = `${key}:${sessionId}`;
+  tokenBaselines.set(cacheKey, {
+    tokenEstimate: raw.tokenEstimate,
+    messageCount: raw.messageCount,
+  });
+  return raw;
 }
 
 /** Delete the target message and everything after it for a session (inclusive). */

@@ -511,6 +511,13 @@ export class AgentService {
     }
 
     await this.agent.chat(input);
+    // /clear wipes the in-memory context but DB rows persist; snapshot a token
+    // baseline so the side-panel counter restarts from ~0 instead of continuing
+    // to show the cumulative total, then tell the UI to refresh immediately.
+    if (/^\/clear(?:\s|$)/i.test(input.trim())) {
+      const clearedSid = this.agent.getCurrentSessionId?.();
+      if (clearedSid) await this.recordContextClearBaseline(clearedSid);
+    }
     // Plain /go is run by the core's own slash handling (its executePlan stamps
     // the session metadata.projectDir with the sandbox ~/.nexus/tasks/outputs/<name>).
     // Mirror the /setdir side effects so the worker chdirs and the UI refresh
@@ -1700,15 +1707,34 @@ export class AgentService {
     const { estimateSessionTokensCached } = await loadSessionDb();
     const provider = this.agent.provider;
     const cacheKey = provider ? `${provider.name}/${provider.model}` : 'fallback';
-    return estimateSessionTokensCached(
-      sessionId,
-      cacheKey,
-      (content, thinking) => {
-        const count = (s: string): number => (provider?.countTokens ? provider.countTokens(s) : Math.ceil(s.length / 4)) || 0;
-        return count(content ?? '') + (thinking ? count(thinking) : 0);
-      },
-      500,
-    );
+    return estimateSessionTokensCached(sessionId, cacheKey, this.sessionTokenEstimator(provider), 500);
+  }
+
+  /** Build the per-session token estimator matching the active provider (or the
+   *  char/4 fallback). Shared by getSessionStats and recordContextClearBaseline
+   *  so a `/clear` snapshot is taken with the exact same estimator/cache key. */
+  private sessionTokenEstimator(
+    provider: { countTokens?: (s: string) => number; name?: string; model?: string } | undefined,
+  ): (content: string, thinking?: string) => number {
+    return (content, thinking) => {
+      const count = (s: string): number => (provider?.countTokens ? provider.countTokens(s) : Math.ceil(s.length / 4)) || 0;
+      return count(content ?? '') + (thinking ? count(thinking) : 0);
+    };
+  }
+
+  /** Snapshot the running token totals right after `/clear` so the side panel
+   *  restarts from ~0. DB rows are not deleted by /clear (the transcript is
+   *  runtime-only), so without a baseline the estimate would keep growing. */
+  private async recordContextClearBaseline(sessionId: string): Promise<void> {
+    try {
+      const { recordTokenBaseline } = await loadSessionDb();
+      const provider = this.agent?.provider;
+      const cacheKey = provider ? `${provider.name}/${provider.model}` : 'fallback';
+      recordTokenBaseline(sessionId, cacheKey, this.sessionTokenEstimator(provider), 500);
+      this.onEvent?.({ type: 'context_cleared', sessionId });
+    } catch (err) {
+      this.onLog?.('warn', `Token baseline record failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   getConfig(): Record<string, unknown> {

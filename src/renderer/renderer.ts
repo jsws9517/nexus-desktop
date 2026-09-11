@@ -127,6 +127,7 @@ type AgentEvent =
   | { type: 'task_failed'; taskId: string; error: string }
   | { type: 'sessionRenamed'; sessionId: string; name: string }
   | { type: 'cwdChanged'; sessionId: string; cwd: string }
+  | { type: 'context_cleared'; sessionId: string }
   | { type: 'slash_start'; command: string; anchorId?: number }
   | { type: 'slash'; text: string }
   | { type: 'slash_end'; anchorId?: number; command: string };
@@ -660,6 +661,13 @@ function handleEvent(event: AgentEvent): void {
       if (event.sessionId && event.name) tabNames.set(event.sessionId, event.name);
       renderTabBar();
       void refreshSidebarSession();
+      break;
+    case 'context_cleared':
+      // /clear wiped the in-memory context; the token counter reset to ~0 so
+      // refresh the sidebar immediately (no turn_end fires for slash output).
+      if (event.sessionId === currentSessionId) {
+        void refreshSessionStats();
+      }
       break;
     case 'cwdChanged':
       // Session's working directory changed (e.g. /setdir or /chcwd): refresh

@@ -12,7 +12,7 @@ const nexusDir = join(tmp, '.nexus');
 mkdirSync(nexusDir, { recursive: true });
 process.env.LLMA_DATA_DIR = tmp;
 
-const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph, estimateSessionTokensCached } =
+const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph, estimateSessionTokensCached, recordTokenBaseline } =
   await import('../dist/session-db.js');
 
 let db;
@@ -214,5 +214,40 @@ test('estimateSessionTokensCached computes incrementally and invalidates after t
   // Different cache key (e.g. provider switch) recomputes independently.
   r = estimateSessionTokensCached(sid, 'v2', est, 1);
   assert.equal(r.tokenEstimate, 3);
+  assert.equal(r.messageCount, 1);
+});
+
+test('recordTokenBaseline resets reported usage and counts only post-clear rows', () => {
+  const sid = 'sess-clear';
+  db.prepare('INSERT INTO sessions (id, name, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(sid, 'Clear', 'anthropic', 'claude', Date.now(), Date.now());
+  const ins = db.prepare('INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)');
+  const k = Date.now();
+  ins.run(sid, 'user', 'aaaa', k + 1); // 4
+  ins.run(sid, 'assistant', 'bbbbbb', k + 2); // 6
+  const est = (c) => c.length;
+  // Pre-clear running total.
+  const before = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(before.tokenEstimate, 10);
+  // /clear: snapshot the raw running total as the reset point.
+  const snapshot = recordTokenBaseline(sid, 'v1', est, 1);
+  assert.equal(snapshot.tokenEstimate, 10);
+  // Immediately after /clear the reported usage is 0 (even though rows exist).
+  let r = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(r.tokenEstimate, 0);
+  assert.equal(r.messageCount, 0);
+  // New rows after the clear count from zero again.
+  ins.run(sid, 'user', 'cccc', k + 3); // 4
+  ins.run(sid, 'assistant', 'dd', k + 4); // 2
+  r = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(r.tokenEstimate, 6);
+  assert.equal(r.messageCount, 2);
+  // A second /clear moves the reset point forward without resurrecting old rows.
+  recordTokenBaseline(sid, 'v1', est, 1);
+  r = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(r.tokenEstimate, 0);
+  ins.run(sid, 'user', 'eeeee', k + 5); // 5
+  r = estimateSessionTokensCached(sid, 'v1', est, 1);
+  assert.equal(r.tokenEstimate, 5);
   assert.equal(r.messageCount, 1);
 });
