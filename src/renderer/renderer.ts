@@ -1268,40 +1268,6 @@ function renderHistoryRow(m: StoredMsg, toolNameMap?: Map<string, string>): void
       asst.stream.classList.remove('streaming');
       curAssistant = null;
     }
-    const calls = parseToolCalls(m.toolCalls);
-    if (calls.length > 0 && !m.content) {
-      const label = calls.map((c) => c.name).join(', ');
-      const summary = document.createElement('div');
-      summary.className = 'tool-card collapsed';
-      const header = document.createElement('button');
-      header.className = 'tool-header';
-      const chevron = document.createElement('span');
-      chevron.className = 'tool-chevron';
-      chevron.textContent = '▸';
-      const nameEl = document.createElement('span');
-      nameEl.className = 'tool-name';
-      nameEl.textContent = `🔧 ${label}`;
-      header.appendChild(chevron);
-      header.appendChild(nameEl);
-      const body = document.createElement('div');
-      body.className = 'tool-result hidden';
-      body.textContent = calls.map((c) => `${c.name}(${c.id})`).join('\n');
-      summary.appendChild(header);
-      summary.appendChild(body);
-      messagesEl.appendChild(summary);
-      let filled = false;
-      header.addEventListener('click', () => {
-        const collapsed = summary.classList.toggle('collapsed');
-        chevron.textContent = collapsed ? '▸' : '▾';
-        if (!collapsed) {
-          if (!filled) { filled = true; } else {}
-          body.classList.remove('hidden');
-        } else {
-          body.classList.add('hidden');
-        }
-      });
-      curAssistant = null;
-    }
   } else if (m.role === 'tool' && m.content) {
     const toolName = toolNameMap?.get(String(m.toolCallId ?? '')) ?? undefined;
     addToolResultBlock(String(m.content), toolName);
