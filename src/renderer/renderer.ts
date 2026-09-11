@@ -1312,13 +1312,8 @@ function renderHistoryRow(m: StoredMsg, toolCallInfoMap?: Map<string, ToolCallIn
     const tcId = String(m.toolCallId ?? '');
     const existingCard = tcId ? messagesEl.querySelector(`[data-tool-call-id="${tcId}"]`) : null;
     if (existingCard) {
-      existingCard.classList.remove('collapsed');
-      const chevronEl = existingCard.querySelector('.tool-chevron');
-      if (chevronEl) chevronEl.textContent = '▾';
-      const argsEl = existingCard.querySelector('.tool-args');
-      if (argsEl) argsEl.classList.remove('hidden');
       const resultEl = document.createElement('div');
-      resultEl.className = 'tool-result';
+      resultEl.className = 'tool-result hidden';
       resultEl.textContent = String(m.content);
       existingCard.appendChild(resultEl);
     } else {
