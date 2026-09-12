@@ -5,6 +5,8 @@ import { isWorkerBlockText } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
+import { ParallelExecutionCard } from './components/ParallelExecutionCard.js';
+import type { SubTaskResult, SubTaskStatus } from '../agent/sub-agent/types.js';
 
 interface SessionInfo {
   id: string;
@@ -130,7 +132,10 @@ type AgentEvent =
   | { type: 'context_cleared'; sessionId: string }
   | { type: 'slash_start'; command: string; anchorId?: number }
   | { type: 'slash'; text: string }
-  | { type: 'slash_end'; anchorId?: number; command: string };
+  | { type: 'slash_end'; anchorId?: number; command: string }
+  | { type: 'parallel_start'; sessionId: string; prompt: string }
+  | { type: 'parallel_end'; sessionId: string; tasks: Array<{ taskId: string; status: SubTaskStatus; output: string; durationMs: number; error?: string; tokenUsage: { prompt: number; completion: number } }>; tokenUsage: { prompt: number; completion: number } }
+  | { type: 'parallel_error'; sessionId: string; error: string };
 
 declare global {
   interface Window {
@@ -343,6 +348,16 @@ interface TaskItem {
   error?: string;
 }
 const tasks = new Map<string, TaskItem>();
+
+// ---------- parallel execution state ----------
+interface ParallelSession {
+  sessionId: string;
+  prompt: string;
+  startTime: number;
+  tasks: Map<string, { status: string; output?: string; error?: string; durationMs?: number }>;
+}
+const parallelSessions = new Map<string, ParallelSession>();
+let parallelCardEl: HTMLElement | null = null;
 
 // per-turn DOM handles
 let curAssistant: { bubble: HTMLElement; stream: HTMLElement; buffer: string; cleaned: boolean } | null = null;
@@ -989,6 +1004,15 @@ function handleEvent(event: AgentEvent): void {
     }
     case 'session_end':
       setBusy(false);
+      break;
+    case 'parallel_start':
+      handleParallelStart(event.sessionId, event.prompt);
+      break;
+    case 'parallel_end':
+      handleParallelEnd(event.sessionId, event.tasks);
+      break;
+    case 'parallel_error':
+      handleParallelError(event.sessionId, event.error);
       break;
   }
 }
@@ -2320,6 +2344,140 @@ function handleTaskEvent(event: Extract<AgentEvent, { type: `task_${string}` }>)
     }
   }
   renderTasks();
+}
+
+// ---------- parallel execution rendering ----------
+function renderParallelCard(session: ParallelSession): void {
+  if (!parallelCardEl) {
+    parallelCardEl = document.createElement('div');
+    parallelCardEl.className = 'parallel-execution-card';
+    parallelCardEl.style.cssText = `
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      margin: 8px 0;
+      background-color: #f9fafb;
+    `;
+    messagesEl.appendChild(parallelCardEl);
+  }
+
+  const header = document.createElement('div');
+  header.style.cssText = `
+    font-weight: bold;
+    margin-bottom: 12px;
+    color: #374151;
+  `;
+  header.textContent = `🔄 ${getUiLang() === 'zh-CN' ? '并行执行中...' : 'Parallel execution...'}`;
+  parallelCardEl.appendChild(header);
+
+  const tasksContainer = document.createElement('div');
+  tasksContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+  
+  for (const [taskId, taskData] of session.tasks) {
+    const card = document.createElement('div');
+    card.innerHTML = ParallelExecutionCard({
+      taskId,
+      status: taskData.status as any,
+      output: taskData.output,
+      durationMs: taskData.durationMs,
+      error: taskData.error,
+    });
+    tasksContainer.appendChild(card.firstElementChild!);
+  }
+
+  parallelCardEl.appendChild(tasksContainer);
+  scrollToBottom();
+}
+
+function handleParallelStart(sessionId: string, prompt: string): void {
+  const session: ParallelSession = {
+    sessionId,
+    prompt,
+    startTime: Date.now(),
+    tasks: new Map(),
+  };
+  parallelSessions.set(sessionId, session);
+  renderParallelCard(session);
+}
+
+function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
+  const session = parallelSessions.get(sessionId);
+  if (!session) return;
+
+  for (const task of tasks) {
+    session.tasks.set(task.taskId, {
+      status: task.status,
+      output: task.output,
+      error: task.error,
+      durationMs: task.durationMs,
+    });
+  }
+
+  // Update the card with final results
+  if (parallelCardEl) {
+    parallelCardEl.innerHTML = '';
+    const header = document.createElement('div');
+    header.style.cssText = `
+      font-weight: bold;
+      margin-bottom: 12px;
+      color: #10b981;
+    `;
+    header.textContent = `✅ ${getUiLang() === 'zh-CN' ? '并行执行完成' : 'Parallel execution completed'}`;
+    parallelCardEl.appendChild(header);
+
+    const tasksContainer = document.createElement('div');
+    tasksContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+    
+    for (const task of tasks) {
+      const card = document.createElement('div');
+      card.innerHTML = ParallelExecutionCard({
+        taskId: task.taskId,
+        status: task.status,
+        output: task.output,
+        durationMs: task.durationMs,
+        error: task.error,
+      });
+      tasksContainer.appendChild(card.firstElementChild!);
+    }
+
+    parallelCardEl.appendChild(tasksContainer);
+  }
+
+  // Clean up after a delay
+  setTimeout(() => {
+    parallelCardEl?.remove();
+    parallelCardEl = null;
+    parallelSessions.delete(sessionId);
+  }, 5000);
+}
+
+function handleParallelError(sessionId: string, error: string): void {
+  const session = parallelSessions.get(sessionId);
+  if (!session) return;
+
+  if (parallelCardEl) {
+    parallelCardEl.innerHTML = '';
+    const header = document.createElement('div');
+    header.style.cssText = `
+      font-weight: bold;
+      margin-bottom: 12px;
+      color: #ef4444;
+    `;
+    header.textContent = `❌ ${getUiLang() === 'zh-CN' ? '并行执行失败' : 'Parallel execution failed'}`;
+    parallelCardEl.appendChild(header);
+
+    const errorMsg = document.createElement('div');
+    errorMsg.style.cssText = 'color: #dc2626;';
+    errorMsg.textContent = error;
+    parallelCardEl.appendChild(errorMsg);
+  }
+
+  // Clean up after a delay
+  setTimeout(() => {
+    parallelCardEl?.remove();
+    parallelCardEl = null;
+    parallelSessions.delete(sessionId);
+  }, 5000);
 }
 
 // ---------- MCP per-session toggle ----------
