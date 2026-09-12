@@ -857,10 +857,25 @@ export class AgentService {
       if (before < 4) {
         this.emitText('Not enough history to compress.\n');
       } else {
+        // Resolve the limit against the ACTUAL in-memory provider (the session's
+        // model override may differ from the persisted config model, whose name
+        // might not even resolve a known context window).
+        const modelLimit = this.agent.config.getModelContextLimit(this.agent.provider?.model);
         await this.agent.context.compress();
         const after = this.agent.context.getMessages().length;
         const tokensAfter = this.agent.context.getTokenCount();
-        this.emitText(`Compressed ${before} → ${after} messages (${tokensBefore} → ${tokensAfter} tokens).\n`);
+        const saved = tokensBefore - tokensAfter;
+        if (after === before && saved <= 0) {
+          // The engine only compresses past its trigger threshold (85% of the
+          // window by default); report the honest no-op instead of a fake
+          // "Compressed 199 → 199 (0 tokens)" success line.
+          const usage = modelLimit > 0 ? `${Math.round((tokensBefore / modelLimit) * 100)}%` : 'unknown';
+          this.emitText(
+            `Nothing to compress: context is at ${tokensBefore} tokens (${usage} of its ${modelLimit}-token window), below the compression trigger.\n`,
+          );
+        } else {
+          this.emitText(`Compressed ${before} → ${after} messages (${tokensBefore} → ${tokensAfter} tokens).\n`);
+        }
       }
       return true;
     }
@@ -1132,7 +1147,7 @@ export class AgentService {
     if (sessionId && !name) {
       try {
         const tokenCount = this.agent.context.getTokenCount();
-        const modelLimit = this.agent.config.getModelContextLimit();
+        const modelLimit = this.agent.config.getModelContextLimit(this.agent.provider?.model);
         const msgs = this.agent.context.getMessages();
         if (tokenCount > modelLimit * 0.95 && msgs.length >= 4) {
           this.onLog?.('info', `Session ${sessionId} resumes with ${tokenCount} tokens (>95% of ${modelLimit}); compressing…`);
