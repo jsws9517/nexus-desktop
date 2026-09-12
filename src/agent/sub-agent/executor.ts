@@ -47,7 +47,7 @@ export class SubAgentExecutor {
     
     for (const batch of batches) {
       const batchPromises = batch.map(task => 
-        this.executeSingle(task, baseSessionId)
+        this.executeWithRetry(task, baseSessionId)
       );
       
       const batchResults = await Promise.allSettled(batchPromises);
@@ -62,6 +62,39 @@ export class SubAgentExecutor {
     }
     
     return allResults;
+  }
+
+  /**
+   * Execute with retry logic and exponential backoff.
+   */
+  private async executeWithRetry(
+    task: SubTask, 
+    baseSessionId: string,
+    maxRetries: number = 2
+  ): Promise<SubTaskResult> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.executeSingle(task, baseSessionId);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (attempt < maxRetries) {
+          const delayMs = Math.pow(2, attempt) * 1000; // Exponential backoff
+          logger.warn(`Task ${task.id} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delayMs}ms...`);
+          await this.delay(delayMs);
+        }
+      }
+    }
+    
+    return this.toFailedResult(lastError!);
+  }
+
+  /**
+   * Utility: delay for specified milliseconds.
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
