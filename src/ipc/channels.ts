@@ -58,6 +58,10 @@ export const CHANNELS = {
   getMcpStatus: 'nexus:getMcpStatus',
   getMcpServers: 'nexus:getMcpServers',
   setMcpServer: 'nexus:setMcpServer',
+  runSubAgent: 'nexus:runSubAgent',
+  getSubAgentStatus: 'nexus:getSubAgentStatus',
+  cancelSubAgent: 'nexus:cancelSubAgent',
+  subAgentProgress: 'nexus:subAgentProgress',
   shutdown: 'nexus:shutdown',
 
   // renderer → main: desktop-only (desktop.json state) channels.

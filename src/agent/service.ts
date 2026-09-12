@@ -139,6 +139,32 @@ export class AgentService {
   }
 
   /**
+   * Call the LLM directly with a prompt (for decomposition, etc.).
+   */
+  async callLlm(options: {
+    messages: Array<{ role: string; content: string }>;
+    model?: string;
+  }): Promise<string> {
+    if (!this.agent) throw new Error('Agent not initialized');
+    
+    const messages = options.messages.map(m => ({
+      role: m.role as 'user' | 'assistant' | 'system',
+      content: m.content,
+    }));
+    
+    return this.agent.provider.complete(messages);
+  }
+
+  /**
+   * Set tool allowlist for this agent (for sub-agent isolation).
+   */
+  setToolAllowlist(tools: Set<string>): void {
+    if (this.agent) {
+      this.agent.toolAllowlist = tools;
+    }
+  }
+
+  /**
    * Cached MCP tool definitions fetched from the shared main-process hub. The
    * core calls `agent.mcp.getAllTools()` SYNCHRONOUSLY (per turn, to build the
    * tool list), so this patch must supply an array, not a Promise. Remote MCP
@@ -554,9 +580,30 @@ export class AgentService {
     return this.persistUserInput(input);
   }
 
+  /**
+   * Determine if parallel execution is appropriate.
+   */
+  private shouldUseParallel(prompt: string): boolean {
+    const patterns = [
+      /分析.*和.*和/i,              // Analyze A and B and C
+      /比较.*与.*与/i,              // Compare A with B with C
+      /分别.*处理.*和.*和/i,        // Process A, B, and C separately
+      /并行/i,                      // Explicitly mentions parallel
+    ];
+    
+    return patterns.some(p => p.test(prompt));
+  }
+
   async chat(input: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy()) throw new Error('Agent is busy');
+    
+    // Check if parallel execution should be used
+    if (this.shouldUseParallel(input)) {
+      await this.chatParallel(input);
+      return;
+    }
+    
     // chat() resolves pending askUser with the next user input, otherwise runs a turn
     const isSlash = input.trim().startsWith('/');
     const isClear = /^\/clear(?:\s|$)/i.test(input.trim());
@@ -632,6 +679,24 @@ export class AgentService {
       if (sid) await this.applyPlanProjectDir(sid);
     }
     this.finalizeSlashTurn();
+  }
+
+  /**
+   * Parallel execution mode.
+   * 
+   * Since the worker process cannot create WorkerHost instances (Electron-only),
+   * this method emits a 'parallel_request' event to notify the main process.
+   * The main process will handle the actual parallel orchestration.
+   */
+  private async chatParallel(prompt: string): Promise<void> {
+    const sessionId = this.agent?.getCurrentSessionId?.() ?? 'unknown';
+    
+    // Notify main process to handle parallel execution
+    this.onEvent?.({ 
+      type: 'parallel_request', 
+      sessionId, 
+      prompt 
+    });
   }
 
   // ---------------------------------------------------------------- DAG bridge

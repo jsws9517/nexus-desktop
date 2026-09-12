@@ -93,6 +93,12 @@ export const WORKER_METHODS = {
   setMcpServer: { fields: { name: S.str(200), enabled: S.bool() } },
   getSlashLog: { fields: { sessionId: S.str() } },
   getSlashLogPath: { fields: { sessionId: S.str() } },
+  runSubAgent: {
+    fields: { taskId: S.str(200), prompt: S.str(65536), tools: S.obj(), maxTurns: S.num(), timeoutMs: S.num() },
+    optional: ['tools', 'maxTurns', 'timeoutMs'],
+  },
+  getSubAgentStatus: { fields: { taskId: S.str(200) } },
+  cancelSubAgent: { fields: { taskId: S.str(200) } },
   shutdown: { fields: {} },
 } satisfies Record<string, MethodSpec>;
 

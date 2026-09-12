@@ -277,6 +277,12 @@ function flushTabEventBatch(): void {
   }
 }
 function forwardTabEvent(sessionId: string, event: AgentEvent): void {
+  // Handle parallel execution requests from worker
+  if (event.type === 'parallel_request') {
+    handleParallelRequest(sessionId, event as { type: string; prompt: string });
+    return;
+  }
+  
   if (event.type === 'text' || event.type === 'thinking') {
     tabEventBatch.push({ sessionId, event });
     if (!tabEventBatchTimer) {
@@ -285,6 +291,58 @@ function forwardTabEvent(sessionId: string, event: AgentEvent): void {
   } else {
     flushTabEventBatch();
     send(CHANNELS.tabEvent, { sessionId, event });
+  }
+}
+
+/**
+ * Handle parallel execution request from a worker process.
+ * The main process creates the OrchestratorAgent and executes the parallel tasks.
+ */
+async function handleParallelRequest(sessionId: string, event: { type: string; prompt: string }): Promise<void> {
+  const { OrchestratorAgent } = await import('../agent/sub-agent/orchestrator.js');
+  const { WorkerHost } = await import('./worker-host.js');
+  const { workerScriptPath } = await import('./session-workers.js');
+  
+  // Send progress event to renderer
+  send(CHANNELS.tabEvent, { sessionId, event: { type: 'parallel_start', sessionId, prompt: event.prompt } });
+  
+  try {
+    const orchestrator = new OrchestratorAgent(
+      null, // No AgentService in main process - use fallback decomposition
+      {
+        workerFactory: (scriptPath: string) => new WorkerHost(scriptPath),
+        workerScriptPath: workerScriptPath(),
+      }
+    );
+    
+    const result = await orchestrator.orchestrate(event.prompt, sessionId);
+    
+    send(CHANNELS.tabEvent, { 
+      sessionId, 
+      event: { 
+        type: 'parallel_end', 
+        sessionId,
+        tasks: result.tasks,
+        tokenUsage: result.tokenUsage
+      } 
+    });
+    
+    // Output the aggregated result
+    if (result.output) {
+      send(CHANNELS.tabEvent, { 
+        sessionId, 
+        event: { type: 'text', text: result.output } 
+      });
+    }
+  } catch (error) {
+    send(CHANNELS.tabEvent, { 
+      sessionId, 
+      event: { 
+        type: 'parallel_error', 
+        sessionId,
+        error: error instanceof Error ? error.message : String(error)
+      } 
+    });
   }
 }
 

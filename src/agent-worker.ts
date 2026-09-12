@@ -54,6 +54,9 @@ type WorkerRequest =
   | { id: number; method: 'getMcpStatus' }
   | { id: number; method: 'getMcpServers' }
   | { id: number; method: 'setMcpServer'; params: { name: string; enabled: boolean } }
+  | { id: number; method: 'runSubAgent'; params: { taskId: string; prompt: string; tools?: string[]; maxTurns?: number; timeoutMs?: number } }
+  | { id: number; method: 'getSubAgentStatus'; params: { taskId: string } }
+  | { id: number; method: 'cancelSubAgent'; params: { taskId: string } }
   | { id: number; method: 'shutdown' };
 
 /** JSON-RPC transport. stdio (dev/system node) or parentPort (Electron utilityProcess). */
@@ -124,6 +127,9 @@ service.onMcpRequest = (op, params) =>
 // Startup is split into two phases:
 //   earlyInit — constructs the Agent (config/session/provider), fast.
 //   init      — MCP connect + skills load, slow.
+// Sub-agent state tracking
+const subAgentStates = new Map<string, { status: string; startTime: number }>();
+
 // Read-only session/config methods only need phase 1 and must NOT wait for
 // phase 2; mutations (chat, MCP toggles, ...) wait on the full init promise.
 // Full serialization is NOT an option: abort() must stay able to run
@@ -250,6 +256,45 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   getMcpStatus: () => service.getMcpStatus(),
   getMcpServers: () => service.getMcpServers(),
   setMcpServer: (req: WorkerRequest & { method: 'setMcpServer' }) => service.setMcpServer(req.params.name, req.params.enabled),
+  runSubAgent: async (req: WorkerRequest & { method: 'runSubAgent' }) => {
+    const { taskId, prompt, tools, maxTurns, timeoutMs } = req.params;
+    subAgentStates.set(taskId, { status: 'running', startTime: Date.now() });
+    
+    try {
+      const tempService = new AgentService();
+      await tempService.earlyInit();
+      
+      if (tools && tools.length > 0) {
+        tempService.setToolAllowlist(new Set(tools));
+      }
+      
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Task ${taskId} timed out`)), timeoutMs ?? 60000)
+      );
+      
+      await Promise.race([
+        tempService.chat(prompt),
+        timeoutPromise,
+      ]);
+      
+      subAgentStates.set(taskId, { status: 'succeeded', startTime: Date.now() });
+      return {
+        output: `Task ${taskId} completed successfully`,
+        tokenUsage: { prompt: 0, completion: 0 },
+      };
+    } catch (error) {
+      subAgentStates.set(taskId, { status: 'failed', startTime: Date.now() });
+      throw error;
+    }
+  },
+  getSubAgentStatus: (req: WorkerRequest & { method: 'getSubAgentStatus' }) => {
+    const state = subAgentStates.get(req.params.taskId);
+    return state ?? { status: 'unknown' };
+  },
+  cancelSubAgent: (req: WorkerRequest & { method: 'cancelSubAgent' }) => {
+    subAgentStates.set(req.params.taskId, { status: 'cancelled', startTime: Date.now() });
+    return { success: true };
+  },
   shutdown: () => service.shutdown(),
 };
 
