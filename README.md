@@ -23,20 +23,70 @@ replaces the terminal UI layer.
 - Fast tab opening: a pre-warmed, session-unbound spare worker is kept ready when
   system resources allow, so the common open-tab path skips a cold process
   spawn + Agent construction (gated on the resource monitor + tab ceiling).
+- **Sub-Agent parallel execution**: complex requests are decomposed by an
+  `OrchestratorAgent` into independent sub-tasks that run in isolated worker
+  processes concurrently (with dependency resolution, concurrency limits, and
+  graceful fallback to serial).
+- **Skill / Artifact pipeline (M0)**: office skills (`sheet.analyze`,
+  `bi.chart`) produce structured `Artifact` payloads that render inline as
+  Vega-Lite charts, CSV tables, and markdown cards directly in the chat stream.
 - Clipboard image pasting: `Alt+V` (mirroring coder-core) attaches a clipboard
   screenshot / image to the input; native image pastes are detected too.
 - Windows installer with a branded icon.
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph Renderer["renderer (Electron webview)"]
+        UI["Chat UI / Markdown streaming"]
+        Artifacts["Artifact Canvas\n(sheet · chart · csv inline cards)"]
+        Config["Config Web UI\n(provider / vision / MCP / skills)"]
+    end
+
+    subgraph Main["main (Electron) — index.ts"]
+        Ipc["IPC register\n(channels.ts → register.ts)"]
+        State["DesktopState\n(~/.nexus/desktop.json)"]
+        Monitor["ResourceMonitor\n(tab ceiling + spare gate)"]
+        MCPHub["MCP Hub\n(mcp-hub.ts)\n• Remote MCP servers\n• In-process: memory / git\n  / fetch / time"]
+        SessionWorkers["SessionWorkers\n(session-workers.ts)\n• Per-tab WorkerHost\n• Pre-warmed spare"]
+    end
+
+    subgraph Worker["worker (Node AgentService)\nagent-worker.ts + nexus-coder"]
+        AgentService["AgentService\n(service.ts)\n• Core conversation loop\n• /plan → /go → /revise DAG\n• Sub-Agent orchestrator"]
+        SubAgent["Sub-Agent\n(sub-agent/)\n• OrchestratorAgent\n  (task decomposition)\n• SubAgentExecutor\n  (parallel execution)\n• Decomposer (LLM-based)\n• Tool categories (R/W split)"]
+        Skills["Skills\n(skills/)\n• sheet.read / sheet.analyze\n• bi.chart (Vega-Lite)"]
+        Tools["Built-in Tools\n(tools/)\n• filesystem\n• sqlite\n• sequential-thinking"]
+        Artifact["Artifact Protocol\n(shared/artifact.ts)\n• envelope: __artifactVersion\n• type: sheet / chart / csv /\n  ppt / docx / html / …\n• patch streaming (partial→done)"]
+    end
+
+    Renderer -->|"IPC channels"| Main
+    Main -->|"stdio NDJSON / utilityProcess parentPort"| Worker
+
+    Main --> MCPHub
+    SessionWorkers --> MCPHub
+    SessionWorkers -->|"spawn / spare lease"| Worker
+
+    Worker --> AgentService
+    AgentService --> SubAgent
+    AgentService --> Skills
+    AgentService --> Tools
+    Skills -->|"returns Artifact envelope"| AgentService
+    AgentService -->|"ToolResult.content"| Artifact
+
+    AgentService -->|"nexus:tabEvents"| Renderer
+    AgentService -->|"nexus:taskEvents"| Renderer
+    Artifact -->|"parseArtifactContent"| Artifacts
+
+    style Renderer fill:#e1f5fe
+    style Main fill:#fff3e0
+    style Worker fill:#e8f5e9
+    style SubAgent fill:#fce4ec
+    style Skills fill:#f3e5f5
+    style Artifact fill:#e0f2f1
 ```
-renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utilityProcess──▶ worker (Node AgentService)
-   preload (sandboxed)          index.ts / ipc/register.ts            agent-worker.ts + nexus-coder
-                                    │  ├─ global worker ........... shared sessions/config/providers/MCP surface
-                                    │  ├─ session worker per tab ... multi-tab parallelism (own process + cwd)
-                                    │  ├─ pre-warmed spare ......... session-unbound, binds on next tab open
-                                    └────── mcp-hub.ts ............. one OS process per MCP server, shared by all
-```
+
+### Process model
 
 - The core **Agent** always runs in a separate worker process — never inside
   Electron's main process — keeping native modules (`better-sqlite3`) on a stable
@@ -58,6 +108,23 @@ renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utili
   process per server — no per-tab shadow processes). Built-in tools
   (filesystem / sqlite / sequential-thinking) run in-process via a unified
   registry (`src/tools/`).
+- **In-process built-ins** (`mcp-hub.ts`): `memory`, `git`, `fetch`, `time`
+  servers are replaced by single-process implementations; their names are
+  shadowed in the settings UI so they show as "connected" without spawning
+  external processes.
+- **Sub-Agent parallelism** (`src/agent/sub-agent/`):
+  - `OrchestratorAgent` decomposes a prompt via LLM into `SubTask[]` with
+    dependency edges.
+  - `SubAgentExecutor` runs independent tasks concurrently (default fan-out = 4,
+    total timeout = 5 min), topologically sorts dependent tasks, and aggregates
+    results.
+  - Failed sub-tasks fall back gracefully; partial failure returns succeeded
+    results alongside error reports.
+- **Artifact pipeline** (`src/shared/artifact.ts` + `src/renderer/artifacts/`):
+  Skill results embed a JSON envelope (`{"__artifactVersion":1,"artifact":{…}}`)
+  inside `ToolResult.content`. The renderer parses it with
+  `parseArtifactContent()` and dispatches to type-specific view components
+  (`chart-view.ts`, `table-view.ts`). Export via `nexus:saveArtifact` dialog.
 - The app shares `~/.nexus` (sessions DB + session config) with the CLI; it does
   **not** depend on the CLI binary.
 
@@ -65,24 +132,32 @@ renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utili
 
 ```
 src/
-  main/        Electron bootstrap (index.ts), WorkerHost, per-tab SessionWorkers,
-               MCP hub, desktop state store (src/main/desktop-state.ts)
-  ipc/         channel constants (channels.ts) + registerIpc handlers (register.ts)
-  agent/       AgentService + shared bridge types (facade re-export: src/agent-service.ts)
-  tools/       built-in MCP tool registry (filesystem / sqlite / sequential-thinking)
-  renderer/    renderer UI, i18n, markdown streaming
-  shared/      IPC validation spec + runtime constants
+  main/           Electron bootstrap (index.ts), WorkerHost, per-tab SessionWorkers,
+                  MCP hub, desktop state store (src/main/desktop-state.ts),
+                  in-process tools (memory-kg / git-internal / fetch-tools / time-tools)
+  ipc/            channel constants (channels.ts) + registerIpc handlers (register.ts)
+  agent/          AgentService + shared bridge types
+    service.ts    core conversation loop, /plan /go /revise DAG, sub-agent wiring
+    sub-agent/    OrchestratorAgent, SubAgentExecutor, Decomposer, types, metrics
+  tools/          built-in tool registries (filesystem / sqlite / sequential-thinking)
+  skills/         artifact-producing skills (sheet / chart)
+  renderer/       renderer UI, i18n, markdown streaming, artifact renderers
+    artifacts/    artifact-view / chart-view / table-view / vega
+  shared/         IPC validation spec, Artifact protocol, runtime constants, logger
+  agent-service.ts  thin re-export facade (preserves dist/agent-service.js path)
 ```
 
 ## Dependencies
 
 - `nexus-coder` - Nexus CLI core (includes all transitive dependencies)
 - `electron-updater` - Auto-update support
+- `exceljs` - M0: spreadsheet read/analyze skill
+- `vega` / `vega-lite` / `vega-embed` - M0: chart skill + inline rendering
 
 ## Source mirror
 
 The source (`main` + tags) is auto-mirrored to Gitee on every push
-(`.github/workflows/gitee-sync.yml`), and releases are published on both hosts:
+ (`.github/workflows/gitee-sync.yml`), and releases are published on both hosts:
 
 - GitHub: https://github.com/jsws9517/nexus-desktop
 - Gitee mirror: https://gitee.com/cict_1_0/nexus-desktop
@@ -109,6 +184,7 @@ npm start            # build + launch in dev mode
 | `npm run test:unit` | headless unit suite (`node --test`, incl. IPC + tools) |
 | `npm run test:smoke`| headless RPC smoke test (no GUI, no LLM)             |
 | `npm run test:chat` | headless end-to-end chat through the worker          |
+| `npm run test:work` | work-mode test (DAG plan/go/revise)                   |
 | `npm run dist:win`  | build the Windows `.exe` installer                 |
 
 ## Packaging

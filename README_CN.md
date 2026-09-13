@@ -11,19 +11,64 @@
 - 消息排队：agent 繁忙时发送的消息立即上屏，当前轮次结束后逐条自动提交。
 - 多标签会话：每个标签页运行在独立 worker 进程中，一个标签的流式输出不会阻塞其他标签，各标签保持独立的 `cwd` 与 provider/model 覆盖。
 - 快速开标签：系统资源允许时预置一个**未绑定会话**的备用 worker，常见开标签路径跳过冷启动（进程 spawn + Agent 构造），并受资源监控与标签上限门禁。
+- **Sub-Agent 并行执行**：复杂请求由 `OrchestratorAgent` 经 LLM 分解为多个独立子任务，在各隔离 worker 进程中并发执行（支持依赖排序、并发上限控制、失败 graceful fallback）。
+- **Skill / Artifact 流水线（M0）**：办公技能（`sheet.analyze`、`bi.chart`）返回结构化 `Artifact` 负载，直接以内联卡片形式渲染为 Vega-Lite 图表、CSV 表格或 markdown 内容。
 - 剪切板贴图：按 `Alt+V`（与 coder-core 一致）把剪切板截图/图片作为附件加入输入框；原生图片粘贴也会被识别。
 - Windows 安装包：带品牌图标。
 
 ## 架构
 
+```mermaid
+graph TB
+    subgraph Renderer["renderer (Electron webview)"]
+        UI["Chat UI / Markdown 流式渲染"]
+        Artifacts["Artifact 画布\n(sheet · chart · csv 内联卡片)"]
+        Config["配置 Web UI\n(provider / vision / MCP / skills)"]
+    end
+
+    subgraph Main["main (Electron) — index.ts"]
+        Ipc["IPC 注册\n(channels.ts → register.ts)"]
+        State["DesktopState\n(~/.nexus/desktop.json)"]
+        Monitor["ResourceMonitor\n(标签上限 + 备用 worker 门禁)"]
+        MCPHub["MCP Hub\n(mcp-hub.ts)\n• 远程 MCP 服务器\n• 进程内：memory / git\n  / fetch / time"]
+        SessionWorkers["SessionWorkers\n(session-workers.ts)\n• 按标签的 WorkerHost\n• 预热备用 worker"]
+    end
+
+    subgraph Worker["worker (Node AgentService)\nagent-worker.ts + nexus-coder"]
+        AgentService["AgentService\n(service.ts)\n• 核心对话循环\n• /plan → /go → /revise DAG\n• Sub-Agent 编排"]
+        SubAgent["Sub-Agent\n(sub-agent/)\n• OrchestratorAgent\n  (LLM 任务分解)\n• SubAgentExecutor\n  (并发执行)\n• Decomposer (LLM 辅助)\n• Tool 分类 (读写分离)"]
+        Skills["Skills\n(skills/)\n• sheet.read / sheet.analyze\n• bi.chart (Vega-Lite)"]
+        Tools["内置工具\n(tools/)\n• filesystem\n• sqlite\n• sequential-thinking"]
+        Artifact["Artifact 协议\n(shared/artifact.ts)\n• 信封格式: __artifactVersion\n• 类型: sheet / chart / csv /\n  ppt / docx / html / …\n• patch 流式 (partial→done)"]
+    end
+
+    Renderer -->|"IPC channels"| Main
+    Main -->|"stdio NDJSON / utilityProcess parentPort"| Worker
+
+    Main --> MCPHub
+    SessionWorkers --> MCPHub
+    SessionWorkers -->|"spawn / 备用 worker 租赁"| Worker
+
+    Worker --> AgentService
+    AgentService --> SubAgent
+    AgentService --> Skills
+    AgentService --> Tools
+    Skills -->|"返回 Artifact 信封"| AgentService
+    AgentService -->|"ToolResult.content"| Artifact
+
+    AgentService -->|"nexus:tabEvents"| Renderer
+    AgentService -->|"nexus:taskEvents"| Renderer
+    Artifact -->|"parseArtifactContent"| Artifacts
+
+    style Renderer fill:#e1f5fe
+    style Main fill:#fff3e0
+    style Worker fill:#e8f5e9
+    style SubAgent fill:#fce4ec
+    style Skills fill:#f3e5f5
+    style Artifact fill:#e0f2f1
 ```
-renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utilityProcess──▶ worker (Node AgentService)
-   preload (sandboxed)          index.ts / ipc/register.ts            agent-worker.ts + nexus-coder
-                                    │  ├─ global worker ........... 共享的 会话/配置/provider/MCP 入口
-                                    │  ├─ session worker per tab ... 多标签并行（独立进程 + cwd）
-                                    │  ├─ pre-warmed spare ......... 未绑定会话，下个标签打开时接管绑定
-                                    └────── mcp-hub.ts ............. 每个 MCP 服务器一个 OS 进程，全局共享
-```
+
+### 进程模型
 
 - 核心 **Agent** 始终运行在独立 worker 进程中——绝不在 Electron 主进程内执行——从而让原生模块（`better-sqlite3`）保持稳定 ABI，并将核心崩溃与 UI 隔离。
 - **开发 / npm 安装**传输：worker 以系统 `node` 子进程方式 spawn，基于 stdio 的 JSON-RPC。
@@ -31,25 +76,40 @@ renderer (webview) ──IPC──▶ main (Electron) ──stdio NDJSON / utili
 - **标签 worker**：每个打开的会话标签拥有独立的 `WorkerHost` 进程（同一份 `agent-worker.js`，通过 `startSession` 绑定到具体会话）。一个标签的播放/流式不会阻塞其他标签。
 - **预热备用 worker**：当资源监控状态健康且标签数低于上限时，预创建一个未绑定会话的 worker。它直到某个标签真正打开才被绑定，因此不可能被误判为"携带进行中轮次的空闲进程"。由 `open()`/`openNew()` 原子接管，关闭标签时自动补位。
 - **MCP 总线（hub）**：所有 MCP 服务器的连接与启动统一由主进程 `mcp-hub` 持有，各 worker 通过它代理工具调用（每服务器一个 OS 进程——无 per-tab 影子进程）。内置工具（文件系统 / sqlite / 顺序思考）通过统一注册表（`src/tools/`）在进程内运行。
+- **进程内内置服务**（`mcp-hub.ts`）：`memory`、`git`、`fetch`、`time` 四个 MCP 服务器由主进程内的单进程实现替代，设置 UI 中显示为"已连接"，无需 spawn 外部进程。
+- **Sub-Agent 并行**（`src/agent/sub-agent/`）：
+  - `OrchestratorAgent` 通过 LLM 将 prompt 分解为带依赖边的 `SubTask[]`。
+  - `SubAgentExecutor` 并发运行独立任务（默认并发上限 4，总超时 5 分钟），对有依赖的任务做拓扑排序，并聚合结果。
+  - 部分失败时优雅降级：已成功子任务的结果一并返回，失败子任务附带错误报告。
+- **Artifact 流水线**（`src/shared/artifact.ts` + `src/renderer/artifacts/`）：
+  Skill 结果以 JSON 信封（`{"__artifactVersion":1,"artifact":{…}}`）嵌入 `ToolResult.content`。渲染器通过 `parseArtifactContent()` 解析后，分发给类型特定的视图组件（`chart-view.ts`、`table-view.ts`）。导出通过 `nexus:saveArtifact` 对话框完成。
 - 应用与 CLI 共享 `~/.nexus`（会话 DB + 会话配置），**不依赖** CLI 二进制。
 
 ## 源码结构
 
 ```
 src/
-  main/        Electron 引导（index.ts）、WorkerHost、按标签的 SessionWorkers、
-               MCP hub、桌面状态存储（src/main/desktop-state.ts）
-  ipc/         频道常量（channels.ts）+ registerIpc 处理器（register.ts）
-  agent/       AgentService 与共享桥接类型（门面再导出：src/agent-service.ts）
-  tools/       内置 MCP 工具注册表（文件系统 / sqlite / 顺序思考）
-  renderer/    渲染器 UI、i18n、markdown 流式渲染
-  shared/      IPC 校验规范与运行时常量
+  main/           Electron 引导（index.ts）、WorkerHost、按标签的 SessionWorkers、
+                  MCP hub、桌面状态存储（desktop-state.ts）、
+                  进程内工具（memory-kg / git-internal / fetch-tools / time-tools）
+  ipc/            频道常量（channels.ts）+ registerIpc 处理器（register.ts）
+  agent/          AgentService 与共享桥接类型
+    service.ts    核心对话循环、/plan /go /revise DAG、Sub-Agent 接线
+    sub-agent/    OrchestratorAgent、SubAgentExecutor、Decomposer、类型定义、指标
+  tools/          内置工具注册表（文件系统 / sqlite / 顺序思考）
+  skills/         Artifact 生产型技能（sheet / chart）
+  renderer/       渲染器 UI、i18n、markdown 流式渲染、artifact 渲染器
+    artifacts/    artifact-view / chart-view / table-view / vega
+  shared/         IPC 校验规范、Artifact 协议、运行时常量、日志
+  agent-service.ts  薄包装再导出（保留 dist/agent-service.js 路径）
 ```
 
 ## 依赖
 
 - `nexus-coder` — Nexus CLI 核心（含全部传递依赖）
 - `electron-updater` — 自动更新支持
+- `exceljs` — M0：电子表格读取/分析技能
+- `vega` / `vega-lite` / `vega-embed` — M0：图表技能 + 前端内联渲染
 
 ## 源码镜像
 
@@ -79,6 +139,7 @@ npm start            # 构建并启动开发模式
 | `npm run test:unit` | 无头单元测试（`node --test`，含 IPC 与内置工具）      |
 | `npm run test:smoke`| 无头 RPC 冒烟测试（无 GUI、无 LLM）                   |
 | `npm run test:chat` | 通过 worker 的无头端到端对话                         |
+| `npm run test:work` | Work mode 测试（DAG plan/go/revise）                  |
 | `npm run dist:win`  | 构建 Windows `.exe` 安装包                            |
 
 ## 打包

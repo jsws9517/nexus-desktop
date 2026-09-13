@@ -11,7 +11,7 @@
 This document provides detailed, step-by-step execution instructions for each phase (P1-P4), with specific file operations, verification criteria, and acceptance tests.
 
 **Execution Protocol**:
-1. Each phase is独立验收 (independently verified)
+1. Each phase is independently verified
 2. TypeScript compilation must pass before proceeding
 3. Unit tests must pass for each phase
 4. Manual verification for UI/integration phases
