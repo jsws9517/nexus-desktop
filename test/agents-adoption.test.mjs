@@ -2,7 +2,7 @@
  * P0 unit tests — .agents constitution + agents_* tools + model capabilities.
  *
  * Covers docs/dsh-plugin-adoption-plan.md §11.1:
- *   - constitution fallback chain (DEEPSEEK.md → CLAUDE.md → AGENTS.md →
+ *   - constitution fallback chain (rules/NEXUS.md → rules/AGENTS.md →
  *     .clinerules → root AGENTS.md → any .agents/rules/*.md), first-existing-wins
  *   - 32 KB size cap refusal (no silent context bloat)
  *   - agents_index / agents_read / agents_search authorization + path confinement
@@ -50,8 +50,8 @@ mkdirSync(join(root, '.agents', 'rules'), { recursive: true });
 mkdirSync(join(root, '.agents', 'skills', 'charting'), { recursive: true });
 mkdirSync(join(root, '.agents', 'skills', 'sql'), { recursive: true });
 writeFileSync(
-  join(root, '.agents', 'rules', 'DEEPSEEK.md'),
-  'CONSTITUTION_TOP\n# DeepSeek Rules\n- never use charts without bi.chart\n',
+  join(root, '.agents', 'rules', 'NEXUS.md'),
+  'CONSTITUTION_TOP\n# Nexus Rules\n- never use charts without bi.chart\n',
   'utf8',
 );
 writeFileSync(
@@ -79,17 +79,17 @@ test('agents tools are registered under TOOL registry ids', () => {
   assert.equal(AGENTS_TOOL_DEFS.length, 3);
 });
 
-test('resolves DEEPSEEK.md when present (highest precedence)', async () => {
+test('resolves NEXUS.md when present (highest precedence)', async () => {
   const f = await resolveConstitutionFile(root);
-  assert.equal(f, join(root, '.agents', 'rules', 'DEEPSEEK.md'));
+  assert.equal(f, join(root, '.agents', 'rules', 'NEXUS.md'));
 });
 
-test('falls back to CLAUDE.md when DEEPSEEK.md is absent', async () => {
+test('falls back to rules/AGENTS.md when NEXUS.md is absent', async () => {
   const alt = mkdtempSync(join(tmpdir(), 'nexus-agents-fb-'));
   mkdirSync(join(alt, '.agents', 'rules'), { recursive: true });
-  writeFileSync(join(alt, '.agents', 'rules', 'CLAUDE.md'), 'CLAUDE RULES', 'utf8');
+  writeFileSync(join(alt, '.agents', 'rules', 'AGENTS.md'), 'AGENTS RULES', 'utf8');
   const f = await resolveConstitutionFile(alt);
-  assert.equal(f, join(alt, '.agents', 'rules', 'CLAUDE.md'));
+  assert.equal(f, join(alt, '.agents', 'rules', 'AGENTS.md'));
   rmWithCwdEscape(alt, __dirname);
 });
 
@@ -120,7 +120,7 @@ test('loadConstitution returns text for an authorized root (cwd)', async () => {
 test('loadConstitution refuses > 32 KB files with reason too-large', async () => {
   const alt = mkdtempSync(join(tmpdir(), 'nexus-agents-big-'));
   mkdirSync(join(alt, '.agents', 'rules'), { recursive: true });
-  writeFileSync(join(alt, '.agents', 'rules', 'DEEPSEEK.md'), 'x'.repeat(40_000), 'utf8');
+  writeFileSync(join(alt, '.agents', 'rules', 'NEXUS.md'), 'x'.repeat(40_000), 'utf8');
   process.chdir(alt);
   const res = await loadConstitution(alt);
   assert.equal(res.reason, 'too-large');
@@ -132,7 +132,7 @@ test('loadConstitution refuses > 32 KB files with reason too-large', async () =>
 test('loadConstitution returns unauthorized for a foreign root', async () => {
   const foreign = mkdtempSync(join(tmpdir(), 'nexus-agents-for-'));
   mkdirSync(join(foreign, '.agents', 'rules'), { recursive: true });
-  writeFileSync(join(foreign, '.agents', 'rules', 'DEEPSEEK.md'), 'FOREIGN', 'utf8');
+  writeFileSync(join(foreign, '.agents', 'rules', 'NEXUS.md'), 'FOREIGN', 'utf8');
   process.chdir(root); // cwd is the authorized root; foreign is not
   const res = await loadConstitution(foreign);
   assert.equal(res.reason, 'unauthorized');
@@ -149,12 +149,12 @@ test('agents_index lists skills, rules and constitution', async () => {
   assert.ok(!res.isError, res.content);
   const data = JSON.parse(res.content);
   assert.equal(data.root, root);
-  assert.ok(data.constitution?.endsWith('DEEPSEEK.md'));
+  assert.ok(data.constitution?.endsWith('NEXUS.md'));
   assert.equal(data.skills.length, 2);
   assert.equal(data.skills[0].name, 'charting');
   assert.match(data.skills[0].description, /bi\.chart/);
   assert.equal(data.rules.length, 1);
-  assert.equal(data.rules[0].name, 'DEEPSEEK.md');
+  assert.equal(data.rules[0].name, 'NEXUS.md');
 });
 
 test('agents_read reads a skill file inside .agents', async () => {

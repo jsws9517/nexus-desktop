@@ -69,11 +69,11 @@ knowledge graph stores *user* facts; it does not carry *project* rules into the 
 
 | Aegis Concept | Description | Nexus-Desktop Mapping |
 |---|---|---|
-| **Constitution injection** | `.agents/rules/DEEPSEEK.md` injected into **every** model step | Reuse `ctx.prependToSystem()` with a dedicated `[Project Constitution]` marker; auto-removed when the rule set is empty |
-| **`.agents` directory standard** | One folder per project: `skills/<skill>/SKILL.md`, `rules/DEEPSEEK.md`, `mcp.json` | Adopt the same standard at the project root (see [§3.5](#35-agents-directory-spec)) |
+| **Constitution injection** | `.agents/rules/NEXUS.md` injected into **every** model step (filename localized: Nexus's own identity, not copied from other agents' naming) | Reuse `ctx.prependToSystem()` with a dedicated `[Project Constitution]` marker; auto-removed when the rule set is empty |
+| **`.agents` directory standard** | One folder per project: `skills/<skill>/SKILL.md`, `rules/NEXUS.md`, `mcp.json` | Adopt the same standard at the project root (see [§3.5](#35-agents-directory-spec)) |
 | **Native knowledge tools** | `agents_index`, `agents_read`, `agents_search` callable by the agent | Add three built-in tools registered in `src/tools/index.ts` (see [§3.6](#36-tool-specifications)) |
 | **Global + project scopes** | Global config in `~/.dsh/aegis-mcp.json`, project config in `.agents/mcp.json` | Global in `~/.nexus/config.json`; project in `.agents/` under the authorized project root |
-| **Constitution fallback chain** | `DEEPSEEK.md` → `CLAUDE.md` → `AGENTS.md` → `.clinerules` → root `AGENTS.md` | Same precedence, evaluated left-to-right, first existing file wins |
+| **Constitution fallback chain** | `NEXUS.md` → (generic) `AGENTS.md` → `.clinerules` → root `AGENTS.md` | Same precedence, evaluated left-to-right, first existing file wins; the upstream Aegis names `DEEPSEEK.md`/`CLAUDE.md` were dropped — the constitution file is named after **Nexus**, not after other agents |
 
 ### 3.4 Scope & Non-Goals
 
@@ -94,12 +94,18 @@ knowledge graph stores *user* facts; it does not carry *project* rules into the 
 <project-root>/
 └── .agents/
     ├── skills/<skill-name>/SKILL.md   ← optional; how to build X (markdown w/ front-matter)
-    ├── rules/DEEPSEEK.md              ← project constitution (highest precedence)
+    ├── rules/NEXUS.md               ← project constitution (highest precedence)
     └── mcp.json                       ← optional; standard { "mcpServers": {...} } format
 ```
 
 **Constitution fallback chain** (first existing wins):
-`rules/DEEPSEEK.md` → `rules/CLAUDE.md` → `rules/AGENTS.md` → root `.clinerules` → root `AGENTS.md` → any `rules/*.md`.
+`rules/NEXUS.md` → `rules/AGENTS.md` → root `.clinerules` → root `AGENTS.md` → any `rules/*.md`.
+
+> **Naming decision**: the upstream Aegis constitution file is `rules/DEEPSEEK.md` (per DSH
+> project conventions), with `CLAUDE.md` also in its chain. Nexus-Desktop **adapts, not copies**:
+> the primary constitution file is `rules/NEXUS.md` — named after this project. The generic
+> fallbacks (`AGENTS.md`, `.clinerules`) remain because they are open cross-tool conventions
+> in which the project may already document itself; they only apply if `NEXUS.md` is absent.
 
 **Security note**: `.agents/rules/*.md` is **system-level instruction input**. It MUST be treated as
 untrusted until the user authorizes the directory (path authorizer). Loaded rule text is appended to
@@ -162,7 +168,7 @@ const CONSTITUTION_MARKER = '[Project Constitution]';
 
 /** Called once per session start (and on .agents change via a watcher). */
 private async loadConstitution(cwd: string): Promise<string | null> {
-  const file = await resolveConstitutionFile(cwd); // DEEPSEEK.md → CLAUDE.md → ... (see §3.5)
+  const file = await resolveConstitutionFile(cwd); // NEXUS.md → AGENTS.md → ... (see §3.5)
   if (!file) return null;
   return safeReadConstitution(file); // size-capped (e.g. ≤ 32 KB), marker-delimited
 }
@@ -182,7 +188,7 @@ model and keeps isolation guarantees intact.
 
 ### 3.8 Acceptance Criteria
 
-- [ ] With `.agents/rules/DEEPSEEK.md` present, every LLM step in a local session includes the rule text.
+- [ ] With `.agents/rules/NEXUS.md` present, every LLM step in a local session includes the rule text.
 - [ ] Removing the file (or clearing the marker) removes the text from subsequent steps.
 - [ ] `agents_index` / `agents_read` / `agents_search` work within authorized roots; out-of-root paths are denied.
 - [ ] Constitution loading honors the path-authorizer grant (unattended-safe, no dead-stdin prompt).
@@ -471,7 +477,7 @@ Later ──── P3-Operations
 
 | Area | Coverage | File (new) |
 |---|---|---|
-| Constitution resolution | Fallback chain `DEEPSEEK.md→CLAUDE.md→AGENTS.md→.clinerules→root AGENTS.md`; first-existing-wins; empty `.agents/` returns null | `test/agents-constitution.test.mjs` |
+| Constitution resolution | Fallback chain `NEXUS.md→AGENTS.md→.clinerules→root AGENTS.md`; first-existing-wins; empty `.agents/` returns null | `test/agents-constitution.test.mjs` |
 | Size cap | > 32 KB constitution refused with explicit error; no silent truncation | same |
 | `agents_*` tools | Index/read/search against a fixture `.agents/` tree; out-of-root path denied by authorizer mock | `test/agents-tools.test.mjs` |
 | Capability merge | `modelCapabilities` overlay on defaults; `vision: unknown` stays conservative (native behavior preserved) — mirrors ModLens exclusion rule | `test/model-capabilities.test.mjs` |
@@ -480,7 +486,7 @@ Later ──── P3-Operations
 
 ### 11.2 Integration Tests (RPC smoke, `scripts/smoke-test.mjs` pattern)
 
-- Local session with `.agents/rules/DEEPSEEK.md` → every step's built prompt contains `[Project Constitution]` marker (audit hook assertion).
+- Local session with `.agents/rules/NEXUS.md` → every step's built prompt contains `[Project Constitution]` marker (audit hook assertion).
 - Removing the file mid-session → next step's marker absent (watcher path).
 - Sub-agent (parallel phase): orchestrator-passed constitution appears exactly once in child prompt; child worker performs no filesystem discovery.
 - Sidebar `registerTab` round-trip: main→renderer→main with typed `SidebarEvent`; unregister cleans subscriptions (no leaked listeners after tab close).

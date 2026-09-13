@@ -1,12 +1,13 @@
 /**
- * Project knowledge tools (borrowed from Tolten Aegis — see docs/dsh-plugin-adoption-plan.md §3).
+ * Project knowledge tools (adapted from Tolten Aegis — see docs/dsh-plugin-adoption-plan.md §3).
  *
- * Implements the `.agents` project-knowledge standard:
+ * Implements the `.agents` project-knowledge standard, first filename localized
+ * to this project's identity (Nexus):
  *
  *   <project-root>/
  *   └── .agents/
  *       ├── skills/<skill-name>/SKILL.md   ← how to build X (markdown w/ front-matter)
- *       ├── rules/DEEPSEEK.md              ← project constitution (highest precedence)
+ *       ├── rules/NEXUS.md                 ← project constitution (highest precedence)
  *       └── mcp.json                       ← optional; standard mcpServers format
  *
  * The **constitution** is loaded by AgentService and injected into EVERY model
@@ -41,10 +42,17 @@ export const MAX_CONSTITUTION_BYTES = 32 * 1024;
 /** Hard cap on a single tool result returned to the LLM. */
 const MAX_TOOL_RESULT_CHARS = 30_000;
 
-/** Fallback chain, first existing file wins (Aegis spec). */
+/**
+ * Fallback chain, first existing file wins.
+ *
+ * `.agents/rules/NEXUS.md` is the project constitution — the filename is
+ * localized to Nexus (not copied from Aegis' DEEPSEEK.md / other agents' names).
+ * The trailing generic entries (AGENTS.md, .clinerules) stay as low-priority
+ * compatibility for open cross-tool conventions (not DSH-specific), so a project
+ * that already documents itself for other agents still gets picked up last.
+ */
 const CONSTITUTION_FALLBACK = [
-  '.agents/rules/DEEPSEEK.md',
-  '.agents/rules/CLAUDE.md',
+  '.agents/rules/NEXUS.md',
   '.agents/rules/AGENTS.md',
   '.clinerules',
   'AGENTS.md',
@@ -310,7 +318,7 @@ const AGENTS_INDEX_TOOL: ToolDef = {
 const AGENTS_READ_TOOL: ToolDef = {
   name: 'agents_read',
   description:
-    'Read a file from the project .agents directory (e.g. skills/foo/SKILL.md, rules/DEEPSEEK.md) or the resolved constitution.',
+    'Read a file from the project .agents directory (e.g. skills/foo/SKILL.md, rules/NEXUS.md) or the resolved constitution.',
   inputSchema: {
     type: 'object',
     properties: {
