@@ -2170,6 +2170,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   reloadConfig(): { ok: boolean } {
     if (!this.agent?.config) return { ok: false };
     this.agent.config.reload?.();
+    // 热应用 contextWindow 压缩参数变更（Web 面板保存后即时生效）
+    this.agent.applyContextWindow?.();
     return { ok: true };
   }
 
