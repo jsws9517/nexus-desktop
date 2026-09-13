@@ -18,48 +18,36 @@
 
 ## 架构
 
-```mermaid
-flowchart LR
-    subgraph R["renderer"]
-        UI["Chat\nUI"]
-        Art["Artifact\nCanvas"]
-        CFG["Config\nWeb UI"]
-    end
-
-    subgraph M["main"]
-        IPC["IPC"]
-        State["DesktopState"]
-        Mon["Resource\nMonitor"]
-        SW["SessionWorkers\n+ spare gate"]
-        MCPH["MCP Hub"]
-    end
-
-    subgraph W["worker (Node)"]
-        AS["AgentService"]
-        SA["Sub-Agent\nExecutor"]
-        SK["Skills\n(sheet / chart)"]
-        TL["Built-in\nTools"]
-        ART["Artifact\nProtocol"]
-    end
-
-    R ==>|IPC| M
-    M ==>|JSON-RPC<br/>stdio / utilityProcess| W
-
-    SW --> MCPH
-    AS --> SA
-    AS --> SK
-    AS --> TL
-    SK -->|"Artifact envelope"| ART
-    ART -->|"parseArtifactContent"| Art
-
-    SA -->|"nexus:taskEvents"| R
-    AS -->|"nexus:tabEvents"| R
-
-    style R fill:#f0f7ff,stroke:#4a90d9,stroke-width:1.5px
-    style M fill:#fff8ee,stroke:#d9a04a,stroke-width:1.5px
-    style W fill:#f0fff4,stroke:#4ad98a,stroke-width:1.5px
-    style SA fill:#fff0f6,stroke:#d94aad,stroke-width:1px
-    style ART fill:#e8fff0,stroke:#4ad9a0,stroke-width:1px
+```
+┌────────────────────────────────────────────────────┐
+│ renderer (Electron webview)                        │
+│ Chat UI — markdown streaming                       │
+│ Config Web UI — provider/MCP/skills                │
+│ Artifact Canvas — sheet/chart/csv                  │
+└──────────────────────────┬─────────────────────────┘
+                           │
+                           │  IPC (channels.ts → register.ts)
+                           ▼
+┌────────────────────────────────────────────────────┐
+│ main (Electron)                                    │
+│ DesktopState — ~/.nexus/desktop.json               │
+│ ResourceMonitor — tab ceiling + spare gate         │
+│ SessionWorkers — per-tab + pre-warmed spare        │
+│ MCP Hub — remote + in-process                      │
+│   memory / git / fetch / time                      │
+└──────────────────────────┬─────────────────────────┘
+                           │
+                           │  JSON-RPC (stdio NDJSON / utilityProcess)
+                           ▼
+┌────────────────────────────────────────────────────┐
+│ worker (Node AgentService)                         │
+│ AgentService — /plan → /go → /revise core          │
+│ Sub-Agent Executor — parallel tasks                │
+│ Skills — sheet.read / sheet.analyze / bi.chart     │
+│ Built-in Tools — filesystem / sqlite / think       │
+│ Artifact Protocol — ToolResult.content             │
+│   → parseArtifactContent → Artifact Canvas         │
+└────────────────────────────────────────────────────┘
 ```
 
 ### 进程模型
