@@ -84,6 +84,41 @@
   --bubble-user: #2b3a55;
   --bubble-assist: #26272b;
 }
+/* ---- Terminal page (P1 built-in) ---- */
+.terminal-page { padding: 10px; }
+.terminal-root { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+.terminal-header { display: flex; flex-direction: column; gap: 2px; }
+.terminal-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.terminal-legend { font-size: 11px; color: var(--text-dim); }
+.terminal-output { flex: 1; min-height: 120px; max-height: 320px; overflow-y: auto; background: var(--bg-2, #111); color: var(--text); font-family: var(--mono, monospace); font-size: 12px; padding: 8px; border-radius: 6px; border: 1px solid var(--border); white-space: pre-wrap; word-break: break-all; }
+.terminal-input-row { display: flex; gap: 6px; }
+.terminal-input { flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--mono, monospace); font-size: 12px; }
+
+/* ---- Side Chat page (P1 built-in) ---- */
+.sidechat-page { padding: 10px; }
+.sidechat-root { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+.sidechat-header { display: flex; flex-direction: column; gap: 2px; }
+.sidechat-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.sidechat-legend { font-size: 11px; color: var(--text-dim); }
+.sidechat-history { flex: 1; min-height: 120px; max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.sidechat-msg { font-size: 12px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); }
+.sidechat-msg.user { background: var(--accent-dim, rgba(99,179,237,0.12)); }
+.sidechat-msg.agent { background: var(--bg-2, #111); }
+.sidechat-input-row { display: flex; gap: 6px; }
+.sidechat-input { flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; }
+.sidechat-send { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--accent, #3b82f6); color: #fff; font-size: 12px; cursor: pointer; }
+
+/* ---- Git page (P1 built-in) ---- */
+.git-page { padding: 10px; }
+.git-root { display: flex; flex-direction: column; gap: 10px; }
+.git-header { display: flex; flex-direction: column; gap: 2px; }
+.git-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.git-legend { font-size: 11px; color: var(--text-dim); }
+.git-dir { font-family: var(--mono, monospace); font-size: 12px; padding: 8px; background: var(--bg-2, #111); border-radius: 6px; border: 1px solid var(--border); word-break: break-all; }
+.git-hint { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+.git-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.git-chip { font-size: 11px; font-family: var(--mono, monospace); padding: 3px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-dim); background: var(--bg); }
+
 
 /* Warm low-blue theme (eye comfort). Activates when the app sets
    <html data-theme="warm">. */

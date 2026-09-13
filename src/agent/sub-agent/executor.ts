@@ -48,7 +48,7 @@ export class SubAgentExecutor {
     
     for (const batch of batches) {
       const batchPromises = batch.map(task => 
-        this.executeWithRetry(task, baseSessionId, constitutionText)
+        this.executeWithRetry(task, baseSessionId, undefined, constitutionText)
       );
       
       const batchResults = await Promise.allSettled(batchPromises);

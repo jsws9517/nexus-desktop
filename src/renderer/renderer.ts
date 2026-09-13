@@ -10,6 +10,9 @@ import type { SubTaskResult, SubTaskStatus } from '../agent/sub-agent/types.js';
 import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
+import { TerminalPage, mountTerminalPage } from './sidebar/pages/terminal.js';
+import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
+import { GitPage, mountGitPage } from './sidebar/pages/git.js';
 
 interface SessionInfo {
   id: string;
@@ -4235,14 +4238,32 @@ window.nexusDesktop.onTabsChanged((open) => {
     await refreshSessions();
     await refreshSidebarSession();
     await syncOpenTabs();
-    // P1: register built-in sidebar tabs (currently the Sub-Agents flagship page)
-    // and render the tab bar. The registry is the single extension surface; more
-    // tabs (terminal, side-chat, git) attach the same way in later phases.
+    // P1: register built-in sidebar tabs (Sub-Agents flagship + terminal,
+    // side-chat, Git) and render the tab bar. The registry is the single
+    // extension surface; third-party tabs attach the same way.
     sidebarRegistry.register({
       id: SubAgentsPage.id,
       title: SubAgentsPage.title,
       icon: SubAgentsPage.icon,
       mount: mountSubAgentsPage,
+    });
+    sidebarRegistry.register({
+      id: TerminalPage.id,
+      title: TerminalPage.title,
+      icon: TerminalPage.icon,
+      mount: mountTerminalPage,
+    });
+    sidebarRegistry.register({
+      id: SideChatPage.id,
+      title: SideChatPage.title,
+      icon: SideChatPage.icon,
+      mount: mountSideChatPage,
+    });
+    sidebarRegistry.register({
+      id: GitPage.id,
+      title: GitPage.title,
+      icon: GitPage.icon,
+      mount: mountGitPage,
     });
     renderSidebarTabs();
     await initResourcePanel();

@@ -54,7 +54,7 @@ type WorkerRequest =
   | { id: number; method: 'getMcpStatus' }
   | { id: number; method: 'getMcpServers' }
   | { id: number; method: 'setMcpServer'; params: { name: string; enabled: boolean } }
-  | { id: number; method: 'runSubAgent'; params: { taskId: string; prompt: string; tools?: string[]; maxTurns?: number; timeoutMs?: number } }
+  | { id: number; method: 'runSubAgent'; params: { taskId: string; prompt: string; tools?: string[]; maxTurns?: number; timeoutMs?: number; constitution?: string } }
   | { id: number; method: 'getSubAgentStatus'; params: { taskId: string } }
   | { id: number; method: 'cancelSubAgent'; params: { taskId: string } }
   | { id: number; method: 'shutdown' };
