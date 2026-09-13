@@ -445,6 +445,12 @@ interface ParallelSession {
   tasks: Map<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }>;
 }
 const parallelSessions = new Map<string, ParallelSession>();
+// Session ids with a parallel batch STILL EXECUTING. Distinct from
+// `parallelSessions` (which keeps the completed batch for the progress card
+// until the user closes it): the running indicator must stay lit while a batch
+// is genuinely in flight, so the intermediate session_end events that each
+// sub-task's agent.chat() emits must NOT clear busy until parallel_end lands.
+const parallelBatches = new Set<string>();
 let parallelCardEl: HTMLElement | null = null;
 
 // per-turn DOM handles
@@ -1093,7 +1099,13 @@ function handleEvent(event: AgentEvent): void {
       break;
     }
     case 'session_end':
-      setBusy(false);
+      // A session span ended. During a parallel batch every sub-task's
+      // agent.chat() emits its own session_start…session_end, so clearing busy
+      // here would make the send/stop hint flash "idle" while the remaining
+      // sub-tasks are still executing (the false-ending illusion). Only clear
+      // when NO parallel batch for this session is still in flight; the final
+      // drain() after chat() resolves does the real release.
+      if (!parallelBatches.has(currentSessionId)) setBusy(false);
       break;
     case 'parallel_start':
       handleParallelStart(event.sessionId, event.prompt, event.tasks);
@@ -1111,7 +1123,11 @@ function handleEvent(event: AgentEvent): void {
 function setBusy(value: boolean): void {
   busy = value;
   busyIndicator.classList.toggle('hidden', !value);
-  sendBtn.classList.toggle('hidden', value);
+  // NOTE: the Send button is deliberately decoupled from busy — it stays
+  // available while a turn or a parallel batch is executing so the user can
+  // inject a new prompt at any time; enqueue/drain serializes it into the
+  // pending queue and runs it after the current work finishes. Only the Stop
+  // button + running indicator track the actual in-flight execution.
   stopBtn.classList.toggle('hidden', !value);
   document.querySelectorAll('.regen-btn').forEach((b) => {
     (b as HTMLButtonElement).disabled = value;
@@ -2152,11 +2168,24 @@ async function closeTab(sessionId: string): Promise<void> {
 function applyTabEvent(sessionId: string, event: AgentEvent): void {
   const tab = tabs.get(sessionId);
   if (!tab) return;
-  if (event.type === 'turn_start') tab.busy = true;
-  else if (event.type === 'session_end') tab.busy = false;
+  if (event.type === 'parallel_start') {
+    parallelBatches.add(sessionId);
+    tab.busy = true;
+  } else if (event.type === 'parallel_end' || event.type === 'parallel_error') {
+    parallelBatches.delete(sessionId);
+    tab.busy = false;
+  } else if (event.type === 'turn_start') {
+    tab.busy = true;
+  } else if (event.type === 'session_end') {
+    // A sub-task span ended, not necessarily the whole batch — keep the tab
+    // busy until the owning parallel batch (if any) truly finishes.
+    tab.busy = parallelBatches.has(sessionId);
+  }
+  const touchesBusy = event.type === 'turn_start' || event.type === 'session_end'
+    || event.type === 'parallel_start' || event.type === 'parallel_end' || event.type === 'parallel_error';
   if (sessionId === activeTabId) {
     handleEvent(event);
-  } else if (event.type === 'turn_start' || event.type === 'session_end') {
+  } else if (touchesBusy) {
     renderTabBar();
   }
 }
@@ -2513,7 +2542,15 @@ async function restoreParallelState(sessionId: string): Promise<void> {
           status: task.status,
         });
       }
-      
+
+      // If the batch is genuinely still in flight (metadata lags the real
+      // worker), re-arm the in-flight marker so intermediate session_end events
+      // don't clear the running indicator while the tab is open. Completed
+      // batches (all succeeded/failed) are historical — no marker, just the card.
+      if (parallelState.tasks.some((t) => t.status === 'pending' || t.status === 'running')) {
+        parallelBatches.add(sessionId);
+      }
+
       parallelSessions.set(sessionId, session);
       renderParallelCard(session);
     }
@@ -2527,6 +2564,12 @@ function handleParallelStart(
   prompt: string, 
   taskList?: Array<{ id: string; description: string; status: string }>
 ): void {
+  // A parallel batch is genuinely executing — hold the running indicator across
+  // the whole batch (see the session_end handler; intermediate sub-task spans
+  // must not clear it) and keep the Stop affordance available.
+  parallelBatches.add(sessionId);
+  setBusy(true);
+
   const session: ParallelSession = {
     sessionId,
     prompt,
@@ -2549,6 +2592,12 @@ function handleParallelStart(
 }
 
 function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
+  // The batch is over. The final setBusy(false) is normally handled by drain()
+  // once the chat() IPC resolves; this only rescues edge paths (restored state,
+  // errors) where no serial turn is driving the busy transition any more.
+  parallelBatches.delete(sessionId);
+  if (!running && pendingQueue.length === 0) setBusy(false);
+
   const session = parallelSessions.get(sessionId);
   if (!session) return;
 
@@ -2612,6 +2661,11 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
 }
 
 function handleParallelError(sessionId: string, error: string): void {
+  // Release the in-flight marker even when the batch was never registered in
+  // parallelSessions (e.g. it died before a card existed) so busy never sticks.
+  parallelBatches.delete(sessionId);
+  if (!running && pendingQueue.length === 0) setBusy(false);
+
   const session = parallelSessions.get(sessionId);
   if (!session) return;
 
