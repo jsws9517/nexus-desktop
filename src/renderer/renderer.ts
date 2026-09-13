@@ -400,7 +400,9 @@ let running = false;
 let stopRequested = false;
 // When frozen, auto-scroll is suppressed so the user can review earlier context
 // while a turn is still streaming. New content keeps rendering normally below;
-// only the viewport stays put (safe — no DOM/state is deferred).
+// only the viewport stays put (safe — no DOM/state is deferred). The lock is
+// session-scoped: it persists across turns/messages until the user unfreezes,
+// and resets when switching to another session (see resetViewState).
 let frozen = false;
 const pendingQueue: string[] = [];
 let attachments: string[] = [];
@@ -1111,10 +1113,6 @@ function setBusy(value: boolean): void {
   busyIndicator.classList.toggle('hidden', !value);
   sendBtn.classList.toggle('hidden', value);
   stopBtn.classList.toggle('hidden', !value);
-  freezeBtn.classList.toggle('hidden', !value);
-  // A turn ending (or being aborted) releases the freeze so the final result
-  // is revealed; a fresh message/session resets it too (see sendMessage).
-  if (!value) setFrozen(false);
   document.querySelectorAll('.regen-btn').forEach((b) => {
     (b as HTMLButtonElement).disabled = value;
   });
@@ -1142,7 +1140,9 @@ function setBusy(value: boolean): void {
 }
 
 /** Toggle the viewport freeze (auto-scroll lock). Safe by design: content keeps
- *  streaming below, only the scroll position stays put. */
+ *  streaming below, only the scroll position stays put. The lock spans the whole
+ *  session — turn end / new messages don't release it; only the user (or a
+ *  session switch) does. */
 function setFrozen(value: boolean): void {
   if (frozen === value) return;
   frozen = value;
@@ -1894,10 +1894,14 @@ async function startNewSession(): Promise<void> {
 function showChatEmpty(): void {
   chatEmptyEl.textContent = t('chatEmptyHint');
   chatEmptyEl.classList.remove('hidden');
+  // No session → nothing to freeze; hide the lock and release any stale one.
+  freezeBtn.classList.add('hidden');
+  setFrozen(false);
 }
 
 function hideChatEmpty(): void {
   chatEmptyEl.classList.add('hidden');
+  freezeBtn.classList.remove('hidden');
 }
 
 async function startOrResumeLatestSession(): Promise<void> {
@@ -1927,6 +1931,7 @@ async function startOrResumeLatestSession(): Promise<void> {
 // running without corrupting the focused conversation.
 
 function resetViewState(): void {
+  setFrozen(false); // the per-session freeze lives and dies with the session
   if (curAssistant) curAssistant.stream.classList.remove('streaming');
   messagesEl.innerHTML = '';
   toolCards.clear();
@@ -2873,7 +2878,6 @@ function drain(): void {
 async function sendMessage(): Promise<void> {
   const text = inputEl.value.trim();
   if (!text && attachments.length === 0) return;
-  setFrozen(false);
   // /new — desktop shortcut equal to the core command: open a brand-new empty
   // tab that inherits the current session's project dir + project memory.
   // Intercepted locally so the fresh session gets its own worker/tab and the
@@ -4000,12 +4004,13 @@ sendBtn.addEventListener('click', () => void sendMessage());
 stopBtn.addEventListener('click', () => requestStop());
 freezeBtn.addEventListener('click', () => setFrozen(!frozen));
 
-// Ctrl+. toggles the viewport freeze while a turn is streaming (Ctrl+Space is
-// taken by IMEs, so avoid it).
+// Ctrl+. toggles the viewport freeze (Ctrl+Space is taken by IMEs, so avoid
+// it). Works across the whole session — while streaming or idle, and the lock
+// survives new messages/turns until toggled off or the session is switched.
 document.addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key === '.') {
     e.preventDefault();
-    if (busy) setFrozen(!frozen);
+    if (currentSessionId) setFrozen(!frozen);
   }
 });
 document.addEventListener('keydown', (e) => {
