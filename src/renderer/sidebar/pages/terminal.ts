@@ -38,7 +38,12 @@ export function mountTerminalPage(
   const readLogs = opts.readLogs ?? defaultReadLogs;
   const subscribeLogs =
     opts.subscribeLogs ??
-    ((cb: (line: string) => void) => window.nexusDesktop.onLog((log) => cb(`[${log.level}] ${log.message}`)));
+    ((cb: (line: string) => void) => {
+      window.nexusDesktop.onLog((log) => cb(`[${log.level}] ${log.message}`));
+      // preload onLog has no unsubscribe; return a safe no-op so the page
+      // contract (returns a cleanup) is uniform across injectable sources.
+      return () => {};
+    });
   const exec = opts.exec ?? (() => {});
   const getUiLang = opts.getUiLang ?? (() => 'zh-CN');
 
