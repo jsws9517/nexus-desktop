@@ -7,6 +7,9 @@ import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
 import { ParallelExecutionCard } from './components/ParallelExecutionCard.js';
 import type { SubTaskResult, SubTaskStatus } from '../agent/sub-agent/types.js';
+import { SidebarRegistryImpl } from './sidebar/registry.js';
+import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
+import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
 
 interface SessionInfo {
   id: string;
@@ -275,6 +278,86 @@ const searchEl = $('#session-search') as HTMLInputElement;
 const sessionPagerEl = $('#session-pager');
 const sidebarEl = $('#sidebar') as HTMLElement;
 const collapseBtn = $('#btn-collapse-sidebar') as HTMLButtonElement;
+
+// ---------- P1 sidebar extension registry (DSH Better SideBar port) ----------
+const sidebarRegistry = new SidebarRegistryImpl();
+const sidebarTabsEl = $('#sidebar-tabs') as HTMLElement;
+const sidebarPageEl = $('#sidebar-page') as HTMLElement;
+let activeSidebarTabId: string | null = null;
+// Unsubscribe hook for the currently mounted sidebar page (registry tracks it;
+// we keep the active id so switching tabs can re-mount when a tab re-opens).
+
+/**
+ * Render the sidebar tab bar from the registry, highlighting the active tab.
+ * The page container stays empty until a tab is opened (click toggles).
+ */
+function renderSidebarTabs(): void {
+  const regs = sidebarRegistry.list();
+  sidebarTabsEl.replaceChildren();
+  if (regs.length === 0) {
+    sidebarTabsEl.classList.add('hidden');
+    return;
+  }
+  sidebarTabsEl.classList.remove('hidden');
+  for (const reg of regs) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sidebar-tab' + (reg.id === activeSidebarTabId ? ' active' : '');
+    btn.dataset.tabId = reg.id;
+    btn.textContent = (reg.icon ? reg.icon + ' ' : '') + reg.title;
+    btn.title = reg.title;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', String(reg.id === activeSidebarTabId));
+    btn.addEventListener('click', () => toggleSidebarTab(reg.id));
+    sidebarTabsEl.appendChild(btn);
+  }
+}
+
+/** Build the SidebarContext handed to page mounts (live view of renderer state). */
+function makeSidebarContext(sessionId: string): SidebarContext {
+  return {
+    sessionId,
+    getParallelSessions: () => parallelSessions as ReadonlyMap<string, { sessionId: string; prompt: string; startTime: number; tasks: ReadonlyMap<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }> }>,
+    subscribe: (fn) => {
+      const wrapped = (event: AgentEvent) => fn(event);
+      eventSubscribers.add(wrapped);
+      return () => {
+        eventSubscribers.delete(wrapped);
+      };
+    },
+  };
+}
+
+/** Toggle a sidebar tab on/off (click again to close — registry disposes page). */
+function toggleSidebarTab(id: string): void {
+  if (activeSidebarTabId === id) {
+    sidebarRegistry.mountDispose(id);
+    activeSidebarTabId = null;
+    sidebarPageEl.hidden = true;
+    sidebarPageEl.replaceChildren();
+    renderSidebarTabs();
+    return;
+  }
+  const reg = sidebarRegistry.get(id);
+  if (!reg) return;
+  const ctx = makeSidebarContext(currentSessionId);
+  sidebarPageEl.hidden = false;
+  const route = () => {
+    sidebarRegistry.mount(id, sidebarPageEl, makeSidebarContext(currentSessionId));
+  };
+  // Mount fresh every toggle; sidebarRegistry.mount disposes any earlier mount.
+  activeSidebarTabId = id;
+  route();
+  renderSidebarTabs();
+}
+
+/** Every AgentEvent also fans out to sidebar pages (in addition to handleEvent). */
+const eventSubscribers = new Set<(event: AgentEvent) => void>();
+function notifySidebarSubscribers(event: AgentEvent): void {
+  for (const fn of [...eventSubscribers]) {
+    try { fn(event); } catch { /* page errors never break the core loop */ }
+  }
+}
 const pagerPrevEl = $('#pager-prev') as HTMLButtonElement;
 const pagerNextEl = $('#pager-next') as HTMLButtonElement;
 const pagerInfoEl = $('#pager-info');
@@ -4041,9 +4124,15 @@ inputEl.addEventListener('paste', (e) => {
 });
 
 // ---------- wire events ----------
-window.nexusDesktop.onEvent(handleEvent);
+window.nexusDesktop.onEvent((event) => {
+  handleEvent(event);
+  notifySidebarSubscribers(event);
+});
 window.nexusDesktop.onEvents((events) => {
-  for (const e of events) handleEvent(e);
+  for (const e of events) {
+    handleEvent(e);
+    notifySidebarSubscribers(e);
+  }
 });
 window.nexusDesktop.onPermission(showPermission);
 window.nexusDesktop.onLog((log) => {
@@ -4146,6 +4235,16 @@ window.nexusDesktop.onTabsChanged((open) => {
     await refreshSessions();
     await refreshSidebarSession();
     await syncOpenTabs();
+    // P1: register built-in sidebar tabs (currently the Sub-Agents flagship page)
+    // and render the tab bar. The registry is the single extension surface; more
+    // tabs (terminal, side-chat, git) attach the same way in later phases.
+    sidebarRegistry.register({
+      id: SubAgentsPage.id,
+      title: SubAgentsPage.title,
+      icon: SubAgentsPage.icon,
+      mount: mountSubAgentsPage,
+    });
+    renderSidebarTabs();
     await initResourcePanel();
     // Open the resumed session in its own tab so it runs in a per-session worker.
     if (currentSessionId && !tabs.has(currentSessionId)) await openTab(currentSessionId);
