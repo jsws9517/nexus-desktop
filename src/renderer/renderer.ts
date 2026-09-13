@@ -133,7 +133,7 @@ type AgentEvent =
   | { type: 'slash_start'; command: string; anchorId?: number }
   | { type: 'slash'; text: string }
   | { type: 'slash_end'; anchorId?: number; command: string }
-  | { type: 'parallel_start'; sessionId: string; prompt: string }
+  | { type: 'parallel_start'; sessionId: string; prompt: string; tasks?: Array<{ id: string; description: string; status: string }> }
   | { type: 'parallel_end'; sessionId: string; tasks: Array<{ taskId: string; status: SubTaskStatus; output: string; durationMs: number; error?: string; tokenUsage: { prompt: number; completion: number } }>; tokenUsage: { prompt: number; completion: number } }
   | { type: 'parallel_error'; sessionId: string; error: string };
 
@@ -354,7 +354,7 @@ interface ParallelSession {
   sessionId: string;
   prompt: string;
   startTime: number;
-  tasks: Map<string, { status: string; output?: string; error?: string; durationMs?: number }>;
+  tasks: Map<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }>;
 }
 const parallelSessions = new Map<string, ParallelSession>();
 let parallelCardEl: HTMLElement | null = null;
@@ -777,6 +777,8 @@ function handleEvent(event: AgentEvent): void {
       if (event.sessionId !== currentSessionId) {
         tasks.clear();
         renderTasks();
+        // Restore parallel execution state from session metadata
+        void restoreParallelState(event.sessionId);
       }
       currentSessionId = event.sessionId;
       void refreshSidebarSession();
@@ -1006,7 +1008,7 @@ function handleEvent(event: AgentEvent): void {
       setBusy(false);
       break;
     case 'parallel_start':
-      handleParallelStart(event.sessionId, event.prompt);
+      handleParallelStart(event.sessionId, event.prompt, event.tasks);
       break;
     case 'parallel_end':
       handleParallelEnd(event.sessionId, event.tasks);
@@ -2007,6 +2009,8 @@ async function switchTab(sessionId: string): Promise<void> {
     saveMsgCache(sessionId, fresh);
   } catch {}
   await refreshSlashLog(sessionId);
+  // Restore parallel execution state from session metadata
+  await restoreParallelState(sessionId);
   const tab = tabs.get(sessionId);
   if (tab) {
     status = { cwd: status.cwd, busy: tab.busy, provider: tab.provider, model: tab.model };
@@ -2377,6 +2381,7 @@ function renderParallelCard(session: ParallelSession): void {
     const card = document.createElement('div');
     card.innerHTML = ParallelExecutionCard({
       taskId,
+      description: taskData.description,
       status: taskData.status as any,
       output: taskData.output,
       durationMs: taskData.durationMs,
@@ -2389,13 +2394,65 @@ function renderParallelCard(session: ParallelSession): void {
   scrollToBottom();
 }
 
-function handleParallelStart(sessionId: string, prompt: string): void {
+/**
+ * Restore parallel execution state from session metadata.
+ * Called when switching to a session that has an in-progress parallel execution.
+ */
+async function restoreParallelState(sessionId: string): Promise<void> {
+  try {
+    const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
+    const parallelState = meta.parallelExecution as {
+      prompt: string;
+      tasks: Array<{ id: string; description: string; status: string; prompt: string }>;
+      startTime: number;
+    } | undefined;
+    
+    if (parallelState?.tasks && parallelState.tasks.length > 0) {
+      // Create a parallel session from metadata
+      const session: ParallelSession = {
+        sessionId,
+        prompt: parallelState.prompt,
+        startTime: parallelState.startTime,
+        tasks: new Map(),
+      };
+      
+      for (const task of parallelState.tasks) {
+        session.tasks.set(task.id, {
+          description: task.description,
+          status: task.status,
+        });
+      }
+      
+      parallelSessions.set(sessionId, session);
+      renderParallelCard(session);
+    }
+  } catch (err) {
+    // Ignore metadata read errors
+  }
+}
+
+function handleParallelStart(
+  sessionId: string, 
+  prompt: string, 
+  taskList?: Array<{ id: string; description: string; status: string }>
+): void {
   const session: ParallelSession = {
     sessionId,
     prompt,
     startTime: Date.now(),
     tasks: new Map(),
   };
+  
+  // Store task descriptions if provided
+  if (taskList) {
+    for (const task of taskList) {
+      session.tasks.set(task.id, {
+        description: task.description,
+        status: task.status,
+      });
+    }
+  }
+  
   parallelSessions.set(sessionId, session);
   renderParallelCard(session);
 }
@@ -2441,14 +2498,26 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
     }
 
     parallelCardEl.appendChild(tasksContainer);
+    
+    // Add close button
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = getUiLang() === 'zh-CN' ? '关闭' : 'Close';
+    closeBtn.style.cssText = `
+      margin-top: 12px;
+      padding: 6px 12px;
+      background-color: #e5e7eb;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    `;
+    closeBtn.addEventListener('click', () => {
+      parallelCardEl?.remove();
+      parallelCardEl = null;
+      parallelSessions.delete(sessionId);
+    });
+    parallelCardEl.appendChild(closeBtn);
   }
-
-  // Clean up after a delay
-  setTimeout(() => {
-    parallelCardEl?.remove();
-    parallelCardEl = null;
-    parallelSessions.delete(sessionId);
-  }, 5000);
 }
 
 function handleParallelError(sessionId: string, error: string): void {
@@ -2467,17 +2536,28 @@ function handleParallelError(sessionId: string, error: string): void {
     parallelCardEl.appendChild(header);
 
     const errorMsg = document.createElement('div');
-    errorMsg.style.cssText = 'color: #dc2626;';
+    errorMsg.style.cssText = 'color: #dc2626; margin-bottom: 12px;';
     errorMsg.textContent = error;
     parallelCardEl.appendChild(errorMsg);
+    
+    // Add close button
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = getUiLang() === 'zh-CN' ? '关闭' : 'Close';
+    closeBtn.style.cssText = `
+      padding: 6px 12px;
+      background-color: #e5e7eb;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    `;
+    closeBtn.addEventListener('click', () => {
+      parallelCardEl?.remove();
+      parallelCardEl = null;
+      parallelSessions.delete(sessionId);
+    });
+    parallelCardEl.appendChild(closeBtn);
   }
-
-  // Clean up after a delay
-  setTimeout(() => {
-    parallelCardEl?.remove();
-    parallelCardEl = null;
-    parallelSessions.delete(sessionId);
-  }, 5000);
 }
 
 // ---------- MCP per-session toggle ----------
@@ -2694,7 +2774,12 @@ function drain(): void {
       addSystem(`${t('error')}${errText(err)}`);
     } finally {
       running = false;
-      drain();
+      // Defer drain() to the next microtask so that session_end events
+      // (which arrive via IPC in the same tick) have a chance to call
+      // setBusy(false) first. Without this, drain() fires synchronously
+      // and can reset busy before the session_end handler runs, causing
+      // the send button to reappear while the agent is still streaming.
+      void Promise.resolve().then(() => drain());
     }
   })();
 }
@@ -2812,7 +2897,8 @@ async function regenerateAt(wrap: HTMLElement, userIndex: number): Promise<void>
     addSystem(`${t('error')}${errText(err)}`);
   } finally {
     running = false;
-    drain();
+    // Same deferred drain as in drain() — wait for session_end to arrive.
+    void Promise.resolve().then(() => drain());
   }
 }
 
