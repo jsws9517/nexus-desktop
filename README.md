@@ -37,53 +37,47 @@ replaces the terminal UI layer.
 ## Architecture
 
 ```mermaid
-graph TB
-    subgraph Renderer["renderer (Electron webview)"]
-        UI["Chat UI / Markdown streaming"]
-        Artifacts["Artifact Canvas\n(sheet · chart · csv inline cards)"]
-        Config["Config Web UI\n(provider / vision / MCP / skills)"]
+flowchart LR
+    subgraph R["renderer"]
+        UI["Chat\nUI"]
+        Art["Artifact\nCanvas"]
+        CFG["Config\nWeb UI"]
     end
 
-    subgraph Main["main (Electron) — index.ts"]
-        Ipc["IPC register\n(channels.ts → register.ts)"]
-        State["DesktopState\n(~/.nexus/desktop.json)"]
-        Monitor["ResourceMonitor\n(tab ceiling + spare gate)"]
-        MCPHub["MCP Hub\n(mcp-hub.ts)\n• Remote MCP servers\n• In-process: memory / git\n  / fetch / time"]
-        SessionWorkers["SessionWorkers\n(session-workers.ts)\n• Per-tab WorkerHost\n• Pre-warmed spare"]
+    subgraph M["main"]
+        IPC["IPC"]
+        State["DesktopState"]
+        Mon["Resource\nMonitor"]
+        SW["SessionWorkers\n+ spare gate"]
+        MCPH["MCP Hub"]
     end
 
-    subgraph Worker["worker (Node AgentService)\nagent-worker.ts + nexus-coder"]
-        AgentService["AgentService\n(service.ts)\n• Core conversation loop\n• /plan → /go → /revise DAG\n• Sub-Agent orchestrator"]
-        SubAgent["Sub-Agent\n(sub-agent/)\n• OrchestratorAgent\n  (task decomposition)\n• SubAgentExecutor\n  (parallel execution)\n• Decomposer (LLM-based)\n• Tool categories (R/W split)"]
-        Skills["Skills\n(skills/)\n• sheet.read / sheet.analyze\n• bi.chart (Vega-Lite)"]
-        Tools["Built-in Tools\n(tools/)\n• filesystem\n• sqlite\n• sequential-thinking"]
-        Artifact["Artifact Protocol\n(shared/artifact.ts)\n• envelope: __artifactVersion\n• type: sheet / chart / csv /\n  ppt / docx / html / …\n• patch streaming (partial→done)"]
+    subgraph W["worker (Node)"]
+        AS["AgentService"]
+        SA["Sub-Agent\nExecutor"]
+        SK["Skills\n(sheet / chart)"]
+        TL["Built-in\nTools"]
+        ART["Artifact\nProtocol"]
     end
 
-    Renderer -->|"IPC channels"| Main
-    Main -->|"stdio NDJSON / utilityProcess parentPort"| Worker
+    R ==>|IPC| M
+    M ==>|JSON-RPC<br/>stdio / utilityProcess| W
 
-    Main --> MCPHub
-    SessionWorkers --> MCPHub
-    SessionWorkers -->|"spawn / spare lease"| Worker
+    SW --> MCPH
+    AS --> SA
+    AS --> SK
+    AS --> TL
+    SK -->|"Artifact envelope"| ART
+    ART -->|"parseArtifactContent"| Art
 
-    Worker --> AgentService
-    AgentService --> SubAgent
-    AgentService --> Skills
-    AgentService --> Tools
-    Skills -->|"returns Artifact envelope"| AgentService
-    AgentService -->|"ToolResult.content"| Artifact
+    SA -->|"nexus:taskEvents"| R
+    AS -->|"nexus:tabEvents"| R
 
-    AgentService -->|"nexus:tabEvents"| Renderer
-    AgentService -->|"nexus:taskEvents"| Renderer
-    Artifact -->|"parseArtifactContent"| Artifacts
-
-    style Renderer fill:#e1f5fe
-    style Main fill:#fff3e0
-    style Worker fill:#e8f5e9
-    style SubAgent fill:#fce4ec
-    style Skills fill:#f3e5f5
-    style Artifact fill:#e0f2f1
+    style R fill:#f0f7ff,stroke:#4a90d9,stroke-width:1.5px
+    style M fill:#fff8ee,stroke:#d9a04a,stroke-width:1.5px
+    style W fill:#f0fff4,stroke:#4ad98a,stroke-width:1.5px
+    style SA fill:#fff0f6,stroke:#d94aad,stroke-width:1px
+    style ART fill:#e8fff0,stroke:#4ad9a0,stroke-width:1px
 ```
 
 ### Process model

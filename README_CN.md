@@ -19,53 +19,47 @@
 ## 架构
 
 ```mermaid
-graph TB
-    subgraph Renderer["renderer (Electron webview)"]
-        UI["Chat UI / Markdown 流式渲染"]
-        Artifacts["Artifact 画布\n(sheet · chart · csv 内联卡片)"]
-        Config["配置 Web UI\n(provider / vision / MCP / skills)"]
+flowchart LR
+    subgraph R["renderer"]
+        UI["Chat\nUI"]
+        Art["Artifact\nCanvas"]
+        CFG["Config\nWeb UI"]
     end
 
-    subgraph Main["main (Electron) — index.ts"]
-        Ipc["IPC 注册\n(channels.ts → register.ts)"]
-        State["DesktopState\n(~/.nexus/desktop.json)"]
-        Monitor["ResourceMonitor\n(标签上限 + 备用 worker 门禁)"]
-        MCPHub["MCP Hub\n(mcp-hub.ts)\n• 远程 MCP 服务器\n• 进程内：memory / git\n  / fetch / time"]
-        SessionWorkers["SessionWorkers\n(session-workers.ts)\n• 按标签的 WorkerHost\n• 预热备用 worker"]
+    subgraph M["main"]
+        IPC["IPC"]
+        State["DesktopState"]
+        Mon["Resource\nMonitor"]
+        SW["SessionWorkers\n+ spare gate"]
+        MCPH["MCP Hub"]
     end
 
-    subgraph Worker["worker (Node AgentService)\nagent-worker.ts + nexus-coder"]
-        AgentService["AgentService\n(service.ts)\n• 核心对话循环\n• /plan → /go → /revise DAG\n• Sub-Agent 编排"]
-        SubAgent["Sub-Agent\n(sub-agent/)\n• OrchestratorAgent\n  (LLM 任务分解)\n• SubAgentExecutor\n  (并发执行)\n• Decomposer (LLM 辅助)\n• Tool 分类 (读写分离)"]
-        Skills["Skills\n(skills/)\n• sheet.read / sheet.analyze\n• bi.chart (Vega-Lite)"]
-        Tools["内置工具\n(tools/)\n• filesystem\n• sqlite\n• sequential-thinking"]
-        Artifact["Artifact 协议\n(shared/artifact.ts)\n• 信封格式: __artifactVersion\n• 类型: sheet / chart / csv /\n  ppt / docx / html / …\n• patch 流式 (partial→done)"]
+    subgraph W["worker (Node)"]
+        AS["AgentService"]
+        SA["Sub-Agent\nExecutor"]
+        SK["Skills\n(sheet / chart)"]
+        TL["Built-in\nTools"]
+        ART["Artifact\nProtocol"]
     end
 
-    Renderer -->|"IPC channels"| Main
-    Main -->|"stdio NDJSON / utilityProcess parentPort"| Worker
+    R ==>|IPC| M
+    M ==>|JSON-RPC<br/>stdio / utilityProcess| W
 
-    Main --> MCPHub
-    SessionWorkers --> MCPHub
-    SessionWorkers -->|"spawn / 备用 worker 租赁"| Worker
+    SW --> MCPH
+    AS --> SA
+    AS --> SK
+    AS --> TL
+    SK -->|"Artifact envelope"| ART
+    ART -->|"parseArtifactContent"| Art
 
-    Worker --> AgentService
-    AgentService --> SubAgent
-    AgentService --> Skills
-    AgentService --> Tools
-    Skills -->|"返回 Artifact 信封"| AgentService
-    AgentService -->|"ToolResult.content"| Artifact
+    SA -->|"nexus:taskEvents"| R
+    AS -->|"nexus:tabEvents"| R
 
-    AgentService -->|"nexus:tabEvents"| Renderer
-    AgentService -->|"nexus:taskEvents"| Renderer
-    Artifact -->|"parseArtifactContent"| Artifacts
-
-    style Renderer fill:#e1f5fe
-    style Main fill:#fff3e0
-    style Worker fill:#e8f5e9
-    style SubAgent fill:#fce4ec
-    style Skills fill:#f3e5f5
-    style Artifact fill:#e0f2f1
+    style R fill:#f0f7ff,stroke:#4a90d9,stroke-width:1.5px
+    style M fill:#fff8ee,stroke:#d9a04a,stroke-width:1.5px
+    style W fill:#f0fff4,stroke:#4ad98a,stroke-width:1.5px
+    style SA fill:#fff0f6,stroke:#d94aad,stroke-width:1px
+    style ART fill:#e8fff0,stroke:#4ad9a0,stroke-width:1px
 ```
 
 ### 进程模型
