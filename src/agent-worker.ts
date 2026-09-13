@@ -258,12 +258,18 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   getMcpServers: () => service.getMcpServers(),
   setMcpServer: (req: WorkerRequest & { method: 'setMcpServer' }) => service.setMcpServer(req.params.name, req.params.enabled),
   runSubAgent: async (req: WorkerRequest & { method: 'runSubAgent' }) => {
-    const { taskId, prompt, tools, maxTurns, timeoutMs } = req.params;
+    const { taskId, prompt, tools, maxTurns, timeoutMs, constitution } = req.params;
     subAgentStates.set(taskId, { status: 'running', startTime: Date.now() });
     
     try {
       const tempService = new AgentService();
       await tempService.earlyInit();
+      
+      // Constitution inheritance (§3.7): the Orchestrator passes the text
+      // explicitly; the worker performs NO filesystem discovery for it.
+      if (typeof constitution === 'string') {
+        tempService.setConstitutionOverride(constitution.length > 0 ? constitution : null);
+      }
       
       if (tools && tools.length > 0) {
         tempService.setToolAllowlist(new Set(tools));

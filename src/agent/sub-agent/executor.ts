@@ -38,7 +38,8 @@ export class SubAgentExecutor {
    */
   async executeParallel(
     tasks: SubTask[],
-    baseSessionId: string
+    baseSessionId: string,
+    constitutionText?: string
   ): Promise<SubTaskResult[]> {
     const sorted = this.topologicalSort(tasks);
     const batches = this.chunkByConcurrency(sorted);
@@ -47,7 +48,7 @@ export class SubAgentExecutor {
     
     for (const batch of batches) {
       const batchPromises = batch.map(task => 
-        this.executeWithRetry(task, baseSessionId)
+        this.executeWithRetry(task, baseSessionId, constitutionText)
       );
       
       const batchResults = await Promise.allSettled(batchPromises);
@@ -70,13 +71,14 @@ export class SubAgentExecutor {
   private async executeWithRetry(
     task: SubTask, 
     baseSessionId: string,
-    maxRetries: number = 2
+    maxRetries: number = 2,
+    constitutionText?: string
   ): Promise<SubTaskResult> {
     let lastError: Error | null = null;
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await this.executeSingle(task, baseSessionId);
+        return await this.executeSingle(task, baseSessionId, constitutionText);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         if (attempt < maxRetries) {
@@ -102,7 +104,8 @@ export class SubAgentExecutor {
    */
   private async executeSingle(
     task: SubTask,
-    baseSessionId: string
+    baseSessionId: string,
+    constitutionText?: string
   ): Promise<SubTaskResult> {
     const startTime = Date.now();
     
@@ -119,6 +122,7 @@ export class SubAgentExecutor {
         tools: task.tools,
         maxTurns: task.maxTurns ?? 10,
         timeoutMs: task.timeoutMs ?? 60000,
+        ...(constitutionText != null ? { constitution: constitutionText } : {}),
       });
       
       this.onProgress?.(task.id, 'succeeded');

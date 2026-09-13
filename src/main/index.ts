@@ -300,11 +300,24 @@ async function handleParallelRequest(sessionId: string, event: { type: string; p
   const { OrchestratorAgent } = await import('../agent/sub-agent/orchestrator.js');
   const { WorkerHost } = await import('./worker-host.js');
   const { workerScriptPath } = await import('./session-workers.js');
+  const { loadConstitution } = await import('../tools/agents.js');
   
   // Send progress event to renderer
   send(CHANNELS.tabEvent, { sessionId, event: { type: 'parallel_start', sessionId, prompt: event.prompt } });
   
   try {
+    // Load the project constitution ONCE here, in the main process, and pass
+    // the text down into every sub-task prompt (§3.7). The child workers never
+    // discover the constitution themselves — the Orchestrator passes it down.
+    let constitutionText: string | null = null;
+    try {
+      const { dir } = await sessionWorkers.request<{ dir: string }>(sessionId, 'getDefaultProjectDir');
+      const loaded = await loadConstitution(dir ?? process.cwd());
+      if (loaded.reason === 'ok' && loaded.text) constitutionText = loaded.text;
+    } catch {
+      // Constitution is best-effort for parallel runs; never block the run.
+    }
+
     const orchestrator = new OrchestratorAgent(
       null, // No AgentService in main process - use fallback decomposition
       {
@@ -313,7 +326,7 @@ async function handleParallelRequest(sessionId: string, event: { type: string; p
       }
     );
     
-    const result = await orchestrator.orchestrate(event.prompt, sessionId);
+    const result = await orchestrator.orchestrate(event.prompt, sessionId, constitutionText ?? undefined);
     
     send(CHANNELS.tabEvent, { 
       sessionId, 

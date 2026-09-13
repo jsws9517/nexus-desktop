@@ -94,8 +94,8 @@ export const WORKER_METHODS = {
   getSlashLog: { fields: { sessionId: S.str() } },
   getSlashLogPath: { fields: { sessionId: S.str() } },
   runSubAgent: {
-    fields: { taskId: S.str(200), prompt: S.str(65536), tools: S.obj(), maxTurns: S.num(), timeoutMs: S.num() },
-    optional: ['tools', 'maxTurns', 'timeoutMs'],
+    fields: { taskId: S.str(200), prompt: S.str(65536), tools: S.obj(), maxTurns: S.num(), timeoutMs: S.num(), constitution: S.str(32768) },
+    optional: ['tools', 'maxTurns', 'timeoutMs', 'constitution'],
   },
   getSubAgentStatus: { fields: { taskId: S.str(200) } },
   cancelSubAgent: { fields: { taskId: S.str(200) } },

@@ -32,10 +32,16 @@ export class OrchestratorAgent {
 
   /**
    * Orchestrate parallel task execution.
+   *
+   * @param constitutionText Optional project-constitution text to pass into
+   *   every sub-task prompt (adoption plan §3.7): sub-agents inherit the
+   *   constitution explicitly from the Orchestrator — they never re-discover
+   *   it via the filesystem inside the isolated child worker.
    */
   async orchestrate(
     userPrompt: string,
-    sessionId: string
+    sessionId: string,
+    constitutionText?: string
   ): Promise<OrchestrationResult> {
     const subTasks = await this.decomposeTasks(userPrompt, sessionId);
     
@@ -48,7 +54,7 @@ export class OrchestratorAgent {
       };
     }
     
-    const results = await this.executor.executeParallel(subTasks, sessionId);
+    const results = await this.executor.executeParallel(subTasks, sessionId, constitutionText);
     
     const output = await this.aggregateResults(results, userPrompt);
     

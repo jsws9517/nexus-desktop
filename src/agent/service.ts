@@ -122,6 +122,22 @@ export class AgentService {
    * pruned on each call. `compressionWarned` tracks whether we already
    * emitted the user-facing hint for the current session to avoid spam.
    */
+  /**
+   * When set by the Orchestrator (§3.7), the sub-agent uses this text directly
+   * and NEVER discovers the constitution via the filesystem.
+   * undefined = not overridden (default: load from filesystem).
+   */
+  private constitutionOverride: string | undefined;
+
+  /**
+   * Set the constitution text explicitly (for sub-agents, §3.7).
+   * Pass null to force 'no constitution' (skip filesystem).
+   * Pass undefined to restore default filesystem loading.
+   */
+  setConstitutionOverride(text: string | null): void {
+    this.constitutionOverride = text === null ? '' : text;
+  }
+
   private compressionLog = new Map<string, number[]>();
   private compressionWarned = new Set<string>();
 
@@ -406,17 +422,24 @@ export class AgentService {
           // Only local sessions: sub-agents (parallel phase) get the text
           // explicitly passed by the Orchestrator (see adoption plan §3.7).
           try {
-            const constitution = await loadConstitution(projectDir ?? process.cwd());
-            if (constitution.reason === 'ok' && constitution.text) {
+            let text = this.constitutionOverride !== undefined ? (this.constitutionOverride || null) : null;
+            if (!text) {
+              // Sub-agent sessions (Orchestrator §3.7): override is set, so we
+              // NEVER discover the constitution via the filesystem in the worker.
+              const constitution = await loadConstitution(projectDir ?? process.cwd());
+              if (constitution.reason === 'ok' && constitution.text) text = constitution.text;
+              else if (constitution.reason === 'too-large') {
+                this.onLog?.('warn', `Constitution at ${constitution.file} > 32 KB — refused (no silent context bloat)`);
+              } else if (constitution.reason === 'unauthorized') {
+                this.onLog?.('debug', 'Constitution skipped: project root not authorized');
+              }
+            }
+            if (text) {
               if (!firstContent.includes(CONSTITUTION_MARKER)) {
                 ctx.prependToSystem(
-                  `\n\n${CONSTITUTION_MARKER}\n${constitution.text}\n${CONSTITUTION_MARKER}\n`,
+                  `\n\n${CONSTITUTION_MARKER}\n${text}\n${CONSTITUTION_MARKER}\n`,
                 );
               }
-            } else if (constitution.reason === 'too-large') {
-              this.onLog?.('warn', `Constitution at ${constitution.file} > 32 KB — refused (no silent context bloat)`);
-            } else if (constitution.reason === 'unauthorized') {
-              this.onLog?.('debug', 'Constitution skipped: project root not authorized');
             } else if (firstContent.includes(CONSTITUTION_MARKER)) {
               // Rule set removed / no longer resolvable — clear the block.
               ctx.replaceSystemByMarker(CONSTITUTION_MARKER, null);
