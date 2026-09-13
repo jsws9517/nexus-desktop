@@ -277,11 +277,9 @@ function flushTabEventBatch(): void {
   }
 }
 function forwardTabEvent(sessionId: string, event: AgentEvent): void {
-  // Handle parallel execution requests from worker
-  if (event.type === 'parallel_request') {
-    handleParallelRequest(sessionId, event as { type: string; prompt: string });
-    return;
-  }
+  // Parallel request events are now handled directly in the worker process
+  // (chatParallel in service.ts handles decomposition and execution locally)
+  // So we don't need to forward parallel_request events anymore
   
   if (event.type === 'text' || event.type === 'thinking') {
     tabEventBatch.push({ sessionId, event });

@@ -584,11 +584,63 @@ export class AgentService {
    * Determine if parallel execution is appropriate.
    */
   private shouldUseParallel(prompt: string): boolean {
+    // Universal: 2+ conjunctions → likely parallel task list
+    const conjunctionRegex = /(?:和|与|以及|，|,|、|＆|&|and|et|y|и|أو)/gi;
+    const conjunctionCount = (prompt.match(conjunctionRegex) || []).length;
+    if (conjunctionCount >= 2) return true;
+
+    // Per-language patterns (synced across all 6 UN languages)
     const patterns = [
-      /分析.*和.*和/i,              // Analyze A and B and C
-      /比较.*与.*与/i,              // Compare A with B with C
-      /分别.*处理.*和.*和/i,        // Process A, B, and C separately
-      /并行/i,                      // Explicitly mentions parallel
+      // === Chinese (中文) - 中国、新加坡 ===
+      /分析.*和.*(?:和|与|以及)/i,
+      /比较.*(?:与|和).*(?:与|和)/i,
+      /并行/,
+      /同时.*(?:处理|执行|分析|完成)/i,
+      /分别.*(?:处理|执行|分析|完成)/i,
+      /请.*(?:处理|执行|分析).*(?:和|与|以及)/i,
+      
+      // === English - US, UK, Canada, Australia ===
+      /\bparallel\b/i,
+      /\bconcurrent(ly)?\b/i,
+      /\bsimultaneous(ly)?\b/i,
+      /\banalyze.*and.*and/i,
+      /\bcompare.*with.*and/i,
+      /\bprocess.*and.*and/i,
+      /\bdo.*and.*and/i,
+      
+      // === French (Français) - France, Canada, Belgium, Switzerland ===
+      /\bparallèlement\b/i,
+      /\bsimultanément\b/i,
+      /\banalyser.*et.*et/i,
+      /\bcomparer.*et.*et/i,
+      /\btraiter.*et.*et/i,
+      /\bfaire.*et.*et/i,
+      
+      // === Russian (Русский) - Russia, Belarus, Kyrgyzstan ===
+      /\bпараллельно\b/i,
+      /\bодновременно\b/i,
+      /\bанализировать.*и.*и/i,
+      /\bсравнить.*и.*и/i,
+      /\bобработать.*и.*и/i,
+      /\bсделать.*и.*и/i,
+      
+      // === Spanish (Español) - Spain, Mexico, Argentina, Colombia ===
+      /\bparalelamente\b/i,
+      /\bsimultáneamente\b/i,
+      /\banalizar.*y.*y/i,
+      /\bcomparar.*y.*y/i,
+      /\bprocesar.*y.*y/i,
+      /\brealizar.*y.*y/i,
+      
+      // === Arabic (العربية) - Saudi, Egypt, UAE, Iraq ===
+      /\bبالتوازي\b/,
+      /\bفي نفس الوقت\b/,
+      /\bتحليل.*و.*و/,
+      /\bمقارنة.*و.*و/,
+      /\bمعالجة.*و.*و/,
+      
+      // === Task list patterns (universal) ===
+      /(?:任务|task|tâche|tarea|задача|مهمة)\s*[1-9]\s*[,.]?\s*(?:任务|task|tâche|tarea|задача|مهمة)\s*[2-9]/i,
     ];
     
     return patterns.some(p => p.test(prompt));
@@ -685,18 +737,202 @@ export class AgentService {
    * Parallel execution mode.
    * 
    * Since the worker process cannot create WorkerHost instances (Electron-only),
-   * this method emits a 'parallel_request' event to notify the main process.
-   * The main process will handle the actual parallel orchestration.
+   * we use fallback decomposition and execute tasks sequentially in the current
+   * worker. The UI still shows parallel cards for visual feedback.
    */
   private async chatParallel(prompt: string): Promise<void> {
-    const sessionId = this.agent?.getCurrentSessionId?.() ?? 'unknown';
+    if (!this.agent) throw new Error('Agent not initialized');
+    if (this.agent.isBusy()) throw new Error('Agent is busy');
     
-    // Notify main process to handle parallel execution
-    this.onEvent?.({ 
-      type: 'parallel_request', 
-      sessionId, 
-      prompt 
+    const sessionId = this.agent.getCurrentSessionId?.() ?? 'unknown';
+    
+    // Persist the original user input first (same as normal chat)
+    this.persistUserInput(prompt);
+    
+    // Decompose the prompt into sub-tasks (fallback: split by conjunctions)
+    const subTasks = this.fallbackDecompose(prompt);
+    
+    if (subTasks.length === 0) {
+      // Fallback returned nothing useful, just run normal chat
+      await this.agent.chat(prompt);
+      return;
+    }
+    
+    // Store parallel execution state in session metadata for persistence
+    const parallelState = {
+      prompt,
+      tasks: subTasks.map(t => ({
+        id: t.id,
+        description: t.description,
+        prompt: t.prompt,
+        status: 'pending' as const,
+      })),
+      startTime: Date.now(),
+    };
+    this.setSessionMetadata(sessionId, { 
+      ...this.getSessionMetadata(sessionId),
+      parallelExecution: parallelState 
     });
+    
+    // Emit parallel_start event
+    this.onEvent?.({ 
+      type: 'parallel_start', 
+      sessionId, 
+      prompt,
+      tasks: subTasks.map(t => ({ id: t.id, description: t.description, status: 'pending' })),
+    });
+    
+    // Track task results
+    const taskResults: Array<{
+      taskId: string;
+      status: string;
+      output: string;
+      durationMs: number;
+      error?: string;
+      tokenUsage: { prompt: number; completion: number };
+    }> = [];
+    
+    // Execute each sub-task sequentially
+    for (const task of subTasks) {
+      const startTime = Date.now();
+      
+      // Update metadata: task running
+      this.updateParallelTaskStatus(sessionId, task.id, 'running');
+      
+      // Emit task_progress: running
+      this.onEvent?.({
+        type: 'task_progress',
+        taskId: task.id,
+        status: 'running',
+        description: task.description,
+      });
+      
+      try {
+        // Execute the sub-task using the existing agent
+        // This will properly handle turn_start/turn_end and persist to DB
+        await this.agent.chat(task.prompt);
+        
+        const durationMs = Date.now() - startTime;
+        
+        // Preserve original task description in output
+        taskResults.push({
+          taskId: task.id,
+          status: 'succeeded',
+          output: task.description,
+          durationMs,
+          tokenUsage: { prompt: 0, completion: 0 },
+        });
+        
+        // Update metadata: task succeeded
+        this.updateParallelTaskStatus(sessionId, task.id, 'succeeded');
+        
+        // Emit task_progress: succeeded
+        this.onEvent?.({
+          type: 'task_progress',
+          taskId: task.id,
+          status: 'succeeded',
+          description: task.description,
+        });
+      } catch (error) {
+        const durationMs = Date.now() - startTime;
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        
+        // Preserve original task description in output
+        taskResults.push({
+          taskId: task.id,
+          status: 'failed',
+          output: task.description,
+          durationMs,
+          error: errorMsg,
+          tokenUsage: { prompt: 0, completion: 0 },
+        });
+        
+        // Update metadata: task failed
+        this.updateParallelTaskStatus(sessionId, task.id, 'failed');
+        
+        // Emit task_progress: failed
+        this.onEvent?.({
+          type: 'task_progress',
+          taskId: task.id,
+          status: 'failed',
+          description: task.description,
+          error: errorMsg,
+        });
+      }
+    }
+    
+    // Keep parallel state in metadata for history (don't delete)
+    // This allows restoring the parallel execution info when switching back to this session
+    
+    // Emit parallel_end event
+    this.onEvent?.({ 
+      type: 'parallel_end', 
+      sessionId,
+      tasks: taskResults,
+      tokenUsage: { prompt: 0, completion: 0 },
+    });
+  }
+
+  /**
+   * Update task status in session metadata.
+   */
+  private updateParallelTaskStatus(
+    sessionId: string, 
+    taskId: string, 
+    status: string
+  ): void {
+    const meta = this.getSessionMetadata(sessionId);
+    const parallelState = meta.parallelExecution as {
+      tasks: Array<{ id: string; status: string }>;
+    } | undefined;
+    
+    if (parallelState?.tasks) {
+      const task = parallelState.tasks.find(t => t.id === taskId);
+      if (task) {
+        task.status = status as any;
+        this.setSessionMetadata(sessionId, meta);
+      }
+    }
+  }
+
+  /**
+   * Fallback decomposition: split prompt by conjunctions and generate meaningful descriptions.
+   */
+  private fallbackDecompose(prompt: string): Array<{
+    id: string;
+    description: string;
+    prompt: string;
+  }> {
+    // Split by common Chinese and English conjunctions
+    const parts = prompt.split(/(?:和|与|以及|,|\band\b)/i)
+      .map(p => p.trim())
+      .filter(p => p.length > 5); // Ignore very short fragments
+    
+    if (parts.length <= 1) {
+      // No conjunctions found, return single task
+      return [{
+        id: 'task_1',
+        description: 'Complete user request',
+        prompt: prompt,
+      }];
+    }
+    
+    return parts.map((part, index) => ({
+      id: `task_${index + 1}`,
+      description: this.generateTaskDescription(part, index + 1),
+      prompt: part,
+    }));
+  }
+
+  /**
+   * Generate a meaningful description for a sub-task.
+   * All descriptions follow the same format: "Task N: <content>"
+   */
+  private generateTaskDescription(part: string, index: number): string {
+    // Truncate to consistent length
+    const maxLen = 50;
+    const truncated = part.length > maxLen ? part.substring(0, maxLen) + '...' : part;
+    return `Task ${index}: ${truncated}`;
   }
 
   // ---------------------------------------------------------------- DAG bridge

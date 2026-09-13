@@ -2,6 +2,7 @@ import type { SubTaskStatus } from '../../agent/sub-agent/types.js';
 
 interface ParallelExecutionCardProps {
   taskId: string;
+  description?: string;
   status: SubTaskStatus;
   output?: string;
   durationMs?: number;
@@ -38,8 +39,10 @@ function formatDuration(ms: number): string {
 }
 
 export function ParallelExecutionCard({ 
-  taskId, status, output, durationMs, error 
+  taskId, description, status, output, durationMs, error 
 }: ParallelExecutionCardProps) {
+  const displayTitle = description || taskId;
+  
   return `
     <div class="parallel-task-card" style="
       border: 1px solid ${statusColors[status]};
@@ -52,10 +55,10 @@ export function ParallelExecutionCard({
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 8px;
+        margin-bottom: 4px;
       ">
         <span style="font-weight: bold; color: #374151;">
-          ${taskId}
+          ${displayTitle}
         </span>
         <span style="color: ${statusColors[status]};">
           ${statusIcons[status]} ${status}
@@ -66,6 +69,14 @@ export function ParallelExecutionCard({
           </span>
         ` : ''}
       </div>
+      
+      ${description ? `
+        <div style="
+          font-size: 0.75rem;
+          color: #6b7280;
+          margin-bottom: 8px;
+        ">${taskId}</div>
+      ` : ''}
       
       ${status === 'running' ? `
         <div style="
