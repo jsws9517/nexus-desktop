@@ -835,17 +835,20 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     
     const sessionId = this.agent.getCurrentSessionId?.() ?? 'unknown';
     
-    // Persist the original user input first (same as normal chat)
-    this.persistUserInput(prompt);
-    
     // Decompose the prompt into sub-tasks (fallback: split by conjunctions)
     const subTasks = this.fallbackDecompose(prompt);
     
-    if (subTasks.length === 0) {
-      // Fallback returned nothing useful, just run normal chat
+    if (subTasks.length <= 1) {
+      // Not genuinely parallel (single task covering the whole prompt): run a
+      // normal single turn. agent.chat() persists the user row itself, and we
+      // deliberately do NOT call persistUserInput() here — doing both would
+      // write the same prompt twice to the DB and render it twice in the UI.
       await this.agent.chat(prompt);
       return;
     }
+    
+    // Persist the original user input exactly once (the visible transcript row)
+    this.persistUserInput(prompt);
     
     // Store parallel execution state in session metadata for persistence
     const parallelState = {
@@ -897,9 +900,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       });
       
       try {
-        // Execute the sub-task using the existing agent
-        // This will properly handle turn_start/turn_end and persist to DB
-        await this.agent.chat(task.prompt);
+        // Execute the sub-task using the existing agent.
+        // This will properly handle turn_start/turn_end and persist to DB.
+        // The prompt is wrapped in the shared worker markers so the persisted
+        // row is classified as a worker block — hidden from the transcript and
+        // excluded from the regenerate() user index — and the original request
+        // is carried along as context, matching the sub-agent pipeline. Without
+        // the markers each fragment would surface as its own visible user row.
+        await this.agent.chat(this.wrapWorkerPrompt(task.prompt, prompt));
         
         const durationMs = Date.now() - startTime;
         
@@ -982,6 +990,18 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         this.setSessionMetadata(sessionId, meta);
       }
     }
+  }
+
+  /**
+   * Wrap a fallback sub-task prompt in the shared worker markers so the row this
+   * worker persists is filtered from the transcript and ignored by the
+   * regenerate() user index (constants.ts isWorkerPrompt / isWorkerBlockText).
+   * The original request is embedded as context — mirroring how the real
+   * sub-agent pipeline builds its [Project Directory] / [Original Request]
+   * blocks — so each fragment still executes with full user intent.
+   */
+  private wrapWorkerPrompt(taskPrompt: string, originalPrompt: string): string {
+    return `[Original Request]\n${originalPrompt}\n\n---\n\n${taskPrompt}`;
   }
 
   /**
