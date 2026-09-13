@@ -204,6 +204,7 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     busy: service.busy,
     provider: service.getActiveProvider(),
     model: service.getActiveModel(),
+    contextLimit: service.getActiveContextLimit(),
   }),
   getPermissions: () => service.getPermissions(),
   getLanguage: () => service.getLanguage(),

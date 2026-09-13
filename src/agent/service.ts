@@ -23,6 +23,15 @@ import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { INTERNAL_TOOLS, ALL_TOOL_DEFS, callBuiltinTool } from '../tools/index.js';
+import { loadConstitution, CONSTITUTION_MARKER } from '../tools/agents.js';
+import {
+  readModelCapabilities,
+  getModelCapability,
+  shouldInjectVisionHint,
+  buildVisionHint,
+  VISION_HINT_MARKER,
+  resolveContextLimit,
+} from '../model-capabilities.js';
 import { MEMORY_WRITE_TOOLS } from '../main/memory-kg.js';
 import { GIT_WRITE_TOOLS } from '../main/git-internal.js';
 import { logger } from '../shared/logger.js';
@@ -390,6 +399,50 @@ export class AgentService {
             );
           }
 
+          // --- Project constitution (P0, from Tolten Aegis) ---
+          // Inject the .agents project constitution into EVERY model step,
+          // under a clearly delimited marker so it is strippable/auditable.
+          // Refused for unauthorized roots; size-capped internally (32 KB).
+          // Only local sessions: sub-agents (parallel phase) get the text
+          // explicitly passed by the Orchestrator (see adoption plan §3.7).
+          try {
+            const constitution = await loadConstitution(projectDir ?? process.cwd());
+            if (constitution.reason === 'ok' && constitution.text) {
+              if (!firstContent.includes(CONSTITUTION_MARKER)) {
+                ctx.prependToSystem(
+                  `\n\n${CONSTITUTION_MARKER}\n${constitution.text}\n${CONSTITUTION_MARKER}\n`,
+                );
+              }
+            } else if (constitution.reason === 'too-large') {
+              this.onLog?.('warn', `Constitution at ${constitution.file} > 32 KB — refused (no silent context bloat)`);
+            } else if (constitution.reason === 'unauthorized') {
+              this.onLog?.('debug', 'Constitution skipped: project root not authorized');
+            } else if (firstContent.includes(CONSTITUTION_MARKER)) {
+              // Rule set removed / no longer resolvable — clear the block.
+              ctx.replaceSystemByMarker(CONSTITUTION_MARKER, null);
+            }
+          } catch {
+            // Prompt decoration must never break a turn.
+          }
+
+          // --- Vision-route hint (P0, from ModLens auto-detect-and-route) ---
+          // Only inject when the model is POSITIVELY confirmed text-only
+          // (declared vision:false). Native-vision / unknown models never get
+          // the hint — conservative rule, mirrors ModLens.
+          try {
+            const caps = readModelCapabilities(this.getConfig());
+            const activeModel = this.getActiveModel();
+            if (shouldInjectVisionHint(caps, activeModel)) {
+              if (!firstContent.includes(VISION_HINT_MARKER)) {
+                ctx.prependToSystem(`\n\n${VISION_HINT_MARKER}\n${buildVisionHint(activeModel)}\n`);
+              }
+            } else if (firstContent.includes(VISION_HINT_MARKER)) {
+              ctx.replaceSystemByMarker(VISION_HINT_MARKER, null);
+            }
+          } catch {
+            // Prompt decoration must never break a turn.
+          }
+
           // --- Work-mode skill enforcement ---
           // When the user message references data files or analysis tasks,
           // inject a system prompt that FORCES the model to use deterministic
@@ -503,14 +556,27 @@ export class AgentService {
       this.compressionLog.set(sid, recent);
       if (recent.length >= 3 && !this.compressionWarned.has(sid)) {
         this.compressionWarned.add(sid);
-        this.onLog?.('warn',
-          `Session "${sid}" was compressed ${recent.length} times in 5 min. ` +
-          `The model's context limit may not match reality — add it to config.json's ` +
-          `"modelContextLimits" map (e.g. "agnes-2.5-flash": 524288) to fix.`,
-        );
+        const cap = this.getModelCapabilityForActive();
+        if (cap?.contextLimit) {
+          // Declared capability exists — the warning is informational only:
+          // the real fix is already in config (modelCapabilities.contextLimit).
+          this.onLog?.('warn',
+            `Session "${sid}" was compressed ${recent.length} times in 5 min. ` +
+            `Declared context limit for ${this.getActiveModel() || 'active model'} is ` +
+            `${cap.contextLimit} tokens — if compressions persist, lower it or reduce ` +
+            `tool-result sizes (MAX_TOOL_RESULT_CHARS).`,
+          );
+        } else {
+          this.onLog?.('warn',
+            `Session "${sid}" was compressed ${recent.length} times in 5 min. ` +
+            `The model's context limit may not match reality — add it to config.json's ` +
+            `"modelCapabilities" map (e.g. "${this.getActiveModel() || 'model-id'}": ` +
+            `{ "contextLimit": 524288, "vision": false }) to fix.`,
+          );
+        }
       }
     };
-    this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
+this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
@@ -1986,6 +2052,34 @@ export class AgentService {
 
   getActiveModel(): string {
     return this.overrideModel || this.agent?.provider?.model || '';
+  }
+
+  /**
+   * Resolve the declared capability for the active model (modelCapabilities
+   * map in config.json). Backs the compression-warning upgrade (P0, §5.3).
+   */
+  getModelCapabilityForActive() {
+    try {
+      return getModelCapability(readModelCapabilities(this.getConfig()), this.getActiveModel());
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolve the declared context limit for the active model. Returns the
+   * declared value from modelCapabilities (preferred), legacy modelContextLimits,
+   * or undefined when unknown. Used by getStatus → renderer context gauge (§5.3).
+   */
+  getActiveContextLimit(): number | undefined {
+    try {
+      const cfg = this.getConfig();
+      const caps = readModelCapabilities(cfg);
+      const legacy = (cfg as any)?.modelContextLimits as Record<string, number> | undefined;
+      return resolveContextLimit(caps, this.getActiveModel(), legacy);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
