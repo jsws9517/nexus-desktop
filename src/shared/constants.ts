@@ -33,4 +33,5 @@ export const EARLY_METHODS = new Set<string>([
   'getMcpServers', 'getMcpStatus', 'startSession',
   'getSlashLog', 'getSlashLogPath',
   'setCwd', 'getDefaultProjectDir', 'getSessionMetadata',
+  'sideChat',
 ]);

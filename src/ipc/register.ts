@@ -97,6 +97,7 @@ export function registerIpc(ctx: IpcContext): void {
     };
 
   ipcMain.handle(CHANNELS.chat, callForSession('chat'));
+  ipcMain.handle(CHANNELS.sideChat, call('sideChat'));
   ipcMain.handle(CHANNELS.regenerate, callForSession('regenerate'));
   ipcMain.handle(CHANNELS.withdraw, callForSession('withdraw'));
   ipcMain.handle(CHANNELS.abort, async (_e, params?: Record<string, unknown>) => {

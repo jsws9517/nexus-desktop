@@ -2,53 +2,56 @@
  * P1 — Side-chat sidebar page (DSH Better SideBar port).
  * See docs/dsh-plugin-adoption-plan.md §4.2 ("side chat → new").
  *
- * A light secondary chat surface: a quick-prompt input that sends into the
- * active session alongside the main conversation. It renders only the last
- * few exchanges (bounded) so the page stays cheap and never blocks the chat.
+ * A light secondary chat surface: a quick-prompt input for scratch questions
+ * that must NOT disturb the main conversation. Every send goes through the
+ * isolated `sideChat` IPC channel — a throwaway AgentService in the (global)
+ * worker completes the renderer-held transcript and returns a single reply.
+ * Nothing is persisted to the session store and the session's own worker/context
+ * is never touched, so side chat stays usable while the main chat is mid-turn.
  *
- * Dependency-injected for unit tests (fake chat + fake message loader).
+ * The page holds its own bounded transcript; there is no event-bus mirroring
+ * (which previously replayed the main session's streaming chunks as separate
+ * "replies") and no load of the main session's later history into this surface.
+ *
+ * Dependency-injected for unit tests (fake chat sender).
  */
 
-import type { AgentEvent } from '../../../agent/types.js';
 import type { SidebarContext } from '../types.js';
 
+/** A single transcript entry. `pending` = waiting on the worker reply,
+ *  `error` = the request failed (content holds the failure hint). */
+interface ChatItem {
+  role: 'user' | 'assistant';
+  content: string;
+  pending?: boolean;
+  error?: boolean;
+}
+
 export interface SideChatPageOptions {
-  /** Send a message into the session (default: preload chat bridge). */
-  send?: (input: string, sessionId: string) => void;
-  /** Load recent messages; default uses the preload getMessages bridge. */
-  loadMessages?: (sessionId: string, limit: number) => Promise<Array<{ role: string; content: string }>>;
+  /** Send a transcript and resolve with the assistant reply (default: preload
+   *  sideChat bridge — isolated, never the session worker). */
+  send?: (messages: Array<{ role: string; content: string }>) => Promise<string>;
   getUiLang?: () => string;
 }
 
-function defaultSend(input: string, sessionId: string): void {
-  void window.nexusDesktop.chat(input, { sessionId: sessionId || undefined });
-}
-
-async function defaultLoadMessages(
-  sessionId: string,
-  limit: number,
-): Promise<Array<{ role: string; content: string }>> {
-  try {
-    const res = await window.nexusDesktop.getMessages(sessionId, { last: limit });
-    const rows = (res as { items?: Array<{ role?: string; content?: string }> })?.items ?? [];
-    return rows.map((r) => ({ role: r.role ?? 'user', content: typeof r.content === 'string' ? r.content : '' }));
-  } catch {
-    return [];
-  }
+async function defaultSend(messages: Array<{ role: string; content: string }>): Promise<string> {
+  const res = await window.nexusDesktop.sideChat(messages);
+  return res && typeof res.reply === 'string' ? res.reply : '';
 }
 
 /**
  * Mount the side-chat page into `container`. Returns a dispose function that
- * unsubscribes from the event bus and removes every DOM node created here.
+ * removes every DOM node created here (no event subscriptions to release).
  */
 export function mountSideChatPage(
   container: HTMLElement,
-  ctx: SidebarContext,
+  _ctx: SidebarContext,
   opts: SideChatPageOptions = {},
 ): () => void {
   const send = opts.send ?? defaultSend;
-  const loadMessages = opts.loadMessages ?? defaultLoadMessages;
   const getUiLang = opts.getUiLang ?? (() => 'zh-CN');
+  const thinkingText = getUiLang() === 'zh-CN' ? '💭 思考中…' : '💭 thinking…';
+  const failedText = getUiLang() === 'zh-CN' ? '❌ 请求失败，请重试' : '❌ request failed, try again';
 
   container.classList.add('sidechat-page');
   container.innerHTML = '';
@@ -86,13 +89,14 @@ export function mountSideChatPage(
   inputRow.appendChild(sendBtn);
 
   const MAX_HISTORY = 100;
-  let items: Array<{ role: string; content: string }> = [];
+  let items: ChatItem[] = [];
+  let pending = false;
 
   const render = (): void => {
     history.replaceChildren();
     for (const item of items.slice(-MAX_HISTORY)) {
       const row = document.createElement('div');
-      row.className = 'sidechat-msg ' + (item.role === 'user' ? 'user' : 'agent');
+      row.className = 'sidechat-msg ' + item.role + (item.pending ? ' pending' : '') + (item.error ? ' error' : '');
       row.textContent = item.content.length > 160 ? item.content.slice(0, 160) + '…' : item.content;
       history.appendChild(row);
     }
@@ -101,15 +105,36 @@ export function mountSideChatPage(
 
   const submit = (): void => {
     const text = input.value.trim();
-    if (!text) return;
+    if (!text || pending) return;
     input.value = '';
     items.push({ role: 'user', content: text });
+    items.push({ role: 'assistant', content: thinkingText, pending: true });
+    pending = true;
     render();
-    try {
-      send(text, ctx.sessionId);
-    } catch {
-      // Send failures never break the side-chat page.
-    }
+    const messages = items
+      .slice(-MAX_HISTORY)
+      .filter((i) => !i.pending && !i.error)
+      .map((i) => ({ role: i.role, content: i.content }));
+    Promise.resolve(send(messages))
+      .then((reply) => {
+        const last = items[items.length - 1];
+        if (last?.pending) {
+          last.pending = false;
+          last.content = reply || (getUiLang() === 'zh-CN' ? '（空回复）' : '(empty reply)');
+        }
+      })
+      .catch(() => {
+        const last = items[items.length - 1];
+        if (last?.pending) {
+          last.pending = false;
+          last.error = true;
+          last.content = failedText;
+        }
+      })
+      .finally(() => {
+        pending = false;
+        render();
+      });
   };
 
   input.addEventListener('keydown', (e) => {
@@ -117,30 +142,15 @@ export function mountSideChatPage(
   });
   sendBtn.addEventListener('click', submit);
 
-  const unsubscribe = ctx.subscribe((event: AgentEvent) => {
-    // Reflect assistant turns arriving for this session.
-    if (event.sessionId && event.sessionId !== ctx.sessionId && ctx.sessionId) return;
-    if (event.type === 'text' && typeof event.text === 'string') {
-      items.push({ role: 'agent', content: event.text });
-      render();
-    }
-  });
-
-  void loadMessages(ctx.sessionId, 20).then((rows) => {
-    items = [...rows, ...items].slice(-MAX_HISTORY);
-    render();
-  });
-
   render();
 
   return () => {
-    unsubscribe();
     container.classList.remove('sidechat-page');
     container.innerHTML = '';
   };
 }
 
-/** Assistant binding: constructs the page with the real IPC bridges. */
+/** Assistant binding: constructs the page with the real IPC bridge. */
 export const SideChatPage = {
   id: 'side-chat',
   title: 'Side Chat',

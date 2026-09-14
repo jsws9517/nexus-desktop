@@ -78,6 +78,7 @@ export function mountSubAgentsPage(
 
   /** Rebuild the whole list from the shared parallel-session map (cheap: card render is string-based). */
   const render = (): void => {
+    ctx.pruneParallelSessions?.();
     const sessions = [...ctx.getParallelSessions().entries()].sort(sortSessions);
     list.replaceChildren();
     if (sessions.length === 0) {
@@ -126,7 +127,13 @@ export function mountSubAgentsPage(
   };
 
   const unsubscribe = ctx.subscribe(onEvent);
+  // Auto-recycle: while the page is mounted, sweep finished sessions on a timer
+  // so expired cards disappear without needing a parallel event to re-render.
+  const autoRecycle = setInterval(() => {
+    render();
+  }, 10_000);
   return () => {
+    clearInterval(autoRecycle);
     unsubscribe();
     container.classList.remove('sub-agents-page');
     container.innerHTML = '';

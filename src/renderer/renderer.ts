@@ -10,9 +10,7 @@ import type { SubTaskResult, SubTaskStatus } from '../agent/sub-agent/types.js';
 import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
-import { TerminalPage, mountTerminalPage } from './sidebar/pages/terminal.js';
 import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
-import { GitPage, mountGitPage } from './sidebar/pages/git.js';
 
 interface SessionInfo {
   id: string;
@@ -148,6 +146,7 @@ declare global {
   interface Window {
     nexusDesktop: {
       chat(input: string, opts?: { sessionId?: string }): Promise<unknown>;
+      sideChat(messages: Array<{ role: string; content: string }>): Promise<{ reply: string }>;
       abort(opts?: { sessionId?: string }): Promise<unknown>;
       startSession(name?: string, sessionId?: string): Promise<string>;
       listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: SessionInfo[]; total: number }>;
@@ -323,6 +322,7 @@ function makeSidebarContext(sessionId: string): SidebarContext {
   return {
     sessionId,
     getParallelSessions: () => parallelSessions as ReadonlyMap<string, { sessionId: string; prompt: string; startTime: number; tasks: ReadonlyMap<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }> }>,
+    pruneParallelSessions: (ttlMs?: number) => pruneParallelSessions(ttlMs),
     subscribe: (fn) => {
       const wrapped = (event: AgentEvent) => fn(event);
       eventSubscribers.add(wrapped);
@@ -463,6 +463,39 @@ const parallelSessions = new Map<string, ParallelSession>();
 // sub-task's agent.chat() emits must NOT clear busy until parallel_end lands.
 const parallelBatches = new Set<string>();
 let parallelCardEl: HTMLElement | null = null;
+
+// Finished parallel sessions are recycled automatically: either TTL-swept once
+// they've sat complete for PARALLEL_SESSION_TTL_MS, or hard-capped so the map
+// can never grow unbounded. In-flight batches are never evicted.
+const PARALLEL_SESSION_TTL_MS = 10 * 60 * 1000;
+const PARALLEL_SESSION_MAX = 20;
+const TERMINAL_TASK_STATUS = new Set(['succeeded', 'failed', 'timeout', 'cancelled']);
+
+function isTerminalTask(t: { status: string }): boolean {
+  return TERMINAL_TASK_STATUS.has(t.status);
+}
+
+function pruneParallelSessions(ttlMs: number = PARALLEL_SESSION_TTL_MS): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const [sid, session] of parallelSessions) {
+    const done = session.tasks.size > 0 && [...session.tasks.values()].every(isTerminalTask);
+    if (done && !parallelBatches.has(sid) && now - session.startTime >= ttlMs) {
+      parallelSessions.delete(sid);
+      removed++;
+    }
+  }
+  if (parallelSessions.size > PARALLEL_SESSION_MAX) {
+    const newestFirst = [...parallelSessions].sort((a, b) => (b[1].startTime ?? 0) - (a[1].startTime ?? 0));
+    for (const [sid, session] of newestFirst) {
+      if (parallelSessions.size <= PARALLEL_SESSION_MAX) break;
+      if (parallelBatches.has(sid)) continue;
+      parallelSessions.delete(sid);
+      removed++;
+    }
+  }
+  return removed;
+}
 
 // per-turn DOM handles
 let curAssistant: { bubble: HTMLElement; stream: HTMLElement; buffer: string; cleaned: boolean } | null = null;
@@ -2612,6 +2645,8 @@ function handleParallelStart(
   prompt: string, 
   taskList?: Array<{ id: string; description: string; status: string }>
 ): void {
+  // Recycle long-finished sessions before adding the fresh batch.
+  pruneParallelSessions();
   // A parallel batch is genuinely executing — hold the running indicator across
   // the whole batch (see the session_end handler; intermediate sub-task spans
   // must not clear it) and keep the Stop affordance available.
@@ -4421,9 +4456,9 @@ window.nexusDesktop.onTabsChanged((open) => {
     await refreshSessions();
     await refreshSidebarSession();
     await syncOpenTabs();
-    // P1: register built-in sidebar tabs (Sub-Agents flagship + terminal,
-    // side-chat, Git) and render the tab bar. The registry is the single
-    // extension surface; third-party tabs attach the same way.
+    // P1: register built-in sidebar tabs (Sub-Agents + Side Chat) and render
+    // the tab bar. The registry is the single extension surface; third-party
+    // tabs attach the same way.
     sidebarRegistry.register({
       id: SubAgentsPage.id,
       title: SubAgentsPage.title,
@@ -4431,22 +4466,10 @@ window.nexusDesktop.onTabsChanged((open) => {
       mount: mountSubAgentsPage,
     });
     sidebarRegistry.register({
-      id: TerminalPage.id,
-      title: TerminalPage.title,
-      icon: TerminalPage.icon,
-      mount: mountTerminalPage,
-    });
-    sidebarRegistry.register({
       id: SideChatPage.id,
       title: SideChatPage.title,
       icon: SideChatPage.icon,
       mount: mountSideChatPage,
-    });
-    sidebarRegistry.register({
-      id: GitPage.id,
-      title: GitPage.title,
-      icon: GitPage.icon,
-      mount: mountGitPage,
     });
     renderSidebarTabs();
     await initResourcePanel();

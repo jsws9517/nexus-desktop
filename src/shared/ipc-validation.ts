@@ -12,7 +12,8 @@ export type FieldSpec =
   | { kind: 'boolean' }
   | { kind: 'number' }
   | { kind: 'object' }
-  | { kind: 'enum'; values: readonly string[] };
+  | { kind: 'enum'; values: readonly string[] }
+  | { kind: 'messages' };
 
 interface MethodSpec {
   fields: Record<string, FieldSpec>;
@@ -25,15 +26,18 @@ const S = {
   num: (): FieldSpec => ({ kind: 'number' }),
   obj: (): FieldSpec => ({ kind: 'object' }),
   en: (values: readonly string[]): FieldSpec => ({ kind: 'enum', values }),
+  msg: (): FieldSpec => ({ kind: 'messages' }),
 };
 
 export const PERMISSION_ANSWERS = ['y', 'a', 'n'] as const;
 export const MAX_CHAT_INPUT = 65536;
+const MAX_SIDE_CHAT_MESSAGES = 50;
 
 export const WORKER_METHODS = {
   earlyInit: { fields: { cwd: S.str() }, optional: ['cwd'] },
   init: { fields: { cwd: S.str(), deferMcp: S.bool() }, optional: ['cwd', 'deferMcp'] },
   chat: { fields: { input: S.str(MAX_CHAT_INPUT) } },
+  sideChat: { fields: { messages: S.msg() } },
   regenerate: { fields: { sessionId: S.str(), userIndex: S.num() } },
   withdraw: { fields: { sessionId: S.str(), userIndex: S.num() } },
   abort: { fields: {} },
@@ -122,6 +126,22 @@ function checkField(value: unknown, spec: FieldSpec, path: string): string | nul
       return typeof value === 'string' && spec.values.includes(value)
         ? null
         : `${path} must be one of [${spec.values.join(', ')}]`;
+    case 'messages': {
+      if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SIDE_CHAT_MESSAGES) {
+        return `${path} must be a non-empty array of at most ${MAX_SIDE_CHAT_MESSAGES} messages`;
+      }
+      for (let i = 0; i < value.length; i++) {
+        const m = value[i] as { role?: unknown; content?: unknown };
+        if (!m || typeof m !== 'object' || Array.isArray(m)) return `${path}[${i}] must be an object`;
+        if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'system') {
+          return `${path}[${i}].role must be 'user' | 'assistant' | 'system'`;
+        }
+        if (typeof m.content !== 'string' || m.content.length > MAX_CHAT_INPUT) {
+          return `${path}[${i}].content must be a string ≤ ${MAX_CHAT_INPUT}`;
+        }
+      }
+      return null;
+    }
   }
 }
 

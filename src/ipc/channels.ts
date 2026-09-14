@@ -58,6 +58,7 @@ export const CHANNELS = {
   getMcpStatus: 'nexus:getMcpStatus',
   getMcpServers: 'nexus:getMcpServers',
   setMcpServer: 'nexus:setMcpServer',
+  sideChat: 'nexus:sideChat',
   runSubAgent: 'nexus:runSubAgent',
   getSubAgentStatus: 'nexus:getSubAgentStatus',
   cancelSubAgent: 'nexus:cancelSubAgent',

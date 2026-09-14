@@ -3,6 +3,10 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 const api = {
   chat: (input: string, opts?: { sessionId?: string }) =>
     ipcRenderer.invoke('nexus:chat', { input, ...(opts ?? {}) }),
+  // Isolated scratch chat: worker completes the renderer-held transcript on a
+  // throwaway AgentService — never the session's worker, never its context/db.
+  sideChat: (messages: Array<{ role: string; content: string }>) =>
+    ipcRenderer.invoke('nexus:sideChat', { messages }),
   regenerate: (sessionId: string, userIndex: number) =>
     ipcRenderer.invoke('nexus:regenerate', { sessionId, userIndex }),
   withdraw: (sessionId: string, userIndex: number) =>

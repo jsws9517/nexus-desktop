@@ -29,6 +29,9 @@ export interface SidebarContext {
   sessionId: string;
   /** Live parallel-execution state (same Map renderer.ts maintains). */
   getParallelSessions(): ReadonlyMap<string, ParallelSessionView>;
+  /** Recycle finished sessions (TTL sweep + hard cap). Optional guard for
+   *  pages built against older contexts. */
+  pruneParallelSessions?(ttlMs?: number): number;
   /** Subscribe to the agent event bus; returns an unsubscribe function. */
   subscribe(fn: (event: AgentEvent) => void): () => void;
 }

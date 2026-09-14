@@ -10,6 +10,7 @@ type WorkerRequest =
   | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
   | { id: number; method: 'init'; params?: { cwd?: string; deferMcp?: boolean } }
   | { id: number; method: 'chat'; params: { input: string } }
+  | { id: number; method: 'sideChat'; params: { messages: Array<{ role: string; content: string }> } }
   | { id: number; method: 'regenerate'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'withdraw'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'abort' }
@@ -174,6 +175,17 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   },
   chat: async (req: WorkerRequest & { method: 'chat' }) => {
     await service.chat(req.params.input);
+  },
+  sideChat: async (req: WorkerRequest & { method: 'sideChat' }) => {
+    // Isolated scratch conversation: a fresh AgentService per request, seeded
+    // with the renderer-held transcript. It never touches the session store,
+    // the main worker's context, or its busy state — side chat stays usable
+    // while the real session is mid-turn and can never pollute it.
+    const messages = req.params.messages.map((m) => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content }));
+    const tempService = new AgentService();
+    await tempService.earlyInit();
+    const reply = await tempService.callLlm({ messages });
+    return { reply };
   },
   regenerate: async (req: WorkerRequest & { method: 'regenerate' }) => {
     await service.regenerate(req.params.sessionId, req.params.userIndex);
