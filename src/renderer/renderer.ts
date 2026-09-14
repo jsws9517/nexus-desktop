@@ -159,6 +159,7 @@ declare global {
       deleteSession(id: string): Promise<unknown>;
       renameSession(id: string, name: string): Promise<unknown>;
       getConfig(): Promise<Record<string, unknown>>;
+      getIntentRecognition(): Promise<boolean>;
       getProviders(): Promise<ProviderInfo[]>;
       getStatus(opts?: { sessionId?: string }): Promise<StatusInfo>;
       getPermissions(): Promise<PermissionsInfo>;
@@ -398,6 +399,15 @@ let currentSessionId = '';
 let busy = false;
 let running = false;
 let stopRequested = false;
+// Mirror of the core "Context Window → Intent Recognition" toggle
+// (`contextWindow.intentRecognition`, default ON). Fetched from the config via
+// IPC at boot and refreshed when the full config Web UI closes.
+let intentRecognitionEnabled = true;
+// The prompt currently being executed by drain() and when its chat() IPC began.
+// Used to judge whether a newly queued message is an iterative supersede of the
+// in-flight turn (same semantics as the core's BridgeHost.ITERATION_WINDOW_MS).
+let inFlightPrompt = '';
+let turnStartedAt = 0;
 // When frozen, auto-scroll is suppressed so the user can review earlier context
 // while a turn is still streaming. New content keeps rendering normally below;
 // only the viewport stays put (safe — no DOM/state is deferred). The lock is
@@ -1120,10 +1130,22 @@ function handleEvent(event: AgentEvent): void {
 }
 
 // ---------- status / busy ----------
+// Send button visibility is decoupled from the busy flag: while a turn is
+// running the user may still draft a prompt, and typing reveals the send button
+// next to the Stop control (opencode-style send-while-running). Idle always
+// shows send.
+function updateSendButtonVisibility(): void {
+  if (!busy) {
+    sendBtn.classList.remove('hidden');
+    return;
+  }
+  sendBtn.classList.toggle('hidden', !inputEl.value.trim());
+}
+
 function setBusy(value: boolean): void {
   busy = value;
   busyIndicator.classList.toggle('hidden', !value);
-  sendBtn.classList.toggle('hidden', value);
+  updateSendButtonVisibility();
   stopBtn.classList.toggle('hidden', !value);
   document.querySelectorAll('.regen-btn').forEach((b) => {
     (b as HTMLButtonElement).disabled = value;
@@ -2885,18 +2907,84 @@ document.addEventListener('keydown', (e) => {
 // the old single "pending flag" that fired on the turn_end event — which raced
 // the worker (chat() had not resolved yet) and could crash it with a concurrent
 // dispatch.
+//
+// When the core's "Intent Recognition" toggle is ON (default), a queued message
+// that arrives close to the start of the in-flight turn and reads as an
+// iterative supersede (stop / change-of-plan / refinement) aborts that turn
+// early and lets the new instruction be injected into the current context —
+// matching the opencode-style send-while-running affordance. Mirrors the core's
+// acp/bridge/intent.js detection + BridgeHost.ITERATION_WINDOW_MS gating.
+const ITERATION_WINDOW_MS = 90_000;
+
+// Markers that signal the user is changing their mind / refining the in-flight
+// request (Chinese + English), case-insensitive — kept in sync with the core's
+// isIterativeIntent() so the desktop and IM-bridge paths behave identically.
+const REFINE_MARKERS: RegExp[] = [
+  /^(不对|不是|错了|改|换个|重新|再|还是|其实|等等|停|别|不要|算了|撤销|取消|更正|修正|补充|另外|还有|即|诶|哎)/i,
+  /\b(redo|retry|instead|change|wrong|fix|stop|cancel|actually|wait|no,|re-?do|revise|update|correct|rephrase)\b/i,
+];
+
+function isIterativeIntent(newText: string, inFlightPrompt: string): boolean {
+  const t = newText.trim();
+  if (!t) return false;
+  for (const re of REFINE_MARKERS) if (re.test(t)) return true;
+  if (inFlightPrompt && tokenOverlap(newText, inFlightPrompt) >= 0.5) return true;
+  return false;
+}
+
+// Character-bigram Jaccard similarity — language-agnostic, works for CJK and
+// Latin without a tokenizer. Returns 0..1.
+function tokenOverlap(a: string, b: string): number {
+  const sa = bigrams(a);
+  const sb = bigrams(b);
+  if (sa.size === 0 || sb.size === 0) return 0;
+  let inter = 0;
+  for (const g of sa) if (sb.has(g)) inter++;
+  return inter / (sa.size + sb.size - inter);
+}
+
+function bigrams(s: string): Set<string> {
+  const norm = s.toLowerCase().replace(/\s+/g, '');
+  const set = new Set<string>();
+  if (norm.length <= 1) {
+    if (norm) set.add(norm);
+    return set;
+  }
+  for (let i = 0; i < norm.length - 1; i++) set.add(norm.slice(i, i + 2));
+  return set;
+}
+
 function enqueue(text: string): void {
   if (!text) return;
   addUser(text);
   inputEl.value = '';
   pendingQueue.push(text);
+  maybeHandleIterativeIntent(text);
+  updateSendButtonVisibility();
   drain();
+}
+
+/** Intent recognition for optionally-queued messages (core toggle gated). */
+function maybeHandleIterativeIntent(text: string): void {
+  if (!running || !intentRecognitionEnabled) return;
+  if (turnStartedAt === 0 || Date.now() - turnStartedAt > ITERATION_WINDOW_MS) return;
+  if (!isIterativeIntent(text, inFlightPrompt)) return;
+  // Supersede the in-flight turn: abort it now, keep the message queued so it is
+  // injected into the current context when the turn ends (queue is preserved).
+  requestStop();
 }
 
 function drain(): void {
   if (running) {
     setBusy(true);
-    if (pendingQueue.length > 0) inputStatus.textContent = t('queued', { n: pendingQueue.length });
+    // A stop just requested inside enqueue() must not be overwritten by the
+    // generic running readout; keep the "Stopping…" feedback visible.
+    if (stopRequested) {
+      inputStatus.textContent = t('stopping');
+      inputStatus.classList.add('stopping');
+    } else if (pendingQueue.length > 0) {
+      inputStatus.textContent = t('queued', { n: pendingQueue.length });
+    }
     return;
   }
   const text = pendingQueue.shift();
@@ -2905,6 +2993,8 @@ function drain(): void {
     return;
   }
   running = true;
+  inFlightPrompt = text;
+  turnStartedAt = Date.now();
   setBusy(true);
   curAssistant = null;
   curThinking = null;
@@ -2918,6 +3008,8 @@ function drain(): void {
       addSystem(`${t('error')}${errText(err)}`);
     } finally {
       running = false;
+      inFlightPrompt = '';
+      turnStartedAt = 0;
       // Defer drain() to the next microtask so that session_end events
       // (which arrive via IPC in the same tick) have a chance to call
       // setBusy(false) first. Without this, drain() fires synchronously
@@ -4140,6 +4232,7 @@ function clearDraft(id: string): void {
 }
 let draftTimer: ReturnType<typeof setTimeout> | null = null;
 inputEl.addEventListener('input', () => {
+  updateSendButtonVisibility();
   if (draftTimer) clearTimeout(draftTimer);
   draftTimer = setTimeout(saveDraft, 400);
 });
@@ -4217,6 +4310,7 @@ async function initResourcePanel(): Promise<void> {
 // in-memory copy matches disk, then re-apply i18n / sidebar state.
 window.nexusDesktop.onConfigWindowClosed(async () => {
   await window.nexusDesktop.reloadConfig();
+  intentRecognitionEnabled = await window.nexusDesktop.getIntentRecognition().catch(() => true);
   await loadLanguage();
   await refreshSidebarSession();
   const provs = await window.nexusDesktop.getProviders();
@@ -4260,6 +4354,7 @@ window.nexusDesktop.onTabsChanged((open) => {
     await loadLanguage();
     showOnboarding();
     void window.nexusDesktop.getInputRows().then((r) => applyInputRows(r)).catch(() => {});
+    void window.nexusDesktop.getIntentRecognition().then((v) => (intentRecognitionEnabled = v)).catch(() => {});
     status = await window.nexusDesktop.getStatus();
     providers = await window.nexusDesktop.getProviders();
     if (providers.length === 0) {

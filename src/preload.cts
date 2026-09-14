@@ -71,6 +71,7 @@ const api = {
     ipcRenderer.invoke('nexus:setMcpServer', { name, enabled }),
   getDeferMcp: () => ipcRenderer.invoke('nexus:getDeferMcp'),
   setDeferMcp: (enabled: boolean) => ipcRenderer.invoke('nexus:setDeferMcp', enabled),
+  getIntentRecognition: () => ipcRenderer.invoke('nexus:getIntentRecognition') as Promise<boolean>,
   getPinned: () => ipcRenderer.invoke('nexus:getPinned'),
   setPinned: (ids: string[]) => ipcRenderer.invoke('nexus:setPinned', ids),
   getMinimizeToTray: () => ipcRenderer.invoke('nexus:getMinimizeToTray'),

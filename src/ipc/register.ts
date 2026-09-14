@@ -145,6 +145,20 @@ export function registerIpc(ctx: IpcContext): void {
     }
   });
   ipcMain.handle(CHANNELS.reloadConfig, call('reloadConfig'));
+  // Read the core intent-recognition toggle straight from config.json instead of
+  // routing through the worker: the renderer needs it early (to decide whether
+  // to supersede in-flight turns) and the worker is gated behind fullReady.
+  ipcMain.handle(CHANNELS.getIntentRecognition, async (): Promise<boolean> => {
+    try {
+      const cfgPath = join(homedir(), '.nexus', 'config.json');
+      await access(cfgPath);
+      const raw = await readFile(cfgPath, 'utf-8');
+      const cfg = JSON.parse(raw) as { contextWindow?: { intentRecognition?: boolean } };
+      return cfg.contextWindow?.intentRecognition ?? true;
+    } catch {
+      return true;
+    }
+  });
   ipcMain.handle(CHANNELS.getSpeechVisionConfig, call('getSpeechVisionConfig'));
   ipcMain.handle(CHANNELS.setActiveSpeechProvider, call('setActiveSpeechProvider'));
   ipcMain.handle(CHANNELS.setActiveTtsProvider, call('setActiveTtsProvider'));

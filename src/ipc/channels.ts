@@ -67,6 +67,7 @@ export const CHANNELS = {
   // renderer → main: desktop-only (desktop.json state) channels.
   getDeferMcp: 'nexus:getDeferMcp',
   setDeferMcp: 'nexus:setDeferMcp',
+  getIntentRecognition: 'nexus:getIntentRecognition',
   getPinned: 'nexus:getPinned',
   setPinned: 'nexus:setPinned',
   getMinimizeToTray: 'nexus:getMinimizeToTray',
