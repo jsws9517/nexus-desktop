@@ -1123,11 +1123,7 @@ function handleEvent(event: AgentEvent): void {
 function setBusy(value: boolean): void {
   busy = value;
   busyIndicator.classList.toggle('hidden', !value);
-  // NOTE: the Send button is deliberately decoupled from busy — it stays
-  // available while a turn or a parallel batch is executing so the user can
-  // inject a new prompt at any time; enqueue/drain serializes it into the
-  // pending queue and runs it after the current work finishes. Only the Stop
-  // button + running indicator track the actual in-flight execution.
+  sendBtn.classList.toggle('hidden', value);
   stopBtn.classList.toggle('hidden', !value);
   document.querySelectorAll('.regen-btn').forEach((b) => {
     (b as HTMLButtonElement).disabled = value;
@@ -2613,13 +2609,16 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
   // Update the card with final results
   if (parallelCardEl) {
     parallelCardEl.innerHTML = '';
+    const interrupted = tasks.some((task) => task.status === 'cancelled');
     const header = document.createElement('div');
     header.style.cssText = `
       font-weight: bold;
       margin-bottom: 12px;
-      color: #10b981;
+      color: ${interrupted ? '#f59e0b' : '#10b981'};
     `;
-    header.textContent = `✅ ${getUiLang() === 'zh-CN' ? '并行执行完成' : 'Parallel execution completed'}`;
+    header.textContent = interrupted
+      ? `⏹ ${getUiLang() === 'zh-CN' ? '并行执行已中断' : 'Parallel execution interrupted'}`
+      : `✅ ${getUiLang() === 'zh-CN' ? '并行执行完成' : 'Parallel execution completed'}`;
     parallelCardEl.appendChild(header);
 
     const tasksContainer = document.createElement('div');

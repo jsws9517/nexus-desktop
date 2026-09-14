@@ -36,6 +36,7 @@ import { MEMORY_WRITE_TOOLS } from '../main/memory-kg.js';
 import { GIT_WRITE_TOOLS } from '../main/git-internal.js';
 import { logger } from '../shared/logger.js';
 import type { AgentEvent, PermissionRequest, ProviderInfo } from './types.js';
+import type { SubTask } from './sub-agent/types.js';
 import { extractTopic } from './topic.js';
 import { redactConfig } from './config-read.js';
 let sessionDbPromise: Promise<typeof import('../session-db.js')> | null = null;
@@ -98,6 +99,12 @@ function capToolResult<T>(res: T): T {
 export class AgentService {
   private agent: Agent | null = null;
   private initialized = false;
+  // Set by abort() so parallel batches can halt BETWEEN sub-tasks (the core's
+  // abort() only interrupts the currently running agent.chat(); without this
+  // flag the next sub-task would start immediately with a fresh AbortController).
+  // Reset at the start of every user-initiated chat() so a stale request never
+  // cancels a later turn.
+  private stopRequested = false;
   private mcpEnabled = true;
   private pendingPermissions = new Map<string, (answer: string) => void>();
   private nextPermissionId = 1;
@@ -751,6 +758,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy()) throw new Error('Agent is busy');
     
+    // A fresh user send starts with a clean stop state: the flag only gates a
+    // parallel batch that is CURRENTLY executing, never the next turn.
+    this.stopRequested = false;
+    
     // Check if parallel execution should be used
     if (this.shouldUseParallel(input)) {
       await this.chatParallel(input);
@@ -896,8 +907,41 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       tokenUsage: { prompt: number; completion: number };
     }> = [];
     
-    // Execute each sub-task sequentially
-    for (const task of subTasks) {
+    // Record a sub-task that was never (fully) run because the user stopped the
+    // batch — persisted to metadata, surfaced to the card/sidebar as cancelled.
+    const cancelTask = (task: SubTask): void => {
+      taskResults.push({
+        taskId: task.id,
+        status: 'cancelled',
+        output: task.description,
+        durationMs: 0,
+        error: 'Stopped by user',
+        tokenUsage: { prompt: 0, completion: 0 },
+      });
+      this.updateParallelTaskStatus(sessionId, task.id, 'cancelled');
+      this.onEvent?.({
+        type: 'task_progress',
+        taskId: task.id,
+        status: 'cancelled',
+        description: task.description,
+        error: 'Stopped by user',
+      });
+    };
+    
+    // Execute each sub-task sequentially. The core's abort() only interrupts the
+    // currently running agent.chat(); the loop itself MUST also consult
+    // stopRequested so a Stop halts the WHOLE batch instead of silently starting
+    // the next sub-task with a brand-new AbortController.
+    for (let i = 0; i < subTasks.length; i++) {
+      const task = subTasks[i];
+      
+      // Stop landed while this task was queued (between sub-tasks) — cancel it
+      // and everything still ahead, don't start fresh work after a Stop.
+      if (this.stopRequested) {
+        for (let j = i; j < subTasks.length; j++) cancelTask(subTasks[j]);
+        break;
+      }
+      
       const startTime = Date.now();
       
       // Update metadata: task running
@@ -922,6 +966,30 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         await this.agent.chat(this.wrapWorkerPrompt(task.prompt, prompt));
         
         const durationMs = Date.now() - startTime;
+        
+        if (this.stopRequested) {
+          // agent.chat() returns cleanly even when aborted mid-run — that "clean"
+          // return is exactly how the core reports a Stop. Record this task (and
+          // the remaining queue) as cancelled and halt the batch here.
+          taskResults.push({
+            taskId: task.id,
+            status: 'cancelled',
+            output: task.description,
+            durationMs,
+            error: 'Stopped by user',
+            tokenUsage: { prompt: 0, completion: 0 },
+          });
+          this.updateParallelTaskStatus(sessionId, task.id, 'cancelled');
+          this.onEvent?.({
+            type: 'task_progress',
+            taskId: task.id,
+            status: 'cancelled',
+            description: task.description,
+            error: 'Stopped by user',
+          });
+          for (let j = i + 1; j < subTasks.length; j++) cancelTask(subTasks[j]);
+          break;
+        }
         
         // Preserve original task description in output
         taskResults.push({
@@ -1420,6 +1488,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   // ---------------------------------------------------------------------- end
 
   abort(): void {
+    this.stopRequested = true;
     this.agent?.abort?.();
   }
 
