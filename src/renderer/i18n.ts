@@ -50,6 +50,14 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   thinkingDot: { 'zh-CN': '💭 思考中…', en: '💭 Thinking…' },
   collapseThinking: { 'zh-CN': '💭 收起思考', en: '💭 Collapse' },
   thought: { 'zh-CN': '💭 思考', en: '💭 Thought' },
+  thinkingStallWarn: {
+    'zh-CN': '模型持续产出思考但无实际进展（约 {n} token）。若反复出现，建议降低思维深度或更换模型。',
+    en: 'The model keeps producing thinking with no real progress (~{n} tokens). If this recurs, consider lowering the reasoning depth or switching models.',
+  },
+  thinkingStallAbort: {
+    'zh-CN': '模型重复同一段思考（约 {n} token）陷入空转，已自动中断本轮以止损。',
+    en: 'The model repeated the same thinking block (~{n} tokens) — the turn was auto-interrupted to stop the token burn.',
+  },
   noMcpServers: { 'zh-CN': '未配置 MCP 服务器', en: 'No MCP servers configured' },
   mcpLoadFailed: { 'zh-CN': '加载失败', en: 'Failed to load' },
   mcpFailed: { 'zh-CN': '失败', en: 'Failed' },

@@ -280,15 +280,15 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
         setTimeout(() => reject(new Error(`Task ${taskId} timed out`)), timeoutMs ?? 60000)
       );
       
-      await Promise.race([
-        tempService.chat(prompt),
+      const usage = await Promise.race([
+        tempService.chatForUsage(prompt),
         timeoutPromise,
       ]);
       
       subAgentStates.set(taskId, { status: 'succeeded', startTime: Date.now() });
       return {
         output: `Task ${taskId} completed successfully`,
-        tokenUsage: { prompt: 0, completion: 0 },
+        tokenUsage: { prompt: usage.prompt, completion: usage.completion },
       };
     } catch (error) {
       subAgentStates.set(taskId, { status: 'failed', startTime: Date.now() });

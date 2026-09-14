@@ -119,6 +119,7 @@ type AgentEvent =
   | { type: 'state_delta'; contextTokens: number; turn: number }
   | { type: 'turn_end'; stopReason: string; usage?: { inputTokens: number; outputTokens: number } }
   | { type: 'session_end' }
+  | { type: 'thinking_stall'; reason: string; thinkingTokens: number; repeatCount: number; aborting?: boolean }
   | {
       type: 'task_graph';
       graphId: string;
@@ -994,6 +995,10 @@ function handleEvent(event: AgentEvent): void {
     case 'thinking':
       if (event.thinking) {
         let delta = event.thinking;
+        // Defensive noise filter: the service already drops pure-whitespace /
+        // replacement-char deltas, but restored history or other senders may
+        // carry them. Never render/count garbage thinking.
+        if (!delta.replace(/\uFFFD/g, '').trim()) break;
         // Strip leading whitespace exactly once (one blank line per pending
         // tool call), then preserve all real internal \n / \t formatting.
         if (!curThinking?.cleaned) {
@@ -1008,6 +1013,31 @@ function handleEvent(event: AgentEvent): void {
         scrollToBottom();
       }
       break;
+    case 'thinking_stall': {
+      // Empty/stalled deep reasoning was detected by the service's thinking
+      // guard — surface a compact warning so the wasted-token burn is visible.
+      // `aborting: true` means the turn was already aborted (loop signal).
+      const wrap = document.createElement('div');
+      wrap.className = 'msg thinking-stall';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      const title = document.createElement('div');
+      title.className = 'thinking-stall-title';
+      const zhS = getUiLang() === 'zh-CN';
+      const reason = event.reason === 'loop' ? (zhS ? '空转循环' : 'thinking loop') : (zhS ? '无进展思考' : 'idle thinking');
+      title.textContent = `⚠️ ${zhS ? '检测到' : 'Detected '} ${reason}`;
+      const body = document.createElement('div');
+      body.className = 'thinking-stall-body';
+      body.textContent = event.aborting
+        ? t('thinkingStallAbort', { n: fmtNum(event.thinkingTokens) })
+        : t('thinkingStallWarn', { n: fmtNum(event.thinkingTokens) });
+      bubble.appendChild(title);
+      bubble.appendChild(body);
+      wrap.appendChild(bubble);
+      messagesEl.appendChild(wrap);
+      scrollToBottom();
+      break;
+    }
     case 'tool_call_start':
       addToolCard(event);
       break;

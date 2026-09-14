@@ -38,6 +38,12 @@ import { logger } from '../shared/logger.js';
 import type { AgentEvent, PermissionRequest, ProviderInfo } from './types.js';
 import type { SubTask } from './sub-agent/types.js';
 import { extractTopic } from './topic.js';
+import {
+  EMPTY_USAGE,
+  TurnMonitor,
+  type ThinkingStall,
+  type TurnUsage,
+} from './turn-monitor.js';
 import { redactConfig } from './config-read.js';
 let sessionDbPromise: Promise<typeof import('../session-db.js')> | null = null;
 function loadSessionDb(): Promise<typeof import('../session-db.js')> {
@@ -111,6 +117,24 @@ export class AgentService {
   /** Set by a bare `/revise`; the next plain (non-slash) message is the fix
    *  for the revise dialogue instead of a normal chat turn. */
   private pendingRevise = false;
+
+  /**
+   * Live per-turn monitor feeding the event bridge (see below). Non-null only
+   * while `runTurn()` is executing; counts streamed text/thinking chars, drops
+   * noise thinking deltas and guards against empty/stalled reasoning.
+   */
+  private activeMonitor: TurnMonitor | null = null;
+
+  /** Estimated usage of the most recent completed turn (`chat`/`chatParallel`). */
+  private lastUsage: TurnUsage | null = null;
+
+  /**
+   * True (default) to abort a turn when the model repeats the same thinking
+   * block (loop signal) — a degenerate hallucination spin cannot recover, so
+   * continuing only burns tokens. Idle thinking (deep-but-slow reasoning) is
+   * NEVER aborted, only warned.
+   */
+  abortOnThinkingLoop = true;
 
   /** Rolling { t, used } samples of live context usage for the sidebar gauge
    *  (§G1). In-memory ONLY, bounded window (~30s), appended on each
@@ -543,7 +567,7 @@ export class AgentService {
       return norm === 'y' || norm === 'a' ? 'y' : norm;
     });
 
-    this.agent.onEvent = (event: AgentEvent) => this.onEvent?.(event);
+    this.agent.onEvent = (event: AgentEvent) => this.handleAgentEvent(event);
     // onOutput is used by slash-command and non-streaming paths (e.g. runRemoteSlashCommand's
     // /plan /go /tasks). When we are inside a slash turn, route it to the slash
     // log/card channel; otherwise surface it as a plain text event.
@@ -754,10 +778,106 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     return patterns.some(p => p.test(prompt));
   }
 
+  /**
+   * Event bridge used as `agent.onEvent`. Feeds the active turn monitor: drops
+   * noise thinking deltas, counts real streamed chars, and fires the thinking
+   * stall guard. The raw event is then forwarded to the UI unchanged.
+   */
+  private handleAgentEvent(event: AgentEvent): void {
+    const mon = this.activeMonitor;
+    if (mon) {
+      if (event.type === 'thinking' && typeof event.thinking === 'string') {
+        if (mon.isNoise(event.thinking)) return; // drop noise — never counted/rendered
+        mon.noteThinking(event.thinking);
+        const stall = mon.checkStall();
+        if (stall.stalled) {
+          mon.markStallHandled();
+          this.handleThinkingStall(stall);
+        }
+      } else if (event.type === 'text' && typeof event.text === 'string') {
+        mon.noteText(event.text);
+      } else if (event.type === 'tool_call_start') {
+        mon.noteProgress();
+      }
+    }
+    this.onEvent?.(event);
+  }
+
+  /**
+   * Reaction to a thinking-stall verdict (loop / idle) from the turn monitor.
+   * Loop = degenerate hallucination spin → abort the turn (stops the token
+   * burn). Idle = deep-but-slow reasoning → warn only, never abort blindly.
+   */
+  private handleThinkingStall(stall: ThinkingStall): void {
+    const model = this.getActiveModel() || 'active model';
+    if (stall.reason === 'loop') {
+      this.onLog?.(
+        'warn',
+        `[thinking-guard] model "${model}" repeated the same thinking block ` +
+          `${stall.repeatCount} times (~${stall.thinkingTokens} tokens) with no progress — ` +
+          `aborting this turn to stop the token burn.`,
+      );
+      this.onEvent?.({
+        type: 'thinking_stall',
+        reason: stall.reason,
+        thinkingTokens: stall.thinkingTokens,
+        repeatCount: stall.repeatCount,
+        aborting: this.abortOnThinkingLoop,
+      });
+      if (this.abortOnThinkingLoop) this.agent?.abort?.();
+    } else {
+      this.onLog?.(
+        'warn',
+        `[thinking-guard] model "${model}" produced ~${stall.thinkingTokens} thinking tokens ` +
+          `without yielding text or a tool call.`,
+      );
+      this.onEvent?.({
+        type: 'thinking_stall',
+        reason: stall.reason,
+        thinkingTokens: stall.thinkingTokens,
+        repeatCount: stall.repeatCount,
+        aborting: false,
+      });
+    }
+  }
+
+  /**
+   * Run one raw agent turn under the turn monitor and report estimated usage.
+   * This is the single choke point every agent.chat() in this service flows
+   * through (single turn, parallel sub-tasks), so `completion` reflects the
+   * actual streamed text + thinking and `prompt` the live context size.
+   */
+  private async runTurn(input: string): Promise<TurnUsage> {
+    const agent = this.agent;
+    if (!agent) throw new Error('Agent not initialized');
+    const monitor = new TurnMonitor();
+    monitor.setPromptBaseline(agent.context?.getTokenCount?.() ?? 0);
+    this.activeMonitor = monitor;
+    try {
+      await agent.chat(input);
+    } finally {
+      this.activeMonitor = null;
+    }
+    const usage = monitor.finish();
+    this.lastUsage = usage;
+    return usage;
+  }
+
+  /**
+   * Run a full chat turn (slash handling + parallel detection included) and
+   * return the estimated token usage for the whole call. Used by the isolated
+   * sub-agent path (agent-worker runSubAgent) so task cards report real numbers
+   * instead of the hardcoded zeros.
+   */
+  async chatForUsage(input: string): Promise<TurnUsage> {
+    await this.chat(input);
+    return this.lastUsage ?? EMPTY_USAGE;
+  }
+
   async chat(input: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy()) throw new Error('Agent is busy');
-    
+
     // A fresh user send starts with a clean stop state: the flag only gates a
     // parallel batch that is CURRENTLY executing, never the next turn.
     this.stopRequested = false;
@@ -815,7 +935,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       }
     }
 
-    await this.agent.chat(input);
+    await this.runTurn(input);
     // /clear wipes the in-memory context but DB rows persist; snapshot a token
     // baseline so the side-panel counter restarts from ~0 instead of continuing
     // to show the cumulative total, then tell the UI to refresh immediately.
@@ -866,7 +986,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       // normal single turn. agent.chat() persists the user row itself, and we
       // deliberately do NOT call persistUserInput() here — doing both would
       // write the same prompt twice to the DB and render it twice in the UI.
-      await this.agent.chat(prompt);
+      await this.runTurn(prompt);
       return;
     }
     
@@ -963,10 +1083,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         // excluded from the regenerate() user index — and the original request
         // is carried along as context, matching the sub-agent pipeline. Without
         // the markers each fragment would surface as its own visible user row.
-        await this.agent.chat(this.wrapWorkerPrompt(task.prompt, prompt));
-        
+        const usage = await this.runTurn(this.wrapWorkerPrompt(task.prompt, prompt));
+
         const durationMs = Date.now() - startTime;
-        
+
         if (this.stopRequested) {
           // agent.chat() returns cleanly even when aborted mid-run — that "clean"
           // return is exactly how the core reports a Stop. Record this task (and
@@ -977,7 +1097,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
             output: task.description,
             durationMs,
             error: 'Stopped by user',
-            tokenUsage: { prompt: 0, completion: 0 },
+            tokenUsage: { prompt: usage.prompt, completion: usage.completion },
           });
           this.updateParallelTaskStatus(sessionId, task.id, 'cancelled');
           this.onEvent?.({
@@ -990,14 +1110,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           for (let j = i + 1; j < subTasks.length; j++) cancelTask(subTasks[j]);
           break;
         }
-        
+
         // Preserve original task description in output
         taskResults.push({
           taskId: task.id,
           status: 'succeeded',
           output: task.description,
           durationMs,
-          tokenUsage: { prompt: 0, completion: 0 },
+          tokenUsage: { prompt: usage.prompt, completion: usage.completion },
         });
         
         // Update metadata: task succeeded
@@ -1040,13 +1160,28 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     
     // Keep parallel state in metadata for history (don't delete)
     // This allows restoring the parallel execution info when switching back to this session
-    
+
+    // Aggregate the real (estimated) usage across every sub-task so parallel_end
+    // reports an honest total instead of hardcoded zeros (§ token accounting).
+    const totalUsage = taskResults.reduce<TurnUsage>(
+      (acc, r) => ({
+        prompt: acc.prompt + (r.tokenUsage?.prompt ?? 0),
+        completion: acc.completion + (r.tokenUsage?.completion ?? 0),
+        thinkingChars: acc.thinkingChars,
+        textChars: acc.textChars,
+        thinkingDeltas: acc.thinkingDeltas,
+        thinkingEstimate: acc.thinkingEstimate,
+      }),
+      { ...EMPTY_USAGE },
+    );
+    this.lastUsage = totalUsage;
+
     // Emit parallel_end event
-    this.onEvent?.({ 
-      type: 'parallel_end', 
+    this.onEvent?.({
+      type: 'parallel_end',
       sessionId,
       tasks: taskResults,
-      tokenUsage: { prompt: 0, completion: 0 },
+      tokenUsage: totalUsage,
     });
   }
 
