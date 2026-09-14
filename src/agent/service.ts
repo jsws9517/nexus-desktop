@@ -105,6 +105,12 @@ export class AgentService {
    *  for the revise dialogue instead of a normal chat turn. */
   private pendingRevise = false;
 
+  /** Rolling { t, used } samples of live context usage for the sidebar gauge
+   *  (§G1). In-memory ONLY, bounded window (~30s), appended on each
+   *  getStatus() poll from the `agent.context.getTokenCount()` the service
+   *  already reads live — zero added I/O, zero prompts, unattended-safe. */
+  private ctxUsageSamples: Array<{ t: number; used: number }> = [];
+
   /** Per-session provider/model override (in-memory ONLY — never writes the
    *  shared global config). Populated by setProviderOverride/setModelOverride
    *  so a session worker can run a different model without polluting the
@@ -196,6 +202,12 @@ export class AgentService {
    * tools are prefetched into this cache asynchronously by `refreshMcpToolCache()`.
    */
   private mcpToolCache: McpToolDef[] = [];
+
+  /**
+   * Bounded rolling window of {t, used} context-usage samples backing
+   * getContextUsage() live gauge (fill % + tokens/sec).
+   */
+  private ctxSamples: { t: number; used: number }[] = [];
 
   /**
    * Asynchronously refresh the cached MCP tool list from the shared hub. Called
@@ -2123,6 +2135,37 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     } catch {
       return undefined;
     }
+  }
+
+  /**
+  /** Live context usage + tokens/sec for the §G1 sidebar gauge. Samples the
+   *  SAME live `agent.context.getTokenCount()` the service already polls for
+   *  compression (zero added I/O, zero prompts, unattended-safe) and the
+   *  active model's context limit; keeps a bounded in-memory rolling window
+   *  of {t, used} samples so the gauge shows a truthful fill % plus a genuine
+   *  streaming TPS (tokens/sec growth while a turn streams; ~0 when idle). */
+  getContextUsage(): { used: number; limit: number | undefined; pct: number; tps: number } {
+    let used = 0;
+    try {
+      used = this.agent?.context?.getTokenCount?.() ?? 0;
+    } catch {
+      used = 0;
+    }
+    const limit = this.getActiveContextLimit();
+    const now = Date.now();
+    const ROLLING_MS = 30_000;
+    this.ctxSamples.push({ t: now, used });
+    while (this.ctxSamples.length && now - this.ctxSamples[0].t > ROLLING_MS) this.ctxSamples.shift();
+    if (this.ctxSamples.length > 512) this.ctxSamples.splice(0, this.ctxSamples.length - 512);
+    let tps = 0;
+    if (this.ctxSamples.length >= 2) {
+      const first = this.ctxSamples[0];
+      const last = this.ctxSamples[this.ctxSamples.length - 1];
+      const dt = (last.t - first.t) / 1000;
+      if (dt > 0) tps = Math.max(0, (last.used - first.used) / dt);
+    }
+    const pct = limit && limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+    return { used, limit, pct, tps };
   }
 
   /**
