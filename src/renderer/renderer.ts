@@ -431,7 +431,17 @@ const tabNames = new Map<string, string>();
 let userMessageSeq = 0;
 
 // Per-provider model list cache (filled from the provider API on demand).
-const modelsCache = new Map<string, string[]>();
+// Refreshed after MODEL_LIST_TTL_MS so provider-side additions/deprecations are
+// picked up instead of being frozen for the whole app lifetime.
+const MODEL_LIST_TTL_MS = 10 * 60 * 1000;
+interface ModelsCacheEntry {
+  list: string[];
+  ts: number;
+}
+const modelsCache = new Map<string, ModelsCacheEntry>();
+// Sessions already auto-fallbacked off a delisted model (remediating on first
+// sight avoids yanking the active model every time the tab regains focus).
+const modelFallbacked = new Set<string>();
 
 // Session sidebar pagination: 20 most recent non-ACP sessions per page.
 const SESSION_PAGE_SIZE = 20;
@@ -4093,20 +4103,47 @@ function refreshModelSelect(): void {
   };
   seed();
   const cached = modelsCache.get(active);
-  if (cached && cached.length > 0) {
-    populateModelOptions(cached, current);
+  if (cached && cached.list.length > 0 && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
+    populateModelOptions(cached.list, current);
     return;
   }
   void (async () => {
     try {
       const models = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
       if (!active || active !== status.provider) return;
-      modelsCache.set(active, models);
+      modelsCache.set(active, { list: models, ts: Date.now() });
       if (models.length > 0) populateModelOptions(models, current);
+      await remediateDelistedModel(active, models, status.model);
     } catch {
       // keep the seeded current-model option
     }
   })();
+}
+
+/**
+ * If the live /models list no longer contains the session's active model
+ * (delisted/renamed on the provider side), fall back to the provider's
+ * configured default model so subsequent turns stop retrying the dead id.
+ * Runs at most once per session and only on a fresh, successful list fetch.
+ */
+async function remediateDelistedModel(active: string, models: string[], current: string): Promise<void> {
+  if (models.length === 0 || !current || models.includes(current)) return;
+  const sid = currentSessionId;
+  if (sid && modelFallbacked.has(sid)) return;
+  const providerDefault = providers.find((p) => p.name === active)?.model;
+  if (!providerDefault || providerDefault === current) return;
+  if (sid) modelFallbacked.add(sid);
+  try {
+    await window.nexusDesktop.switchModel(providerDefault, { sessionId: sid || undefined });
+    status = await window.nexusDesktop.getStatus({ sessionId: sid || undefined });
+    addSystem(`${t('modelDeprecated')} (${current} → ${providerDefault})`);
+    await refreshSessions();
+    await refreshSidebarSession();
+    refreshModelSelect();
+    modelFallbacked.delete(sid);
+  } catch {
+    // leave the current model as-is
+  }
 }
 
 function populateModelOptions(models: string[], current: string): void {

@@ -127,6 +127,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   switchedProvider: { 'zh-CN': '已切换到 Provider: {name}（{model}）', en: 'Switched to Provider: {name} ({model})' },
   modelLabel: { 'zh-CN': 'Model', en: 'Model' },
   switchedModel: { 'zh-CN': '已切换到模型: {name}（{from} → {to}）', en: 'Switched model: {name} ({from} → {to})' },
+  modelDeprecated: { 'zh-CN': '模型已下架或不可用，已自动回退', en: 'Model is no longer available, auto-fallback' },
   projectDir: { 'zh-CN': '📁 项目目录: {cwd}', en: '📁 Project directory: {cwd}' },
   advancedConfig: { 'zh-CN': '打开完整配置', en: 'Open full config' },
   speechSection: { 'zh-CN': '语音模型 Speech', en: 'Speech Models' },
