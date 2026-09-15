@@ -340,11 +340,7 @@ function makeSidebarContext(sessionId: string): SidebarContext {
 /** Toggle a sidebar tab on/off (click again to close — registry disposes page). */
 function toggleSidebarTab(id: string): void {
   if (activeSidebarTabId === id) {
-    sidebarRegistry.mountDispose(id);
-    activeSidebarTabId = null;
-    sidebarPageEl.hidden = true;
-    sidebarPageEl.replaceChildren();
-    renderSidebarTabs();
+    hideSidebarPage();
     return;
   }
   const reg = sidebarRegistry.get(id);
@@ -358,6 +354,50 @@ function toggleSidebarTab(id: string): void {
   activeSidebarTabId = id;
   route();
   renderSidebarTabs();
+  // Auto-hide: collapse back to the bare icon strip after idle.
+  armSidebarAutoHide();
+}
+
+/**
+ * Auto-hide idle sidebar panels (Sub-Agents / Side Chat). Once a page is open
+ * it stays until the user interacts, then slides back to the bare icon strip
+ * after `SIDEBAR_AUTO_HIDE_MS` of inactivity — the strip alone never occupies
+ * the panel's bottom space persistently.
+ */
+const SIDEBAR_AUTO_HIDE_MS = 10_000;
+let sidebarAutoHideTimer: number | null = null;
+
+/** Collapse the open sidebar page back to the icon strip (dispose + hide). */
+function hideSidebarPage(): void {
+  cancelSidebarAutoHide();
+  if (activeSidebarTabId === null) return;
+  sidebarRegistry.mountDispose(activeSidebarTabId);
+  activeSidebarTabId = null;
+  sidebarPageEl.hidden = true;
+  sidebarPageEl.replaceChildren();
+  renderSidebarTabs();
+}
+
+/** (Re)arm the idle-close timer for the currently open sidebar page. */
+function armSidebarAutoHide(): void {
+  cancelSidebarAutoHide();
+  if (activeSidebarTabId === null) return;
+  sidebarAutoHideTimer = window.setTimeout(() => {
+    sidebarAutoHideTimer = null;
+    if (activeSidebarTabId !== null) hideSidebarPage();
+  }, SIDEBAR_AUTO_HIDE_MS);
+}
+
+function cancelSidebarAutoHide(): void {
+  if (sidebarAutoHideTimer !== null) {
+    window.clearTimeout(sidebarAutoHideTimer);
+    sidebarAutoHideTimer = null;
+  }
+}
+
+/** Interaction anywhere in the page/tab-strip resets the idle-close timer. */
+function resetSidebarAutoHide(): void {
+  armSidebarAutoHide();
 }
 
 /** Every AgentEvent also fans out to sidebar pages (in addition to handleEvent). */
@@ -4600,6 +4640,14 @@ window.nexusDesktop.onTabsChanged((open) => {
       mount: mountSideChatPage,
     });
     renderSidebarTabs();
+    // Idle auto-hide (10s): any interaction inside the open page or on the tab
+    // strip — pointer activity, scrolling, typing — resets the close timer so
+    // the panel only collapses back to the icon strip once it goes quiet.
+    sidebarPageEl.addEventListener('pointerdown', resetSidebarAutoHide, true);
+    sidebarPageEl.addEventListener('pointermove', resetSidebarAutoHide, true);
+    sidebarPageEl.addEventListener('wheel', resetSidebarAutoHide, { passive: true });
+    sidebarPageEl.addEventListener('keydown', resetSidebarAutoHide, true);
+    sidebarTabsEl.addEventListener('pointerdown', resetSidebarAutoHide);
     await initResourcePanel();
     // Open the resumed session in its own tab so it runs in a per-session worker.
     if (currentSessionId && !tabs.has(currentSessionId)) await openTab(currentSessionId);
