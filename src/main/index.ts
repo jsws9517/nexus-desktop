@@ -1,5 +1,7 @@
 import { app, BrowserWindow, Menu, nativeImage, nativeTheme, Tray } from 'electron';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
@@ -106,6 +108,18 @@ let configWin: BrowserWindow | null = null;
 const CONFIG_WEB_PATH = createRequire(import.meta.url).resolve(
   'nexus-coder/dist/src/config/web.js',
 );
+
+/** Best-effort config-language probe (same file register.ts's getLanguage uses). */
+function readConfigLanguage(): 'zh-CN' | 'en' {
+  try {
+    const cfgPath = join(homedir(), '.nexus', 'config.json');
+    const raw = readFileSync(cfgPath, 'utf-8');
+    const cfg = JSON.parse(raw) as { language?: string };
+    return cfg.language === 'zh-CN' ? 'zh-CN' : 'en';
+  } catch {
+    return 'zh-CN';
+  }
+}
 
 /**
  * Number of concurrently-open session tabs. In the multi-session design this
@@ -384,7 +398,7 @@ async function openConfigWindow(): Promise<void> {
     configWin = new BrowserWindow({
       width: 1080,
       height: 760,
-      title: 'Nexus 设置',
+      title: readConfigLanguage() === 'zh-CN' ? 'Nexus 设置' : 'Nexus Settings',
       backgroundColor: '#fafafa',
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
     });

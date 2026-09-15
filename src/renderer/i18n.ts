@@ -187,6 +187,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   logsEmpty: { 'zh-CN': '暂无日志', en: 'No logs yet' },
   refreshLogs: { 'zh-CN': '刷新', en: 'Refresh' },
   appearanceSection: { 'zh-CN': '外观', en: 'Appearance' },
+  providersNav: { 'zh-CN': '模型', en: 'Models' },
+  settingsNavAria: { 'zh-CN': '设置导航', en: 'Settings navigation' },
   inputRowsLabel: { 'zh-CN': '输入框行数', en: 'Input box rows' },
   inputRowsHint: { 'zh-CN': '输入框的默认可见行数（1–20）', en: 'Default visible rows for the input box (1–20)' },
   resourceSection: { 'zh-CN': '资源与会话', en: 'Resources & Sessions' },
@@ -223,6 +225,29 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   },
   tabsOverloaded: { 'zh-CN': '系统资源过高，已暂停新建会话', en: 'System overloaded; new sessions paused' },
   tabsOpenFailed: { 'zh-CN': '无法打开会话标签：', en: 'Failed to open session tab: ' },
+
+  // Sidebar (Sub-Agents / Side Chat) — strings follow the active UI language.
+  sidebarSubAgents: { 'zh-CN': '子代理', en: 'Sub-Agents' },
+  sidebarSideChat: { 'zh-CN': '旁路聊天', en: 'Side Chat' },
+  subAgentsPanel: { 'zh-CN': '🛰 子代理并行面板', en: '🛰 Sub-Agent Panel' },
+  subAgentsLegend: { 'zh-CN': '实时任务卡，不阻塞聊天', en: 'live task cards, chat never blocks' },
+  subAgentsEmpty: {
+    'zh-CN': '暂无并行执行 —— 发起多任务调度后，任务卡片会实时显示在这里。',
+    en: 'No parallel executions yet — dispatch a multi-task run and its cards appear here live.',
+  },
+  subAgentsScopedEmpty: {
+    'zh-CN': '当前会话（{session}）暂无并行任务 —— 切换工作区后自动关联。',
+    en: 'No parallel tasks in the current session ({session}). Switching workspaces re-associates automatically.',
+  },
+  subAgentsDefaultSession: { 'zh-CN': '默认会话', en: 'default session' },
+  subAgentsTasks: { 'zh-CN': '{n} 个任务', en: '{n} tasks' },
+  sideChatTitle: { 'zh-CN': '💬 旁路聊天', en: '💬 Side Chat' },
+  sideChatLegend: { 'zh-CN': '快速提问，不打断主对话', en: 'quick prompts, main chat untouched' },
+  sideChatPlaceholder: { 'zh-CN': '输入快捷提问并回车…', en: 'type a quick prompt and press Enter…' },
+  sideChatSend: { 'zh-CN': '发送', en: 'Send' },
+  sideChatThinking: { 'zh-CN': '💭 思考中…', en: '💭 thinking…' },
+  sideChatFailed: { 'zh-CN': '❌ 请求失败，请重试', en: '❌ request failed, try again' },
+  sideChatEmptyReply: { 'zh-CN': '（空回复）', en: '(empty reply)' },
 
   // P2 WorkBuddy artifact previews.
   artifactExportCsv: { 'zh-CN': '导出 CSV', en: 'Export CSV' },

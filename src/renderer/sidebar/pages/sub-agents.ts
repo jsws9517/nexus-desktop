@@ -14,6 +14,7 @@
  */
 
 import { ParallelExecutionCard } from '../../components/ParallelExecutionCard.js';
+import { STR } from '../../i18n.js';
 import type { AgentEvent } from '../../../agent/types.js';
 import type { ParallelSessionView, SidebarContext } from '../types.js';
 
@@ -38,6 +39,13 @@ function sortSessions(a: [string, ParallelSessionView], b: [string, ParallelSess
   return (b[1]?.startTime ?? 0) - (a[1]?.startTime ?? 0);
 }
 
+/** Translate a STR key using a live language getter (ctx first, then opts). */
+function str(key: string, lang: string, vars?: Record<string, string | number>): string {
+  let out = STR[key]?.[lang as keyof (typeof STR)[string]] ?? STR[key]?.['zh-CN'] ?? key;
+  if (vars) out = out.replace(/\{(\w+)\}/g, (_m, k) => (vars[k] !== undefined ? String(vars[k]) : ''));
+  return out;
+}
+
 /**
  * Mount the sub-agent page into `container`. Returns a dispose function that
  * unsubscribes from the event bus and removes every DOM node created here.
@@ -48,7 +56,9 @@ export function mountSubAgentsPage(
   opts: SubAgentsPageOptions = {},
 ): () => void {
   const renderCard = opts.renderCard ?? ParallelExecutionCard;
-  const getUiLang = opts.getUiLang ?? (() => 'zh-CN');
+  // Live language: prefer the context accessor (renderer keeps it current) so
+  // the page re-renders in the right language after a UI language change.
+  const getLang = (): string => ctx.getUiLang?.() ?? opts.getUiLang?.() ?? 'zh-CN';
 
   container.classList.add('sub-agents-page');
   container.innerHTML = '';
@@ -59,11 +69,15 @@ export function mountSubAgentsPage(
 
   const header = document.createElement('div');
   header.className = 'sub-agents-header';
-  header.innerHTML = `
-    <span class="sub-agents-title">${getUiLang() === 'zh-CN' ? '🛰 子代理并行面板' : '🛰 Sub-Agent Panel'}</span>
-    <span class="sub-agents-legend">${getUiLang() === 'zh-CN' ? '实时任务卡，不阻塞聊天' : 'live task cards, chat never blocks'}</span>
-  `;
   root.appendChild(header);
+
+  const titleEl = document.createElement('span');
+  titleEl.className = 'sub-agents-title';
+  header.appendChild(titleEl);
+
+  const legendEl = document.createElement('span');
+  legendEl.className = 'sub-agents-legend';
+  header.appendChild(legendEl);
 
   // Tracks the session this panel is currently bound to (updates on tab switch).
   const scopedTracker = document.createElement('span');
@@ -76,9 +90,7 @@ export function mountSubAgentsPage(
 
   const empty = document.createElement('div');
   empty.className = 'sub-agents-empty';
-  empty.textContent = getUiLang() === 'zh-CN'
-    ? '暂无并行执行 —— 发起多任务调度后，任务卡片会实时显示在这里。'
-    : 'No parallel executions yet — dispatch a multi-task run and its cards appear here live.';
+  empty.textContent = str('subAgentsEmpty', getLang());
   list.appendChild(empty);
 
   const truncateId = (id: string, maxLen = 8): string =>
@@ -90,23 +102,23 @@ export function mountSubAgentsPage(
     // Self-heal: close stale "running" tasks / dead batches before rendering so
     // the task graph never shows an unclosed slot after the timeout.
     ctx.forceCloseStaleTasks?.();
+    // Re-paint static labels with the live language (mount / lang changes).
+    titleEl.textContent = str('subAgentsPanel', getLang());
+    legendEl.textContent = str('subAgentsLegend', getLang());
     // The panel is scoped to the FOCUSED workspace: switching tabs re-associates
     // it to that session's parallel activity automatically.
     const activeSessionId = ctx.getActiveSessionId?.() ?? ctx.sessionId;
-    const zh = getUiLang() === 'zh-CN';
-    scopedTracker.textContent = `🗂 ${activeSessionId ? truncateId(activeSessionId) : (zh ? '默认会话' : 'default session')}`;
+    scopedTracker.textContent = `🗂 ${activeSessionId ? truncateId(activeSessionId) : str('subAgentsDefaultSession', getLang())}`;
     const all = [...ctx.getParallelSessions().entries()];
     const sessions = all.filter(([sid]) => sid === activeSessionId).sort(sortSessions);
     list.replaceChildren();
     if (sessions.length === 0) {
       if (all.length > 0) {
-        empty.textContent = zh
-          ? `当前会话（${truncateId(activeSessionId || (ctx.sessionId || '—'))}）暂无并行任务 —— 切换工作区后自动关联。`
-          : `No parallel tasks in the current session (${truncateId(activeSessionId || (ctx.sessionId || '—'))}). Switching workspaces re-associates automatically.`;
+        empty.textContent = str('subAgentsScopedEmpty', getLang(), {
+          session: truncateId(activeSessionId || (ctx.sessionId || '—')),
+        });
       } else {
-        empty.textContent = zh
-          ? '暂无并行执行 —— 发起多任务调度后，任务卡片会实时显示在这里。'
-          : 'No parallel executions yet — dispatch a multi-task run and its cards appear here live.';
+        empty.textContent = str('subAgentsEmpty', getLang());
       }
       list.appendChild(empty);
       return;
@@ -117,7 +129,7 @@ export function mountSubAgentsPage(
 
       const head = document.createElement('div');
       head.className = 'sub-agents-session-head';
-      head.textContent = `${session.prompt?.slice(0, 60) || sessionId} — ${session.tasks.size} tasks`;
+      head.textContent = `${session.prompt?.slice(0, 60) || sessionId} — ${str('subAgentsTasks', getLang(), { n: session.tasks.size })}`;
       section.appendChild(head);
 
       for (const [taskId, task] of [...session.tasks.entries()].sort((x, y) => {
@@ -147,7 +159,7 @@ export function mountSubAgentsPage(
 
   /** Incremental updates: a plain re-render is deterministic and O(running tasks). */
   const onEvent = (event: AgentEvent): void => {
-    if (event.type === 'parallel_start' || event.type === 'task_progress' || event.type === 'parallel_end' || event.type === 'parallel_error' || event.type === 'session_changed') {
+    if (event.type === 'parallel_start' || event.type === 'task_progress' || event.type === 'parallel_end' || event.type === 'parallel_error' || event.type === 'session_changed' || event.type === 'language_changed') {
       render();
     }
   };
@@ -170,6 +182,7 @@ export function mountSubAgentsPage(
 export const SubAgentsPage = {
   id: 'sub-agents',
   title: 'Sub-Agents',
+  titleKey: 'sidebarSubAgents',
   icon: '🛰',
   mount: mountSubAgentsPage,
 } as const;

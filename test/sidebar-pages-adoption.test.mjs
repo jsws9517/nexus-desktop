@@ -125,16 +125,58 @@ test('side-chat: send failure shows an error bubble and stays usable', async () 
 
 test('side-chat: no messages are loaded from the main session and no bus events are mirrored', async () => {
   const container = new FakeContainer();
-  let subscribed = false;
+  const handlers = [];
   const ctx = {
     sessionId: 's1',
-    subscribe: () => { subscribed = true; return () => {}; },
+    subscribe: (fn) => { handlers.push(fn); return () => { handlers.length = 0; }; },
   };
   const dispose = mountSideChatPage(container, ctx, { getUiLang: () => 'en', send: async () => 'ok' });
   await new Promise((r) => setTimeout(r, 0));
   const history = findEl(container, 'sidechat-history');
+  const input = findEl(container, 'sidechat-input');
   // The page must start empty — it never pulls main-session history into view.
   assert.equal(history.children.length, 0, 'starts with an empty isolated transcript');
-  assert.equal(subscribed, false, 'does not subscribe to the main event bus (no chunk mirroring)');
+  // It subscribes ONLY for the renderer's language-control event; real session
+  // events (chunks / turns) are ignored so nothing is mirrored into the transcript.
+  assert.ok(handlers.length === 1, 'subscribes once (language control only)');
+
+  input.value = 'prompt';
+  input.dispatch('keydown', { key: 'Enter' });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(history.children.length, 2, 'two bubbles after a turn');
+
+  // A main-session streaming chunk must NOT appear (no mirroring).
+  for (const h of handlers) h({ type: 'text', sessionId: 's1', text: 'echo' });
+  assert.equal(history.children.length, 2, 'session chunk ignored');
+  assert.ok(!msgTexts(history).includes('echo'), 'no chunk mirrored into side chat');
+
   dispose();
+});
+
+test('side-chat: re-paints static labels when the UI language changes', () => {
+  // Live language is fed through ctx.getUiLang (renderer context) so the page
+  // follows the running app language; the opts override is only for older tests.
+  const container = new FakeContainer();
+  const handlers = [];
+  let lang = 'en';
+  const input = () => findEl(container, 'sidechat-input');
+  const title = () => findEl(container, 'sidechat-title')?.textContent ?? '';
+  const dispose = mountSideChatPage(container, {
+    sessionId: 's1',
+    getUiLang: () => lang,
+    subscribe: (fn) => { handlers.push(fn); return () => { handlers.length = 0; }; },
+  }, { send: async () => 'ok' });
+  try {
+    assert.equal(title(), '💬 Side Chat', 'mounts in the current language');
+    assert.match(input().placeholder, /quick prompt/, 'placeholder follows language');
+
+    // Language switch (config window closed with a new language) → labels repaint
+    // immediately, transcript content untouched.
+    lang = 'zh-CN';
+    for (const h of handlers) h({ type: 'language_changed' });
+    assert.equal(title(), '💬 旁路聊天', 'title repainted in zh-CN');
+    assert.match(input().placeholder, /快捷提问/, 'placeholder repainted');
+  } finally {
+    dispose();
+  }
 });

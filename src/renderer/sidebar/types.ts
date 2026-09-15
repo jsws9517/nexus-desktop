@@ -30,6 +30,11 @@ export interface SidebarContext {
   /** Live accessor for the CURRENT active session — pages use this to stay
    *  bound to the focused workspace even after the user switches tabs. */
   getActiveSessionId?(): string;
+  /** Live accessor for the current UI language ('en' | 'zh-CN'). Pages read this
+   *  (not mount-time opts) so they re-render with the right language whenever the
+   *  running app's language changes. Provided by the renderer context; optional
+   *  for dependency-injected tests that pin a language via page opts instead. */
+  getUiLang?(): string;
   /** Live parallel-execution state (same Map renderer.ts maintains). */
   getParallelSessions(): ReadonlyMap<string, ParallelSessionView>;
   /** Recycle finished sessions (TTL sweep + hard cap). Optional guard for
@@ -64,6 +69,9 @@ export interface SidebarTabRegistration {
   /** Stable id, e.g. 'sub-agents'. Duplicate ids are rejected. */
   id: string;
   title: string;
+  /** i18n key for the tab button label; when set, the renderer translates the
+   *  title live (built-in pages use this so the tab bar follows the language). */
+  titleKey?: string;
   icon?: string;
   /**
    * Build the page UI into `container` and return a dispose function.

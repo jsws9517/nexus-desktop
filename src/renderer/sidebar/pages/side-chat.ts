@@ -17,6 +17,8 @@
  */
 
 import { stripProtocolXml } from '../../../shared/constants.js';
+import { STR } from '../../i18n.js';
+import type { AgentEvent } from '../../../agent/types.js';
 import type { SidebarContext } from '../types.js';
 
 /** A single transcript entry. `pending` = waiting on the worker reply,
@@ -40,19 +42,28 @@ async function defaultSend(messages: Array<{ role: string; content: string }>): 
   return res && typeof res.reply === 'string' ? res.reply : '';
 }
 
+/** Translate a STR key using a live language getter. */
+function str(key: string, lang: string, vars?: Record<string, string | number>): string {
+  let out = STR[key]?.[lang as keyof (typeof STR)[string]] ?? STR[key]?.['zh-CN'] ?? key;
+  if (vars) out = out.replace(/\{(\w+)\}/g, (_m, k) => (vars[k] !== undefined ? String(vars[k]) : ''));
+  return out;
+}
+
 /**
  * Mount the side-chat page into `container`. Returns a dispose function that
  * removes every DOM node created here (no event subscriptions to release).
  */
 export function mountSideChatPage(
   container: HTMLElement,
-  _ctx: SidebarContext,
+  ctx: SidebarContext,
   opts: SideChatPageOptions = {},
 ): () => void {
   const send = opts.send ?? defaultSend;
-  const getUiLang = opts.getUiLang ?? (() => 'zh-CN');
-  const thinkingText = getUiLang() === 'zh-CN' ? '💭 思考中…' : '💭 thinking…';
-  const failedText = getUiLang() === 'zh-CN' ? '❌ 请求失败，请重试' : '❌ request failed, try again';
+  // Live language: prefer the context accessor so static labels re-paint when
+  // the UI language changes after mount.
+  const getLang = (): string => ctx.getUiLang?.() ?? opts.getUiLang?.() ?? 'zh-CN';
+  const thinkingText = () => str('sideChatThinking', getLang());
+  const failedText = () => str('sideChatFailed', getLang());
 
   container.classList.add('sidechat-page');
   container.innerHTML = '';
@@ -63,11 +74,17 @@ export function mountSideChatPage(
 
   const header = document.createElement('div');
   header.className = 'sidechat-header';
-  header.innerHTML = `
-    <span class="sidechat-title">${getUiLang() === 'zh-CN' ? '💬 旁路聊天' : '💬 Side Chat'}</span>
-    <span class="sidechat-legend">${getUiLang() === 'zh-CN' ? '快速提问，不打断主对话' : 'quick prompts, main chat untouched'}</span>
-  `;
   root.appendChild(header);
+
+  const titleEl = document.createElement('span');
+  titleEl.className = 'sidechat-title';
+  titleEl.textContent = str('sideChatTitle', getLang());
+  header.appendChild(titleEl);
+
+  const legendEl = document.createElement('span');
+  legendEl.className = 'sidechat-legend';
+  legendEl.textContent = str('sideChatLegend', getLang());
+  header.appendChild(legendEl);
 
   const history = document.createElement('div');
   history.className = 'sidechat-history';
@@ -80,14 +97,23 @@ export function mountSideChatPage(
 
   const input = document.createElement('input');
   input.className = 'sidechat-input';
-  input.placeholder = getUiLang() === 'zh-CN' ? '输入快捷提问并回车…' : 'type a quick prompt and press Enter…';
+  input.placeholder = str('sideChatPlaceholder', getLang());
   input.spellcheck = false;
   inputRow.appendChild(input);
 
   const sendBtn = document.createElement('button');
   sendBtn.className = 'sidechat-send';
-  sendBtn.textContent = getUiLang() === 'zh-CN' ? '发送' : 'Send';
+  sendBtn.textContent = str('sideChatSend', getLang());
   inputRow.appendChild(sendBtn);
+
+  // Re-paint the static labels (title / legend / placeholder / send) when the
+  // running app's UI language changes — transcript content is left untouched.
+  const applyLang = (): void => {
+    titleEl.textContent = str('sideChatTitle', getLang());
+    legendEl.textContent = str('sideChatLegend', getLang());
+    input.placeholder = str('sideChatPlaceholder', getLang());
+    sendBtn.textContent = str('sideChatSend', getLang());
+  };
 
   const MAX_HISTORY = 100;
   let items: ChatItem[] = [];
@@ -109,7 +135,7 @@ export function mountSideChatPage(
     if (!text || pending) return;
     input.value = '';
     items.push({ role: 'user', content: text });
-    items.push({ role: 'assistant', content: thinkingText, pending: true });
+    items.push({ role: 'assistant', content: thinkingText(), pending: true });
     pending = true;
     render();
     const messages = items
@@ -121,7 +147,7 @@ export function mountSideChatPage(
         const last = items[items.length - 1];
         if (last?.pending) {
           last.pending = false;
-          last.content = stripProtocolXml(reply) || (getUiLang() === 'zh-CN' ? '（空回复）' : '(empty reply)');
+          last.content = stripProtocolXml(reply) || str('sideChatEmptyReply', getLang());
         }
       })
       .catch(() => {
@@ -129,7 +155,7 @@ export function mountSideChatPage(
         if (last?.pending) {
           last.pending = false;
           last.error = true;
-          last.content = failedText;
+          last.content = failedText();
         }
       })
       .finally(() => {
@@ -145,7 +171,19 @@ export function mountSideChatPage(
 
   render();
 
+  // Language control events only: re-paint static labels when the UI language
+  // changes. Real session events are deliberately ignored — side chat is an
+  // isolated surface and must never mirror the main transcript's chunks.
+  let unsubscribeLang: (() => void) | undefined;
+  if (typeof ctx.subscribe === 'function') {
+    const onEvent = (event: AgentEvent): void => {
+      if (event.type === 'language_changed') applyLang();
+    };
+    unsubscribeLang = ctx.subscribe(onEvent);
+  }
+
   return () => {
+    unsubscribeLang?.();
     container.classList.remove('sidechat-page');
     container.innerHTML = '';
   };
@@ -155,6 +193,7 @@ export function mountSideChatPage(
 export const SideChatPage = {
   id: 'side-chat',
   title: 'Side Chat',
+  titleKey: 'sidebarSideChat',
   icon: '💬',
   mount: mountSideChatPage,
 } as const;

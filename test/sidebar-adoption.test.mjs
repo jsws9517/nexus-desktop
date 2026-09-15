@@ -319,3 +319,33 @@ test('sub-agents page: self-heals stale runs by invoking forceCloseStaleTasks on
 
   dispose();
 });
+
+test('sub-agents page: re-paints static labels + empty state when the UI language changes', () => {
+  const container = new FakeContainer();
+  const handlers = [];
+  const sessions = new Map();
+  let lang = 'zh-CN';
+  const ctx = {
+    sessionId: 's1',
+    getUiLang: () => lang,
+    getParallelSessions: () => sessions,
+    subscribe(fn) { handlers.push(fn); return () => { handlers.length = 0; }; },
+  };
+  const title = () => findEl(container, 'sub-agents-title')?.textContent ?? '';
+  const empty = () => findEl(container, 'sub-agents-empty')?.textContent ?? '';
+  const dispose = mountSubAgentsPage(container, ctx, {
+    renderCard: () => '<div class="fake-card"></div>',
+  });
+  try {
+    assert.equal(title(), '🛰 子代理并行面板', 'mounts in the current language');
+    assert.match(empty(), /暂无并行执行/, 'empty state follows mount language');
+
+    // Language switch → the panel re-paints immediately (language_changed bus).
+    lang = 'en';
+    for (const h of handlers) h({ type: 'language_changed' });
+    assert.equal(title(), '🛰 Sub-Agent Panel', 'title repainted in English');
+    assert.match(empty(), /No parallel executions yet/, 'empty state repainted');
+  } finally {
+    dispose();
+  }
+});

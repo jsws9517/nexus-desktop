@@ -143,7 +143,8 @@ type AgentEvent =
   | { type: 'parallel_error'; sessionId: string; error: string }
   // Renderer-synthesized events (not emitted by the worker) driven by local state:
   | { type: 'task_progress'; taskId: string; status: string; description?: string; error?: string }
-  | { type: 'session_changed'; sessionId: string };
+  | { type: 'session_changed'; sessionId: string }
+  | { type: 'language_changed' };
 
 declare global {
   interface Window {
@@ -317,8 +318,11 @@ function renderSidebarTabs(): void {
     btn.type = 'button';
     btn.className = 'sidebar-tab' + (reg.id === activeSidebarTabId ? ' active' : '');
     btn.dataset.tabId = reg.id;
-    btn.textContent = (reg.icon ? reg.icon + ' ' : '') + reg.title;
-    btn.title = reg.title;
+    // Built-in panels carry an i18n key for their title; third-party regs fall
+    // back to their static title.
+    const label = reg.titleKey ? t(reg.titleKey) : reg.title;
+    btn.textContent = (reg.icon ? reg.icon + ' ' : '') + label;
+    btn.title = label;
     btn.setAttribute('role', 'tab');
     btn.setAttribute('aria-selected', String(reg.id === activeSidebarTabId));
     btn.addEventListener('click', () => toggleSidebarTab(reg.id));
@@ -331,6 +335,8 @@ function makeSidebarContext(sessionId: string): SidebarContext {
   return {
     sessionId,
     getActiveSessionId: () => currentSessionId,
+    // Live language accessor so pages re-render with the running UI language.
+    getUiLang: () => getUiLang(),
     getParallelSessions: () => parallelSessions as ReadonlyMap<string, { sessionId: string; prompt: string; startTime: number; tasks: ReadonlyMap<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }> }>,
     pruneParallelSessions: (ttlMs?: number) => pruneParallelSessions(ttlMs),
     // Force-close stale running tasks (per-task timeout + dead-batch sweep) so
@@ -422,6 +428,14 @@ function notifySidebarSubscribers(event: AgentEvent): void {
 function notifyActiveSessionChanged(sessionId: string): void {
   for (const fn of [...eventSubscribers]) {
     try { fn({ type: 'session_changed', sessionId }); } catch { /* page errors never break the core loop */ }
+  }
+}
+
+/** Broadcast that the UI language changed so open sidebar pages re-paint their
+ *  static labels / empty states in the new language. */
+function notifyLanguageChanged(): void {
+  for (const fn of [...eventSubscribers]) {
+    try { fn({ type: 'language_changed' }); } catch { /* page errors never break the core loop */ }
   }
 }
 const pagerPrevEl = $('#pager-prev') as HTMLButtonElement;
@@ -3837,16 +3851,16 @@ function buildSettings(providersList: ProviderInfo[]): void {
   const nav = document.createElement('div');
   nav.className = 'settings-nav';
   nav.setAttribute('role', 'tablist');
-  nav.setAttribute('aria-label', '设置导航');
+  nav.setAttribute('aria-label', t('settingsNavAria'));
 
   const sections = [
-    { id: 'providers', label: t('providers') || '模型' },
-    { id: 'speech', label: t('speechSection') || '语音' },
-    { id: 'vision', label: t('visionSection') || '视觉' },
-    { id: 'startup', label: t('startupSection') || '启动' },
-    { id: 'resource', label: t('resourceSection') || '资源' },
-    { id: 'appearance', label: t('appearanceSection') || '外观' },
-    { id: 'update', label: t('updateSection') || '更新' },
+    { id: 'providers', label: t('providersNav') },
+    { id: 'speech', label: t('speechSection') },
+    { id: 'vision', label: t('visionSection') },
+    { id: 'startup', label: t('startupSection') },
+    { id: 'resource', label: t('resourceSection') },
+    { id: 'appearance', label: t('appearanceSection') },
+    { id: 'update', label: t('updateSection') },
   ];
 
   const contentArea = document.createElement('div');
@@ -3902,7 +3916,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
     fields.className = 'provider-fields';
 
     const baseUrlLabel = document.createElement('label');
-    baseUrlLabel.textContent = 'Base URL';
+    baseUrlLabel.textContent = t('baseUrlOptional');
     const baseUrlInput = document.createElement('input');
     baseUrlInput.type = 'text';
     baseUrlInput.className = 'provider-field';
@@ -3911,13 +3925,13 @@ function buildSettings(providersList: ProviderInfo[]): void {
     baseUrlInput.placeholder = 'https://api.example.com/v1';
 
     const apiKeyLabel = document.createElement('label');
-    apiKeyLabel.textContent = 'API Key';
+    apiKeyLabel.textContent = t('apiKey');
     const apiKeyInput = document.createElement('input');
     apiKeyInput.type = 'password';
     apiKeyInput.className = 'provider-field';
     apiKeyInput.dataset.field = 'apiKey';
     apiKeyInput.value = p.hasKey ? '••••••••' : '';
-    apiKeyInput.placeholder = p.hasKey ? '已设置' : '输入 API Key';
+    apiKeyInput.placeholder = p.hasKey ? t('apiKeyKeep') : t('apiKeyEnter');
 
     fields.appendChild(baseUrlLabel);
     fields.appendChild(baseUrlInput);
@@ -4387,6 +4401,27 @@ async function openSettings(): Promise<void> {
   } catch (err) {
     settingsMsg.textContent = errText(err);
   }
+  // Subcribe to language changes so the modal re-builds in the new locale
+  // without requiring the user to close and re-open the dialog.
+  if (!settingsLangUnsub) settingsLangUnsub = subscribeSettingsLang();
+}
+
+// --- desktop settings modal language-reactivity ---
+let settingsLangUnsub: (() => void) | null = null;
+function subscribeSettingsLang(): () => void {
+  const fn = (ev: AgentEvent) => {
+    if (ev.type !== 'language_changed') return;
+    if (!settingsOverlay.classList.contains('hidden')) buildSettings(providers);
+  };
+  eventSubscribers.add(fn);
+  return () => { eventSubscribers.delete(fn); };
+}
+function closeSettingsOverlay(): void {
+  if (settingsLangUnsub) {
+    settingsLangUnsub();
+    settingsLangUnsub = null;
+  }
+  settingsOverlay.classList.add('hidden');
 }
 
 function makeFieldValues(row: HTMLElement): Record<string, string> {
@@ -4398,9 +4433,9 @@ function makeFieldValues(row: HTMLElement): Record<string, string> {
 }
 
 $('#btn-settings').addEventListener('click', () => void openSettings());
-$('#settings-close').addEventListener('click', () => settingsOverlay.classList.add('hidden'));
+$('#settings-close').addEventListener('click', () => closeSettingsOverlay());
 settingsOverlay.addEventListener('click', (e) => {
-  if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
+  if (e.target === settingsOverlay) closeSettingsOverlay();
 });
 
 // Live-update the settings update section from main-process events (progress,
@@ -4873,6 +4908,10 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
   await window.nexusDesktop.reloadConfig();
   intentRecognitionEnabled = await window.nexusDesktop.getIntentRecognition().catch(() => true);
   await loadLanguage();
+  // Re-paint any open sidebar panels (Sub-Agents / Side Chat) when the config
+  // window changed the UI language.
+  notifyLanguageChanged();
+  renderSidebarTabs();
   await refreshSidebarSession();
   const provs = await window.nexusDesktop.getProviders();
   providers = provs;
