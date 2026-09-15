@@ -2467,6 +2467,7 @@ async function switchTab(sessionId: string): Promise<void> {
       status = await window.nexusDesktop.getStatus({ sessionId });
     } catch {}
   }
+  debugLog('switchTab', { sessionId, provider: status.provider, model: status.model, bl: [...(modelBlacklist.get(status.provider) ?? [])] });
   setBusy(Boolean(tab?.busy));
   await syncCwdLabel();
   loadDraft(sessionId);
@@ -4397,6 +4398,7 @@ function refreshProviderSelect(): void {
 function refreshModelSelect(force = false): void {
   const active = status.provider;
   const current = status.model;
+  debugLog('refreshModelSelect', { active, current, force, session: currentSessionId });
   modelSelect.disabled = !active || !current;
   modelSelect.title = '';
   const seed = () => {
@@ -4412,30 +4414,29 @@ function refreshModelSelect(force = false): void {
   seed();
   if (!active) return;
   const cached = modelsCache.get(active);
-  // Only a REAL (ok) cached list can satisfy the TTL window. A failed/empty
-  // probe is never cached as authoritative — the next refresh retries it.
   if (!force && cached && cached.ok && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
+    debugLog('cache hit', { provider: active, listLen: cached.list.length, ts: cached.ts, bl: [...(modelBlacklist.get(active) ?? [])] });
     if (cached.list.length > 0) populateModelOptions(cached.list, current);
     void remediateDelistedModel(active, cached.list, current);
     return;
   }
+  debugLog('cache miss / force fetch', { provider: active });
   void (async () => {
     try {
       const res = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
+      debugLog('fetch result', { provider: active, ok: res.ok, rawLen: res.models.length, error: res.error });
       if (!active || active !== status.provider) return;
-      // Filter out blacklisted (confirmed-unavailable) model ids so TTL refresh
-      // never re-adds a dead id to the dropdown — they only return when the user
-      // explicitly selects them from the raw dropdown (if re-added by API later).
       const filtered = filterBlacklisted(active, res.models);
+      debugLog('filtered result', { provider: active, filteredLen: filtered.length, bl: [...(modelBlacklist.get(active) ?? [])] });
       modelsCache.set(active, { list: filtered, ts: Date.now(), ok: res.ok, error: res.error });
       if (res.ok && filtered.length > 0) {
         populateModelOptions(filtered, current);
       } else if (res.error) {
         modelSelect.title = `models: ${res.error}`;
       }
-      // Only remediate against a genuinely fresh, real list.
       if (res.ok) await remediateDelistedModel(active, filtered, status.model);
-    } catch {
+    } catch (e) {
+      debugLog('fetch error', { provider: active, error: String(e) });
       modelSelect.title = 'models: fetch failed (will retry)';
     }
   })();
@@ -4474,6 +4475,8 @@ async function remediateDelistedModel(active: string, models: string[], current:
 const MODEL_UNAVAILABLE_RE =
   /Model is unavailable|Model is not available|model .*unavailable|model .*does not exist|model .*not found|model .*no longer available|403|forbidden|访问被拒绝|已下架|已下线|模型.*不可用/i;
 
+function debugLog(...args: unknown[]): void { console.debug('[MODEL-BL]', ...args); }
+
 /**
  * A chat invocation for `modelId` on `providerName` failed because the model is
  * unavailable at call time even though /models still lists it. Purge the id
@@ -4504,23 +4507,35 @@ async function remediateUnavailableModel(providerName: string, modelId: string, 
 
 /** Remove `modelId` from the provider's cached list and re-render the dropdown. */
 function retireUnavailableModel(providerName: string, modelId: string): void {
+  debugLog('retireUnavailableModel', { provider: providerName, modelId, activeProvider: status.provider, inCache: !!modelsCache.get(providerName), cacheListLen: modelsCache.get(providerName)?.list.length });
   if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Set());
   modelBlacklist.get(providerName)!.add(modelId);
+  debugLog('blacklist after add', { provider: providerName, bl: [...modelBlacklist.get(providerName)!] });
   const cached = modelsCache.get(providerName);
-  if (!cached) return;
+  if (!cached) { debugLog('retire: no cache entry, skip cache update'); return; }
   modelsCache.set(providerName, { ...cached, list: filterBlacklisted(providerName, cached.list) });
-  if (status.provider === providerName) populateModelOptions(cached.list, status.model);
+  debugLog('cache updated', { provider: providerName, newLen: modelsCache.get(providerName)!.list.length });
+  if (status.provider === providerName) {
+    debugLog('retire: repopulating dropdown');
+    populateModelOptions(cached.list, status.model);
+  } else {
+    debugLog('retire: provider mismatch, skip dropdown repop', { statusProvider: status.provider, providerName });
+  }
 }
 
 /** Filter `list` by removing every model id present in the provider's blacklist. */
 function filterBlacklisted(providerName: string, list: string[]): string[] {
   const bl = modelBlacklist.get(providerName);
   if (!bl || bl.size === 0) return list;
-  return list.filter((m) => !bl.has(m));
+  const out = list.filter((m) => !bl.has(m));
+  if (out.length !== list.length) debugLog('filterBlacklisted', { provider: providerName, before: list.length, after: out.length, removed: list.filter((m) => bl.has(m)) });
+  return out;
 }
 
 function populateModelOptions(models: string[], current: string): void {
   const safe = filterBlacklisted(status.provider, models);
+  const removed = models.length - safe.length;
+  if (removed > 0) debugLog('populateModelOptions: filtered', { provider: status.provider, inputLen: models.length, safeLen: safe.length, removed, bl: [...(modelBlacklist.get(status.provider) ?? [])] });
   const selected = safe.includes(current) ? current : safe[0] || '';
   modelSelect.innerHTML = '';
   for (const m of safe) {
