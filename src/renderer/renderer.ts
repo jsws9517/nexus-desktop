@@ -4421,7 +4421,7 @@ function refreshModelSelect(force = false): void {
     void remediateDelistedModel(active, cached.list, current);
     return;
   }
-  debugLog('cache miss / force fetch', { provider: active });
+  debugLog('cache miss / force fetch', { provider: active, cacheEntry: modelsCache.has(active) ? { ok: modelsCache.get(active)!.ok, listLen: modelsCache.get(active)!.list.length, ts: modelsCache.get(active)!.ts } : null, blSize: modelBlacklist.get(active)?.size ?? 0 });
   void (async () => {
     try {
       const res = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
@@ -4517,11 +4517,12 @@ function retireUnavailableModel(providerName: string, modelId: string): void {
   debugLog('blacklist after add', { provider: providerName, bl: [...modelBlacklist.get(providerName)!] });
   const cached = modelsCache.get(providerName);
   if (!cached) { debugLog('retire: no cache entry, skip cache update'); return; }
-  modelsCache.set(providerName, { ...cached, list: filterBlacklisted(providerName, cached.list) });
-  debugLog('cache updated', { provider: providerName, newLen: modelsCache.get(providerName)!.list.length });
+  const filtered = filterBlacklisted(providerName, cached.list);
+  modelsCache.set(providerName, { ...cached, list: filtered });
+  debugLog('cache updated', { provider: providerName, newLen: filtered.length });
   if (status.provider === providerName) {
     debugLog('retire: repopulating dropdown');
-    populateModelOptions(cached.list, status.model);
+    populateModelOptions(filtered, status.model);
   } else {
     debugLog('retire: provider mismatch, skip dropdown repop', { statusProvider: status.provider, providerName });
   }
