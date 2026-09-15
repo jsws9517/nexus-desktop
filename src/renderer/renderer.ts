@@ -254,7 +254,6 @@ declare global {
       onTabEvents(cb: (payloads: Array<{ sessionId: string; event: AgentEvent }>) => void): void;
       onTabsChanged(cb: (tabs: TabInfo[]) => void): void;
       onUpdateState(cb: (state: Record<string, unknown>) => void): void;
-      debugModelLog(msg: string): Promise<void>;
     };
   }
 }
@@ -554,7 +553,6 @@ function probeBlacklistedModels(): void {
   }
   if (!oldest) return;
   const { modelId } = oldest;
-  debugLog('probe: testing blacklisted model', { provider: activeProvider, modelId });
   const savedModel = status.model;
   void (async () => {
     try {
@@ -564,13 +562,11 @@ function probeBlacklistedModels(): void {
         bl.delete(modelId);
         if (bl.size === 0) modelBlacklist.delete(activeProvider);
         persistBlacklist();
-        debugLog('probe: model recovered, removed from blacklist', { provider: activeProvider, modelId });
       }
     } catch {
       if (bl.has(modelId)) {
         bl.set(modelId, Date.now());
         persistBlacklist();
-        debugLog('probe: still unavailable', { provider: activeProvider, modelId });
       }
     } finally {
       if (status.model !== savedModel) {
@@ -2545,7 +2541,6 @@ async function switchTab(sessionId: string): Promise<void> {
       status = await window.nexusDesktop.getStatus({ sessionId });
     } catch {}
   }
-  debugLog('switchTab', { sessionId, provider: status.provider, model: status.model, bl: [...(modelBlacklist.get(status.provider)?.keys() ?? [])] });
   setBusy(Boolean(tab?.busy));
   await syncCwdLabel();
   loadDraft(sessionId);
@@ -3459,7 +3454,6 @@ function drain(): void {
       if (bl?.has(attemptModel)) {
         bl.delete(attemptModel);
         persistBlacklist();
-        debugLog('blacklist removed (call succeeded)', { provider: attemptProvider, modelId: attemptModel });
       }
       await refreshSessions(currentSessionId);
       await syncMsgCache(currentSessionId);
@@ -4484,7 +4478,6 @@ function refreshProviderSelect(): void {
 function refreshModelSelect(force = false): void {
   const active = status.provider;
   const current = status.model;
-  debugLog('refreshModelSelect', { active, current, force, session: currentSessionId });
   modelSelect.disabled = !active || !current;
   modelSelect.title = '';
   const seed = () => {
@@ -4501,19 +4494,15 @@ function refreshModelSelect(force = false): void {
   if (!active) return;
   const cached = modelsCache.get(active);
   if (!force && cached && cached.ok && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
-    debugLog('cache hit', { provider: active, listLen: cached.list.length, ts: cached.ts, bl: [...(modelBlacklist.get(active)?.keys() ?? [])] });
     if (cached.list.length > 0) populateModelOptions(cached.list, current);
     void remediateDelistedModel(active, cached.list, current);
     return;
   }
-  debugLog('cache miss / force fetch', { provider: active, cacheEntry: modelsCache.has(active) ? { ok: modelsCache.get(active)!.ok, listLen: modelsCache.get(active)!.list.length, ts: modelsCache.get(active)!.ts } : null, blSize: modelBlacklist.get(active)?.size ?? 0 });
   void (async () => {
     try {
       const res = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
-      debugLog('fetch result', { provider: active, ok: res.ok, rawLen: res.models.length, error: res.error });
       if (!active || active !== status.provider) return;
       const filtered = filterBlacklisted(active, res.models);
-      debugLog('filtered result', { provider: active, filteredLen: filtered.length, bl: [...(modelBlacklist.get(active)?.keys() ?? [])] });
       modelsCache.set(active, { list: filtered, ts: Date.now(), ok: res.ok, error: res.error });
       if (res.ok && filtered.length > 0) {
         populateModelOptions(filtered, current);
@@ -4522,7 +4511,6 @@ function refreshModelSelect(force = false): void {
       }
       if (res.ok) await remediateDelistedModel(active, filtered, status.model);
     } catch (e) {
-      debugLog('fetch error', { provider: active, error: String(e) });
       modelSelect.title = 'models: fetch failed (will retry)';
     }
   })();
@@ -4561,10 +4549,6 @@ async function remediateDelistedModel(active: string, models: string[], current:
 const MODEL_UNAVAILABLE_RE =
   /Model is unavailable|Model is not available|model .*unavailable|model .*does not exist|model .*not found|model .*no longer available|403|forbidden|访问被拒绝|已下架|已下线|模型.*不可用/i;
 
-function debugLog(...args: unknown[]): void {
-  const msg = args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
-  window.nexusDesktop.debugModelLog(msg).catch(() => {});
-}
 
 /**
  * A chat invocation for `modelId` on `providerName` failed because the model is
@@ -4596,21 +4580,15 @@ async function remediateUnavailableModel(providerName: string, modelId: string, 
 
 /** Remove `modelId` from the provider's cached list and re-render the dropdown. */
 function retireUnavailableModel(providerName: string, modelId: string): void {
-  debugLog('retireUnavailableModel', { provider: providerName, modelId, activeProvider: status.provider, inCache: !!modelsCache.get(providerName), cacheListLen: modelsCache.get(providerName)?.list.length });
   if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Map());
   modelBlacklist.get(providerName)!.set(modelId, 0);
   persistBlacklist();
-  debugLog('blacklist after add', { provider: providerName, bl: [...modelBlacklist.get(providerName)!.keys()] });
   const cached = modelsCache.get(providerName);
-  if (!cached) { debugLog('retire: no cache entry, skip cache update'); return; }
+  if (!cached) return;
   const filtered = filterBlacklisted(providerName, cached.list);
   modelsCache.set(providerName, { ...cached, list: filtered });
-  debugLog('cache updated', { provider: providerName, newLen: filtered.length });
   if (status.provider === providerName) {
-    debugLog('retire: repopulating dropdown');
     populateModelOptions(filtered, status.model);
-  } else {
-    debugLog('retire: provider mismatch, skip dropdown repop', { statusProvider: status.provider, providerName });
   }
 }
 
@@ -4619,14 +4597,12 @@ function filterBlacklisted(providerName: string, list: string[]): string[] {
   const bl = modelBlacklist.get(providerName);
   if (!bl || bl.size === 0) return list;
   const out = list.filter((m) => !bl.has(m));
-  if (out.length !== list.length) debugLog('filterBlacklisted', { provider: providerName, before: list.length, after: out.length, removed: list.filter((m) => bl.has(m)) });
   return out;
 }
 
 function populateModelOptions(models: string[], current: string): void {
   const safe = filterBlacklisted(status.provider, models);
   const removed = models.length - safe.length;
-  if (removed > 0) debugLog('populateModelOptions: filtered', { provider: status.provider, inputLen: models.length, safeLen: safe.length, removed, bl: [...(modelBlacklist.get(status.provider)?.keys() ?? [])] });
   const selected = safe.includes(current) ? current : safe[0] || '';
   modelSelect.innerHTML = '';
   for (const m of safe) {

@@ -17,7 +17,7 @@ import type { WorkerHost } from '../main/worker-host.js';
 import type { SessionWorkers, OpenTabInfo } from '../main/session-workers.js';
 import type { ResourceMonitor, ResourceState } from '../main/resource-monitor.js';
 import { Updater } from '../main/updater.js';
-import { logger, recentLogLines } from '../shared/logger.js';
+import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList } from '../shared/ipc-validation.js';
 import { CHANNELS } from './channels.js';
 import type { DesktopStateAccess } from '../main/desktop-state.js';
@@ -482,9 +482,5 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle(CHANNELS.downloadUpdate, () => updater.download());
   ipcMain.handle(CHANNELS.installUpdate, () => {
     updater.install();
-  });
-  ipcMain.handle(CHANNELS.debugModelLog, (_e, params?: Record<string, unknown>) => {
-    const msg = params && typeof params.msg === 'string' ? params.msg : '';
-    logger.info(`[MODEL-BL] ${msg}`);
   });
 }

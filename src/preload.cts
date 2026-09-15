@@ -161,7 +161,6 @@ const api = {
   onUpdateState: (cb: (state: Record<string, unknown>) => void) => {
     ipcRenderer.on('nexus:updateState', (_e, state) => cb(state));
   },
-  debugModelLog: (msg: string) => ipcRenderer.invoke('nexus:debugModelLog', { msg }),
 };
 
 contextBridge.exposeInMainWorld('nexusDesktop', api);
