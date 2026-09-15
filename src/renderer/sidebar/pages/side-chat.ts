@@ -16,6 +16,7 @@
  * Dependency-injected for unit tests (fake chat sender).
  */
 
+import { stripProtocolXml } from '../../../shared/constants.js';
 import type { SidebarContext } from '../types.js';
 
 /** A single transcript entry. `pending` = waiting on the worker reply,
@@ -120,7 +121,7 @@ export function mountSideChatPage(
         const last = items[items.length - 1];
         if (last?.pending) {
           last.pending = false;
-          last.content = reply || (getUiLang() === 'zh-CN' ? '（空回复）' : '(empty reply)');
+          last.content = stripProtocolXml(reply) || (getUiLang() === 'zh-CN' ? '（空回复）' : '(empty reply)');
         }
       })
       .catch(() => {
