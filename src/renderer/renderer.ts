@@ -632,6 +632,9 @@ interface SlashCardRec {
   chevron: HTMLElement;
 }
 let curSlash: SlashCardRec | null = null;
+// Anchor (DB message id) of the turn's slash input; used to fold a finished
+// live card into slashLogCache so it survives later re-renders.
+let curSlashAnchorId: number | undefined;
 interface ToolCardRec {
   card: HTMLElement;
   resultEl: HTMLElement | null;
@@ -642,6 +645,14 @@ const toolCards = new Map<number, ToolCardRec>();
 /** Slash-log entries for the active session, re-inserted after every history
  *  re-render (resume / load-earlier) so collapsible cards track their anchor. */
 let slashLog: SlashLogEntry[] = [];
+
+// Each session's slash log is fetched from disk exactly once per app run
+// ("first restore"), then served from memory. Re-renders, tab switches and
+// worker restarts reuse the cache instead of re-reading the file and re-flowing
+// every card — that constant re-positioning is what made slash cards jump
+// between the top and the tail of the transcript.
+const slashLogCache = new Map<string, SlashLogEntry[]>();
+const slashLogFetched = new Set<string>();
 
 // ---------- history windowing + cache ----------
 // History is fetched in windows so a long session never renders every message
@@ -1127,6 +1138,7 @@ function handleEvent(event: AgentEvent): void {
         curSlash = null;
       }
       curSlash = makeSlashCardEl(event.command, '');
+      curSlashAnchorId = event.anchorId;
       messagesEl.appendChild(curSlash.card);
       scrollToBottom();
       break;
@@ -1137,17 +1149,32 @@ function handleEvent(event: AgentEvent): void {
       }
       break;
     case 'slash_end': {
+      const anchorId = curSlashAnchorId;
       if (curSlash) {
+        const content = curSlash.body.textContent;
         // Auto-collapse only when the accumulated content is actually large;
         // an empty card from a no-output command is simply removed.
-        if (curSlash.body.textContent.trim().length === 0) {
+        if (content.trim().length === 0) {
           curSlash.card.remove();
-        } else if (slashShouldCollapse(curSlash.body.textContent)) {
-          curSlash.card.classList.add('collapsed');
-          curSlash.chevron.textContent = '▸';
-          curSlash.body.classList.add('hidden');
+        } else {
+          if (slashShouldCollapse(content)) {
+            curSlash.card.classList.add('collapsed');
+            curSlash.chevron.textContent = '▸';
+            curSlash.body.classList.add('hidden');
+          }
+          // Fold the finished live card into the session cache (same array the
+          // active slashLog points to) so later re-renders keep it anchored.
+          if (anchorId != null && slashLogFetched.has(currentSessionId)) {
+            slashLogCache.get(currentSessionId)!.push({
+              ts: new Date().toISOString(),
+              command: event.command,
+              anchorId,
+              content,
+            });
+          }
         }
         curSlash = null;
+        curSlashAnchorId = undefined;
       }
       break;
     }
@@ -1922,59 +1949,42 @@ function makeSlashCardEl(command: string, content: string): SlashCardRec {
   return { card, body, chevron };
 }
 
-/** Re-insert all cached slash cards into the current history DOM, anchored
- *  after their slash-input message (matched by data-mid). Cards whose anchor
- *  isn't in the visible window are placed at the correct chronological position
- *  relative to visible messages (not dumped at the end). Call after any
+/** Re-insert slash-log cards after a history re-render. Each card renders only
+ *  while its slash-input message (matched by data-mid) is present in the loaded
+ *  message window, and is placed right after it. Cards whose anchor isn't loaded
+ *  are skipped — they surface naturally once paging loads their anchor, so they
+ *  never pile up at the top or get dumped at the conversation tail. `slashLog`
+ *  comes from the per-session in-memory cache (refreshSlashLog), so repeated
+ *  re-renders produce the same stable layout. Call after any
  *  renderMessageWindow() so reloads / load-earlier don't drop them. */
 function insertSlashCards(): void {
   if (slashLog.length === 0) return;
-  // Collect all visible elements with data-mid in DOM order for position lookups.
-  const visibleMids: Array<{ mid: number; el: Element }> = [];
-  for (const el of messagesEl.querySelectorAll('[data-mid]')) {
-    const mid = Number((el as HTMLElement).dataset.mid);
-    if (!isNaN(mid)) visibleMids.push({ mid, el });
-  }
   for (const e of slashLog) {
     // /clear entries have no anchorId and must never render as a card — they
-    // are pure state mutations. Old log files may still contain them; skip them
-    // here to avoid the "append at end" fallback dumping them at the conversation tail.
+    // are pure state mutations. Old log files may still contain them; skip.
     if (/^\/clear(?:\s|$)/i.test(e.command)) continue;
+    if (e.anchorId == null) continue;
+    const anchor = messagesEl.querySelector(`[data-mid="${e.anchorId}"]`);
+    if (!anchor) continue;
     const rec = makeSlashCardEl(e.command, e.content);
-    if (e.anchorId != null) {
-      // Fast path: exact anchor in the visible DOM → insert right after it.
-      const anchor = messagesEl.querySelector(`[data-mid="${e.anchorId}"]`);
-      if (anchor) {
-        if (anchor.nextSibling) messagesEl.insertBefore(rec.card, anchor.nextSibling);
-        else messagesEl.appendChild(rec.card);
-        continue;
-      }
-      // Slow path: anchor is outside the loaded message window. Find the first
-      // visible element whose mid is greater than the anchorId and insert before
-      // it so the card lands at the correct chronological position.
-      let insertBefore: Element | null = null;
-      for (const v of visibleMids) {
-        if (v.mid > e.anchorId) { insertBefore = v.el; break; }
-      }
-      if (insertBefore) {
-        messagesEl.insertBefore(rec.card, insertBefore);
-      } else {
-        messagesEl.appendChild(rec.card);
-      }
-      continue;
-    }
-    // No anchorId at all (legacy entry): append at end as last resort.
-    messagesEl.appendChild(rec.card);
+    if (anchor.nextSibling) messagesEl.insertBefore(rec.card, anchor.nextSibling);
+    else messagesEl.appendChild(rec.card);
   }
 }
 
-/** Fetch the session's slash log from disk and re-insert its cards. */
+/** Bind the active session to its cached slash log, fetching from disk only on
+ *  the first restore of the session in this app run. Later tab switches, worker
+ *  restarts and load-earlier re-renders reuse the cache. */
 async function refreshSlashLog(sessionId: string): Promise<void> {
-  try {
-    slashLog = await window.nexusDesktop.getSlashLog(sessionId);
-  } catch {
-    slashLog = [];
+  if (!slashLogFetched.has(sessionId)) {
+    try {
+      slashLogCache.set(sessionId, await window.nexusDesktop.getSlashLog(sessionId));
+    } catch {
+      slashLogCache.set(sessionId, []);
+    }
+    slashLogFetched.add(sessionId);
   }
+  slashLog = slashLogCache.get(sessionId) ?? [];
   insertSlashCards();
 }
 
@@ -2166,6 +2176,7 @@ function resetViewState(): void {
   curAssistant = null;
   curThinking = null;
   curSlash = null;
+  curSlashAnchorId = undefined;
   slashLog = [];
   userMessageSeq = 0;
   msgItems = [];
@@ -2357,6 +2368,10 @@ async function switchTab(sessionId: string): Promise<void> {
 async function closeTab(sessionId: string): Promise<void> {
   if (!tabs.has(sessionId)) return;
   tabs.delete(sessionId);
+  // A fully closed session is forgotten: reopening is a fresh "first restore",
+  // so its slash log is re-read from disk instead of a stale cache.
+  slashLogFetched.delete(sessionId);
+  slashLogCache.delete(sessionId);
   try {
     await window.nexusDesktop.closeSession(sessionId);
   } catch {}
