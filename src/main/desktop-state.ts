@@ -29,6 +29,7 @@ interface DesktopStateData {
   memThresholdPct?: number;
   cpuThresholdPct?: number;
   monitorEnabled?: boolean;
+  lazyWorker?: boolean;
 }
 
 export type WindowBounds = { x?: number; y?: number; width?: number; height?: number };
@@ -58,6 +59,8 @@ export interface DesktopStateAccess {
   setCpuThresholdPct(n: number): void;
   getMonitorEnabled(): boolean;
   setMonitorEnabled(enabled: boolean): void;
+  getLazyWorker(): boolean;
+  setLazyWorker(enabled: boolean): void;
 }
 
 /** Full store: the 20 IPC accessors plus the app-bootstrap helpers. */
@@ -111,6 +114,10 @@ export function createDesktopState(): DesktopStateStore {
   };
   const getMonitorEnabled = (): boolean => {
     const v = read().monitorEnabled;
+    return typeof v === 'boolean' ? v : true;
+  };
+  const getLazyWorker = (): boolean => {
+    const v = read().lazyWorker;
     return typeof v === 'boolean' ? v : true;
   };
 
@@ -170,6 +177,10 @@ export function createDesktopState(): DesktopStateStore {
     getMonitorEnabled,
     setMonitorEnabled(enabled: boolean): void {
       write({ monitorEnabled: enabled });
+    },
+    getLazyWorker,
+    setLazyWorker(enabled: boolean): void {
+      write({ lazyWorker: enabled });
     },
     loadSavedCwd(): string | undefined {
       const cwd = read().lastCwd;

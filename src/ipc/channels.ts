@@ -88,6 +88,8 @@ export const CHANNELS = {
   setCpuThreshold: 'nexus:setCpuThreshold',
   getMonitorEnabled: 'nexus:getMonitorEnabled',
   setMonitorEnabled: 'nexus:setMonitorEnabled',
+  getLazyWorker: 'nexus:getLazyWorker',
+  setLazyWorker: 'nexus:setLazyWorker',
   getResourceState: 'nexus:getResourceState',
 
   // renderer → main: main-local (no worker round-trip) channels.

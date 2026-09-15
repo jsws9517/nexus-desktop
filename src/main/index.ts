@@ -506,7 +506,9 @@ if (gotLock) {
     // session until bound, so it cannot carry an in-flight turn. Gated on resource
     // health + tab headroom; reused by the open()/close() top-up paths.
     sessionWorkers.canWarm = () =>
-      resourceMon.getState().status !== 'overloaded' && sessionWorkers.size < desktopState.getMaxTabs();
+      desktopState.getLazyWorker() &&
+      resourceMon.getState().status !== 'overloaded' &&
+      sessionWorkers.size < desktopState.getMaxTabs();
     resourceMon.start();
     void sessionWorkers.warmSpare();
     registerIpc({
@@ -544,6 +546,8 @@ if (gotLock) {
       setCpuThresholdPct: desktopState.setCpuThresholdPct,
       getMonitorEnabled: desktopState.getMonitorEnabled,
       setMonitorEnabled: desktopState.setMonitorEnabled,
+      getLazyWorker: desktopState.getLazyWorker,
+      setLazyWorker: desktopState.setLazyWorker,
     });
     createWindow();
 

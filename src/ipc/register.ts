@@ -291,6 +291,12 @@ export function registerIpc(ctx: IpcContext): void {
     ctx.applyResourceConfig(resourceMon);
     return { ok: true };
   });
+  ipcMain.handle(CHANNELS.getLazyWorker, (): boolean => ctx.getLazyWorker());
+  ipcMain.handle(CHANNELS.setLazyWorker, (_e, enabled: unknown): { ok: boolean } => {
+    if (!isBoolean(enabled)) return { ok: false };
+    ctx.setLazyWorker(enabled);
+    return { ok: true };
+  });
   ipcMain.handle(CHANNELS.getResourceState, (): ResourceState => resourceMon.getState());
 
   // ── Multi-tab: per-session worker lifecycle ──

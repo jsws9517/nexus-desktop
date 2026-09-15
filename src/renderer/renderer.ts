@@ -235,6 +235,8 @@ declare global {
       setCpuThreshold(n: number): Promise<{ ok: boolean }>;
       getMonitorEnabled(): Promise<boolean>;
       setMonitorEnabled(enabled: boolean): Promise<{ ok: boolean }>;
+      getLazyWorker(): Promise<boolean>;
+      setLazyWorker(enabled: boolean): Promise<{ ok: boolean }>;
       getResourceState(): Promise<ResourceStateInfo>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
@@ -3998,6 +4000,14 @@ function buildResourceSection(container?: HTMLElement): void {
 
   buildToggle(t('monitorEnabledLabel'), t('monitorEnabledHint'), window.nexusDesktop.getMonitorEnabled(), (v) => {
     return window.nexusDesktop.setMonitorEnabled(v);
+  }, target);
+
+  target.appendChild(buildNumberRow(t('maxTabsLabel'), t('maxTabsHint'), 1, 20, window.nexusDesktop.getMaxTabs(), (v) => {
+    return window.nexusDesktop.setMaxTabs(v);
+  }));
+
+  buildToggle(t('lazyWorkerLabel'), t('lazyWorkerHint'), window.nexusDesktop.getLazyWorker(), (v) => {
+    return window.nexusDesktop.setLazyWorker(v);
   }, target);
 }
 

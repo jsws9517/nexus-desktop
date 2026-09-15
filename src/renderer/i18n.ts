@@ -208,6 +208,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   cpuThresholdHint: { 'zh-CN': '系统 CPU 占用超过此值且持续偏高时，暂停创建新会话', en: 'Pause new sessions when system CPU stays above this level' },
   monitorEnabledLabel: { 'zh-CN': '启用资源监控', en: 'Enable resource monitoring' },
   monitorEnabledHint: { 'zh-CN': '高内存/CPU 时提前干预，暂停新建会话以保护系统', en: 'Proactively pause new sessions when memory/CPU load is high' },
+  lazyWorkerLabel: { 'zh-CN': '预热备用 Worker', en: 'Pre-warm spare worker' },
+  lazyWorkerHint: { 'zh-CN': '开启后自动预留一个空闲 Worker 以加速新建标签；低配电脑可关闭', en: 'Keeps one idle worker ready for faster tab creation; disable on low-end machines' },
 
   // Multi-tab (per-session worker) UI.
   tabsEmpty: { 'zh-CN': '无打开的会话标签', en: 'No open session tabs' },
