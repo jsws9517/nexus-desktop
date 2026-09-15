@@ -4215,9 +4215,10 @@ function refreshProviderSelect(): void {
  * Populate the model dropdown for the active provider. Seeds with the current
  * model immediately, then asynchronously loads the provider's /models list
  * (cached per provider) and fills in the rest without disturbing the
- * selection.
+ * selection. `force` bypasses the TTL cache and re-pulls the list (used when
+ * the provider changes) so the fresh list re-validates / re-picks the model.
  */
-function refreshModelSelect(): void {
+function refreshModelSelect(force = false): void {
   const active = status.provider;
   const current = status.model;
   modelSelect.disabled = !active || !current;
@@ -4232,9 +4233,13 @@ function refreshModelSelect(): void {
     }
   };
   seed();
+  if (!active) return;
   const cached = modelsCache.get(active);
-  if (cached && cached.list.length > 0 && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
-    populateModelOptions(cached.list, current);
+  if (!force && cached && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
+    if (cached.list.length > 0) populateModelOptions(cached.list, current);
+    // Every tab switch must re-validate ITS OWN active model — a restore may
+    // pin a per-session delisted id that the boot-time global fetch never saw.
+    void remediateDelistedModel(active, cached.list, current);
     return;
   }
   void (async () => {
@@ -4254,23 +4259,23 @@ function refreshModelSelect(): void {
  * If the live /models list no longer contains the session's active model
  * (delisted/renamed on the provider side), fall back to the provider's
  * configured default model so subsequent turns stop retrying the dead id.
- * Runs at most once per session and only on a fresh, successful list fetch.
+ * Runs at most once per session (marker kept so a failed fallback — or the
+ * user's later explicit re-selection — is never yanked/re-tried repeatedly).
  */
 async function remediateDelistedModel(active: string, models: string[], current: string): Promise<void> {
   if (models.length === 0 || !current || models.includes(current)) return;
-  const sid = currentSessionId;
-  if (sid && modelFallbacked.has(sid)) return;
+  const key = currentSessionId || 'global';
+  if (modelFallbacked.has(key)) return;
   const providerDefault = providers.find((p) => p.name === active)?.model;
   if (!providerDefault || providerDefault === current) return;
-  if (sid) modelFallbacked.add(sid);
+  modelFallbacked.add(key);
   try {
-    await window.nexusDesktop.switchModel(providerDefault, { sessionId: sid || undefined });
-    status = await window.nexusDesktop.getStatus({ sessionId: sid || undefined });
+    await window.nexusDesktop.switchModel(providerDefault, { sessionId: key === 'global' ? undefined : key });
+    status = await window.nexusDesktop.getStatus({ sessionId: key === 'global' ? undefined : key });
     addSystem(`${t('modelDeprecated')} (${current} → ${providerDefault})`);
     await refreshSessions();
     await refreshSidebarSession();
     refreshModelSelect();
-    modelFallbacked.delete(sid);
   } catch {
     // leave the current model as-is
   }
@@ -4294,7 +4299,10 @@ providerSelect.addEventListener('change', async () => {
   await window.nexusDesktop.switchProvider(name, { sessionId: currentSessionId || undefined });
   status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
   addSystem(t('switchedProvider', { name, model: status.model }));
-  refreshModelSelect();
+  // Re-arm the per-session fallback marker + force a fresh list re-pull so the
+  // new provider's model id is re-validated immediately (not from TTL cache).
+  if (currentSessionId) modelFallbacked.delete(currentSessionId);
+  refreshModelSelect(true);
   await refreshSessions();
   await refreshSidebarSession();
 });
