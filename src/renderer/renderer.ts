@@ -506,7 +506,26 @@ const modelsCache = new Map<string, ModelsCacheEntry>();
 // Per-provider blacklist of model ids confirmed unavailable at call time
 // (403, Model is unavailable, etc.). Survives TTL cache refreshes so the dead
 // id is never re-added to the dropdown until the user explicitly re-selects it.
+// Persisted to localStorage so the blacklist survives renderer restarts
+// (e.g. window minimize → taskbar restore).
+const BLACKLIST_STORAGE_KEY = 'nexus-model-blacklist';
 const modelBlacklist = new Map<string, Set<string>>();
+(function restoreBlacklist() {
+  try {
+    const raw = localStorage.getItem(BLACKLIST_STORAGE_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw) as Record<string, string[]>;
+      for (const [k, v] of Object.entries(obj)) modelBlacklist.set(k, new Set(v));
+    }
+  } catch {}
+})();
+function persistBlacklist(): void {
+  try {
+    const obj: Record<string, string[]> = {};
+    for (const [k, v] of modelBlacklist) obj[k] = [...v];
+    localStorage.setItem(BLACKLIST_STORAGE_KEY, JSON.stringify(obj));
+  } catch {}
+}
 // Sessions already auto-fallbacked off a delisted model (remediating on first
 // sight avoids yanking the active model every time the tab regains focus).
 const modelFallbacked = new Set<string>();
@@ -4514,6 +4533,7 @@ function retireUnavailableModel(providerName: string, modelId: string): void {
   debugLog('retireUnavailableModel', { provider: providerName, modelId, activeProvider: status.provider, inCache: !!modelsCache.get(providerName), cacheListLen: modelsCache.get(providerName)?.list.length });
   if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Set());
   modelBlacklist.get(providerName)!.add(modelId);
+  persistBlacklist();
   debugLog('blacklist after add', { provider: providerName, bl: [...modelBlacklist.get(providerName)!] });
   const cached = modelsCache.get(providerName);
   if (!cached) { debugLog('retire: no cache entry, skip cache update'); return; }
