@@ -4507,9 +4507,9 @@ function retireUnavailableModel(providerName: string, modelId: string): void {
   if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Set());
   modelBlacklist.get(providerName)!.add(modelId);
   const cached = modelsCache.get(providerName);
-  if (!cached || !cached.list.includes(modelId)) return;
+  if (!cached) return;
   modelsCache.set(providerName, { ...cached, list: filterBlacklisted(providerName, cached.list) });
-  if (status.provider === providerName) populateModelOptions(filterBlacklisted(providerName, cached.list), status.model);
+  if (status.provider === providerName) populateModelOptions(cached.list, status.model);
 }
 
 /** Filter `list` by removing every model id present in the provider's blacklist. */
@@ -4520,9 +4520,10 @@ function filterBlacklisted(providerName: string, list: string[]): string[] {
 }
 
 function populateModelOptions(models: string[], current: string): void {
-  const selected = current || models[0] || '';
+  const safe = filterBlacklisted(status.provider, models);
+  const selected = safe.includes(current) ? current : safe[0] || '';
   modelSelect.innerHTML = '';
-  for (const m of models) {
+  for (const m of safe) {
     const opt = document.createElement('option');
     opt.value = m;
     opt.textContent = m;
