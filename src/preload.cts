@@ -44,7 +44,11 @@ const api = {
   switchModel: (modelId: string, opts?: { sessionId?: string }) =>
     ipcRenderer.invoke('nexus:switchModel', { modelId, ...(opts ?? {}) }),
   getModels: (providerName?: string, opts?: { sessionId?: string }) =>
-    ipcRenderer.invoke('nexus:getModels', { providerName, ...(opts ?? {}) }),
+    ipcRenderer.invoke('nexus:getModels', { providerName, ...(opts ?? {}) }) as Promise<{
+      models: string[];
+      ok: boolean;
+      error?: string;
+    }>,
   saveProvider: (name: string, fields: Record<string, unknown>) =>
     ipcRenderer.invoke('nexus:saveProvider', { name, fields }),
   setCwd: (cwd: string, opts?: { sessionId?: string }) =>

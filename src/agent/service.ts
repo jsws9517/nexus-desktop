@@ -2374,23 +2374,23 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
   /**
    * Fetch the model list for a provider from its API (OpenAI-compatible
-   * GET /models, Anthropic GET /v1/models). Falls back to the configured
-   * model alone when the API is unreachable or the key is missing.
+   * GET /models, Anthropic GET /v1/models). Returns a structured result so the
+   * caller can tell a REAL list apart from a failed probe — a failed/empty
+   * probe yields `models: []` + `ok: false` (never a masqueraded single-model
+   * "fallback"), so the renderer can retry instead of caching a dead list.
    */
-  async getModels(providerName?: string): Promise<string[]> {
-    if (!this.agent) return [];
+  async getModels(providerName?: string): Promise<{ models: string[]; ok: boolean; error?: string }> {
+    const out = { models: [] as string[], ok: false, error: undefined as string | undefined };
+    if (!this.agent) return out;
     let provider: { type: string; apiKey?: string; baseUrl?: string; model?: string } | undefined;
     try {
       provider = this.agent.config.getProvider(providerName);
     } catch {
       provider = undefined;
     }
-    const fallback = (): string[] => {
-      const m = this.agent?.provider?.model;
-      return m ? [String(m)] : [];
-    };
     if (!provider || typeof provider.apiKey !== 'string' || provider.apiKey.length === 0) {
-      return fallback();
+      out.error = providerName ? `provider "${providerName}" has no API key` : 'no provider';
+      return out;
     }
     // getProvider() returns an in-memory encrypted blob (mem:/enc:). Decrypt it
     // to the real key — sending the blob as the Bearer token yields 401 even
@@ -2402,31 +2402,47 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     } catch {
       apiKey = provider.apiKey;
     }
-    if (!apiKey) return fallback();
+    if (!apiKey) {
+      out.error = `provider "${providerName}" has no usable API key`;
+      return out;
+    }
     const type = provider.type || 'openai';
     const base = (provider.baseUrl || (type === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1')).replace(/\/+$/, '');
-    try {
-      let json: { data?: Array<{ id: string }> } | null = null;
-      if (type === 'anthropic') {
-        const res = await fetch(`${base}/v1/models`, {
-          headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    // Probe every plausible /models URL shape: a custom baseUrl may omit the
+    // standard /v1 prefix (then /models 404s while chat still works).
+    const candidates =
+      type === 'anthropic'
+        ? [`${base}/v1/models`]
+        : base.endsWith('/v1')
+          ? [`${base}/models`]
+          : [`${base}/models`, `${base}/v1/models`, 'https://api.openai.com/v1/models'];
+    let ids: string[] = [];
+    let lastErr: Error | undefined;
+    for (const url of [...new Set(candidates)]) {
+      try {
+        const res = await fetch(url, {
+          headers:
+            type === 'anthropic'
+              ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+              : { Authorization: `Bearer ${apiKey}` },
           signal: AbortSignal.timeout(8000),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        json = (await res.json()) as { data?: Array<{ id: string }> };
-      } else {
-        const res = await fetch(`${base}/models`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        json = (await res.json()) as { data?: Array<{ id: string }> };
+        const json = (await res.json()) as { data?: Array<{ id: string }> };
+        ids = (json?.data ?? []).map((m) => m.id).filter(Boolean);
+        if (ids.length > 0) break;
+        lastErr = new Error('empty model list');
+      } catch (e) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
       }
-      const ids = (json?.data ?? []).map((m) => m.id).filter(Boolean);
-      return ids.length > 0 ? ids : fallback();
-    } catch {
-      return fallback();
     }
+    if (ids.length === 0) {
+      out.error = lastErr?.message ?? 'models endpoint unreachable';
+      return out;
+    }
+    out.models = ids;
+    out.ok = true;
+    return out;
   }
 
   getPermissions(): {

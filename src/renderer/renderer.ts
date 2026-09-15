@@ -177,7 +177,11 @@ declare global {
       getSessionStats(sessionId: string): Promise<SessionStats>;
       switchProvider(name: string, opts?: { sessionId?: string }): Promise<unknown>;
       switchModel(modelId: string, opts?: { sessionId?: string }): Promise<unknown>;
-      getModels(providerName?: string, opts?: { sessionId?: string }): Promise<string[]>;
+      getModels(providerName?: string, opts?: { sessionId?: string }): Promise<{
+        models: string[];
+        ok: boolean;
+        error?: string;
+      }>;
       saveProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
       openSession(sessionId: string, cwd?: string): Promise<{ ok: boolean; tab?: TabInfo; reason?: string }>;
       openNewSession(opts?: { cwd?: string; prevSessionId?: string }): Promise<{ ok: boolean; sessionId?: string; tab?: TabInfo; reason?: string }>;
@@ -489,6 +493,8 @@ const MODEL_LIST_TTL_MS = 10 * 60 * 1000;
 interface ModelsCacheEntry {
   list: string[];
   ts: number;
+  ok: boolean;
+  error?: string;
 }
 const modelsCache = new Map<string, ModelsCacheEntry>();
 // Sessions already auto-fallbacked off a delisted model (remediating on first
@@ -4222,6 +4228,7 @@ function refreshModelSelect(force = false): void {
   const active = status.provider;
   const current = status.model;
   modelSelect.disabled = !active || !current;
+  modelSelect.title = '';
   const seed = () => {
     modelSelect.innerHTML = '';
     if (current) {
@@ -4235,22 +4242,27 @@ function refreshModelSelect(force = false): void {
   seed();
   if (!active) return;
   const cached = modelsCache.get(active);
-  if (!force && cached && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
+  // Only a REAL (ok) cached list can satisfy the TTL window. A failed/empty
+  // probe is never cached as authoritative — the next refresh retries it.
+  if (!force && cached && cached.ok && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
     if (cached.list.length > 0) populateModelOptions(cached.list, current);
-    // Every tab switch must re-validate ITS OWN active model — a restore may
-    // pin a per-session delisted id that the boot-time global fetch never saw.
     void remediateDelistedModel(active, cached.list, current);
     return;
   }
   void (async () => {
     try {
-      const models = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
+      const res = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
       if (!active || active !== status.provider) return;
-      modelsCache.set(active, { list: models, ts: Date.now() });
-      if (models.length > 0) populateModelOptions(models, current);
-      await remediateDelistedModel(active, models, status.model);
+      modelsCache.set(active, { list: res.models, ts: Date.now(), ok: res.ok, error: res.error });
+      if (res.ok && res.models.length > 0) {
+        populateModelOptions(res.models, current);
+      } else if (res.error) {
+        modelSelect.title = `models: ${res.error}`;
+      }
+      // Only remediate against a genuinely fresh, real list.
+      if (res.ok) await remediateDelistedModel(active, res.models, status.model);
     } catch {
-      // keep the seeded current-model option
+      modelSelect.title = 'models: fetch failed (will retry)';
     }
   })();
 }
