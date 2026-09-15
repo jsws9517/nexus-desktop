@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 
 import { initFx } from './fx.js';
-import { isWorkerBlockText } from '../shared/constants.js';
+import { isWorkerBlockText, stripProtocolXml } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
@@ -331,6 +331,9 @@ function makeSidebarContext(sessionId: string): SidebarContext {
     getActiveSessionId: () => currentSessionId,
     getParallelSessions: () => parallelSessions as ReadonlyMap<string, { sessionId: string; prompt: string; startTime: number; tasks: ReadonlyMap<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }> }>,
     pruneParallelSessions: (ttlMs?: number) => pruneParallelSessions(ttlMs),
+    // Force-close stale running tasks (per-task timeout + dead-batch sweep) so
+    // pages can self-heal by calling it from their own render/timer loops.
+    forceCloseStaleTasks: () => { sweepStuckParallelSessions(); },
     subscribe: (fn) => {
       const wrapped = (event: AgentEvent) => fn(event);
       eventSubscribers.add(wrapped);
@@ -523,7 +526,7 @@ interface ParallelSession {
   startTime: number;
   /** Last time any parallel activity touched this batch (start/progress/end/error). */
   lastActivityAt: number;
-  tasks: Map<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }>;
+  tasks: Map<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number; updatedAt?: number }>;
 }
 const parallelSessions = new Map<string, ParallelSession>();
 // Session ids with a parallel batch STILL EXECUTING. Distinct from
@@ -542,6 +545,11 @@ const PARALLEL_SESSION_MAX = 20;
 /** A batch with NO parallel activity for this long is treated as hung and
  *  force-cancelled so stuck running cards + busy indicators close the loop. */
 const PARALLEL_STUCK_TTL_MS = 30 * 60 * 1000;
+/** A single sub-task that stays non-terminal with no progress of its own for
+ *  this long is force-closed individually (the batch sweep above only catches a
+ *  WHOLE batch going silent; a lone stuck task inside an otherwise busy batch
+ *  must still close its loop). */
+const PARALLEL_TASK_STUCK_TTL_MS = 15 * 60 * 1000;
 const TERMINAL_TASK_STATUS = new Set(['succeeded', 'failed', 'timeout', 'cancelled']);
 
 function isTerminalTask(t: { status: string }): boolean {
@@ -584,26 +592,128 @@ function handleTaskProgress(sessionId: string, taskId: string, status: string): 
   const session = parallelSessions.get(sessionId);
   if (!session) return;
   const task = session.tasks.get(taskId);
-  if (task && status) task.status = status;
+  if (task && status) {
+    task.status = status;
+    // Refresh the PER-TASK liveness heartbeat: the per-task force-close sweep
+    // keys off this so a genuinely progressing task never gets auto-closed.
+    task.updatedAt = Date.now();
+  }
 }
 
 /**
- * Force-cancel historical batches that went silent indefinitely (worker crash,
- * abandoned request, restored stale metadata): delete the session + its
- * in-flight marker, unstick busy, and — when the stuck batch is the ACTIVE
- * session — surface a visible "auto-cancelled" closure on its transcript card.
- * Returns the number of batches recycled.
+ * Persist the renderer's force-closed task statuses back into the session's
+ * `parallelExecution` metadata. Without this, a stale run whose metadata still
+ * claims non-terminal tasks (worker crashed / app closed mid-batch) is
+ * re-created from scratch every time the session is reopened — the zombie batch
+ * keeps resurrecting no matter how often the in-memory sweep deletes it.
+ * Best-effort: any read/write error is swallowed.
+ */
+async function reconcileStaleParallelMetadata(sessionId: string): Promise<void> {
+  try {
+    const meta = ((await window.nexusDesktop.getSessionMetadata(sessionId)) ?? {}) as Record<string, unknown>;
+    const parallelState = meta.parallelExecution as { tasks?: Array<{ id: string; status: string }> } | undefined;
+    if (!parallelState?.tasks) return;
+    const session = parallelSessions.get(sessionId);
+    if (!session) return;
+
+    let changed = false;
+    const tasks = parallelState.tasks.map((t) => {
+      // A persisted task that the renderer has since force-closed to a
+      // terminal status (timeout/succeeded/failed/cancelled) is a straggler of
+      // a dead run — reconcile the metadata so the next restore is a closed one.
+      if (TERMINAL_TASK_STATUS.has(t.status)) return t;
+      const live = session.tasks.get(t.id);
+      if (live && TERMINAL_TASK_STATUS.has(live.status)) {
+        changed = true;
+        return { ...t, status: live.status, error: live.error };
+      }
+      return t;
+    });
+    if (!changed) return;
+    await window.nexusDesktop.setSessionMetadata(sessionId, {
+      ...meta,
+      parallelExecution: { ...parallelState, tasks },
+    });
+  } catch {
+    // Metadata reconciliation is best-effort; the in-memory panel is already closed.
+  }
+}
+
+/**
+ * Force-close stale parallel runs so the Sub-Agents task graph never leaves a
+ * "running" state unclosed:
+ *
+ *   1. Per-task: any non-terminal sub-task with no progress of its own for
+ *      PARALLEL_TASK_STUCK_TTL_MS is force-closed (`timeout`) individually.
+ *   2. Whole-batch: a batch with no parallel activity at all for
+ *      `stuckTtlMs` (worker crash, abandoned request, restored stale metadata)
+ *      is force-cancelled: delete the session + its in-flight marker, unstick
+ *      busy, and — when the stuck batch is the ACTIVE session — surface a
+ *      visible closure on its transcript card.
+ *
+ * Reconciles the persisted metadata for any affected session so a stale run
+ * cannot resurrect on the next session restore. Returns batches recycled.
  */
 function sweepStuckParallelSessions(stuckTtlMs: number = PARALLEL_STUCK_TTL_MS): number {
   const now = Date.now();
   const stuck: string[] = [];
+  const closed: Array<{ sessionId: string; taskId: string; status: string }> = [];
+
   for (const [sid, session] of parallelSessions) {
+    // 1. Per-task force-close: a non-terminal task without liveness for
+    //    PARALLEL_TASK_STUCK_TTL_MS is closed even when sibling tasks keep the
+    //    batch heartbeat alive.
+    for (const [taskId, task] of session.tasks) {
+      if (isTerminalTask(task)) continue;
+      const lastProgress = task.updatedAt ?? session.startTime;
+      if (now - lastProgress < PARALLEL_TASK_STUCK_TTL_MS) continue;
+      task.status = 'timeout';
+      task.error = getUiLang() === 'zh-CN' ? '超过时限无进展，已强制闭环' : 'Force-closed: no progress within the time limit';
+      task.durationMs = now - lastProgress;
+      task.updatedAt = now;
+      closed.push({ sessionId: sid, taskId, status: task.status });
+    }
+
+    // 2. Whole-batch force-close (coarser backstop): NO activity at all.
     const lastActivity = session.lastActivityAt ?? session.startTime;
     if (now - lastActivity < stuckTtlMs) continue;
     const incomplete = [...session.tasks.values()].some((t) => !isTerminalTask(t));
     if (incomplete || parallelBatches.has(sid)) stuck.push(sid);
   }
-  if (stuck.length === 0) return 0;
+
+  // Surface per-task closures: a fully-closed batch releases its in-flight
+  // marker and — when it is the active session — rebuilds the transcript card
+  // with the final (closed) state, exactly like a normal parallel_end.
+  if (closed.length > 0) {
+    const bySession = new Map<string, typeof closed>();
+    for (const c of closed) {
+      const arr = bySession.get(c.sessionId) ?? [];
+      arr.push(c);
+      bySession.set(c.sessionId, arr);
+    }
+    for (const [sid, closedTasks] of bySession) {
+      const session = parallelSessions.get(sid);
+      if (session && [...session.tasks.values()].every(isTerminalTask)) {
+        parallelBatches.delete(sid);
+        if (parallelCardEl && sid === currentSessionId) {
+          handleParallelEnd(sid, [...session.tasks].map(([taskId, t]) => ({
+            taskId,
+            status: t.status as SubTaskStatus,
+            output: t.output ?? '',
+            durationMs: t.durationMs ?? 0,
+            error: t.error,
+            tokenUsage: { prompt: 0, completion: 0 },
+          })));
+        }
+      }
+      for (const c of closedTasks) {
+        notifySidebarSubscribers({ type: 'task_progress', taskId: c.taskId, status: c.status });
+      }
+      void reconcileStaleParallelMetadata(sid);
+    }
+  }
+
+  if (stuck.length === 0 && closed.length === 0) return 0;
 
   for (const sid of stuck) {
     parallelBatches.delete(sid);
@@ -616,6 +726,7 @@ function sweepStuckParallelSessions(stuckTtlMs: number = PARALLEL_STUCK_TTL_MS):
       handleParallelError(sid, getUiLang() === 'zh-CN' ? '长时间无进展，已自动取消' : 'No progress for a long time — auto-cancelled');
     }
     parallelSessions.delete(sid);
+    void reconcileStaleParallelMetadata(sid);
   }
   if (!running && pendingQueue.length === 0) setBusy(false);
   renderTabBar();
@@ -1111,7 +1222,7 @@ function handleEvent(event: AgentEvent): void {
     case 'text':
       if (event.text) {
         const asst = ensureAssistant();
-        let delta = event.text;
+        let delta = stripProtocolXml(event.text);
         // The provider often emits newline-only `content` deltas before the
         // real text (e.g. one blank line per pending tool call).  Skip leading
         // whitespace until the first non-empty chunk so the bubble never opens
@@ -1831,7 +1942,7 @@ function renderHistoryRow(m: StoredMsg, toolCallInfoMap?: Map<string, ToolCallIn
     }
     if (m.content) {
       const asst = ensureAssistant();
-      asst.buffer = String(m.content).replace(/^[\s\u00a0]+/, '');
+      asst.buffer = stripProtocolXml(String(m.content)).replace(/^[\s\u00a0]+/, '');
       renderAssistantStream(asst);
       asst.stream.classList.remove('streaming');
       curAssistant = null;
@@ -2764,6 +2875,16 @@ async function restoreParallelState(sessionId: string): Promise<void> {
     } | undefined;
     
     if (parallelState?.tasks && parallelState.tasks.length > 0) {
+      const batchAge = parallelState.startTime == null ? 0 : Date.now() - parallelState.startTime;
+      const hasInFlight = parallelState.tasks.some((t) => t.status === 'pending' || t.status === 'running');
+      // A batch whose metadata still claims in-flight tasks but that started far
+      // longer ago than the stuck TTL is a ZOMBIE (dead worker, abandoned run).
+      // Close its loop NOW: mark the stragglers terminal and never re-arm the
+      // in-flight marker or a fresh heartbeat — otherwise each restore keeps
+      // feeding the sweep a brand-new timestamp and the "running" card survives
+      // forever (§ force-closed loops).
+      const zombie = hasInFlight && parallelState.startTime != null && batchAge >= PARALLEL_STUCK_TTL_MS;
+
       // Create a parallel session from metadata
       const session: ParallelSession = {
         sessionId,
@@ -2772,11 +2893,16 @@ async function restoreParallelState(sessionId: string): Promise<void> {
         lastActivityAt: Date.now(),
         tasks: new Map(),
       };
-      
+
       for (const task of parallelState.tasks) {
+        const isStraggler = zombie && (task.status === 'pending' || task.status === 'running');
         session.tasks.set(task.id, {
           description: task.description,
-          status: task.status,
+          status: isStraggler ? 'timeout' : task.status,
+          error: isStraggler
+            ? (getUiLang() === 'zh-CN' ? '超过时限无进展，已强制闭环' : 'Force-closed: no progress within the time limit')
+            : undefined,
+          updatedAt: Date.now(),
         });
       }
 
@@ -2784,12 +2910,20 @@ async function restoreParallelState(sessionId: string): Promise<void> {
       // worker), re-arm the in-flight marker so intermediate session_end events
       // don't clear the running indicator while the tab is open. Completed
       // batches (all succeeded/failed) are historical — no marker, just the card.
-      if (parallelState.tasks.some((t) => t.status === 'pending' || t.status === 'running')) {
+      // Zombie batches must NOT re-arm: their loop is being force-closed.
+      if (hasInFlight && !zombie) {
         parallelBatches.add(sessionId);
       }
 
       parallelSessions.set(sessionId, session);
-      renderParallelCard(session);
+      if (zombie) {
+        // Surface a visible force-closed closure and reconcile the persisted
+        // metadata so the stale run stops resurrecting on every reopen.
+        handleParallelError(sessionId, getUiLang() === 'zh-CN' ? '超时未闭环，已强制取消' : 'Stale run force-closed after timeout');
+        void reconcileStaleParallelMetadata(sessionId);
+      } else {
+        renderParallelCard(session);
+      }
     }
   } catch (err) {
     // Ignore metadata read errors
@@ -2825,6 +2959,7 @@ function handleParallelStart(
       session.tasks.set(task.id, {
         description: task.description,
         status: task.status,
+        updatedAt: Date.now(),
       });
     }
   }
@@ -2850,6 +2985,7 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
       output: task.output,
       error: task.error,
       durationMs: task.durationMs,
+      updatedAt: Date.now(),
     });
   }
 
@@ -4737,7 +4873,10 @@ window.nexusDesktop.onTabsChanged((open) => {
     renderTabBar();
     // Periodic housekeeping: recycle finished batches by TTL and force-cancel
     // batches that hung silently, even when the Sub-Agents panel is closed.
-    setInterval(() => sweepStuckParallelSessions(), 60_000);
+    setInterval(() => {
+      pruneParallelSessions();
+      sweepStuckParallelSessions();
+    }, 60_000);
   } catch (err) {
     addSystem(`${t('startFailed')}${errText(err)}`);
   }

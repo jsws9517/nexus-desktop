@@ -87,6 +87,9 @@ export function mountSubAgentsPage(
   /** Rebuild the whole list from the shared parallel-session map (cheap: card render is string-based). */
   const render = (): void => {
     ctx.pruneParallelSessions?.();
+    // Self-heal: close stale "running" tasks / dead batches before rendering so
+    // the task graph never shows an unclosed slot after the timeout.
+    ctx.forceCloseStaleTasks?.();
     // The panel is scoped to the FOCUSED workspace: switching tabs re-associates
     // it to that session's parallel activity automatically.
     const activeSessionId = ctx.getActiveSessionId?.() ?? ctx.sessionId;

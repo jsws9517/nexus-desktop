@@ -35,6 +35,10 @@ export interface SidebarContext {
   /** Recycle finished sessions (TTL sweep + hard cap). Optional guard for
    *  pages built against older contexts. */
   pruneParallelSessions?(ttlMs?: number): number;
+  /** Force-close stale parallel runs (per-task timeout + dead-batch sweep) so a
+   *  task card never sits in "running" forever. Optional — pages may call it
+   *  from their own render/timer loop to self-heal. */
+  forceCloseStaleTasks?(): void;
   /** Subscribe to the agent event bus; returns an unsubscribe function. */
   subscribe(fn: (event: AgentEvent) => void): () => void;
 }

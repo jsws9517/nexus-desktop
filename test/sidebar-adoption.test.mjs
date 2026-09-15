@@ -289,3 +289,33 @@ test('sub-agents page: re-renders on parallel_start / parallel_end events', () =
   dispose();
   assert.equal(handlers.length, 0, 'unsubscribed on dispose');
 });
+
+test('sub-agents page: self-heals stale runs by invoking forceCloseStaleTasks on render', () => {
+  const container = new FakeContainer();
+  let handlers = [];
+  const sessions = new Map();
+  let sweepCalls = 0;
+  const ctx = {
+    sessionId: 's1',
+    getParallelSessions: () => sessions,
+    // The page must consult the optional hook on every render so a stale
+    // "running" card is force-closed even without a fresh parallel event.
+    forceCloseStaleTasks: () => { sweepCalls++; },
+    subscribe(fn) { handlers.push(fn); return () => { handlers = []; }; },
+  };
+  const dispose = mountSubAgentsPage(container, ctx, {
+    getUiLang: () => 'en',
+    renderCard: () => '<div class="fake-card"></div>',
+  });
+
+  // Mount triggers an initial render → sweep hook consulted at least once.
+  assert.ok(sweepCalls >= 1, 'sweep hook consulted on initial render');
+
+  // Any parallel event re-renders → the page keeps sweeping stale runs.
+  sessions.set('s1', { sessionId: 's1', prompt: 'Run!', startTime: 5, tasks: new Map([['k1', { status: 'running' }]]) });
+  const before = sweepCalls;
+  for (const h of handlers) h({ type: 'parallel_start', sessionId: 's1', prompt: 'Run!' });
+  assert.ok(sweepCalls > before, 'sweep hook re-consulted after a parallel event');
+
+  dispose();
+});
