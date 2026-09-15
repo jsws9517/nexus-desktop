@@ -254,6 +254,7 @@ declare global {
       onTabEvents(cb: (payloads: Array<{ sessionId: string; event: AgentEvent }>) => void): void;
       onTabsChanged(cb: (tabs: TabInfo[]) => void): void;
       onUpdateState(cb: (state: Record<string, unknown>) => void): void;
+      debugModelLog(msg: string): Promise<void>;
     };
   }
 }
@@ -4475,7 +4476,10 @@ async function remediateDelistedModel(active: string, models: string[], current:
 const MODEL_UNAVAILABLE_RE =
   /Model is unavailable|Model is not available|model .*unavailable|model .*does not exist|model .*not found|model .*no longer available|403|forbidden|访问被拒绝|已下架|已下线|模型.*不可用/i;
 
-function debugLog(...args: unknown[]): void { console.debug('[MODEL-BL]', ...args); }
+function debugLog(...args: unknown[]): void {
+  const msg = args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+  window.nexusDesktop.debugModelLog(msg).catch(() => {});
+}
 
 /**
  * A chat invocation for `modelId` on `providerName` failed because the model is

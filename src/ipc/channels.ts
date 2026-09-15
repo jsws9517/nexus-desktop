@@ -124,6 +124,7 @@ export const CHANNELS = {
   resourceState: 'nexus:resourceState',
   updateState: 'nexus:updateState',
   configWindowClosed: 'nexus:configWindowClosed',
+  debugModelLog: 'nexus:debugModelLog',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
