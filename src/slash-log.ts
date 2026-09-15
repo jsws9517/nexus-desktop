@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, appendFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 
 /**
  * Per-session slash-command output log.
@@ -9,6 +9,9 @@ import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
  * never re-feed the LLM context on resume/regenerate). Instead each execution
  * is appended to `~/.nexus/slash-logs/<sessionId>.md` as a self-describing
  * block and the renderer rehydrates collapsible cards from this file on reload.
+ *
+ * Retention: per-session files older than SLASH_LOG_RETENTION_DAYS are pruned
+ * (checked at most once per day per process, see `pruneSlashLogs`).
  */
 
 export interface SlashLogEntry {
@@ -31,6 +34,41 @@ function baseDir(): string {
   return join(dir, 'slash-logs');
 }
 
+export const SLASH_LOG_RETENTION_DAYS = 90;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Hard-delete slash-log files older than the retention window. */
+export function pruneSlashLogs(nowMs = Date.now()): number {
+  const cutoff = nowMs - SLASH_LOG_RETENTION_DAYS * DAY_MS;
+  let removed = 0;
+  try {
+    for (const f of readdirSync(baseDir())) {
+      const p = join(baseDir(), f);
+      try {
+        if (statSync(p).isFile() && statSync(p).mtimeMs < cutoff) {
+          rmSync(p);
+          removed++;
+        }
+      } catch {
+        // stat/rm race — skip
+      }
+    }
+  } catch {
+    // no slash-log dir — nothing to prune
+  }
+  return removed;
+}
+
+let lastPrune = 0;
+
+function maybePruneSlashLogs(): void {
+  const now = Date.now();
+  if (now - lastPrune < DAY_MS) return;
+  lastPrune = now;
+  pruneSlashLogs(now);
+}
+
 export function slashLogPath(sessionId: string): string {
   return join(baseDir(), `${sessionId}.md`);
 }
@@ -39,6 +77,7 @@ export function slashLogPath(sessionId: string): string {
 export function appendSlashLog(sessionId: string, entry: SlashLogEntry): void {
   const dir = baseDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  maybePruneSlashLogs();
   const path = slashLogPath(sessionId);
   // HTML comment header keeps the metadata machine-parseable while staying
   // invisible in a markdown viewer. cmd is JSON-encoded so quotes/slashes are safe.

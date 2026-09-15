@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { WORKER_MARKERS } from './shared/constants.js';
+import { boundedSet } from './shared/bounded.js';
 
 /**
  * Desktop-only direct access to the core session DB (better-sqlite3).
@@ -286,6 +287,10 @@ const tokenCache = new Map<string, TokenCacheEntry>();
 
 interface TokenBaselineEntry extends TokenEstimate {}
 
+/** Hard cap on per-session token-estimate cache/baseline entries — prevents
+ *  unbounded memory growth across many sessions on a long-lived worker. */
+const MAX_TOKEN_CACHE_ENTRIES = 200;
+
 /**
  * Per-session "cleared at" snapshots. When the user runs `/clear` the in-memory
  * context is wiped but the DB rows stay (the transcript is only runtime, not
@@ -349,7 +354,7 @@ export function estimateSessionTokensRaw(
       tokenEstimate: recompute ? total : prev.tokenEstimate + total,
       messageCount: recompute ? count : prev.messageCount + count,
     };
-    tokenCache.set(cacheKey, entry);
+    boundedSet(tokenCache, cacheKey, entry, MAX_TOKEN_CACHE_ENTRIES);
     return { tokenEstimate: entry.tokenEstimate, messageCount: entry.messageCount };
   } catch {
     return { tokenEstimate: 0, messageCount: 0 };
@@ -393,10 +398,10 @@ export function recordTokenBaseline(
 ): TokenEstimate {
   const raw = estimateSessionTokensRaw(sessionId, key, estimate, batchSize);
   const cacheKey = `${key}:${sessionId}`;
-  tokenBaselines.set(cacheKey, {
+  boundedSet(tokenBaselines, cacheKey, {
     tokenEstimate: raw.tokenEstimate,
     messageCount: raw.messageCount,
-  });
+  }, MAX_TOKEN_CACHE_ENTRIES);
   return raw;
 }
 
