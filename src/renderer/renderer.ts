@@ -1819,8 +1819,9 @@ let searchQuery = '';
 let pinnedIds: string[] = [];
 
 async function togglePin(id: string): Promise<void> {
+  const wasPinned = pinnedIds.includes(id);
   pinnedIds = pinnedIds.filter((x) => x !== id);
-  if (!pinnedIds.includes(id)) pinnedIds.push(id);
+  if (!wasPinned) pinnedIds.push(id);
   try {
     await window.nexusDesktop.setPinned(pinnedIds);
   } catch {}
