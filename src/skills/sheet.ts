@@ -188,7 +188,7 @@ async function readXlsx(path: string, sheetName?: string): Promise<{ columns: st
   await wb.xlsx.readFile(path);
   const ws = sheetName ? (wb.getWorksheet(sheetName) ?? wb.worksheets[0]) : wb.worksheets[0];
   if (!ws) throw new Error('Workbook has no worksheets');
-  const values = ws.getSheetValues() as Array<Array<unknown> | undefined>;
+  const values = ws.getSheetValues() as unknown as Array<Array<unknown> | undefined>;
   const rowCount = Math.min(ws.rowCount, MAX_ROWS + 1);
   const grid: unknown[][] = [];
   for (let r = 1; r <= rowCount; r += 1) {
