@@ -48,6 +48,24 @@ test('renderBlocks renders tables', () => {
   assert.match(out, /<td>1<\/td>/);
 });
 
+test('renderBlocks keeps pipes inside inline code as cell content', () => {
+  // GFM: `|` inside a code span must NOT split the cell (regression for the
+  // git-page table whose last cell embedded callGitTool('a'|'b'…)).
+  const src =
+    '| 现状 | 证据 |\n|---|---|\n' +
+    '| 工具：`callGitTool(\'a\'|\'b\')` 存在 | ✅ 已核 |';
+  const out = renderBlocks(src);
+  assert.match(out, /<td>工具：<code>callGitTool\('a'\|'b'\)<\/code> 存在<\/td>/);
+  assert.match(out, /<td>✅ 已核<\/td>/);
+  assert.ok(!out.includes("'a'</td><td>'b'"), 'pipe inside code must not create a cell');
+});
+
+test('renderBlocks handles escaped pipes in table cells', () => {
+  const out = renderBlocks('| A |\n|---|\n| x \\| y |');
+  assert.match(out, /<td>x \| y<\/td>/);
+  assert.ok(!out.includes('<td>x </td>'), 'escaped pipe must not split the cell');
+});
+
 test('renderBlocks renders task checklists', () => {
   const out = renderBlocks('- [x] done\n- [ ] todo');
   assert.match(out, /class="task-item"/);

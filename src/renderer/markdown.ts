@@ -59,19 +59,45 @@ function isTableSeparator(line: string): boolean {
   return /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && line.includes('-');
 }
 
+/**
+ * Split one `|…|` row into cells WITHOUT treating pipes inside inline code
+ * spans (`…`) as column separators (GFM behavior). Also honors `\|` escapes.
+ */
+function splitRow(line: string): string[] {
+  const s = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells: string[] = [];
+  let cur = '';
+  let inCode = false;
+  for (let k = 0; k < s.length; k++) {
+    const ch = s[k];
+    if (ch === '\\' && s[k + 1] === '|' && !inCode) {
+      cur += '|';
+      k++;
+      continue;
+    }
+    if (ch === '`') {
+      inCode = !inCode;
+      cur += ch;
+      continue;
+    }
+    if (ch === '|' && !inCode) {
+      cells.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  cells.push(cur);
+  return cells.map((c) => c.trim());
+}
+
 /** Parse a run of consecutive `|…|` lines starting at index i. Returns rows. */
 function collectTable(lines: string[], i: number): { rows: string[][]; end: number } | null {
   if (!lines[i].includes('|')) return null;
   const rows: string[][] = [];
   let j = i;
   while (j < lines.length && lines[j].trim() !== '' && lines[j].includes('|')) {
-    const cells = lines[j]
-      .trim()
-      .replace(/^\|/, '')
-      .replace(/\|$/, '')
-      .split('|')
-      .map((c) => c.trim());
-    rows.push(cells);
+    rows.push(splitRow(lines[j]));
     j++;
   }
   if (rows.length < 2 || !isTableSeparator(rows[1].join('|'))) return null;
