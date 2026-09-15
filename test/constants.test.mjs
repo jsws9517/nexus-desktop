@@ -6,6 +6,7 @@ import {
   EARLY_METHODS,
   isWorkerPrompt,
   isWorkerBlockText,
+  stripProtocolXml,
 } from '../dist/shared/constants.js';
 
 test('KEY_MASK is the expected placeholder', () => {
@@ -40,4 +41,28 @@ test('EARLY_METHODS contains the read-only fast-path methods', () => {
     assert.ok(EARLY_METHODS.has(m), `expected ${m} in EARLY_METHODS`);
   }
   assert.ok(!EARLY_METHODS.has('chat'), 'chat must not be early');
+});
+
+test('stripProtocolXml removes leaked protocol XML residue', () => {
+  assert.equal(
+    stripProtocolXml('接下来你说一个字，我就开工～ 😄</parameter>\n</invoke>\n</tool_calls> <system-reminder>'),
+    '接下来你说一个字，我就开工～ 😄',
+  );
+});
+
+test('stripProtocolXml removes full <system-reminder> blocks', () => {
+  assert.equal(
+    stripProtocolXml('hello\n<system-reminder>ignored instructions</system-reminder>\nworld'),
+    'hello\nworld',
+  );
+});
+
+test('stripProtocolXml removes <invoke> tool-call openings and stray tags', () => {
+  assert.equal(
+    stripProtocolXml('<invoke name="bash"><parameter name="cmd">ls</parameter></invoke> ok'),
+    ' ok',
+  );
+  assert.equal(stripProtocolXml('plain text with <b>html</b>'), 'plain text with <b>html</b>');
+  assert.equal(stripProtocolXml('no tags at all'), 'no tags at all');
+  assert.equal(stripProtocolXml(''), '');
 });

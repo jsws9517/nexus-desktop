@@ -10,7 +10,7 @@
  * (agent-worker, main, worker-host, tests) stay unchanged.
  */
 
-import { isWorkerPrompt, KEY_MASK } from '../shared/constants.js';
+import { isWorkerPrompt, KEY_MASK, stripProtocolXml } from '../shared/constants.js';
 import type { StoredRow } from '../session-db.js';
 import { deleteAllSessionMessages, getLastUserMessageId, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
@@ -784,6 +784,13 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    * stall guard. The raw event is then forwarded to the UI unchanged.
    */
   private handleAgentEvent(event: AgentEvent): void {
+    // Strip leaked protocol XML (</parameter></invoke></tool_calls> residue,
+    // <system-reminder> blocks) before anything counts or renders it.
+    if (event.type === 'text' && typeof event.text === 'string') {
+      const clean = stripProtocolXml(event.text);
+      if (!clean) return; // pure protocol residue — nothing user-visible
+      if (clean !== event.text) event = { ...event, text: clean };
+    }
     const mon = this.activeMonitor;
     if (mon) {
       if (event.type === 'thinking' && typeof event.thinking === 'string') {
