@@ -3226,12 +3226,17 @@ function drain(): void {
   curThinking = null;
   toolCards.clear();
   void (async () => {
+    // Snapshot the attempt's provider/model: a model the gateway rejects at call
+    // time (list up, model down) must be retired from the model list cache.
+    const attemptProvider = status.provider;
+    const attemptModel = status.model;
     try {
       await window.nexusDesktop.chat(text, { sessionId: currentSessionId || undefined });
       await refreshSessions(currentSessionId);
       await syncMsgCache(currentSessionId);
     } catch (err) {
       addSystem(`${t('error')}${errText(err)}`);
+      void remediateUnavailableModel(attemptProvider, attemptModel, errText(err));
     } finally {
       running = false;
       inFlightPrompt = '';
@@ -4306,6 +4311,48 @@ async function remediateDelistedModel(active: string, models: string[], current:
   } catch {
     // leave the current model as-is
   }
+}
+
+// Provider-side availability errors that mean a model id listed in /models is
+// actually NOT servable at call time (list up, model down — e.g. Azure/OAI
+// gateways). Matched against the raw error text of a failed chat invocation.
+const MODEL_UNAVAILABLE_RE =
+  /Model is unavailable|Model is not available|model .*unavailable|model .*does not exist|model .*not found|model .*no longer available|已下架|已下线|模型.*不可用/i;
+
+/**
+ * A chat invocation for `modelId` on `providerName` failed because the model is
+ * unavailable at call time even though /models still lists it. Purge the id
+ * from the provider's cached list (so the dropdown drops it until the next
+ * periodic re-fetch) and, when it was the active session model, auto-switch to
+ * the provider's configured default model.
+ */
+async function remediateUnavailableModel(providerName: string, modelId: string, errorText: string): Promise<void> {
+  if (!MODEL_UNAVAILABLE_RE.test(errorText)) return;
+  retireUnavailableModel(providerName, modelId);
+  addSystem(`${t('modelUnavailableRemoved', { name: providerName, model: modelId })}`);
+  if (status.provider !== providerName || status.model !== modelId) return;
+  const providerDefault = providers.find((p) => p.name === providerName)?.model;
+  if (!providerDefault || providerDefault === modelId) return;
+  try {
+    await window.nexusDesktop.switchModel(providerDefault, { sessionId: currentSessionId || undefined });
+    status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
+    addSystem(`${t('modelDeprecated')} (${modelId} → ${providerDefault})`);
+    await refreshSessions();
+    await refreshSidebarSession();
+    // Re-render the dropdown from the (purged) cache so the new default model
+    // becomes the selection — no force refetch (the API still lists the dead id).
+    refreshModelSelect();
+  } catch {
+    // keep the failed model as-is (user can pick another from the dropdown)
+  }
+}
+
+/** Remove `modelId` from the provider's cached list and re-render the dropdown. */
+function retireUnavailableModel(providerName: string, modelId: string): void {
+  const cached = modelsCache.get(providerName);
+  if (!cached || !cached.list.includes(modelId)) return;
+  modelsCache.set(providerName, { ...cached, list: cached.list.filter((m) => m !== modelId) });
+  if (status.provider === providerName) populateModelOptions(cached.list.filter((m) => m !== modelId), status.model);
 }
 
 function populateModelOptions(models: string[], current: string): void {
