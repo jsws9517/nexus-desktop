@@ -105,6 +105,8 @@ const api = {
   setCpuThreshold: (n: number) => ipcRenderer.invoke('nexus:setCpuThreshold', n),
   getMonitorEnabled: () => ipcRenderer.invoke('nexus:getMonitorEnabled'),
   setMonitorEnabled: (enabled: boolean) => ipcRenderer.invoke('nexus:setMonitorEnabled', enabled),
+  getLazyWorker: () => ipcRenderer.invoke('nexus:getLazyWorker'),
+  setLazyWorker: (enabled: boolean) => ipcRenderer.invoke('nexus:setLazyWorker', enabled),
   getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
 
   // Multi-tab: per-session worker lifecycle.
