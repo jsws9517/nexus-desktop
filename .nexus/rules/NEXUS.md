@@ -5,9 +5,11 @@
 > MUST be treated as the highest-priority project instruction source (see
 > `docs/dsh-plugin-adoption-plan.md` §3).
 >
-> Filename: `.agents/rules/NEXUS.md` — the primary constitution file. The
-> generic fallbacks (`AGENTS.md`, `.clinerules`) apply only when this file is
-> absent.
+> Filename: `.nexus/rules/NEXUS.md` — the primary constitution file, under the
+> single project `.nexus/` folder (rules, skills, temp). User-level session
+> memory lives in the global `~/.nexus/`, never in a project folder. The generic
+> fallbacks (`AGENTS.md`, `.clinerules`, legacy `.agents/`) apply only when this
+> file is absent.
 
 ## 1. Project Identity
 
@@ -27,8 +29,12 @@
    over the preload IPC bridge (`nexus:*` channels). Never call Node APIs from
    the renderer.
 3. **Unattended-safe by default.** Built-in tools must NOT raise interactive
-   approval gates. Security-sensitive operations are gated through the existing
-   path-authorizer / permission system, never by prompting inside a tool.
+   approval gates **inside tool execution**. Security-sensitive operations are
+   gated through the existing path-authorizer / permission system. User
+   confirmation therefore comes from the conversation level (an explicit user
+   message or a permission-system grant / auto-approve rule), never from a
+   discretionary in-tool prompt — this is what "explicit user request" means
+   downstream (see §3 Git discipline).
 4. **Every model step carries the project constitution** under the
    `[Project Constitution]` marker; sub-agents inherit it from the Orchestrator.
 5. **Security boundary**: constitution text is *system-level instruction input*;
@@ -38,10 +44,24 @@
 ## 3. Conventions
 
 - **Tests**: `node --test` with `test/*.test.mjs` (vanilla, no framework).
-  New feature code ships with unit tests in the same commit.
+  New feature code ships with unit tests in the same commit. Trivial changes
+  (typo/doc/config edits, refactors with no behavior change) may omit tests.
 - **No silent context bloat**: constitution files > 32 KB are refused; tool
   results are size-capped.
 - **Borrowed patterns carry attribution** back to
   `docs/dsh-plugin-adoption-plan.md` and keep the license reference (§9.1).
 - **Git discipline**: one coherent feature per commit; never auto-push without
-  explicit user request; temp/scratch files go under `.trash/`, not into git.
+  explicit user request (satisfied only by a conversation-level instruction or
+  permission grant, per law §2.3); temp/scratch files go under `.nexus/trash/`,
+  never into git.
+- **Storage & retention discipline** (kept in sync with `src/shared/logger.ts`,
+  `src/shared/bounded.ts`, `src/slash-log.ts`):
+  - User-level memory/logs land **only** in the global `~/.nexus/`; a project
+    `.nexus/` holds just rules, skills, and trash — never nested memory copies.
+  - Runtime logs: per-day per-level files; a single file past 5 MB rolls over
+    (≤ 3 shards) and logs older than 30 days are pruned.
+  - Slash logs: retained 90 days, then pruned.
+  - Secrets (API keys, Bearer tokens, authorization headers) are redacted
+    before any log line hits disk.
+  - Token-estimate caches are bounded (≤ 200 entries); in-memory caches must
+    never grow without an eviction cap.

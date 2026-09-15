@@ -69,45 +69,57 @@ knowledge graph stores *user* facts; it does not carry *project* rules into the 
 
 | Aegis Concept | Description | Nexus-Desktop Mapping |
 |---|---|---|
-| **Constitution injection** | `.agents/rules/NEXUS.md` injected into **every** model step (filename localized: Nexus's own identity, not copied from other agents' naming) | Reuse `ctx.prependToSystem()` with a dedicated `[Project Constitution]` marker; auto-removed when the rule set is empty |
-| **`.agents` directory standard** | One folder per project: `skills/<skill>/SKILL.md`, `rules/NEXUS.md`, `mcp.json` | Adopt the same standard at the project root (see [§3.5](#35-agents-directory-spec)) |
+| **Constitution injection** | `.nexus/rules/NEXUS.md` injected into **every** model step (filename localized: Nexus's own identity, not copied from other agents' naming) | Reuse `ctx.prependToSystem()` with a dedicated `[Project Constitution]` marker; auto-removed when the rule set is empty |
+| **`.nexus` directory standard** | One single project folder for all Nexus-side artifacts: `skills/<skill>/SKILL.md`, `rules/NEXUS.md`, `mcp.json`, `trash/`. User-level session memory stays in the global `~/.nexus/` — never projected into a project folder | Adopt as the project root's only Nexus folder (see [§3.5](#35-nexus-directory-spec)); the ecosystem `.agents/` convention is retained solely as a low-priority migration fallback |
 | **Native knowledge tools** | `agents_index`, `agents_read`, `agents_search` callable by the agent | Add three built-in tools registered in `src/tools/index.ts` (see [§3.6](#36-tool-specifications)) |
-| **Global + project scopes** | Global config in `~/.dsh/aegis-mcp.json`, project config in `.agents/mcp.json` | Global in `~/.nexus/config.json`; project in `.agents/` under the authorized project root |
+| **Global + project scopes** | Global config in `~/.dsh/aegis-mcp.json`, project config in `.nexus/mcp.json` | Global in `~/.nexus/config.json`; project in `.nexus/` under the authorized project root |
 | **Constitution fallback chain** | `NEXUS.md` → (generic) `AGENTS.md` → `.clinerules` → root `AGENTS.md` | Same precedence, evaluated left-to-right, first existing file wins; the upstream Aegis names `DEEPSEEK.md`/`CLAUDE.md` were dropped — the constitution file is named after **Nexus**, not after other agents |
 
 ### 3.4 Scope & Non-Goals
 
 **In scope**
-- Read-only discovery of project `.agents/` (respecting the existing path-authorizer boundary).
+- Read-only discovery of the project `.nexus/` folder (respecting the existing path-authorizer boundary).
 - Constitution injection at every model step for **local** sessions.
 - Three knowledge tools (`agents_index` / `agents_read` / `agents_search`).
-- Project-scoped MCP server loading via `.agents/mcp.json` (merged through the existing main-process hub).
+- Project-scoped MCP server loading via `.nexus/mcp.json` (merged through the existing main-process hub).
 
 **Out of scope (v1)**
 - The "Control Center" M3 panel (deferred to P2 UI phase).
 - Live editing of rules from the UI.
 - Preset installer (no `.agent-presets` concept in Nexus-Desktop).
 
-### 3.5 `.agents` Directory Spec
+### 3.5 `.nexus` Directory Spec
+
+Single project-level folder for all Nexus-side artifacts (avoids a growing zoo of
+project dot-directories):
 
 ```
 <project-root>/
-└── .agents/
+└── .nexus/
     ├── skills/<skill-name>/SKILL.md   ← optional; how to build X (markdown w/ front-matter)
-    ├── rules/NEXUS.md               ← project constitution (highest precedence)
+    ├── rules/NEXUS.md                 ← project constitution (highest precedence)
+    ├── trash/                         ← temp/scratch files (never committed)
     └── mcp.json                       ← optional; standard { "mcpServers": {...} } format
 ```
 
+> **Memory is NOT project-scoped**: user-level session memory lives in the global
+> `~/.nexus/` data directory (`native/data/memory.jsonl` etc.). A project `.nexus/`
+> folder must never nest its own `knowledge/`/memory copies — that doubles the
+> `.nexus` layer and drags session data into per-project directories (and git).
+
 **Constitution fallback chain** (first existing wins):
-`rules/NEXUS.md` → `rules/AGENTS.md` → root `.clinerules` → root `AGENTS.md` → any `rules/*.md`.
+`.nexus/rules/NEXUS.md` → `.nexus/rules/AGENTS.md` → root `.clinerules` → root `AGENTS.md` →
+legacy `.agents/rules/NEXUS.md` → legacy `.agents/rules/AGENTS.md` → any `.nexus/rules/*.md`.
 
 > **Naming decision**: the upstream Aegis constitution file is `rules/DEEPSEEK.md` (per DSH
 > project conventions), with `CLAUDE.md` also in its chain. Nexus-Desktop **adapts, not copies**:
-> the primary constitution file is `rules/NEXUS.md` — named after this project. The generic
+> the primary constitution file is `.nexus/rules/NEXUS.md` — named after this project. The generic
 > fallbacks (`AGENTS.md`, `.clinerules`) remain because they are open cross-tool conventions
-> in which the project may already document itself; they only apply if `NEXUS.md` is absent.
+> in which the project may already document itself; the legacy `.agents/rules/*` entries exist
+> ONLY so projects that adopted the earlier `.agents` convention keep loading their constitution.
+> They never apply when `.nexus/rules/NEXUS.md` is present.
 
-**Security note**: `.agents/rules/*.md` is **system-level instruction input**. It MUST be treated as
+**Security note**: `.nexus/rules/*.md` is **system-level instruction input**. It MUST be treated as
 untrusted until the user authorizes the directory (path authorizer). Loaded rule text is appended to
 the system prompt under a clearly delimited marker so it can be stripped or bisected for audit.
 This mirrors the discipline already applied to WORK_MARKER prompt decoration and `remember` writes.
@@ -188,11 +200,27 @@ model and keeps isolation guarantees intact.
 
 ### 3.8 Acceptance Criteria
 
-- [ ] With `.agents/rules/NEXUS.md` present, every LLM step in a local session includes the rule text.
+- [ ] With `.nexus/rules/NEXUS.md` present, every LLM step in a local session includes the rule text.
 - [ ] Removing the file (or clearing the marker) removes the text from subsequent steps.
 - [ ] `agents_index` / `agents_read` / `agents_search` work within authorized roots; out-of-root paths are denied.
 - [ ] Constitution loading honors the path-authorizer grant (unattended-safe, no dead-stdin prompt).
 - [ ] Loading a > 32 KB constitution is refused with an explicit error (no silent context bloat).
+
+### 3.9 Constitution Content Decisions
+
+The live constitution (`.nexus/rules/NEXUS.md`) encodes two content decisions
+that must survive any regeneration from this plan:
+
+1. **"Explicit user request" boundary** — the unattended-safe law (§2.3 in the
+   constitution) bans interactive approval gates *inside tool execution* only.
+   User confirmation for sensitive actions must come from the conversation
+   level: an explicit user message or a permission-system grant / auto-approve
+   rule. "Never auto-push without explicit user request" (Git discipline) is
+   satisfied the same way — a discretionary in-tool prompt is never the
+   confirmation channel.
+2. **Test-requirement exemption** — new feature code ships unit tests in the
+   same commit, except for trivial changes (typo / doc / config edits, pure
+   refactors with no behavior change) which may omit tests.
 
 ---
 
@@ -450,7 +478,7 @@ Later ──── P3-Operations
    directory is authorized by the path authorizer; keep marker-delimited so it is strippable/auditable.
 2. **Rule files apply only to authorized project roots** — the user's known constraint that
    `D:\agent-cli\nexus-coder` is off-limits without authorization is preserved by the existing
-   authorizer; `.agents/` discovery never bypasses it.
+   authorizer; `.nexus/` discovery never bypasses it.
 3. **Sub-agent inheritance must be explicit** — orchestrator passes constitution text in the prompt,
    never implicit filesystem reads inside isolated workers.
 4. **Size caps** — constitution ≤ 32 KB; tool outputs follow the existing `MAX_TOOL_RESULT_CHARS` regime.
@@ -477,16 +505,16 @@ Later ──── P3-Operations
 
 | Area | Coverage | File (new) |
 |---|---|---|
-| Constitution resolution | Fallback chain `NEXUS.md→AGENTS.md→.clinerules→root AGENTS.md`; first-existing-wins; empty `.agents/` returns null | `test/agents-constitution.test.mjs` |
+| Constitution resolution | Fallback chain `.nexus/rules/NEXUS.md→.nexus/rules/AGENTS.md→.clinerules→root AGENTS.md→legacy .agents/rules/NEXUS.md`; first-existing-wins; empty `.nexus/` returns null | `test/agents-constitution.test.mjs` |
 | Size cap | > 32 KB constitution refused with explicit error; no silent truncation | same |
-| `agents_*` tools | Index/read/search against a fixture `.agents/` tree; out-of-root path denied by authorizer mock | `test/agents-tools.test.mjs` |
+| `agents_*` tools | Index/read/search against a fixture `.nexus/` tree; out-of-root path denied by authorizer mock | `test/agents-tools.test.mjs` |
 | Capability merge | `modelCapabilities` overlay on defaults; `vision: unknown` stays conservative (native behavior preserved) — mirrors ModLens exclusion rule | `test/model-capabilities.test.mjs` |
 | Vision route hint | Hint injected only when `vision: false`; absent for `true`/`unknown` | same |
 | TPS / context gauge | Token-delta over wall-time; green→amber→red thresholds from declared `contextLimit` | `test/gauges.test.mjs` |
 
 ### 11.2 Integration Tests (RPC smoke, `scripts/smoke-test.mjs` pattern)
 
-- Local session with `.agents/rules/NEXUS.md` → every step's built prompt contains `[Project Constitution]` marker (audit hook assertion).
+- Local session with `.nexus/rules/NEXUS.md` → every step's built prompt contains `[Project Constitution]` marker (audit hook assertion).
 - Removing the file mid-session → next step's marker absent (watcher path).
 - Sub-agent (parallel phase): orchestrator-passed constitution appears exactly once in child prompt; child worker performs no filesystem discovery.
 - Sidebar `registerTab` round-trip: main→renderer→main with typed `SidebarEvent`; unregister cleans subscriptions (no leaked listeners after tab close).
@@ -519,6 +547,8 @@ Later ──── P3-Operations
 |---|---|---|
 | 1.0 | 2026 | Initial requirements & design (P0–P4 adoption analysis, references §9, security annotations §9.4) |
 | 1.1 | 2026 | Added dependency diagram (§8.2), testing strategy (§11), risk register (§12); version bumped |
+| 1.2 | 2026 | Consolidated project artifacts under a single `.nexus/` folder (§3.3/§3.5/§3.8/§3.9/§9.4/§11): constitution moved to `.nexus/rules/NEXUS.md`, temp under `.nexus/trash/`; `.agents/` demoted to legacy migration fallback only |
+| 1.3 | 2026 | Storage-lifecycle hardening (constitution §3 & `src/shared/logger.ts`/`src/shared/bounded.ts`/`src/slash-log.ts`): 5 MB log rotation (≤ 3 shards), 30-day log + 90-day slash-log pruning, secret redaction before logging, bounded token-estimate caches (≤ 200); new `test/storage-lifecycle.test.mjs` |
 
 ---
 

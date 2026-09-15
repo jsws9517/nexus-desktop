@@ -16,3 +16,11 @@ nexus-releases/
 .opencode/
 gen-final.mjs
 verify-final.mjs
+
+# Project .nexus/ folder (single project-level home for Nexus artifacts).
+# rules/ is TRACKED (constitution). Temp/scratch lives in trash/ — NEVER committed.
+.nexus/trash/
+# User-level session memory NEVER belongs in a project .nexus/ (it lives in the
+# global ~/.nexus/); any stray knowledge/ copies under a project must stay ignored.
+.nexus/knowledge/
+.nexus/memory/

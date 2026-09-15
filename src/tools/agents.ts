@@ -1,14 +1,20 @@
 /**
  * Project knowledge tools (adapted from Tolten Aegis — see docs/dsh-plugin-adoption-plan.md §3).
  *
- * Implements the `.agents` project-knowledge standard, first filename localized
- * to this project's identity (Nexus):
+ * Implements the `.nexus` project-knowledge standard — a single project-level
+ * folder for all Nexus-side artifacts (rules, skills, temp):
  *
  *   <project-root>/
- *   └── .agents/
+ *   └── .nexus/
  *       ├── skills/<skill-name>/SKILL.md   ← how to build X (markdown w/ front-matter)
  *       ├── rules/NEXUS.md                 ← project constitution (highest precedence)
- *       └── mcp.json                       ← optional; standard mcpServers format
+ *       └── trash/                         ← temp/scratch files (never committed)
+ *
+ * User-level session memory stays in `~/.nexus/` (the global data dir) — it is
+ * NEVER projected into a project `.nexus/` folder.
+ *
+ * `.agents/` remains only as a legacy compatibility fallback for the ecosystem
+ * standard — never a primary location for new Nexus projects.
  *
  * The **constitution** is loaded by AgentService and injected into EVERY model
  * step under the `[Project Constitution]` marker (see §3.7 of the adoption plan),
@@ -16,7 +22,7 @@
  *
  * Three read-only tools are exposed to the LLM:
  *   - agents_index   — list every skill / rule declared in the project
- *   - agents_read    — read any file under .agents/** or the constitution
+ *   - agents_read    — read any file under .nexus/** or the constitution
  *   - agents_search  — keyword search over skill/rule content
  *
  * Security model (§9.4 of the adoption plan):
@@ -24,7 +30,7 @@
  *     inside an authorized project root (worker cwd / path-authorizer grant),
  *     never for arbitrary directories.
  *   - All reads are read-only and size-capped (MAX_CONSTITUTION_BYTES) to avoid
- *     silent context bloat; every resolved path stays inside `<root>/.agents`.
+ *     silent context bloat; every resolved path stays inside `<root>/.nexus`.
  *   - No interactive Approval gate is raised by these tools (unattended-safe).
  */
 
@@ -45,21 +51,26 @@ const MAX_TOOL_RESULT_CHARS = 30_000;
 /**
  * Fallback chain, first existing file wins.
  *
- * `.agents/rules/NEXUS.md` is the project constitution — the filename is
+ * `.nexus/rules/NEXUS.md` is the project constitution — the filename is
  * localized to Nexus (not copied from Aegis' DEEPSEEK.md / other agents' names).
  * The trailing generic entries (AGENTS.md, .clinerules) stay as low-priority
  * compatibility for open cross-tool conventions (not DSH-specific), so a project
  * that already documents itself for other agents still gets picked up last.
+ * The legacy `.agents/` entries are kept ONLY so projects that adopted the
+ * earlier `.agents/rules/NEXUS.md` convention (including this repo's pre-.nexus
+ * state) keep loading their constitution — they must never be a primary path.
  */
 const CONSTITUTION_FALLBACK = [
-  '.agents/rules/NEXUS.md',
-  '.agents/rules/AGENTS.md',
+  '.nexus/rules/NEXUS.md',
+  '.nexus/rules/AGENTS.md',
   '.clinerules',
   'AGENTS.md',
+  '.agents/rules/NEXUS.md',
+  '.agents/rules/AGENTS.md',
 ] as const;
 
-/** Anything under the project's `.agents/` directory is "knowledge". */
-const AGENTS_DIR = '.agents';
+/** Everything under the project's `.nexus/` directory is "knowledge". */
+const AGENTS_DIR = '.nexus';
 
 export interface SkillEntry {
   name: string;
@@ -114,7 +125,7 @@ export async function resolveConstitutionFile(root: string): Promise<string | nu
       // continue down the chain
     }
   }
-  // Aegis fallback: any `.agents/rules/*.md`.
+  // Aegis fallback: any `.nexus/rules/*.md`.
   try {
     const rulesDir = join(base, AGENTS_DIR, 'rules');
     const entries = await readdir(rulesDir);
@@ -154,7 +165,7 @@ export async function loadConstitution(root: string): Promise<ConstitutionLoad> 
   }
 }
 
-/** True when a path sits strictly inside `<root>/.agents`. Guards traversal. */
+/** True when a path sits strictly inside `<root>/.nexus`. Guards traversal. */
 function isInsideAgents(root: string, p: string): boolean {
   const base = normalizeRoot(root);
   const agentsRoot = join(base, AGENTS_DIR);
@@ -167,7 +178,7 @@ function isAbsolutePath(p: string): boolean {
   return /^(?:[A-Za-z]:[\\/]|[\\/])/.test(p);
 }
 
-/** List .agents/skills and .agents/rules for a root. */
+/** List .nexus/skills and .nexus/rules for a root. */
 export async function indexAgents(root: string): Promise<AgentsIndex> {
   const base = normalizeRoot(root);
   const skills: SkillEntry[] = [];
@@ -229,15 +240,15 @@ function extractDescription(content: string): string {
   return heading ? heading[1].trim().slice(0, 200) : '';
 }
 
-/** Read one knowledge file (must be inside `.agents/**` or the constitution). */
+/** Read one knowledge file (must be inside `.nexus/**` or the constitution). */
 export async function readAgentsFile(root: string, relPath: string): Promise<ToolResult> {
   const base = normalizeRoot(root);
   if (!isAuthorizedRoot(base)) {
-    return denied('project root is not authorized for .agents discovery');
+    return denied('project root is not authorized for .nexus discovery');
   }
   const p = resolve(base, relPath);
   if (!isInsideAgents(base, p)) {
-    return denied('path must stay inside the project .agents/ directory');
+    return denied('path must stay inside the project .nexus/ directory');
   }
   try {
     const st = await stat(p);
@@ -259,7 +270,7 @@ export async function readAgentsFile(root: string, relPath: string): Promise<Too
 export async function searchAgents(root: string, query: string): Promise<ToolResult> {
   const base = normalizeRoot(root);
   if (!isAuthorizedRoot(base)) {
-    return denied('project root is not authorized for .agents discovery');
+    return denied('project root is not authorized for .nexus discovery');
   }
   const q = query.trim().toLowerCase();
   if (!q) {
@@ -307,7 +318,7 @@ const rootHint =
 const AGENTS_INDEX_TOOL: ToolDef = {
   name: 'agents_index',
   description:
-    'List every skill and rule declared in the project .agents directory (skills + rules + resolved constitution). ' +
+    'List every skill and rule declared in the project .nexus directory (skills + rules + resolved constitution). ' +
     'Use this before agents_read to discover what the project knows.',
   inputSchema: {
     type: 'object',
@@ -318,11 +329,11 @@ const AGENTS_INDEX_TOOL: ToolDef = {
 const AGENTS_READ_TOOL: ToolDef = {
   name: 'agents_read',
   description:
-    'Read a file from the project .agents directory (e.g. skills/foo/SKILL.md, rules/NEXUS.md) or the resolved constitution.',
+    'Read a file from the project .nexus directory (e.g. skills/foo/SKILL.md, rules/NEXUS.md) or the resolved constitution.',
   inputSchema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Path relative to the project root (must stay inside .agents/).' },
+      path: { type: 'string', description: 'Path relative to the project root (must stay inside .nexus/).' },
       root: { type: 'string', description: rootHint },
     },
     required: ['path'],

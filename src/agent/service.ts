@@ -459,7 +459,7 @@ export class AgentService {
           }
 
           // --- Project constitution (P0, from Tolten Aegis) ---
-          // Inject the .agents project constitution into EVERY model step,
+          // Inject the .nexus project constitution into EVERY model step,
           // under a clearly delimited marker so it is strippable/auditable.
           // Refused for unauthorized roots; size-capped internally (32 KB).
           // Only local sessions: sub-agents (parallel phase) get the text

@@ -1,9 +1,9 @@
 /**
- * P0 unit tests — .agents constitution + agents_* tools + model capabilities.
+ * P0 unit tests — .nexus constitution + agents_* tools + model capabilities.
  *
  * Covers docs/dsh-plugin-adoption-plan.md §11.1:
- *   - constitution fallback chain (rules/NEXUS.md → rules/AGENTS.md →
- *     .clinerules → root AGENTS.md → any .agents/rules/*.md), first-existing-wins
+ *   - constitution fallback chain (.nexus/rules/NEXUS.md → .nexus/rules/AGENTS.md →
+ *     .clinerules → root AGENTS.md → legacy .agents/rules/*.md), first-existing-wins
  *   - 32 KB size cap refusal (no silent context bloat)
  *   - agents_index / agents_read / agents_search authorization + path confinement
  *   - modelCapabilities merge + vision-route hint (ModLens conservative rule)
@@ -44,23 +44,23 @@ const { setPermissionPrompter } = await import(
 );
 setPermissionPrompter(() => 'n');
 
-// ---- fixture: a fake project root with .agents knowledge ---------------------
+// ---- fixture: a fake project root with .nexus knowledge ----------------------
 const root = mkdtempSync(join(tmpdir(), 'nexus-agents-root-'));
-mkdirSync(join(root, '.agents', 'rules'), { recursive: true });
-mkdirSync(join(root, '.agents', 'skills', 'charting'), { recursive: true });
-mkdirSync(join(root, '.agents', 'skills', 'sql'), { recursive: true });
+mkdirSync(join(root, '.nexus', 'rules'), { recursive: true });
+mkdirSync(join(root, '.nexus', 'skills', 'charting'), { recursive: true });
+mkdirSync(join(root, '.nexus', 'skills', 'sql'), { recursive: true });
 writeFileSync(
-  join(root, '.agents', 'rules', 'NEXUS.md'),
+  join(root, '.nexus', 'rules', 'NEXUS.md'),
   'CONSTITUTION_TOP\n# Nexus Rules\n- never use charts without bi.chart\n',
   'utf8',
 );
 writeFileSync(
-  join(root, '.agents', 'skills', 'charting', 'SKILL.md'),
+  join(root, '.nexus', 'skills', 'charting', 'SKILL.md'),
   '---\ndescription: Build charts with bi.chart\n---\n# Charting skill\nUse bi.chart for all charts.\n',
   'utf8',
 );
 writeFileSync(
-  join(root, '.agents', 'skills', 'sql', 'SKILL.md'),
+  join(root, '.nexus', 'skills', 'sql', 'SKILL.md'),
   '# SQL skill\nAlways use query (read-only) before execute.\n',
   'utf8',
 );
@@ -79,21 +79,30 @@ test('agents tools are registered under TOOL registry ids', () => {
   assert.equal(AGENTS_TOOL_DEFS.length, 3);
 });
 
-test('resolves NEXUS.md when present (highest precedence)', async () => {
+test('resolves NEXUS.md under .nexus when present (highest precedence)', async () => {
   const f = await resolveConstitutionFile(root);
-  assert.equal(f, join(root, '.agents', 'rules', 'NEXUS.md'));
+  assert.equal(f, join(root, '.nexus', 'rules', 'NEXUS.md'));
 });
 
-test('falls back to rules/AGENTS.md when NEXUS.md is absent', async () => {
+test('falls back to .nexus/rules/AGENTS.md when NEXUS.md is absent', async () => {
   const alt = mkdtempSync(join(tmpdir(), 'nexus-agents-fb-'));
-  mkdirSync(join(alt, '.agents', 'rules'), { recursive: true });
-  writeFileSync(join(alt, '.agents', 'rules', 'AGENTS.md'), 'AGENTS RULES', 'utf8');
+  mkdirSync(join(alt, '.nexus', 'rules'), { recursive: true });
+  writeFileSync(join(alt, '.nexus', 'rules', 'AGENTS.md'), 'AGENTS RULES', 'utf8');
   const f = await resolveConstitutionFile(alt);
-  assert.equal(f, join(alt, '.agents', 'rules', 'AGENTS.md'));
+  assert.equal(f, join(alt, '.nexus', 'rules', 'AGENTS.md'));
   rmWithCwdEscape(alt, __dirname);
 });
 
-test('falls back to root AGENTS.md when no .agents exists', async () => {
+test('falls back to ancestor legacy .agents/rules/NEXUS.md (migration compat)', async () => {
+  const alt = mkdtempSync(join(tmpdir(), 'nexus-agents-legacy-'));
+  mkdirSync(join(alt, '.agents', 'rules'), { recursive: true });
+  writeFileSync(join(alt, '.agents', 'rules', 'NEXUS.md'), 'LEGACY CONSTITUTION', 'utf8');
+  const f = await resolveConstitutionFile(alt);
+  assert.equal(f, join(alt, '.agents', 'rules', 'NEXUS.md'));
+  rmWithCwdEscape(alt, __dirname);
+});
+
+test('falls back to root AGENTS.md when no .nexus exists', async () => {
   const alt = mkdtempSync(join(tmpdir(), 'nexus-agents-fb2-'));
   writeFileSync(join(alt, 'AGENTS.md'), 'ROOT AGENTS', 'utf8');
   const f = await resolveConstitutionFile(alt);
@@ -119,8 +128,8 @@ test('loadConstitution returns text for an authorized root (cwd)', async () => {
 
 test('loadConstitution refuses > 32 KB files with reason too-large', async () => {
   const alt = mkdtempSync(join(tmpdir(), 'nexus-agents-big-'));
-  mkdirSync(join(alt, '.agents', 'rules'), { recursive: true });
-  writeFileSync(join(alt, '.agents', 'rules', 'NEXUS.md'), 'x'.repeat(40_000), 'utf8');
+  mkdirSync(join(alt, '.nexus', 'rules'), { recursive: true });
+  writeFileSync(join(alt, '.nexus', 'rules', 'NEXUS.md'), 'x'.repeat(40_000), 'utf8');
   process.chdir(alt);
   const res = await loadConstitution(alt);
   assert.equal(res.reason, 'too-large');
@@ -131,8 +140,8 @@ test('loadConstitution refuses > 32 KB files with reason too-large', async () =>
 
 test('loadConstitution returns unauthorized for a foreign root', async () => {
   const foreign = mkdtempSync(join(tmpdir(), 'nexus-agents-for-'));
-  mkdirSync(join(foreign, '.agents', 'rules'), { recursive: true });
-  writeFileSync(join(foreign, '.agents', 'rules', 'NEXUS.md'), 'FOREIGN', 'utf8');
+  mkdirSync(join(foreign, '.nexus', 'rules'), { recursive: true });
+  writeFileSync(join(foreign, '.nexus', 'rules', 'NEXUS.md'), 'FOREIGN', 'utf8');
   process.chdir(root); // cwd is the authorized root; foreign is not
   const res = await loadConstitution(foreign);
   assert.equal(res.reason, 'unauthorized');
@@ -157,14 +166,14 @@ test('agents_index lists skills, rules and constitution', async () => {
   assert.equal(data.rules[0].name, 'NEXUS.md');
 });
 
-test('agents_read reads a skill file inside .agents', async () => {
+test('agents_read reads a skill file inside .nexus', async () => {
   process.chdir(root);
-  const res = await callAgentsTool('agents_read', { path: '.agents/skills/charting/SKILL.md' });
+  const res = await callAgentsTool('agents_read', { path: '.nexus/skills/charting/SKILL.md' });
   assert.ok(!res.isError, res.content);
   assert.match(res.content, /Use bi\.chart for all charts/);
 });
 
-test('agents_read denies traversal outside .agents', async () => {
+test('agents_read denies traversal outside .nexus', async () => {
   process.chdir(root);
   const res = await callAgentsTool('agents_read', { path: '../../etc/passwd' });
   assert.ok(res.isError);
