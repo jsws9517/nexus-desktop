@@ -140,7 +140,10 @@ type AgentEvent =
   | { type: 'slash_end'; anchorId?: number; command: string }
   | { type: 'parallel_start'; sessionId: string; prompt: string; tasks?: Array<{ id: string; description: string; status: string }> }
   | { type: 'parallel_end'; sessionId: string; tasks: Array<{ taskId: string; status: SubTaskStatus; output: string; durationMs: number; error?: string; tokenUsage: { prompt: number; completion: number } }>; tokenUsage: { prompt: number; completion: number } }
-  | { type: 'parallel_error'; sessionId: string; error: string };
+  | { type: 'parallel_error'; sessionId: string; error: string }
+  // Renderer-synthesized events (not emitted by the worker) driven by local state:
+  | { type: 'task_progress'; taskId: string; status: string; description?: string; error?: string }
+  | { type: 'session_changed'; sessionId: string };
 
 declare global {
   interface Window {
@@ -321,6 +324,7 @@ function renderSidebarTabs(): void {
 function makeSidebarContext(sessionId: string): SidebarContext {
   return {
     sessionId,
+    getActiveSessionId: () => currentSessionId,
     getParallelSessions: () => parallelSessions as ReadonlyMap<string, { sessionId: string; prompt: string; startTime: number; tasks: ReadonlyMap<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }> }>,
     pruneParallelSessions: (ttlMs?: number) => pruneParallelSessions(ttlMs),
     subscribe: (fn) => {
@@ -361,6 +365,14 @@ const eventSubscribers = new Set<(event: AgentEvent) => void>();
 function notifySidebarSubscribers(event: AgentEvent): void {
   for (const fn of [...eventSubscribers]) {
     try { fn(event); } catch { /* page errors never break the core loop */ }
+  }
+}
+
+/** Broadcast that the active session changed (tab switch / close / sweep) so
+ *  scoped sidebar pages re-render against the live session id immediately. */
+function notifyActiveSessionChanged(sessionId: string): void {
+  for (const fn of [...eventSubscribers]) {
+    try { fn({ type: 'session_changed', sessionId }); } catch { /* page errors never break the core loop */ }
   }
 }
 const pagerPrevEl = $('#pager-prev') as HTMLButtonElement;
@@ -463,6 +475,8 @@ interface ParallelSession {
   sessionId: string;
   prompt: string;
   startTime: number;
+  /** Last time any parallel activity touched this batch (start/progress/end/error). */
+  lastActivityAt: number;
   tasks: Map<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }>;
 }
 const parallelSessions = new Map<string, ParallelSession>();
@@ -479,6 +493,9 @@ let parallelCardEl: HTMLElement | null = null;
 // can never grow unbounded. In-flight batches are never evicted.
 const PARALLEL_SESSION_TTL_MS = 10 * 60 * 1000;
 const PARALLEL_SESSION_MAX = 20;
+/** A batch with NO parallel activity for this long is treated as hung and
+ *  force-cancelled so stuck running cards + busy indicators close the loop. */
+const PARALLEL_STUCK_TTL_MS = 30 * 60 * 1000;
 const TERMINAL_TASK_STATUS = new Set(['succeeded', 'failed', 'timeout', 'cancelled']);
 
 function isTerminalTask(t: { status: string }): boolean {
@@ -505,6 +522,59 @@ function pruneParallelSessions(ttlMs: number = PARALLEL_SESSION_TTL_MS): number 
     }
   }
   return removed;
+}
+
+/** Refresh the activity heartbeat of a batch (serializes to nothing when the
+ *  session is unknown, so it is safe to call from any event stream). */
+function touchParallelSession(sessionId: string): void {
+  const session = parallelSessions.get(sessionId);
+  if (session) session.lastActivityAt = Date.now();
+}
+
+/** Apply a per-task progress sample to the shared parallel-session map so the
+ *  sub-agent cards flip queued→running→succeeded live instead of at parallel_end. */
+function handleTaskProgress(sessionId: string, taskId: string, status: string): void {
+  touchParallelSession(sessionId);
+  const session = parallelSessions.get(sessionId);
+  if (!session) return;
+  const task = session.tasks.get(taskId);
+  if (task && status) task.status = status;
+}
+
+/**
+ * Force-cancel historical batches that went silent indefinitely (worker crash,
+ * abandoned request, restored stale metadata): delete the session + its
+ * in-flight marker, unstick busy, and — when the stuck batch is the ACTIVE
+ * session — surface a visible "auto-cancelled" closure on its transcript card.
+ * Returns the number of batches recycled.
+ */
+function sweepStuckParallelSessions(stuckTtlMs: number = PARALLEL_STUCK_TTL_MS): number {
+  const now = Date.now();
+  const stuck: string[] = [];
+  for (const [sid, session] of parallelSessions) {
+    const lastActivity = session.lastActivityAt ?? session.startTime;
+    if (now - lastActivity < stuckTtlMs) continue;
+    const incomplete = [...session.tasks.values()].some((t) => !isTerminalTask(t));
+    if (incomplete || parallelBatches.has(sid)) stuck.push(sid);
+  }
+  if (stuck.length === 0) return 0;
+
+  for (const sid of stuck) {
+    parallelBatches.delete(sid);
+    const tab = tabs.get(sid);
+    if (tab) tab.busy = false;
+    // Only render the error closure on the singleton transcript card when the
+    // stuck batch is the one the user is looking at — never stomp a background
+    // session's card that happens to share the same DOM handle.
+    if (sid === currentSessionId || parallelCardEl === null) {
+      handleParallelError(sid, getUiLang() === 'zh-CN' ? '长时间无进展，已自动取消' : 'No progress for a long time — auto-cancelled');
+    }
+    parallelSessions.delete(sid);
+  }
+  if (!running && pendingQueue.length === 0) setBusy(false);
+  renderTabBar();
+  notifyActiveSessionChanged(currentSessionId);
+  return stuck.length;
 }
 
 // per-turn DOM handles
@@ -1198,6 +1268,9 @@ function handleEvent(event: AgentEvent): void {
       break;
     case 'parallel_error':
       handleParallelError(event.sessionId, event.error);
+      break;
+    case 'task_progress':
+      handleTaskProgress(currentSessionId, event.taskId, event.status);
       break;
   }
 }
@@ -2198,6 +2271,9 @@ async function syncCwdLabel(): Promise<void> {
 async function switchTab(sessionId: string): Promise<void> {
   activeTabId = sessionId;
   currentSessionId = sessionId;
+  // Scoped sidebar pages (e.g. Sub-Agents) re-bind to the new session now —
+  // no need to wait for the next agent event.
+  notifyActiveSessionChanged(sessionId);
   hideChatEmpty();
   resetViewState();
   try {
@@ -2226,6 +2302,9 @@ async function switchTab(sessionId: string): Promise<void> {
   void refreshSidebarSession();
   void refreshSessionStats();
   void refreshSessions(sessionId);
+  // Re-broadcast after the async restore lands so the panel's session scope
+  // reflects a freshly restored parallel batch too.
+  notifyActiveSessionChanged(sessionId);
 }
 
 /** Close a tab/worker and fall back to another tab or a fresh session. */
@@ -2242,6 +2321,7 @@ async function closeTab(sessionId: string): Promise<void> {
       await switchTab(next);
     } else {
       currentSessionId = '';
+      notifyActiveSessionChanged('');
       messagesEl.innerHTML = '';
       toolCards.clear();
       tasks.clear();
@@ -2271,6 +2351,10 @@ function applyTabEvent(sessionId: string, event: AgentEvent): void {
     // A sub-task span ended, not necessarily the whole batch — keep the tab
     // busy until the owning parallel batch (if any) truly finishes.
     tab.busy = parallelBatches.has(sessionId);
+  } else if (event.type === 'task_progress') {
+    // Per-sub-task heartbeat: keep the batch's stuck-detector alive and flip
+    // the shared task status so scoped sidebar cards track progress live.
+    handleTaskProgress(sessionId, event.taskId, event.status);
   }
   const touchesBusy = event.type === 'turn_start' || event.type === 'session_end'
     || event.type === 'parallel_start' || event.type === 'parallel_end' || event.type === 'parallel_error';
@@ -2624,6 +2708,7 @@ async function restoreParallelState(sessionId: string): Promise<void> {
         sessionId,
         prompt: parallelState.prompt,
         startTime: parallelState.startTime,
+        lastActivityAt: Date.now(),
         tasks: new Map(),
       };
       
@@ -2657,6 +2742,8 @@ function handleParallelStart(
 ): void {
   // Recycle long-finished sessions before adding the fresh batch.
   pruneParallelSessions();
+  // Force-cancel batches that died silently long ago (missing parallel_end).
+  sweepStuckParallelSessions();
   // A parallel batch is genuinely executing — hold the running indicator across
   // the whole batch (see the session_end handler; intermediate sub-task spans
   // must not clear it) and keep the Stop affordance available.
@@ -2667,6 +2754,7 @@ function handleParallelStart(
     sessionId,
     prompt,
     startTime: Date.now(),
+    lastActivityAt: Date.now(),
     tasks: new Map(),
   };
   
@@ -2685,6 +2773,7 @@ function handleParallelStart(
 }
 
 function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
+  touchParallelSession(sessionId);
   // The batch is over. The final setBusy(false) is normally handled by drain()
   // once the chat() IPC resolves; this only rescues edge paths (restored state,
   // errors) where no serial turn is driving the busy transition any more.
@@ -2757,6 +2846,7 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
 }
 
 function handleParallelError(sessionId: string, error: string): void {
+  touchParallelSession(sessionId);
   // Release the in-flight marker even when the batch was never registered in
   // parallelSessions (e.g. it died before a card existed) so busy never sticks.
   parallelBatches.delete(sessionId);
@@ -4427,6 +4517,7 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
 window.nexusDesktop.onWorkerRestarted(async () => {
   addSystem(t('workerRestarted'));
   currentSessionId = '';
+  notifyActiveSessionChanged('');
   msgItems = [];
   await startOrResumeLatestSession();
   await refreshSessions();
@@ -4513,6 +4604,9 @@ window.nexusDesktop.onTabsChanged((open) => {
     // Open the resumed session in its own tab so it runs in a per-session worker.
     if (currentSessionId && !tabs.has(currentSessionId)) await openTab(currentSessionId);
     renderTabBar();
+    // Periodic housekeeping: recycle finished batches by TTL and force-cancel
+    // batches that hung silently, even when the Sub-Agents panel is closed.
+    setInterval(() => sweepStuckParallelSessions(), 60_000);
   } catch (err) {
     addSystem(`${t('startFailed')}${errText(err)}`);
   }

@@ -27,6 +27,9 @@ import type { AgentEvent } from '../../agent/types.js';
 export interface SidebarContext {
   /** The session whose events drive this page ('' = default session). */
   sessionId: string;
+  /** Live accessor for the CURRENT active session — pages use this to stay
+   *  bound to the focused workspace even after the user switches tabs. */
+  getActiveSessionId?(): string;
   /** Live parallel-execution state (same Map renderer.ts maintains). */
   getParallelSessions(): ReadonlyMap<string, ParallelSessionView>;
   /** Recycle finished sessions (TTL sweep + hard cap). Optional guard for

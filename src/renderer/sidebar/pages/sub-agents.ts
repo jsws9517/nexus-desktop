@@ -65,6 +65,11 @@ export function mountSubAgentsPage(
   `;
   root.appendChild(header);
 
+  // Tracks the session this panel is currently bound to (updates on tab switch).
+  const scopedTracker = document.createElement('span');
+  scopedTracker.className = 'sub-agents-scope';
+  header.appendChild(scopedTracker);
+
   const list = document.createElement('div');
   list.className = 'sub-agents-list';
   root.appendChild(list);
@@ -76,12 +81,30 @@ export function mountSubAgentsPage(
     : 'No parallel executions yet — dispatch a multi-task run and its cards appear here live.';
   list.appendChild(empty);
 
+  const truncateId = (id: string, maxLen = 8): string =>
+    id.length > maxLen ? id.slice(0, maxLen) + '…' : id;
+
   /** Rebuild the whole list from the shared parallel-session map (cheap: card render is string-based). */
   const render = (): void => {
     ctx.pruneParallelSessions?.();
-    const sessions = [...ctx.getParallelSessions().entries()].sort(sortSessions);
+    // The panel is scoped to the FOCUSED workspace: switching tabs re-associates
+    // it to that session's parallel activity automatically.
+    const activeSessionId = ctx.getActiveSessionId?.() ?? ctx.sessionId;
+    const zh = getUiLang() === 'zh-CN';
+    scopedTracker.textContent = `🗂 ${activeSessionId ? truncateId(activeSessionId) : (zh ? '默认会话' : 'default session')}`;
+    const all = [...ctx.getParallelSessions().entries()];
+    const sessions = all.filter(([sid]) => sid === activeSessionId).sort(sortSessions);
     list.replaceChildren();
     if (sessions.length === 0) {
+      if (all.length > 0) {
+        empty.textContent = zh
+          ? `当前会话（${truncateId(activeSessionId || (ctx.sessionId || '—'))}）暂无并行任务 —— 切换工作区后自动关联。`
+          : `No parallel tasks in the current session (${truncateId(activeSessionId || (ctx.sessionId || '—'))}). Switching workspaces re-associates automatically.`;
+      } else {
+        empty.textContent = zh
+          ? '暂无并行执行 —— 发起多任务调度后，任务卡片会实时显示在这里。'
+          : 'No parallel executions yet — dispatch a multi-task run and its cards appear here live.';
+      }
       list.appendChild(empty);
       return;
     }
@@ -121,7 +144,7 @@ export function mountSubAgentsPage(
 
   /** Incremental updates: a plain re-render is deterministic and O(running tasks). */
   const onEvent = (event: AgentEvent): void => {
-    if (event.type === 'parallel_start' || event.type === 'task_progress' || event.type === 'parallel_end' || event.type === 'parallel_error') {
+    if (event.type === 'parallel_start' || event.type === 'task_progress' || event.type === 'parallel_end' || event.type === 'parallel_error' || event.type === 'session_changed') {
       render();
     }
   };

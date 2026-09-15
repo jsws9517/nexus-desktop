@@ -58,6 +58,15 @@
 .sub-agents-header { display: flex; flex-direction: column; gap: 2px; }
 .sub-agents-title { font-size: 13px; font-weight: 600; color: var(--text); }
 .sub-agents-legend { font-size: 11px; color: var(--text-dim); }
+.sub-agents-scope {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
 .sub-agents-list { display: flex; flex-direction: column; gap: 10px; }
 .sub-agents-empty {
   font-size: 12px;

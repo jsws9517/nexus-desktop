@@ -151,6 +151,15 @@ function makeSessionMap(...sessions) {
   return m;
 }
 
+function findEl(root, className) {
+  if (root.className === className) return root;
+  for (const c of root.children ?? []) {
+    const hit = findEl(c, className);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 test('sub-agents page: renders empty state when no parallel sessions', () => {
   const container = new FakeContainer();
   const subscriberRef = { current: null };
@@ -170,7 +179,7 @@ test('sub-agents page: renders one section per session with task cards', () => {
   let cardRenderCount = 0;
   const ctx = makeCtx(
     makeSessionMap({
-      sessionId: 'abc',
+      sessionId: 's1',
       prompt: 'Parallel run',
       startTime: 1000,
       tasks: new Map([
@@ -198,7 +207,56 @@ test('sub-agents page: renders one section per session with task cards', () => {
   const cardEls = section.children.filter((el) => el.tagName === 'div' && el.innerHTML?.includes('fake-card'));
   assert.equal(cardEls.length, 2, 'two task cards rendered');
   assert.equal(cardRenderCount, 2);
+
+  // The panel is scoped to the ctx session (its own tasks, none from others).
+  const head = list.children[0];
+  assert.ok(head, 'scoped section rendered for ctx.sessionId');
   dispose();
+});
+
+test('sub-agents page: re-associates to the active session on tab switch (session_changed)', () => {
+  const container = new FakeContainer();
+  const handlers = [];
+  let active = 's1';
+  const sessions = makeSessionMap(
+    { sessionId: 's1', prompt: 'Batch A', startTime: 10, tasks: new Map([['a', { status: 'running' }]]) },
+    { sessionId: 's2', prompt: 'Batch B', startTime: 5, tasks: new Map([['b', { status: 'succeeded' }]]) },
+  );
+  const ctx = {
+    sessionId: 's1',
+    getActiveSessionId: () => active,
+    getParallelSessions: () => sessions,
+    subscribe(fn) { handlers.push(fn); return () => { handlers.length = 0; }; },
+  };
+  let renders = 0;
+  const dispose = mountSubAgentsPage(container, ctx, {
+    getUiLang: () => 'en',
+    renderCard: () => { renders++; return '<div class="fake-card"></div>'; },
+  });
+  try {
+    const list = () => findEl(container, 'sub-agents-list');
+    const scope = () => findEl(container, 'sub-agents-scope')?.textContent ?? '';
+
+    // Initially bound to s1 → only Batch A section.
+    assert.equal(list().children.length, 1);
+    assert.match(list().children[0].children[0].textContent ?? '', /Batch A/);
+    assert.match(scope(), /s1/, 'scope label shows the bound session');
+
+    // User switches to s2 → the panel re-associates on the session_changed bus.
+    active = 's2';
+    for (const h of handlers) h({ type: 'session_changed', sessionId: 's2' });
+    assert.equal(list().children.length, 1, 'still one section after switch');
+    assert.match(list().children[0].children[0].textContent ?? '', /Batch B/, 'now tracks the active session');
+    assert.match(scope(), /s2/, 'scope label follows the switch');
+
+    // Switch to an untouched session → session-scoped empty state (global map non-empty).
+    active = 's3';
+    for (const h of handlers) h({ type: 'session_changed', sessionId: 's3' });
+    assert.equal(list().children.length, 1, 'empty state shown');
+    assert.match(list().children[0].textContent ?? '', /No parallel tasks in the current session/, 'scoped empty hint');
+  } finally {
+    dispose();
+  }
 });
 
 test('sub-agents page: re-renders on parallel_start / parallel_end events', () => {
