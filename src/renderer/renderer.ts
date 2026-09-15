@@ -508,24 +508,82 @@ const modelsCache = new Map<string, ModelsCacheEntry>();
 // id is never re-added to the dropdown until the user explicitly re-selects it.
 // Persisted to localStorage so the blacklist survives renderer restarts
 // (e.g. window minimize → taskbar restore).
+// Value = lastProbe epoch (0 = never probed).
 const BLACKLIST_STORAGE_KEY = 'nexus-model-blacklist';
-const modelBlacklist = new Map<string, Set<string>>();
+const BLACKLIST_PROBE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 h
+const modelBlacklist = new Map<string, Map<string, number>>();
 (function restoreBlacklist() {
   try {
     const raw = localStorage.getItem(BLACKLIST_STORAGE_KEY);
     if (raw) {
-      const obj = JSON.parse(raw) as Record<string, string[]>;
-      for (const [k, v] of Object.entries(obj)) modelBlacklist.set(k, new Set(v));
+      const obj = JSON.parse(raw) as Record<string, Record<string, number>>;
+      for (const [k, v] of Object.entries(obj)) {
+        const inner = new Map<string, number>();
+        for (const [id, ts] of Object.entries(v)) inner.set(id, ts);
+        modelBlacklist.set(k, inner);
+      }
     }
   } catch {}
 })();
 function persistBlacklist(): void {
   try {
-    const obj: Record<string, string[]> = {};
-    for (const [k, v] of modelBlacklist) obj[k] = [...v];
+    const obj: Record<string, Record<string, number>> = {};
+    for (const [k, v] of modelBlacklist) {
+      const inner: Record<string, number> = {};
+      for (const [id, ts] of v) inner[id] = ts;
+      obj[k] = inner;
+    }
     localStorage.setItem(BLACKLIST_STORAGE_KEY, JSON.stringify(obj));
   } catch {}
 }
+
+// --- Periodic blacklist probe ---
+// Each day, probe one stale blacklisted model with a minimal chat call.
+// If it succeeds → remove from blacklist; otherwise update lastProbe timestamp.
+let probeTimer: ReturnType<typeof setInterval> | undefined;
+function probeBlacklistedModels(): void {
+  const now = Date.now();
+  const activeProvider = status.provider;
+  const bl = modelBlacklist.get(activeProvider);
+  if (!bl || bl.size === 0) return;
+  let oldest: { modelId: string; ts: number } | null = null;
+  for (const [id, ts] of bl) {
+    if (now - ts >= BLACKLIST_PROBE_INTERVAL_MS && (!oldest || ts < oldest.ts)) {
+      oldest = { modelId: id, ts };
+    }
+  }
+  if (!oldest) return;
+  const { modelId } = oldest;
+  debugLog('probe: testing blacklisted model', { provider: activeProvider, modelId });
+  const savedModel = status.model;
+  void (async () => {
+    try {
+      await window.nexusDesktop.switchModel(modelId);
+      await window.nexusDesktop.chat('hi', { sessionId: currentSessionId || undefined });
+      if (bl.has(modelId)) {
+        bl.delete(modelId);
+        if (bl.size === 0) modelBlacklist.delete(activeProvider);
+        persistBlacklist();
+        debugLog('probe: model recovered, removed from blacklist', { provider: activeProvider, modelId });
+      }
+    } catch {
+      if (bl.has(modelId)) {
+        bl.set(modelId, Date.now());
+        persistBlacklist();
+        debugLog('probe: still unavailable', { provider: activeProvider, modelId });
+      }
+    } finally {
+      if (status.model !== savedModel) {
+        try { await window.nexusDesktop.switchModel(savedModel); } catch {}
+      }
+    }
+  })();
+}
+function scheduleBlacklistProbe(): void {
+  probeBlacklistedModels();
+  probeTimer = setInterval(probeBlacklistedModels, BLACKLIST_PROBE_INTERVAL_MS);
+}
+
 // Sessions already auto-fallbacked off a delisted model (remediating on first
 // sight avoids yanking the active model every time the tab regains focus).
 const modelFallbacked = new Set<string>();
@@ -2487,7 +2545,7 @@ async function switchTab(sessionId: string): Promise<void> {
       status = await window.nexusDesktop.getStatus({ sessionId });
     } catch {}
   }
-  debugLog('switchTab', { sessionId, provider: status.provider, model: status.model, bl: [...(modelBlacklist.get(status.provider) ?? [])] });
+  debugLog('switchTab', { sessionId, provider: status.provider, model: status.model, bl: [...(modelBlacklist.get(status.provider)?.keys() ?? [])] });
   setBusy(Boolean(tab?.busy));
   await syncCwdLabel();
   loadDraft(sessionId);
@@ -4443,7 +4501,7 @@ function refreshModelSelect(force = false): void {
   if (!active) return;
   const cached = modelsCache.get(active);
   if (!force && cached && cached.ok && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
-    debugLog('cache hit', { provider: active, listLen: cached.list.length, ts: cached.ts, bl: [...(modelBlacklist.get(active) ?? [])] });
+    debugLog('cache hit', { provider: active, listLen: cached.list.length, ts: cached.ts, bl: [...(modelBlacklist.get(active)?.keys() ?? [])] });
     if (cached.list.length > 0) populateModelOptions(cached.list, current);
     void remediateDelistedModel(active, cached.list, current);
     return;
@@ -4455,7 +4513,7 @@ function refreshModelSelect(force = false): void {
       debugLog('fetch result', { provider: active, ok: res.ok, rawLen: res.models.length, error: res.error });
       if (!active || active !== status.provider) return;
       const filtered = filterBlacklisted(active, res.models);
-      debugLog('filtered result', { provider: active, filteredLen: filtered.length, bl: [...(modelBlacklist.get(active) ?? [])] });
+      debugLog('filtered result', { provider: active, filteredLen: filtered.length, bl: [...(modelBlacklist.get(active)?.keys() ?? [])] });
       modelsCache.set(active, { list: filtered, ts: Date.now(), ok: res.ok, error: res.error });
       if (res.ok && filtered.length > 0) {
         populateModelOptions(filtered, current);
@@ -4539,10 +4597,10 @@ async function remediateUnavailableModel(providerName: string, modelId: string, 
 /** Remove `modelId` from the provider's cached list and re-render the dropdown. */
 function retireUnavailableModel(providerName: string, modelId: string): void {
   debugLog('retireUnavailableModel', { provider: providerName, modelId, activeProvider: status.provider, inCache: !!modelsCache.get(providerName), cacheListLen: modelsCache.get(providerName)?.list.length });
-  if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Set());
-  modelBlacklist.get(providerName)!.add(modelId);
+  if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Map());
+  modelBlacklist.get(providerName)!.set(modelId, 0);
   persistBlacklist();
-  debugLog('blacklist after add', { provider: providerName, bl: [...modelBlacklist.get(providerName)!] });
+  debugLog('blacklist after add', { provider: providerName, bl: [...modelBlacklist.get(providerName)!.keys()] });
   const cached = modelsCache.get(providerName);
   if (!cached) { debugLog('retire: no cache entry, skip cache update'); return; }
   const filtered = filterBlacklisted(providerName, cached.list);
@@ -4568,7 +4626,7 @@ function filterBlacklisted(providerName: string, list: string[]): string[] {
 function populateModelOptions(models: string[], current: string): void {
   const safe = filterBlacklisted(status.provider, models);
   const removed = models.length - safe.length;
-  if (removed > 0) debugLog('populateModelOptions: filtered', { provider: status.provider, inputLen: models.length, safeLen: safe.length, removed, bl: [...(modelBlacklist.get(status.provider) ?? [])] });
+  if (removed > 0) debugLog('populateModelOptions: filtered', { provider: status.provider, inputLen: models.length, safeLen: safe.length, removed, bl: [...(modelBlacklist.get(status.provider)?.keys() ?? [])] });
   const selected = safe.includes(current) ? current : safe[0] || '';
   modelSelect.innerHTML = '';
   for (const m of safe) {
@@ -4947,6 +5005,8 @@ window.nexusDesktop.onTabsChanged((open) => {
     // Open the resumed session in its own tab so it runs in a per-session worker.
     if (currentSessionId && !tabs.has(currentSessionId)) await openTab(currentSessionId);
     renderTabBar();
+    // Periodic blacklist probe: test one stale blacklisted model per day.
+    scheduleBlacklistProbe();
     // Periodic housekeeping: recycle finished batches by TTL and force-cancel
     // batches that hung silently, even when the Sub-Agents panel is closed.
     setInterval(() => {
