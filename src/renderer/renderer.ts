@@ -4446,6 +4446,17 @@ function refreshModelSelect(force = false): void {
       const res = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
       debugLog('fetch result', { provider: active, ok: res.ok, rawLen: res.models.length, error: res.error });
       if (!active || active !== status.provider) return;
+      // Reconcile blacklist: remove ids that reappeared in the fresh /models
+      // list (provider lifted restriction), keep ids that are still absent.
+      const bl = modelBlacklist.get(active);
+      if (bl && bl.size > 0 && res.ok) {
+        const freshSet = new Set(res.models);
+        let changed = false;
+        for (const id of bl) {
+          if (freshSet.has(id)) { bl.delete(id); changed = true; }
+        }
+        if (changed) { persistBlacklist(); debugLog('blacklist reconciled', { provider: active, bl: [...bl] }); }
+      }
       const filtered = filterBlacklisted(active, res.models);
       debugLog('filtered result', { provider: active, filteredLen: filtered.length, bl: [...(modelBlacklist.get(active) ?? [])] });
       modelsCache.set(active, { list: filtered, ts: Date.now(), ok: res.ok, error: res.error });
