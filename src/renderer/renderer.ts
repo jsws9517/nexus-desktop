@@ -500,6 +500,10 @@ interface ModelsCacheEntry {
   error?: string;
 }
 const modelsCache = new Map<string, ModelsCacheEntry>();
+// Per-provider blacklist of model ids confirmed unavailable at call time
+// (403, Model is unavailable, etc.). Survives TTL cache refreshes so the dead
+// id is never re-added to the dropdown until the user explicitly re-selects it.
+const modelBlacklist = new Map<string, Set<string>>();
 // Sessions already auto-fallbacked off a delisted model (remediating on first
 // sight avoids yanking the active model every time the tab regains focus).
 const modelFallbacked = new Set<string>();
@@ -4409,14 +4413,18 @@ function refreshModelSelect(force = false): void {
     try {
       const res = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
       if (!active || active !== status.provider) return;
-      modelsCache.set(active, { list: res.models, ts: Date.now(), ok: res.ok, error: res.error });
-      if (res.ok && res.models.length > 0) {
-        populateModelOptions(res.models, current);
+      // Filter out blacklisted (confirmed-unavailable) model ids so TTL refresh
+      // never re-adds a dead id to the dropdown — they only return when the user
+      // explicitly selects them from the raw dropdown (if re-added by API later).
+      const filtered = filterBlacklisted(active, res.models);
+      modelsCache.set(active, { list: filtered, ts: Date.now(), ok: res.ok, error: res.error });
+      if (res.ok && filtered.length > 0) {
+        populateModelOptions(filtered, current);
       } else if (res.error) {
         modelSelect.title = `models: ${res.error}`;
       }
       // Only remediate against a genuinely fresh, real list.
-      if (res.ok) await remediateDelistedModel(active, res.models, status.model);
+      if (res.ok) await remediateDelistedModel(active, filtered, status.model);
     } catch {
       modelSelect.title = 'models: fetch failed (will retry)';
     }
@@ -4486,10 +4494,19 @@ async function remediateUnavailableModel(providerName: string, modelId: string, 
 
 /** Remove `modelId` from the provider's cached list and re-render the dropdown. */
 function retireUnavailableModel(providerName: string, modelId: string): void {
+  if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Set());
+  modelBlacklist.get(providerName)!.add(modelId);
   const cached = modelsCache.get(providerName);
   if (!cached || !cached.list.includes(modelId)) return;
-  modelsCache.set(providerName, { ...cached, list: cached.list.filter((m) => m !== modelId) });
-  if (status.provider === providerName) populateModelOptions(cached.list.filter((m) => m !== modelId), status.model);
+  modelsCache.set(providerName, { ...cached, list: filterBlacklisted(providerName, cached.list) });
+  if (status.provider === providerName) populateModelOptions(filterBlacklisted(providerName, cached.list), status.model);
+}
+
+/** Filter `list` by removing every model id present in the provider's blacklist. */
+function filterBlacklisted(providerName: string, list: string[]): string[] {
+  const bl = modelBlacklist.get(providerName);
+  if (!bl || bl.size === 0) return list;
+  return list.filter((m) => !bl.has(m));
 }
 
 function populateModelOptions(models: string[], current: string): void {
