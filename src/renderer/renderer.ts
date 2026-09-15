@@ -4315,9 +4315,10 @@ async function remediateDelistedModel(active: string, models: string[], current:
 
 // Provider-side availability errors that mean a model id listed in /models is
 // actually NOT servable at call time (list up, model down — e.g. Azure/OAI
-// gateways). Matched against the raw error text of a failed chat invocation.
+// gateways, or the model's region/account is not supported: 403 / 访问被拒绝).
+// Matched against the localized chat error text produced by errText().
 const MODEL_UNAVAILABLE_RE =
-  /Model is unavailable|Model is not available|model .*unavailable|model .*does not exist|model .*not found|model .*no longer available|已下架|已下线|模型.*不可用/i;
+  /Model is unavailable|Model is not available|model .*unavailable|model .*does not exist|model .*not found|model .*no longer available|403|forbidden|访问被拒绝|已下架|已下线|模型.*不可用/i;
 
 /**
  * A chat invocation for `modelId` on `providerName` failed because the model is
