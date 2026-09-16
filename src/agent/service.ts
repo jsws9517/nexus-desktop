@@ -2597,6 +2597,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     return this.agent?.context?.getLastSummaryTokenCount?.() ?? 0;
   }
 
+  getStrategyCounts(): { summarize: number; truncate: number; snapshot: number } {
+    return this.agent?.context?.getStrategyCounts?.() ?? { summarize: 0, truncate: 0, snapshot: 0 };
+  }
+
   /**
    * Fetch the model list for a provider from its API (OpenAI-compatible
    * GET /models, Anthropic GET /v1/models). Returns a structured result so the

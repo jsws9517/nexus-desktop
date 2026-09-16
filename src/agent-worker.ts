@@ -246,6 +246,7 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     summaryCount: service.getSummaryCount() ?? 0,
     summaryThreshold: service.getSummaryThresholdTokens() ?? 100000,
     lastSummaryTokens: service.getLastSummaryTokenCount() ?? 0,
+    strategyCounts: service.getStrategyCounts(),
     rateLimit: service.getRateLimitStatus(),
   }),
   getPermissions: () => service.getPermissions(),

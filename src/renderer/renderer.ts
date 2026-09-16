@@ -37,6 +37,7 @@ interface StatusInfo {
   summaryCount?: number;
   summaryThreshold?: number;
   lastSummaryTokens?: number;
+  strategyCounts?: { summarize: number; truncate: number; snapshot: number };
   rateLimit?: { family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: 'normal' | 'warning' | 'throttled' };
 }
 
@@ -2771,10 +2772,7 @@ async function refreshSidebarSession(): Promise<void> {
     }
   }
   await refreshSidebarModels();
-  rsideSummaryCount.textContent = String(st.summaryCount ?? '—');
-  const threshold = st.summaryThreshold ?? 100000;
-  const remaining = threshold - (st.lastSummaryTokens ?? 0);
-  rsideSummaryThreshold.textContent = remaining > 0 ? fmtNum(remaining) : '已触发';
+  rsideSummaryCount.textContent = `${t('compressSummarize')}: ${st.strategyCounts?.summarize ?? 0} · ${t('compressTruncate')}: ${st.strategyCounts?.truncate ?? 0} · ${t('compressSnapshot')}: ${st.strategyCounts?.snapshot ?? 0}`;
   // Rate-limit status (per-session; aggregated cross-session is refreshed via event).
   renderRateLimit(st.rateLimit);
 }
