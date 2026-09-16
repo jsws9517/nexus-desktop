@@ -34,6 +34,9 @@ interface StatusInfo {
   busy: boolean;
   provider: string;
   model: string;
+  summaryCount?: number;
+  summaryThreshold?: number;
+  lastSummaryTokens?: number;
 }
 
 interface PermissionsInfo {
@@ -464,6 +467,8 @@ const rsidePerm = $('#rside-perm');
 const rsideMcp = $('#rside-mcp');
 const rsideResourceEl = $('#rside-resource') as HTMLElement;
 const rsideToken = $('#rside-token');
+const rsideSummaryCount = $('#rside-summary-count');
+const rsideSummaryThreshold = $('#rside-summary-threshold');
 const rsideSpeech = $('#rside-speech');
 const rsideVision = $('#rside-vision');
 const taskListEl = $('#task-list');
@@ -2760,6 +2765,10 @@ async function refreshSidebarSession(): Promise<void> {
     }
   }
   await refreshSidebarModels();
+  rsideSummaryCount.textContent = String(st.summaryCount ?? '—');
+  const threshold = st.summaryThreshold ?? 100000;
+  const remaining = threshold - (st.lastSummaryTokens ?? 0);
+  rsideSummaryThreshold.textContent = remaining > 0 ? fmtNum(remaining) : '已触发';
 }
 
 wireCopy(rsideSessionId, () => currentSessionId, () => t('copiedSessionId'));

@@ -114,7 +114,7 @@ service.onEvent = (event: AgentEvent) => send({ type: 'event', event });
 service.onPermission = (req) => { tracePerm(`askPermission id=${req.id}`); send({ type: 'permission', ...req }); };
 service.onLog = (level, message) => send({ type: 'log', level, message });
 // Forward MCP tool discovery + calls to the shared main-process hub (single
-// owner, one OS process per server — no per-tab shadow MCP processes).
+// owner, one OS process per server �?no per-tab shadow MCP processes).
 service.onMcpRequest = (op, params) =>
   sendMcp(op as McpOp, params).catch((e) => {
     logger.debug(`mcp proxy "${op}" failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -126,8 +126,8 @@ service.onMcpRequest = (op, params) =>
 // can reach the worker while service.init() is still running.
 //
 // Startup is split into two phases:
-//   earlyInit — constructs the Agent (config/session/provider), fast.
-//   init      — MCP connect + skills load, slow.
+//   earlyInit �?constructs the Agent (config/session/provider), fast.
+//   init      �?MCP connect + skills load, slow.
 // Sub-agent state tracking
 const subAgentStates = new Map<string, { status: string; startTime: number }>();
 
@@ -179,7 +179,7 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   sideChat: async (req: WorkerRequest & { method: 'sideChat' }) => {
     // Isolated scratch conversation: a fresh AgentService per request, seeded
     // with the renderer-held transcript. It never touches the session store,
-    // the main worker's context, or its busy state — side chat stays usable
+    // the main worker's context, or its busy state �?side chat stays usable
     // while the real session is mid-turn and can never pollute it.
     //
     // Unlike the previous callLlm() path (which was a bare provider.complete()
@@ -242,6 +242,9 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     model: service.getActiveModel(),
     contextLimit: service.getActiveContextLimit(),
     contextUsage: service.getContextUsage(),
+    summaryCount: service.getSummaryCount() ?? 0,
+    summaryThreshold: service.getSummaryThresholdTokens() ?? 100000,
+    lastSummaryTokens: service.getLastSummaryTokenCount() ?? 0,
   }),
   getPermissions: () => service.getPermissions(),
   getLanguage: () => service.getLanguage(),
@@ -425,7 +428,7 @@ if (useParentPort) {
         resolveMcpResult(msg as { id?: number; ok?: boolean; data?: unknown; error?: string });
         return;
       }
-    } catch { /* not JSON — fall through */ }
+    } catch { /* not JSON �?fall through */ }
     void handleRequest(line);
   });
 }

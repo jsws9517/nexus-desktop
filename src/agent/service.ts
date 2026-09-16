@@ -939,7 +939,21 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     // A fresh user send starts with a clean stop state: the flag only gates a
     // parallel batch that is CURRENTLY executing, never the next turn.
     this.stopRequested = false;
-    
+
+    // Proactive progressive summary: compress incrementally before the LLM call
+    // when token delta since last summary exceeds the threshold. Prevents large
+    // sudden compressions and keeps context fresh across long sessions.
+    if (this.agent) {
+      const cw = this.agent.config.getContextWindow?.();
+      const ctx = this.agent.context;
+      if (cw && ctx) {
+        const delta = ctx.getTokenCount() - ctx.getLastSummaryTokenCount();
+        if (delta >= cw.summaryThreshold && ctx.getMessages().length >= ctx.getSummaryAfterMsgs() && ctx.getSummaryCount() < 20) {
+          await ctx.proactiveSummarize();
+        }
+      }
+    }
+
     // Check if parallel execution should be used
     if (this.shouldUseParallel(input)) {
       await this.chatParallel(input);
@@ -2465,6 +2479,18 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     }
     const pct = limit && limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
     return { used, limit, pct, tps };
+  }
+
+  getSummaryCount(): number {
+    return this.agent?.context?.getSummaryCount?.() ?? 0;
+  }
+
+  getSummaryThresholdTokens(): number {
+    return this.agent?.context?.getSummaryThresholdTokens?.() ?? 100000;
+  }
+
+  getLastSummaryTokenCount(): number {
+    return this.agent?.context?.getLastSummaryTokenCount?.() ?? 0;
   }
 
   /**
