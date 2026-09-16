@@ -209,6 +209,13 @@ Decomposition:
    * splitting on conjunctions that connect related nouns in a single task.
    */
   private fallbackDecomposition(userPrompt: string): SubTask[] {
+    // Purely declarative: has conjunctions but no action verb → no decomposition needed
+    const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释|解决|修复|实现|开发|写|画|设计';
+    const hasConjunction = /(?:和|与|以及|、|&|and)/i.test(userPrompt);
+    const hasVerb = new RegExp(`\\b(${actionVerbs})\\b`, 'i').test(userPrompt);
+    if (hasConjunction && !hasVerb) {
+      return [];
+    }
     // Only split on conjunctions that separate full clauses/commands,
     // not those connecting paired nouns within a single action.
     // Pattern: look for verb + object ... CONJ ... verb + object structure.

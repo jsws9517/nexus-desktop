@@ -1034,12 +1034,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     
     // Decompose the prompt into sub-tasks (fallback: split by conjunctions)
     const subTasks = this.fallbackDecompose(prompt);
-    
-    if (subTasks.length <= 1) {
-      // Not genuinely parallel (single task covering the whole prompt): run a
-      // normal single turn. agent.chat() persists the user row itself, and we
-      // deliberately do NOT call persistUserInput() here — doing both would
-      // write the same prompt twice to the DB and render it twice in the UI.
+
+    if (subTasks.length <= 1 || this.isDeclarativePrompt(prompt)) {
+      // Declarative statement or single coherent task — skip parallel UI,
+      // run a normal single turn so sequentialthinking handles the reasoning.
       await this.runTurn(prompt);
       return;
     }
@@ -1271,6 +1269,20 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    */
   private wrapWorkerPrompt(taskPrompt: string, originalPrompt: string): string {
     return `[Original Request]\n${originalPrompt}\n\n---\n\n${taskPrompt}`;
+  }
+
+  /**
+   * Detect purely declarative prompts — statement-like expressions with
+   * no action verb (no 分析/读取/生成/查找 etc.) that merely describe or
+   * compare concepts. These should not spawn parallel tasks; just run a
+   * normal single-turn reasoning pass via sequentialthinking.
+   */
+  private isDeclarativePrompt(prompt: string): boolean {
+    const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释|解决|修复|实现|开发|写|画|设计';
+    // Has conjunctions but NO action verb anywhere → declarative
+    const hasConjunction = /(?:和|与|以及|、|&|and)/i.test(prompt);
+    const hasVerb = new RegExp(`\\b(${actionVerbs})\\b`, 'i').test(prompt);
+    return hasConjunction && !hasVerb;
   }
 
   /**
