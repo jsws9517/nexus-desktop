@@ -1260,6 +1260,13 @@ body {
 .info-value-mono { font-family: monospace; font-size: 11px; }
 .info-value-copy { cursor: pointer; }
 .info-value-copy:hover { text-decoration: underline; }
+.rside-rpm-normal    { color: var(--text-dim); }
+.rside-rpm-warning   { color: var(--warn); }
+.rside-rpm-throttled { color: var(--danger); animation: rpmPulse 1.2s ease-in-out infinite; }
+@keyframes rpmPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
 .mcp-line {
   display: flex;
   gap: 6px;

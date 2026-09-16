@@ -48,3 +48,13 @@ export interface ProviderInfo {
   baseUrl?: string;
   hasKey: boolean;
 }
+
+export interface RateLimitStatus {
+  providerName: string;
+  baseUrl: string;
+  family: string;
+  rpm: number;
+  recentRequests: number;
+  backoffMs: number;
+  status: 'normal' | 'warning' | 'throttled';
+}

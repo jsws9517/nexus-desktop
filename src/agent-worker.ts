@@ -113,6 +113,7 @@ const service = new AgentService();
 service.onEvent = (event: AgentEvent) => send({ type: 'event', event });
 service.onPermission = (req) => { tracePerm(`askPermission id=${req.id}`); send({ type: 'permission', ...req }); };
 service.onLog = (level, message) => send({ type: 'log', level, message });
+service.onRateLimitReport = (data) => send({ type: 'rateLimitReport', data });
 // Forward MCP tool discovery + calls to the shared main-process hub (single
 // owner, one OS process per server �?no per-tab shadow MCP processes).
 service.onMcpRequest = (op, params) =>
@@ -245,6 +246,7 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     summaryCount: service.getSummaryCount() ?? 0,
     summaryThreshold: service.getSummaryThresholdTokens() ?? 100000,
     lastSummaryTokens: service.getLastSummaryTokenCount() ?? 0,
+    rateLimit: service.getRateLimitStatus(),
   }),
   getPermissions: () => service.getPermissions(),
   getLanguage: () => service.getLanguage(),

@@ -37,6 +37,7 @@ interface StatusInfo {
   summaryCount?: number;
   summaryThreshold?: number;
   lastSummaryTokens?: number;
+  rateLimit?: { family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: 'normal' | 'warning' | 'throttled' };
 }
 
 interface PermissionsInfo {
@@ -258,6 +259,8 @@ declare global {
       onTabEvents(cb: (payloads: Array<{ sessionId: string; event: AgentEvent }>) => void): void;
       onTabsChanged(cb: (tabs: TabInfo[]) => void): void;
       onUpdateState(cb: (state: Record<string, unknown>) => void): void;
+      getRateLimitStatus(): Promise<{ providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }>;
+      onRateLimitUpdate(cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }) => void): void;
     };
   }
 }
@@ -471,6 +474,7 @@ const rsideSummaryCount = $('#rside-summary-count');
 const rsideSummaryThreshold = $('#rside-summary-threshold');
 const rsideSpeech = $('#rside-speech');
 const rsideVision = $('#rside-vision');
+const rsideRateLimit = $('#rside-rate-limit');
 const taskListEl = $('#task-list');
 const taskEmptyEl = $('#task-empty');
 const tabBarEl = $('#tab-bar') as HTMLElement;
@@ -2769,6 +2773,28 @@ async function refreshSidebarSession(): Promise<void> {
   const threshold = st.summaryThreshold ?? 100000;
   const remaining = threshold - (st.lastSummaryTokens ?? 0);
   rsideSummaryThreshold.textContent = remaining > 0 ? fmtNum(remaining) : '已触发';
+  // Rate-limit status (per-session; aggregated cross-session is refreshed via event).
+  renderRateLimit(st.rateLimit);
+}
+
+function renderRateLimit(rl: StatusInfo['rateLimit']): void {
+  if (!rl) {
+    rsideRateLimit.textContent = '—';
+    rsideRateLimit.className = 'info-value';
+    return;
+  }
+  const zh = getUiLang() === 'zh-CN';
+  if (rl.backoffMs > 0) {
+    rsideRateLimit.textContent = `${zh ? '退避中' : 'Backoff'} ${Math.round(rl.backoffMs / 1000)}s`;
+    rsideRateLimit.title = `${rl.family} · ${rl.baseUrl}`;
+  } else if (rl.recentRequests >= rl.rpm) {
+    rsideRateLimit.textContent = zh ? '已满 (429)' : 'Full (429)';
+    rsideRateLimit.title = `${rl.providerName} · ${rl.rpm} RPM`;
+  } else {
+    rsideRateLimit.textContent = `${rl.recentRequests}/${rl.rpm}`;
+    rsideRateLimit.title = `${rl.providerName} · ${rl.baseUrl}`;
+  }
+  rsideRateLimit.className = `info-value rside-rpm-${rl.status}`;
 }
 
 wireCopy(rsideSessionId, () => currentSessionId, () => t('copiedSessionId'));
@@ -4909,7 +4935,22 @@ async function initResourcePanel(): Promise<void> {
     const s = await window.nexusDesktop.getResourceState();
     renderResourcePanel(s);
   } catch {}
+  // Pull initial rate-limit state so the sidebar doesn't show "—" until the
+  // first LLM call reports (onRateLimitUpdate event only fires after a call).
+  try {
+    const rl = await window.nexusDesktop.getRateLimitStatus();
+    const primary = rl.providers[0];
+    if (primary) renderRateLimit(primary as StatusInfo['rateLimit']);
+  } catch {}
 }
+
+// Cross-session rate-limit status: push-based refresh when any worker reports.
+window.nexusDesktop.onRateLimitUpdate((data) => {
+  const primary = data.providers[0];
+  if (!primary) return;
+  // Use aggregated data to re-render the sidebar rate-limit indicator.
+  renderRateLimit(primary as StatusInfo['rateLimit']);
+});
 
 // When the full config Web UI closes it may have rewritten config.json
 // (language, providers, MCP, ...). Reload the core config so the long-lived

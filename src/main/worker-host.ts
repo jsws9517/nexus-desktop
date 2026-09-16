@@ -16,7 +16,7 @@ const WORKER_V8_FLAG = '--max-old-space-size=1024';
 const SHUTDOWN_TIMEOUT_MS = 3000;
 
 interface WorkerResponse {
-  type: 'result' | 'event' | 'permission' | 'log' | 'mcpRequest';
+  type: 'result' | 'event' | 'permission' | 'log' | 'mcpRequest' | 'rateLimitReport';
   id?: number;
   ok?: boolean;
   data?: unknown;
@@ -69,6 +69,8 @@ export class WorkerHost {
   onExit?: (code: number | null) => void;
   /** Worker -> main request handler (currently the shared MCP hub proxy). */
   onMcpRequest?: (op: string, params?: Record<string, unknown>) => Promise<unknown>;
+  /** Fired after every callLlm() so the main process can aggregate across sessions. */
+  onRateLimitReport?: (data: unknown) => void;
 
   constructor(private workerPath: string) {}
 
@@ -252,6 +254,9 @@ export class WorkerHost {
         })();
         break;
       }
+      case 'rateLimitReport':
+        this.onRateLimitReport?.(msg.data);
+        break;
     }
   }
 

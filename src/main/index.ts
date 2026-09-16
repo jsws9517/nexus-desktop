@@ -8,6 +8,7 @@ import { WorkerHost } from './worker-host.js';
 import { Updater } from './updater.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import { SessionWorkers } from './session-workers.js';
+import { RateLimitRegistry } from './rate-limit-registry.js';
 import { mcpHub } from './mcp-hub.js';
 import { createDesktopState } from './desktop-state.js';
 import type { AgentEvent } from '../agent-service.js';
@@ -40,6 +41,9 @@ let worker: WorkerHost | null = null;
 // hosts the shared session/providers/config/MCP surface for the sidebar and
 // the settings UI; each opened tab runs its own WorkerHost via this registry.
 const sessionWorkers = new SessionWorkers();
+const rateLimitRegistry = new RateLimitRegistry();
+sessionWorkers.rateLimitRegistry = rateLimitRegistry;
+rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
 const updater = new Updater();
 // System resource watchdog for the multi-session protection (see resource-monitor.ts).
 const resourceMon = new ResourceMonitor({
@@ -572,6 +576,7 @@ if (gotLock) {
       setMonitorEnabled: desktopState.setMonitorEnabled,
       getLazyWorker: desktopState.getLazyWorker,
       setLazyWorker: desktopState.setLazyWorker,
+      rateLimitRegistry,
     });
     createWindow();
 

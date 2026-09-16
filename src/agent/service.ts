@@ -35,7 +35,8 @@ import {
 import { MEMORY_WRITE_TOOLS } from '../main/memory-kg.js';
 import { GIT_WRITE_TOOLS } from '../main/git-internal.js';
 import { logger } from '../shared/logger.js';
-import type { AgentEvent, PermissionRequest, ProviderInfo } from './types.js';
+import type { AgentEvent, PermissionRequest, ProviderInfo, RateLimitStatus } from './types.js';
+import { RateLimiter, inferProviderFamily } from './rate-limiter.js';
 import type { SubTask } from './sub-agent/types.js';
 import { extractTopic } from './topic.js';
 import {
@@ -172,11 +173,19 @@ export class AgentService {
    */
   abortOnThinkingLoop = true;
 
-  /** Rolling { t, used } samples of live context usage for the sidebar gauge
-   *  (§G1). In-memory ONLY, bounded window (~30s), appended on each
-   *  getStatus() poll from the `agent.context.getTokenCount()` the service
-   *  already reads live — zero added I/O, zero prompts, unattended-safe. */
-  private ctxUsageSamples: Array<{ t: number; used: number }> = [];
+   /** Rolling { t, used } samples of live context usage for the sidebar gauge
+    *  (§G1). In-memory ONLY, bounded window (~30s), appended on each
+    *  getStatus() poll from the `agent.context.getTokenCount()` the service
+    *  already reads live — zero added I/O, zero prompts, unattended-safe. */
+   private ctxUsageSamples: Array<{ t: number; used: number }> = [];
+
+   /** Per-process rate limiter keyed by provider family (zhipu / agnes / unknown).
+    *  Cross-session aggregation is handled by the main-process RateLimitRegistry. */
+   private rateLimiter = new RateLimiter();
+
+   /** Called after every callLlm() completes (success or failure) so the main
+    *  process can aggregate per-family counters across all session workers. */
+   onRateLimitReport?: (status: RateLimitStatus) => void;
 
   /** Per-session provider/model override (in-memory ONLY — never writes the
    *  shared global config). Populated by setProviderOverride/setModelOverride
@@ -244,13 +253,33 @@ export class AgentService {
     model?: string;
   }): Promise<string> {
     if (!this.agent) throw new Error('Agent not initialized');
-    
+
     const messages = options.messages.map(m => ({
       role: m.role as 'user' | 'assistant' | 'system',
       content: m.content,
     }));
-    
-    return this.agent.provider.complete(messages);
+
+    const providerName = this.getActiveProvider();
+    const providerCfg = this.agent.config.getProvider(providerName);
+    const family = inferProviderFamily(providerCfg?.baseUrl);
+    const rpm = this.rateLimiter.getEffectiveRpm(family);
+
+    await this.rateLimiter.acquire(family, rpm);
+
+    try {
+      return await this.agent.provider.complete(messages);
+    } catch (err: any) {
+      if (err?.status === 429 || err?.isRateLimited) {
+        this.rateLimiter.markRateLimited(family);
+        const waitMs = this.rateLimiter.getBackoffMs(family);
+        if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+        return this.callLlm(options);
+      }
+      throw err;
+    } finally {
+      const status = this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
+      if (status && this.onRateLimitReport) this.onRateLimitReport(status);
+    }
   }
 
   /**
@@ -911,11 +940,24 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const monitor = new TurnMonitor();
     monitor.setPromptBaseline(agent.context?.getTokenCount?.() ?? 0);
     this.activeMonitor = monitor;
+
+    // Rate-limit the main chat path (distinct from callLlm which handles
+    // sub-agent decomposition). Acquire before every turn; report after so
+    // the main-process registry can aggregate across all open session tabs.
+    const providerName = this.getActiveProvider();
+    const providerCfg = agent.config.getProvider(providerName);
+    const family = inferProviderFamily(providerCfg?.baseUrl);
+    const rpm = this.rateLimiter.getEffectiveRpm(family);
+    await this.rateLimiter.acquire(family, rpm);
+
     try {
       await agent.chat(input);
     } finally {
       this.activeMonitor = null;
+      const status = this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
+      if (status && this.onRateLimitReport) this.onRateLimitReport(status);
     }
+
     const usage = monitor.finish();
     this.lastUsage = usage;
     return usage;
@@ -2487,6 +2529,18 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
   getSummaryThresholdTokens(): number {
     return this.agent?.context?.getSummaryThresholdTokens?.() ?? 100000;
+  }
+
+  getRateLimitStatus(): RateLimitStatus | null {
+    if (!this.agent) return null;
+    const providerName = this.getActiveProvider();
+    const providerCfg = this.agent.config.getProvider(providerName);
+    const family = inferProviderFamily(providerCfg?.baseUrl);
+    return this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
+  }
+
+  inferProviderFamily(baseUrl?: string): 'zhipu' | 'agnes' | 'unknown' {
+    return inferProviderFamily(baseUrl);
   }
 
   getLastSummaryTokenCount(): number {

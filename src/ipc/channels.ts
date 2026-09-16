@@ -124,6 +124,8 @@ export const CHANNELS = {
   resourceState: 'nexus:resourceState',
   updateState: 'nexus:updateState',
   configWindowClosed: 'nexus:configWindowClosed',
+  rateLimitUpdate: 'nexus:rateLimitUpdate',
+  getRateLimitStatus: 'nexus:getRateLimitStatus',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];

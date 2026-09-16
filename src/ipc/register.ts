@@ -15,6 +15,7 @@ import { basename, extname, join } from 'node:path';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import type { WorkerHost } from '../main/worker-host.js';
 import type { SessionWorkers, OpenTabInfo } from '../main/session-workers.js';
+import type { RateLimitRegistry } from '../main/rate-limit-registry.js';
 import type { ResourceMonitor, ResourceState } from '../main/resource-monitor.js';
 import { Updater } from '../main/updater.js';
 import { recentLogLines } from '../shared/logger.js';
@@ -66,10 +67,11 @@ export interface IpcContext extends DesktopStateAccess {
   applyResourceConfig: (monitor: ResourceMonitor) => void;
   countOpenTabs: () => number;
   log: (msg: string) => void;
+  rateLimitRegistry: RateLimitRegistry;
 }
 
 export function registerIpc(ctx: IpcContext): void {
-  const { worker, sessionWorkers, resourceMon, updater, log } = ctx;
+  const { worker, sessionWorkers, resourceMon, updater, log, rateLimitRegistry } = ctx;
   const call = (method: string) => async (_e: unknown, params?: Record<string, unknown>) => {
     if (method === 'resolvePermission') log(`invoke resolvePermission params=${JSON.stringify(params)}`);
     await (ctx.earlyMethods.has(method) ? ctx.earlyReady() : ctx.fullReady());
@@ -482,5 +484,10 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle(CHANNELS.downloadUpdate, () => updater.download());
   ipcMain.handle(CHANNELS.installUpdate, () => {
     updater.install();
+  });
+
+  // Cross-session rate-limit status (aggregated from all open session workers).
+  ipcMain.handle(CHANNELS.getRateLimitStatus, (): { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> } => {
+    return { providers: rateLimitRegistry.getAggregated() };
   });
 }

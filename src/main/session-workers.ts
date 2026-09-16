@@ -1,6 +1,7 @@
 import { WorkerHost } from './worker-host.js';
 import { mcpHub } from './mcp-hub.js';
 import type { AgentEvent } from '../agent-service.js';
+import type { RateLimitRegistry } from './rate-limit-registry.js';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +41,9 @@ interface BoundWorker {
  */
 export class SessionWorkers {
   private map = new Map<string, BoundWorker>();
+
+  /** Optional cross-session rate-limit aggregator. Wired by main/index.ts. */
+  rateLimitRegistry?: RateLimitRegistry;
 
   /**
    * Health gate for the pre-warmed spare. Wired by main/index.ts (needs the
@@ -109,10 +113,15 @@ export class SessionWorkers {
       this.onPermission?.(bound.sessionId, req);
     };
     w.onLog = (level: string, message: string) => this.onLog?.(level, message);
+    w.onRateLimitReport = (data: unknown) => {
+      const rl = data as import('../agent/types.js').RateLimitStatus;
+      if (rl && this.rateLimitRegistry) this.rateLimitRegistry.report(bound.sessionId, rl);
+    };
     w.onExit = (code: number | null) => {
       this.onLog?.('warn', `Session worker exited (sessionId=${bound.sessionId}, code=${code})`);
       if (this.map.get(bound.sessionId) === bound) {
         this.map.delete(bound.sessionId);
+        this.rateLimitRegistry?.forget(bound.sessionId);
         this.onChange?.(this.tabs());
       }
     };

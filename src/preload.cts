@@ -108,6 +108,7 @@ const api = {
   getLazyWorker: () => ipcRenderer.invoke('nexus:getLazyWorker'),
   setLazyWorker: (enabled: boolean) => ipcRenderer.invoke('nexus:setLazyWorker', enabled),
   getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
+  getRateLimitStatus: () => ipcRenderer.invoke('nexus:getRateLimitStatus'),
 
   // Multi-tab: per-session worker lifecycle.
   openSession: (sessionId: string, cwd?: string) =>
@@ -157,6 +158,9 @@ const api = {
   },
   onTabsChanged: (cb: (tabs: Array<{ sessionId: string; provider: string; model: string; busy: boolean }>) => void) => {
     ipcRenderer.on('nexus:tabsChanged', (_e, tabs) => cb(tabs));
+  },
+  onRateLimitUpdate: (cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }) => void) => {
+    ipcRenderer.on('nexus:rateLimitUpdate', (_e, data) => cb(data));
   },
   onUpdateState: (cb: (state: Record<string, unknown>) => void) => {
     ipcRenderer.on('nexus:updateState', (_e, state) => cb(state));

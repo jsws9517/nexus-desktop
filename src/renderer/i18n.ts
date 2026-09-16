@@ -228,6 +228,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
 
   // Sidebar (Sub-Agents / Side Chat) — strings follow the active UI language.
   sidebarSubAgents: { 'zh-CN': '子代理', en: 'Sub-Agents' },
+  rateLimitLabel: { 'zh-CN': 'RPM 用量', en: 'RPM Usage' },
+  rateLimitThrottled: { 'zh-CN': '限流中', en: 'Throttled' },
   summaryCount: { 'zh-CN': '摘要次数', en: 'Summaries' },
   compressBudgetLeft: { 'zh-CN': '下次摘要预算', en: 'Next summary budget' },
   sidebarSideChat: { 'zh-CN': '旁路聊天', en: 'Side Chat' },
