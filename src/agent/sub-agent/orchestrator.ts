@@ -96,6 +96,18 @@ Rules:
 3. Each sub-task should have clear description and prompt
 4. Specify dependencies if tasks are not independent
 
+## DECLINE TO DECOMPOSE DECLARATIVE STATEMENTS
+If the user request is a purely declarative statement — a description of concepts or a question about related terms that contains no action verb (e.g. "分析/读取/生成/查找/处理/解释/解决") — return an empty array [].
+Examples:
+  - "基站ID 和 栅格ID傻傻分不清" → []
+  - "A和B的区别是什么" → []
+  - "介绍X和Y的应用场景" → []
+These should be handled by a single reasoning pass (sequentialthinking), NOT split into parallel tasks.
+
+## SPLIT ONLY WHEN TWO INDEPENDENT ACTIONS ARE REQUIRED
+Only return sub-tasks when the request contains at least two independent action verbs connected by a conjunction — e.g. "读取A和生成B" or "分析X并对比Y".
+A single action with paired objects ("分析A和B") is one task, not two.
+
 User request:
 ${userPrompt}
 

@@ -763,6 +763,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    * Determine if parallel execution is appropriate.
    */
   private shouldUseParallel(prompt: string): boolean {
+    // Declarative statements (conjunctions without action verbs) must not
+    // enter the parallel path at all — they belong in a single runTurn.
+    if (this.isDeclarativePrompt(prompt)) return false;
+
     // Universal: 2+ conjunctions → likely parallel task list
     const conjunctionRegex = /(?:和|与|以及|，|,|、|＆|&|and|et|y|и|أو)/gi;
     const conjunctionCount = (prompt.match(conjunctionRegex) || []).length;
@@ -1135,8 +1139,19 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         // excluded from the regenerate() user index — and the original request
         // is carried along as context, matching the sub-agent pipeline. Without
         // the markers each fragment would surface as its own visible user row.
+        // Capture the actual agent text output so the card shows the real
+        // response rather than the placeholder description.
+        const prevOnEvent = this.onEvent;
+        const textBuf: string[] = [];
+        this.onEvent = (event: AgentEvent) => {
+          if (event.type === 'text' && typeof event.text === 'string') textBuf.push(event.text);
+          prevOnEvent?.(event);
+        };
+
         const usage = await this.runTurn(this.wrapWorkerPrompt(task.prompt, prompt));
 
+        this.onEvent = prevOnEvent;
+        const actualOutput = textBuf.join('').trim();
         const durationMs = Date.now() - startTime;
 
         if (this.stopRequested) {
@@ -1163,11 +1178,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           break;
         }
 
-        // Preserve original task description in output
         taskResults.push({
           taskId: task.id,
           status: 'succeeded',
-          output: task.description,
+          output: actualOutput || task.description,
           durationMs,
           tokenUsage: { prompt: usage.prompt, completion: usage.completion },
         });

@@ -316,8 +316,8 @@ async function handleParallelRequest(sessionId: string, event: { type: string; p
   const { workerScriptPath } = await import('./session-workers.js');
   const { loadConstitution } = await import('../tools/agents.js');
   
-  // Send progress event to renderer
-  send(CHANNELS.tabEvent, { sessionId, event: { type: 'parallel_start', sessionId, prompt: event.prompt } });
+  // Send progress event to renderer — deferred until after decomposition
+  // so that declarative prompts (empty task list) never open useless cards.
   
   try {
     // Load the project constitution ONCE here, in the main process, and pass
@@ -341,6 +341,16 @@ async function handleParallelRequest(sessionId: string, event: { type: string; p
     );
     
     const result = await orchestrator.orchestrate(event.prompt, sessionId, constitutionText ?? undefined);
+
+    // Only open task cards when decomposition actually produced tasks.
+    // Declarative statements or single-coherent-task prompts return an empty
+    // array and should not trigger any parallel UI at all.
+    if (result.tasks.length > 0) {
+      send(CHANNELS.tabEvent, {
+        sessionId,
+        event: { type: 'parallel_start', sessionId, prompt: event.prompt },
+      });
+    }
     
     send(CHANNELS.tabEvent, { 
       sessionId, 
