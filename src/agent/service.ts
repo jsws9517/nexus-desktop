@@ -1275,26 +1275,41 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
   /**
    * Fallback decomposition: split prompt by conjunctions and generate meaningful descriptions.
+   * Only splits when the prompt contains multiple independent clause patterns
+   * (e.g. "分析A和生成B"), not when conjunctions connect paired nouns (e.g. "A和B").
    */
   private fallbackDecompose(prompt: string): Array<{
     id: string;
     description: string;
     prompt: string;
   }> {
-    // Split by common Chinese and English conjunctions
-    const parts = prompt.split(/(?:和|与|以及|,|\band\b)/i)
-      .map(p => p.trim())
-      .filter(p => p.length > 5); // Ignore very short fragments
-    
-    if (parts.length <= 1) {
-      // No conjunctions found, return single task
+    // Detect if prompt has multiple independent action clauses
+    const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释';
+    const hasMultiClause = new RegExp(`\\b(${actionVerbs})\\b.*(?:和|与|以及|&|and).*.?\\b(${actionVerbs})\\b`, 'i').test(prompt);
+
+    if (!hasMultiClause) {
+      // Single coherent task — do NOT split on noun conjunctions
       return [{
         id: 'task_1',
         description: 'Complete user request',
         prompt: prompt,
       }];
     }
-    
+
+    // Split on clause boundaries: sentence terminators or inter-clause conjunctions
+    const parts = prompt
+      .split(/(?:[。；；\.]|(?<=\S)\s*(?:和|与|以及|&|and)\s*(?=\S))/gi)
+      .map(p => p.trim())
+      .filter(p => p.length > 8);
+
+    if (parts.length <= 1) {
+      return [{
+        id: 'task_1',
+        description: 'Complete user request',
+        prompt: prompt,
+      }];
+    }
+
     return parts.map((part, index) => ({
       id: `task_${index + 1}`,
       description: this.generateTaskDescription(part, index + 1),

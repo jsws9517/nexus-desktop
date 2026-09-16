@@ -139,13 +139,30 @@ Return JSON array:
 
   /**
    * Fallback decomposition when LLM is not available.
+   * Only splits on multi-clause prompts; preserves single coherent tasks.
    */
   private fallbackDecomposition(userPrompt: string): SubTask[] {
-    // Split by common conjunctions
-    const parts = userPrompt.split(/(?:和|与|以及|,|\band\b)/i)
+    // Only split when there are multiple independent action clauses
+    const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释';
+    const hasMultiClause = new RegExp(`\\b(${actionVerbs})\\b.*(?:和|与|以及|&|and).*.?\\b(${actionVerbs})\\b`, 'i').test(userPrompt);
+
+    if (!hasMultiClause) {
+      return [{
+        id: 'task_1',
+        description: 'Complete user request',
+        prompt: userPrompt,
+        tools: ['read_media_file', 'list_directory_with_sizes', 'query'],
+        timeoutMs: 60000,
+        maxTurns: 10,
+        dependsOn: [],
+      }];
+    }
+
+    const parts = userPrompt
+      .split(/(?:[。；；\.]|(?<=\S)\s*(?:和|与|以及|&|and)\s*(?=\S))/gi)
       .map(p => p.trim())
-      .filter(p => p.length > 0);
-    
+      .filter(p => p.length > 8);
+
     if (parts.length <= 1) {
       return [{
         id: 'task_1',
@@ -157,7 +174,7 @@ Return JSON array:
         dependsOn: [],
       }];
     }
-    
+
     return parts.map((part, index) => ({
       id: `task_${index + 1}`,
       description: `Part ${index + 1}: ${part.substring(0, 50)}...`,

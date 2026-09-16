@@ -205,16 +205,21 @@ Decomposition:
 
   /**
    * Fallback decomposition when LLM fails.
-   * Uses heuristic-based splitting with semantic awareness.
+   * Uses heuristic-based splitting with semantic awareness to avoid
+   * splitting on conjunctions that connect related nouns in a single task.
    */
   private fallbackDecomposition(userPrompt: string): SubTask[] {
-    // Try to split by common conjunctions
-    const parts = userPrompt.split(/(?:和|与|以及|，|,|、|＆|&|and|et|y|и|أو)/i)
-      .map(p => p.trim())
-      .filter(p => p.length > 5); // Ignore very short fragments
-    
-    if (parts.length <= 1) {
-      // No conjunctions found, return single task
+    // Only split on conjunctions that separate full clauses/commands,
+    // not those connecting paired nouns within a single action.
+    // Pattern: look for verb + object ... CONJ ... verb + object structure.
+    const conjunctions = '和|与|以及|、|，|,|＆|&| and | et | y | и | أو';
+
+    // Heuristic: detect if prompt has multiple independent clause patterns
+    // e.g. "分析A和B" -> single task; "读取A和生成B" -> two tasks
+    const hasMultiClause = /\b(分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释)\b.*${conjunctions}.*\b(分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释)\b/i.test(userPrompt);
+
+    if (!hasMultiClause) {
+      // Single coherent task — do NOT split
       return [{
         id: 'task_1',
         description: 'Complete user request',
@@ -225,8 +230,27 @@ Decomposition:
         dependsOn: [],
       }];
     }
-    
-    // Multiple tasks from conjunctions
+
+    // Split on sentence-level separators: period, semicolon, or conjunction
+    // that follows a complete clause boundary
+    const sentenceBoundary = /(?:[。；；\.]|(?<=\S)\s*(?:和|与|以及|&|and)\s*(?=\S))/gu;
+    const parts = userPrompt
+      .split(sentenceBoundary)
+      .map(p => p.trim())
+      .filter(p => p.length > 8); // Require meaningful length
+
+    if (parts.length <= 1) {
+      return [{
+        id: 'task_1',
+        description: 'Complete user request',
+        prompt: userPrompt,
+        tools: Array.from(READ_ONLY_TOOLS).slice(0, 5),
+        timeoutMs: 60000,
+        maxTurns: 10,
+        dependsOn: [],
+      }];
+    }
+
     return parts.map((part, index) => ({
       id: `task_${index + 1}`,
       description: this.generateTaskDescription(part, index + 1),
