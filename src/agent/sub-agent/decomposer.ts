@@ -77,7 +77,7 @@ Return a JSON array of sub-tasks:
 [
   {
     "id": "task_1",
-    "description": "Brief description of what this task does",
+    "description": "Brief task summary (10-20 words, rewritten in your own words, NOT copied from user)",
     "prompt": "Detailed instructions for the sub-agent to complete this task",
     "tools": ["tool1", "tool2"],
     "dependsOn": [],
@@ -86,49 +86,67 @@ Return a JSON array of sub-tasks:
   }
 ]
 
+## Description Writing Rules (重要！)
+- **语言匹配**：description语言必须与用户输入语言一致
+  - 用户用中文提问 → description用中文
+  - 用户用英文提问 → description用英文
+  - 混合语言 → 主要内容用哪种语言，description就用哪种
+- **禁止复读机**：description不能照抄用户原话，必须用自己的话提炼
+- **通俗易懂**：用普通人能理解的语言，避免技术术语
+- **简洁明了**：控制在10-20个字/词，一句话说清楚任务目标
+- **突出动作**：以动词开头
+
+**中文示例**：
+- 用户："分析report.xlsx的销售数据" → ✅ "提取表格中的销售指标"
+- 用户："对比A和B两个文件" → ✅ "对比两份文件的差异"
+
+**英文示例**：
+- User: "Analyze report.xlsx sales data" → ✅ "Extract key metrics from spreadsheet"
+- User: "Compare files A and B" → ✅ "Compare differences between two files"
+
 ## Semantic Grouping
 Tasks that share the same semantic context (e.g., "analyze sales data" and "compare with last quarter") should be in the same group if they can share intermediate results.
 
 ## Examples
 
-### Example 1: Simple Conjunction Chain
-User: "Analyze report.xlsx and report2.xlsx and report3.xlsx"
+### Example 1: Chinese Input → Chinese Description
+User: "分析report.xlsx、report2.xlsx和report3.xlsx"
+分析: 3个独立文件分析任务 → 并行执行
+Decomposition:
+[
+  {"id": "task_1", "description": "提取第一个表格的指标", "prompt": "Read and analyze report.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
+  {"id": "task_2", "description": "提取第二个表格的指标", "prompt": "Read and analyze report2.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
+  {"id": "task_3", "description": "提取第三个表格的指标", "prompt": "Read and analyze report3.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"}
+]
+
+### Example 2: English Input → English Description
+User: "Analyze report.xlsx, report2.xlsx and report3.xlsx"
 Analysis: 3 independent file analysis tasks → parallel execution
 Decomposition:
 [
-  {"id": "task_1", "description": "Analyze report.xlsx", "prompt": "Read and analyze report.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
-  {"id": "task_2", "description": "Analyze report2.xlsx", "prompt": "Read and analyze report2.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
-  {"id": "task_3", "description": "Analyze report3.xlsx", "prompt": "Read and analyze report3.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"}
+  {"id": "task_1", "description": "Extract metrics from first spreadsheet", "prompt": "Read and analyze report.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
+  {"id": "task_2", "description": "Extract metrics from second spreadsheet", "prompt": "Read and analyze report2.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
+  {"id": "task_3", "description": "Extract metrics from third spreadsheet", "prompt": "Read and analyze report3.xlsx. Return key metrics.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"}
 ]
 
-### Example 2: Compare with Implicit Read Tasks
+### Example 3: Chinese Input with Sequential Dependencies
+User: "对比report.xlsx的销售数据和上季度的数据"
+分析: 读取当前 → 读取上季度 → 对比（顺序依赖）
+Decomposition:
+[
+  {"id": "task_1", "description": "读取本季度销售数据", "prompt": "Read report.xlsx and extract sales data. Return structured data.", "tools": ["sheet.read"], "dependsOn": [], "priority": "high", "semanticGroup": "data_collection"},
+  {"id": "task_2", "description": "读取上季度销售数据", "prompt": "Find and read last quarter's sales data file. Return structured data.", "tools": ["sheet.read"], "dependsOn": [], "priority": "high", "semanticGroup": "data_collection"},
+  {"id": "task_3", "description": "对比两季度数据差异", "prompt": "Compare the two datasets and generate a summary highlighting differences.", "tools": ["sequentialthinking"], "dependsOn": ["task_1", "task_2"], "priority": "medium", "semanticGroup": "analysis"}
+]
+
+### Example 4: English Input with Sequential Dependencies
 User: "Compare sales data in report.xlsx with last quarter's data"
 Analysis: Read current → Read previous → Compare (sequential dependency)
 Decomposition:
 [
   {"id": "task_1", "description": "Read current quarter sales data", "prompt": "Read report.xlsx and extract sales data. Return structured data.", "tools": ["sheet.read"], "dependsOn": [], "priority": "high", "semanticGroup": "data_collection"},
   {"id": "task_2", "description": "Read last quarter sales data", "prompt": "Find and read last quarter's sales data file. Return structured data.", "tools": ["sheet.read"], "dependsOn": [], "priority": "high", "semanticGroup": "data_collection"},
-  {"id": "task_3", "description": "Compare and generate summary", "prompt": "Compare the two datasets and generate a summary highlighting differences.", "tools": ["sequentialthinking"], "dependsOn": ["task_1", "task_2"], "priority": "medium", "semanticGroup": "analysis"}
-]
-
-### Example 3: Multi-Action Single Object
-User: "Read, analyze, and summarize the sales report"
-Analysis: All actions on same object → sequential chain, not parallel
-Decomposition:
-[
-  {"id": "task_1", "description": "Process sales report", "prompt": "Read the sales report, analyze key metrics, and generate a comprehensive summary.", "tools": ["sheet.read", "sheet.analyze"], "dependsOn": [], "priority": "high", "semanticGroup": "report_analysis"}
-]
-
-### Example 4: Mixed Parallel and Sequential
-User: "Analyze files A, B, C, then compare results and generate report"
-Analysis: A, B, C parallel → compare (depends on all) → report (depends on compare)
-Decomposition:
-[
-  {"id": "task_1", "description": "Analyze file A", "prompt": "Read and analyze file A. Return key findings.", "tools": ["read_media_file"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
-  {"id": "task_2", "description": "Analyze file B", "prompt": "Read and analyze file B. Return key findings.", "tools": ["read_media_file"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
-  {"id": "task_3", "description": "Analyze file C", "prompt": "Read and analyze file C. Return key findings.", "tools": ["read_media_file"], "dependsOn": [], "priority": "high", "semanticGroup": "analysis"},
-  {"id": "task_4", "description": "Compare all results", "prompt": "Compare findings from tasks 1, 2, and 3. Identify patterns and differences.", "tools": ["sequentialthinking"], "dependsOn": ["task_1", "task_2", "task_3"], "priority": "medium", "semanticGroup": "comparison"},
-  {"id": "task_5", "description": "Generate final report", "prompt": "Create a comprehensive report based on the comparison.", "tools": [], "dependsOn": ["task_4"], "priority": "low", "semanticGroup": "reporting"}
+  {"id": "task_3", "description": "Compare data between two quarters", "prompt": "Compare the two datasets and generate a summary highlighting differences.", "tools": ["sequentialthinking"], "dependsOn": ["task_1", "task_2"], "priority": "medium", "semanticGroup": "analysis"}
 ]
 
 ## Important Notes

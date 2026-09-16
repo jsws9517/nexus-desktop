@@ -181,10 +181,34 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     // with the renderer-held transcript. It never touches the session store,
     // the main worker's context, or its busy state — side chat stays usable
     // while the real session is mid-turn and can never pollute it.
+    //
+    // Unlike the previous callLlm() path (which was a bare provider.complete()
+    // with zero tools), we now call init() so the full tool system (skills,
+    // MCP proxy, builtin tools) is wired up, then run through the normal
+    // agent.chat() loop so tool calls are actually executed.
     const messages = req.params.messages.map((m) => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content }));
     const tempService = new AgentService();
-    await tempService.earlyInit();
-    const reply = await tempService.callLlm({ messages });
+    await tempService.init();
+    // Wire an event collector so we can extract the final assistant text
+    // without forwarding events to the main UI (side chat is isolated).
+    const collected: string[] = [];
+    const prevOnEvent = tempService['onEvent'];
+    (tempService as any)['onEvent'] = (event: unknown) => {
+      if (event && typeof event === 'object' && (event as { type: string }).type === 'text') {
+        const text = (event as { text: string }).text;
+        if (text) collected.push(text);
+      }
+    };
+    try {
+      // Run the full chat turn with the last user message; the pre-built
+      // transcript is held by the renderer and replayed each request.
+      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+      const input = lastUserMsg ? lastUserMsg.content : '';
+      await tempService.chat(input);
+    } finally {
+      (tempService as any)['onEvent'] = prevOnEvent;
+    }
+    const reply = collected.join('');
     return { reply };
   },
   regenerate: async (req: WorkerRequest & { method: 'regenerate' }) => {

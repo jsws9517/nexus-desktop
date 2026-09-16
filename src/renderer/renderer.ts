@@ -5,7 +5,7 @@ import { isWorkerBlockText, stripProtocolXml } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
-import { ParallelExecutionCard } from './components/ParallelExecutionCard.js';
+import { ParallelExecutionCard, initParallelCardTooltips } from './components/ParallelExecutionCard.js';
 import type { SubTaskResult, SubTaskStatus } from '../agent/sub-agent/types.js';
 import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
@@ -4953,6 +4953,7 @@ window.nexusDesktop.onTabsChanged((open) => {
     loadTheme();
     initFx();
     addSkipLink();
+    initParallelCardTooltips();
     await loadLanguage();
     showOnboarding();
     void window.nexusDesktop.getInputRows().then((r) => applyInputRows(r)).catch(() => {});

@@ -102,6 +102,42 @@ function capToolResult<T>(res: T): T {
   return { ...res, content: `${head}${marker}${tail}` };
 }
 
+/**
+ * Marker for the block that neutralizes the core package's hard-coded
+ * "[Debugging Discipline]" RULE 1 (nexus-coder dist/src/agent.js) which forbids
+ * reading source files until a runnable reproduction exists. In a desktop agent
+ * IDE that rule is unsatisfiable — you must read source to learn how the project
+ * is built/run before you can even construct a reproduction — and it directly
+ * contradicts the injected [Project Directory] + constitution blocks. The block
+ * built below SUPERSEDES that clause; it is appended to system message 0 so it
+ * lands AFTER the core block in reading order.
+ */
+export const DEBUG_OVERRIDE_MARKER = '[Debugging Discipline Override]';
+
+/** Returns the superseding correction block for the core's RULE 1 hard-block. */
+export function buildDebugDisciplineOverride(): string {
+  return (
+    '\n\n' +
+    DEBUG_OVERRIDE_MARKER +
+    '\n' +
+    'This section SUPERSEDES the "RULE 1 — REPRODUCTION FIRST" clause of the ' +
+    '[Debugging Discipline] block (and any "do NOT read source files" instruction there):\n' +
+    '1. Reading source code IS a legitimate diagnostic step. You are NEVER forbidden from reading ' +
+    'source files to understand or fix a reported issue.\n' +
+    '2. When a bug is cheaply reproducible, prefer establishing a runnable reproduction ' +
+    '(test/script/command that goes red on the symptom) BEFORE theorizing about the cause. ' +
+    'Reading entry points, build scripts, package.json, config and existing tests to figure out ' +
+    'how to build/run the project is a NORMAL part of that, not a rule violation.\n' +
+    '3. When a runnable reproduction is NOT feasible (UI-only, environment/hardware-dependent, ' +
+    'manual steps, external service), skip it and inspect the source directly. Never stall, ' +
+    'refuse, or repeat questions because no reproduction was built.\n' +
+    '4. An explicit user request to read / inspect / analyze source code ALWAYS wins and is ' +
+    'handled immediately, with no reproduction gate.\n' +
+    '5. Clean up any throwaway reproduction script in ONE pass (move to .trash/); never write a ' +
+    'NEW script to delete the OLD one.\n'
+  );
+}
+
 export class AgentService {
   private agent: Agent | null = null;
   private initialized = false;
@@ -456,6 +492,17 @@ export class AgentService {
                 '  - fetch: HTTP requests with content extraction\n' +
                 '  - 36 git_* tools: Full git operations (commit, branch, merge, etc.)\n',
             );
+          }
+
+          // --- Debugging Discipline RULE 1 relaxation (core hard-block) ---
+          // The core base prompt (nexus-coder dist/src/agent.js) unconditionally
+          // appends "[Debugging Discipline]" whose RULE 1 forbids reading source
+          // before a runnable reproduction exists — unsatisfiable for a desktop
+          // IDE and contradictory to the [Project Directory] / constitution blocks
+          // injected above. Append a superseding section (lands after the core
+          // block, so it is read later and overrides it).
+          if (!firstContent.includes(DEBUG_OVERRIDE_MARKER)) {
+            ctx.prependToSystem(buildDebugDisciplineOverride());
           }
 
           // --- Project constitution (P0, from Tolten Aegis) ---

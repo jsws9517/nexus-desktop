@@ -1953,6 +1953,54 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
+/* Parallel Task Tooltip */
+.parallel-task-tooltip {
+  position: fixed;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  pointer-events: none;
+  max-width: 400px;
+  max-height: 300px;
+  overflow: auto;
+  white-space: normal;
+  word-wrap: break-word;
+}
+.parallel-task-tooltip .tooltip-header,
+.parallel-task-tooltip .tooltip-desc,
+.parallel-task-tooltip .tooltip-status,
+.parallel-task-tooltip .tooltip-duration {
+  margin-bottom: 6px;
+}
+.parallel-task-tooltip .tooltip-output,
+.parallel-task-tooltip .tooltip-error {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--code-bg, var(--bg-input));
+  border-radius: 4px;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.parallel-task-tooltip .tooltip-error {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.parallel-task-tooltip pre {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
 /* Settings tabs navigation */
 .settings-nav {
   display: flex;
