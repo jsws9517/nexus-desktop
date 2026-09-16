@@ -186,6 +186,7 @@ declare global {
         models: string[];
         ok: boolean;
         error?: string;
+        separatorIndex?: number;
       }>;
       saveProvider(name: string, fields: Record<string, unknown>): Promise<unknown>;
       openSession(sessionId: string, cwd?: string): Promise<{ ok: boolean; tab?: TabInfo; reason?: string }>;
@@ -523,6 +524,7 @@ interface ModelsCacheEntry {
   ts: number;
   ok: boolean;
   error?: string;
+  separatorIndex?: number;
 }
 const modelsCache = new Map<string, ModelsCacheEntry>();
 // Per-provider blacklist of model ids confirmed unavailable at call time
@@ -4565,7 +4567,7 @@ function refreshModelSelect(force = false): void {
   if (!active) return;
   const cached = modelsCache.get(active);
   if (!force && cached && cached.ok && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
-    if (cached.list.length > 0) populateModelOptions(cached.list, current);
+    if (cached.list.length > 0) populateModelOptions(cached.list, current, cached.separatorIndex);
     void remediateDelistedModel(active, cached.list, current);
     return;
   }
@@ -4574,9 +4576,9 @@ function refreshModelSelect(force = false): void {
       const res = await window.nexusDesktop.getModels(active, { sessionId: currentSessionId || undefined });
       if (!active || active !== status.provider) return;
       const filtered = filterBlacklisted(active, res.models);
-      modelsCache.set(active, { list: filtered, ts: Date.now(), ok: res.ok, error: res.error });
+      modelsCache.set(active, { list: filtered, ts: Date.now(), ok: res.ok, error: res.error, separatorIndex: (res as any).separatorIndex });
       if (res.ok && filtered.length > 0) {
-        populateModelOptions(filtered, current);
+        populateModelOptions(filtered, current, (res as any).separatorIndex);
       } else if (res.error) {
         modelSelect.title = `models: ${res.error}`;
       }
@@ -4671,16 +4673,22 @@ function filterBlacklisted(providerName: string, list: string[]): string[] {
   return out;
 }
 
-function populateModelOptions(models: string[], current: string): void {
+function populateModelOptions(models: string[], current: string, separatorIndex?: number): void {
   const safe = filterBlacklisted(status.provider, models);
-  const removed = models.length - safe.length;
   const selected = safe.includes(current) ? current : safe[0] || '';
   modelSelect.innerHTML = '';
-  for (const m of safe) {
+  for (let i = 0; i < safe.length; i++) {
+    if (separatorIndex !== undefined && i === separatorIndex) {
+      const sep = document.createElement('option');
+      sep.disabled = true;
+      sep.textContent = t('manualSpecified');
+      sep.classList.add('model-divider');
+      modelSelect.appendChild(sep);
+    }
     const opt = document.createElement('option');
-    opt.value = m;
-    opt.textContent = m;
-    opt.selected = m === selected;
+    opt.value = safe[i];
+    opt.textContent = safe[i];
+    opt.selected = safe[i] === selected;
     modelSelect.appendChild(opt);
   }
 }

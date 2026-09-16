@@ -748,6 +748,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     void this.mcpRequest('connect')
       .then(() => this.refreshMcpToolCache())
       .catch(() => {});
+    // 首次启动：若 ~/.nexus/provider-models.yaml 不存在则创建默认模板
+    AgentService.ensureProviderModelsYaml();
     this.initialized = true;
     this.onLog?.('info', `Nexus core initialized (cwd=${process.cwd()}, deferMcp=${defer})`);
   }
@@ -757,6 +759,54 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (agent) await agent.shutdown();
     this.initialized = false;
     this.agent = null;
+  }
+
+  /**
+   * Ensure ~/.nexus/provider-models.yaml exists with a default template on first run.
+   * Only writes when the file is absent — never overwrites user-edited content.
+   */
+  static ensureProviderModelsYaml(): void {
+    const yamlPath = join(homedir(), '.nexus', 'provider-models.yaml');
+    if (existsSync(yamlPath)) return;
+    try {
+      mkdirSync(join(homedir(), '.nexus'), { recursive: true });
+      const DEFAULT =
+        '# 自定义模型列表 — 免费/优先模型置顶，与 API 返回列表合并展示\n' +
+        '# Custom model list — free/priority models appear at the top of the dropdown, followed by the API list.\n' +
+        '#\n' +
+        '# freeModels       始终出现在列表最顶端（免费/推荐模型）\n' +
+        '# freeModels       Always appears at the very top (free / recommended models)\n' +
+        '# priorityModels   出现在 freeModels 之后、API 模型之前\n' +
+        '# priorityModels   Appears after freeModels, before the API-fetched models\n' +
+        '#\n' +
+        '# 修改此文件后无需重启 App，下次打开对应 provider 的下拉菜单即生效\n' +
+        '# Edit this file and the dropdown updates automatically on next open — no restart needed.\n' +
+        '#\n' +
+        '# ---- 示例 / Example ----\n' +
+        'providers:\n' +
+        '  zhipu:\n' +
+        '    freeModels:\n' +
+        '      # - glm-4.7-flash\n' +
+        '      # - glm-z1-flash\n' +
+        '    priorityModels:\n' +
+        '      # - glm-4-flash-250414\n' +
+        '  agnes:\n' +
+        '    freeModels:\n' +
+        '      # - agnes-2.5-flash\n' +
+        '    priorityModels: []\n' +
+        '  deepseek:\n' +
+        '    freeModels: []\n' +
+        '    priorityModels:\n' +
+        '      # - deepseek-v4-pro\n' +
+        '      # - deepseek-v4-flash\n' +
+        '  qiniu:\n' +
+        '    freeModels: []\n' +
+        '    priorityModels: []\n' +
+        '  zen:\n' +
+        '    freeModels: []\n' +
+        '    priorityModels: []\n';
+      writeFileSync(yamlPath, DEFAULT, 'utf-8');
+    } catch {}
   }
 
   private persistUserInput(input: string): number | null {
@@ -2612,8 +2662,57 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       }
     }
     if (ids.length === 0) {
+      // 智谱等 provider：/models API 不返回免费模型，尝试从外置 YAML 补充
+      if (providerName) {
+        try {
+          const yamlPath = join(homedir(), '.nexus', 'provider-models.yaml');
+          if (existsSync(yamlPath)) {
+            const raw = readFileSync(yamlPath, 'utf-8');
+            const yaml = await import('js-yaml');
+            const cfg = yaml.load(raw) as Record<string, unknown> | undefined;
+            const pCfg = ((cfg?.providers as Record<string, Record<string, string[]>>) ?? {})[providerName] ?? {};
+            const free = (pCfg.freeModels ?? []).map((m: string) => m.trim().toLowerCase()).filter(Boolean);
+            const priority = (pCfg.priorityModels ?? []).map((m: string) => m.trim().toLowerCase()).filter(Boolean);
+            if (free.length || priority.length) {
+              const merged = [...new Set([...free, ...priority])];
+              out.models = merged;
+              out.ok = true;
+              (out as any).separatorIndex = merged.length;
+              return out;
+            }
+          }
+        } catch {}
+      }
       out.error = lastErr?.message ?? 'models endpoint unreachable';
       return out;
+    }
+    // 有 providerName 时合并外置 YAML 中的 free/priority 模型（免费置顶）
+    if (providerName) {
+      try {
+        const yamlPath = join(homedir(), '.nexus', 'provider-models.yaml');
+        if (existsSync(yamlPath)) {
+          const raw = readFileSync(yamlPath, 'utf-8');
+          const yaml = await import('js-yaml');
+          const cfg = yaml.load(raw) as Record<string, unknown> | undefined;
+          const pCfg = ((cfg?.providers as Record<string, Record<string, string[]>>) ?? {})[providerName] ?? {};
+          const free = (pCfg.freeModels ?? []).map((m: string) => m.trim().toLowerCase()).filter(Boolean);
+          const priority = (pCfg.priorityModels ?? []).map((m: string) => m.trim().toLowerCase()).filter(Boolean);
+          if (free.length || priority.length) {
+            const merged = [...new Set([...free, ...priority, ...ids])];
+            const freeSet = new Set(free);
+            const prioritySet = new Set(priority);
+            const sorted = [
+              ...merged.filter(m => freeSet.has(m)),
+              ...merged.filter(m => prioritySet.has(m) && !freeSet.has(m)),
+              ...merged.filter(m => !freeSet.has(m) && !prioritySet.has(m)),
+            ];
+            out.models = sorted;
+            out.ok = true;
+            (out as any).separatorIndex = free.length + priority.filter(m => !freeSet.has(m)).length;
+            return out;
+          }
+        }
+      } catch {}
     }
     out.models = ids;
     out.ok = true;
