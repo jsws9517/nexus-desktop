@@ -470,6 +470,32 @@ export class AgentService {
           const ctx = this.agent!.context;
           const msgs = ctx.getMessages();
 
+          // --- "No user query found in messages" guard ---
+          // The core invokes ensureUserInContext() ONLY inside its compression
+          // paths (dist/src/llm/context-manager.js). Compression short-circuits
+          // when token count is below threshold, so a multi-tool turn's 2nd+ LLM
+          // call (runLlmTurn recursion) can reach provider.chat() with a message
+          // tail of assistant(toolCalls)/tool and NO trailing user message. Some
+          // OpenAI-compatible providers reject exactly that with
+          // 400 "No user query found in messages." Mirror the core guard against
+          // the LIVE message list so every call ends with the rightmost user
+          // message (a plain append would duplicate it each tool iteration).
+          const liveMsgs = (ctx as unknown as { messages: Array<{ role?: string }> }).messages;
+          if (liveMsgs && liveMsgs.length > 0 && liveMsgs[liveMsgs.length - 1].role !== 'user') {
+            let rightmostUser: { role?: string } | undefined;
+            for (let i = liveMsgs.length - 1; i >= 0; i--) {
+              if (liveMsgs[i].role === 'user') {
+                rightmostUser = liveMsgs[i];
+                break;
+              }
+            }
+            if (rightmostUser) {
+              const userIdx = liveMsgs.findIndex((m) => m.role === 'user');
+              if (userIdx >= 0) liveMsgs.splice(userIdx, 1);
+              liveMsgs.push(rightmostUser);
+            }
+          }
+
           // --- Project directory injection (existing) ---
           const meta = this.getSessionMetadata(sid);
           const projectDir =
