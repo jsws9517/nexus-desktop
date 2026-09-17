@@ -1325,6 +1325,104 @@ body {
 .task-meta.cancelled { color: var(--dim, #8a8a8a); }
 .task-empty { font-size: 12px; color: var(--text-dim); padding: 6px 2px; }
 
+/* ---- right-panel file browser (bottom section of #right-sidebar) ---- */
+#file-browser { margin-top: auto; }
+#file-browser.collapsed .filebrowser-body { display: none; }
+.filebrowser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.filebrowser-head:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.filebrowser-head .rside-title { text-transform: none; letter-spacing: normal; }
+.filebrowser-toggle {
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.filebrowser-body { display: flex; flex-direction: column; gap: 6px; }
+.filebrowser-tools { display: flex; flex-direction: column; gap: 4px; }
+.filebrowser-filter {
+  width: 100%;
+  font-size: 11px;
+  padding: 3px 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  outline: none;
+}
+.filebrowser-filter:focus { border-color: var(--accent); }
+.filebrowser-hidden {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.filebrowser-hidden input { accent-color: var(--accent); }
+.filebrowser-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.filebrowser-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 0;
+}
+.filebrowser-row:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.filebrowser-arrow {
+  flex-shrink: 0;
+  width: 10px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.filebrowser-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  min-width: 0;
+  flex: 1;
+}
+.filebrowser-name.fb-dir-name { color: var(--text); }
+.filebrowser-size {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.filebrowser-empty, .filebrowser-note {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 2px;
+}
+.filebrowser-note { font-style: italic; }
+.filebrowser-toast {
+  font-size: 11px;
+  color: var(--danger);
+  padding: 4px 2px;
+}
+
 /* =========================================================
    Ambient sci-fi FX layer (canvas particles + CSS grid/vignette)
    All assets are self-generated: keeps the CSP in index.html valid.

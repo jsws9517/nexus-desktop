@@ -11,6 +11,8 @@ import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
 import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
+import { mountFileBrowser } from './components/FileBrowser.js';
+import type { FileBrowserContext } from './components/FileBrowser.js';
 
 interface SessionInfo {
   id: string;
@@ -204,6 +206,8 @@ declare global {
       openFile(): Promise<{ canceled: boolean; paths: string[] }>;
       revealFile(path: string): Promise<{ ok: boolean }>;
       getFileInfos(paths: string[]): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>>;
+      listDirectory(root: string, path: string): Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }>;
+      openExternalFile(path: string): Promise<{ ok: boolean; error?: string }>;
       readImagePreview(path: string): Promise<string | undefined>;
       // Paste image from system clipboard (consistent with coder-core ALT+V).
       pasteImage(): Promise<{ path: string; preview: string } | null>;
@@ -2658,6 +2662,43 @@ async function syncOpenTabs(): Promise<void> {
 }
 
 // ---------- right sidebar: session info + task progress ----------
+/** Resolve the current project directory ('' if unset): the session's recorded
+ *  projectDir is canonical (same source as the rsideCwd row); fall back to the
+ *  worker's live cwd for sessions opened without an explicit project. */
+async function currentProjectDir(): Promise<string> {
+  if (currentSessionId) {
+    try {
+      const meta = (await window.nexusDesktop.getSessionMetadata(currentSessionId)) as Record<string, unknown>;
+      const dir = (meta.projectDir ?? '') as string;
+      if (dir) return dir;
+    } catch {}
+  }
+  return status?.cwd ?? '';
+}
+
+/** True while any task is running/pending — the "must monitor progress" window
+ *  that auto-collapses the right-panel file browser. */
+function isTaskMonitorNeeded(): boolean {
+  for (const t of tasks.values()) {
+    if (t.status === 'running' || t.status === 'pending') return true;
+  }
+  return false;
+}
+
+/** Context handed to the right-panel file browser (live renderer state). */
+function makeFileBrowserContext(): FileBrowserContext {
+  return {
+    getProjectDir: () => currentProjectDir(),
+    getUiLang: () => getUiLang(),
+    subscribe: (fn) => {
+      const wrapped = (event: AgentEvent) => fn(event);
+      eventSubscribers.add(wrapped);
+      return () => eventSubscribers.delete(wrapped);
+    },
+    isMonitorNeeded: () => isTaskMonitorNeeded(),
+  };
+}
+
 function truncateId(id: string, maxLen = 8): string {
   return id.length > maxLen ? id.slice(0, maxLen) + '…' : id;
 }
@@ -5075,6 +5116,11 @@ window.nexusDesktop.onTabsChanged((open) => {
       mount: mountSideChatPage,
     });
     renderSidebarTabs();
+    // Right-panel file browser: mounted once for the app lifetime; it handles
+    // its own lazy tree, extension/hidden filters, session re-binding and the
+    // task/idle auto-collapse rules. Container never needs re-mounting.
+    const fileBrowserEl = $('#file-browser');
+    if (fileBrowserEl) mountFileBrowser(fileBrowserEl, makeFileBrowserContext());
     // Idle auto-hide (10s): any interaction inside the open page or on the tab
     // strip — pointer activity, scrolling, typing — resets the close timer so
     // the panel only collapses back to the icon strip once it goes quiet.

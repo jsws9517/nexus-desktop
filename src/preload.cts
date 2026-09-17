@@ -61,6 +61,10 @@ const api = {
   openFile: () => ipcRenderer.invoke('nexus:openFile'),
   revealFile: (path: string) => ipcRenderer.invoke('nexus:revealFile', path),
   getFileInfos: (paths: string[]) => ipcRenderer.invoke('nexus:getFileInfos', paths),
+  listDirectory: (root: string, path: string) =>
+    ipcRenderer.invoke('nexus:listDirectory', { root, path }) as Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }>,
+  openExternalFile: (path: string) =>
+    ipcRenderer.invoke('nexus:openExternalFile', path) as Promise<{ ok: boolean; error?: string }>,
   readImagePreview: (path: string) => ipcRenderer.invoke('nexus:readImagePreview', path),
   // Paste image from system clipboard (consistent with coder-core ALT+V).
   pasteImage: () => ipcRenderer.invoke('nexus:pasteImage') as Promise<{ path: string; preview: string } | null>,

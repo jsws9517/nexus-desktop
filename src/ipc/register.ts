@@ -9,9 +9,9 @@
  */
 
 import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { basename, extname, join } from 'node:path';
+import { basename, extname, isAbsolute, join, normalize, sep } from 'node:path';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import type { WorkerHost } from '../main/worker-host.js';
 import type { SessionWorkers, OpenTabInfo } from '../main/session-workers.js';
@@ -389,6 +389,67 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle(CHANNELS.revealFile, (_e, path: unknown): { ok: boolean } => {
     if (isNonEmptyString(path)) shell.showItemInFolder(path);
     return { ok: true };
+  });
+
+  // Right-panel file browser: list one directory level with entry types/sizes.
+  // Path containment is enforced against the caller-supplied project root so a
+  // renderer can never enumerate directories outside the active project.
+  const MAX_LIST_ENTRIES = 2000;
+  ipcMain.handle(
+    CHANNELS.listDirectory,
+    async (_e, params: { root?: unknown; path?: unknown }): Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }> => {
+      const root = typeof params?.root === 'string' ? params.root : '';
+      const path = typeof params?.path === 'string' ? params.path : '';
+      if (!root || !path || path.length > 4096 || root.length > 4096) return { ok: false, error: 'invalid path' };
+      const rootNorm = normalize(root);
+      const pathNorm = normalize(path);
+      const isWin = process.platform === 'win32';
+      const rootPrefix = rootNorm.endsWith(sep) ? rootNorm : rootNorm + sep;
+      const isContained =
+        pathNorm === rootNorm ||
+        (isWin ? pathNorm.toLowerCase().startsWith(rootPrefix.toLowerCase()) : pathNorm.startsWith(rootPrefix));
+      if (!isContained) return { ok: false, error: 'path outside project root' };
+      let dirents: import('node:fs').Dirent[];
+      try {
+        dirents = await readdir(pathNorm, { withFileTypes: true });
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+      const entries: Array<{ name: string; type: 'file' | 'directory'; size: number }> = [];
+      let truncated = false;
+      for (const d of dirents) {
+        if (entries.length >= MAX_LIST_ENTRIES) {
+          truncated = true;
+          break;
+        }
+        if (d.isSymbolicLink()) continue;
+        let size = 0;
+        if (d.isFile()) {
+          try {
+            size = (await stat(join(pathNorm, d.name))).size;
+          } catch { /* size 0 on stat failure */ }
+        }
+        entries.push({ name: d.name, type: d.isDirectory() ? 'directory' : 'file', size });
+      }
+      entries.sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      return { ok: true, entries, truncated };
+    },
+  );
+
+  // Open a file with the OS default application (right-panel file browser).
+  ipcMain.handle(CHANNELS.openExternalFile, async (_e, path: unknown): Promise<{ ok: boolean; error?: string }> => {
+    if (!isNonEmptyString(path) || path.length > 4096 || !isAbsolute(path)) return { ok: false, error: 'invalid path' };
+    try {
+      const st = await stat(path);
+      if (!st.isFile()) return { ok: false, error: 'not a file' };
+      const err = await shell.openPath(path);
+      return err ? { ok: false, error: err } : { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   });
 
   // Write user-facing export bytes (chart PNG base64 / CSV text) to a

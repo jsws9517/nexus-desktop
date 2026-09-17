@@ -102,6 +102,8 @@ export const CHANNELS = {
   openFile: 'nexus:openFile',
   revealFile: 'nexus:revealFile',
   getFileInfos: 'nexus:getFileInfos',
+  listDirectory: 'nexus:listDirectory',
+  openExternalFile: 'nexus:openExternalFile',
   readImagePreview: 'nexus:readImagePreview',
   pasteImage: 'nexus:pasteImage',
   saveArtifact: 'nexus:saveArtifact',
