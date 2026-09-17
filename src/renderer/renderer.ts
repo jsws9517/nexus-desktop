@@ -2772,7 +2772,16 @@ async function refreshSidebarSession(): Promise<void> {
     }
   }
   await refreshSidebarModels();
-  rsideSummaryCount.textContent = `${t('compressSummarize')}: ${st.strategyCounts?.summarize ?? 0} · ${t('compressTruncate')}: ${st.strategyCounts?.truncate ?? 0} · ${t('compressSnapshot')}: ${st.strategyCounts?.snapshot ?? 0}`;
+  const sCnt = st.strategyCounts?.summarize ?? 0;
+  const tCnt = st.strategyCounts?.truncate ?? 0;
+  const nCnt = st.strategyCounts?.snapshot ?? 0;
+  rsideSummaryCount.textContent = `${t('compressSummarize')}: ${sCnt} · ${t('compressTruncate')}: ${tCnt} · ${t('compressSnapshot')}: ${nCnt}`;
+  rsideSummaryCount.title = [
+    `${t('compressSummarize')}: ${sCnt}`,
+    `${t('compressTruncate')}: ${tCnt}`,
+    `${t('compressSnapshot')}: ${nCnt}`,
+    `${t('compressTotal')}: ${sCnt + tCnt + nCnt}`,
+  ].join('\n');
   // Rate-limit status (per-session; aggregated cross-session is refreshed via event).
   renderRateLimit(st.rateLimit);
 }
