@@ -21,11 +21,12 @@
 #sidebar.collapsed .sidebar-page { display: none; }
 .sidebar-tabs {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 4px;
   padding: 6px 8px 0;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  flex-wrap: wrap;
 }
 .sidebar-tabs.hidden { display: none; }
 .sidebar-tab {
@@ -37,6 +38,11 @@
   padding: 4px 8px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  flex: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sidebar-tab:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
 .sidebar-tab.active {
@@ -372,7 +378,7 @@ body {
 
 /* ---- Sidebar ---- */
 #sidebar {
-  width: 240px;
+  width: 274px;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   display: flex;
@@ -625,6 +631,15 @@ body {
   font-size: 12px;
   text-align: center;
   padding: 4px 10px;
+}
+
+/* context compression system notice (session pause reason) */
+.msg.compress-notice { margin: 4px 0; }
+.msg.compress-notice .bubble {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 10px;
+  padding: 6px 12px;
 }
 
 /* unattended safety gate: dangerous operation blocked */
@@ -1217,15 +1232,46 @@ body {
 
 /* ---- Right sidebar: session info + task progress ---- */
 #right-sidebar {
-  width: 260px;
+  width: 274px;
   background: var(--bg-sidebar);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  overflow-y: auto;
+  overflow: hidden;
+  position: relative;
   padding: 12px;
   gap: 12px;
+  transition: width 0.2s ease;
+}
+#right-sidebar.collapsed { width: 48px; }
+#right-sidebar.collapsed .rside-section { display: none; }
+#right-sidebar.collapsed .rside-divider { display: none; }
+.rsidebar-toggle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  z-index: 20;
+  width: 16px;
+  height: 44px;
+  border: none;
+  border-radius: 8px 0 0 8px;
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  transition: background 0.15s, color 0.15s;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.25);
+  outline: none;
+  padding: 0;
+}
+.rsidebar-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
+  color: var(--accent);
 }
 .rside-section { display: flex; flex-direction: column; gap: 8px; }
 .rside-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }

@@ -70,6 +70,18 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
     'zh-CN': '模型重复同一段思考（约 {n} token）陷入空转，已自动中断本轮以止损。',
     en: 'The model repeated the same thinking block (~{n} tokens) — the turn was auto-interrupted to stop the token burn.',
   },
+  compressNoticeSummarize: {
+    'zh-CN': '🔄 上下文已触发压缩（摘要 · 第 {round} 轮），会话暂停片刻以整理历史消息…',
+    en: '🔄 Context compression triggered (Summarize · round {round}) — the session is pausing to consolidate history…',
+  },
+  compressNoticeTruncate: {
+    'zh-CN': '✂️ 上下文已触发压缩（截断 · 第 {round} 轮），会话暂停片刻以裁剪超出上下文窗口的内容。',
+    en: '✂️ Context compression triggered (Truncate · round {round}) — the session is pausing to trim overflow…',
+  },
+  compressNoticeSnapshot: {
+    'zh-CN': '📦 上下文已触发压缩（快照 · 第 {round} 轮），会话暂停片刻以归档关键信息。',
+    en: '📦 Context compression triggered (Snapshot · round {round}) — the session is pausing to archive key info…',
+  },
   noMcpServers: { 'zh-CN': '未配置 MCP 服务器', en: 'No MCP servers configured' },
   mcpLoadFailed: { 'zh-CN': '加载失败', en: 'Failed to load' },
   mcpFailed: { 'zh-CN': '失败', en: 'Failed' },
@@ -240,7 +252,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   tabsOpenFailed: { 'zh-CN': '无法打开会话标签：', en: 'Failed to open session tab: ' },
 
   // Sidebar (Sub-Agents / Side Chat) — strings follow the active UI language.
-  sidebarSubAgents: { 'zh-CN': '子代理', en: 'Sub-Agents' },
+  sidebarSubAgents: { 'zh-CN': '子级代理', en: 'Sub-Agents' },
   rateLimitLabel: { 'zh-CN': 'RPM 用量', en: 'RPM Usage' },
   rateLimitThrottled: { 'zh-CN': '限流中', en: 'Throttled' },
   summaryCount: { 'zh-CN': '摘要次数', en: 'Summaries' },
@@ -250,7 +262,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   compressTruncate: { 'zh-CN': '截断', en: 'Truncate' },
   compressSnapshot: { 'zh-CN': '快照', en: 'Snapshot' },
   compressTotal: { 'zh-CN': '总计', en: 'Total' },
-  sidebarSideChat: { 'zh-CN': '旁路聊天', en: 'Side Chat' },
+  sidebarSideChat: { 'zh-CN': '旁路对话', en: 'Side Chat' },
   subAgentsPanel: { 'zh-CN': '🛰 子代理并行面板', en: '🛰 Sub-Agent Panel' },
   subAgentsLegend: { 'zh-CN': '实时任务卡，不阻塞聊天', en: 'live task cards, chat never blocks' },
   subAgentsEmpty: {

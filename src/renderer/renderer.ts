@@ -1406,6 +1406,17 @@ function handleEvent(event: AgentEvent): void {
         // replacement-char deltas, but restored history or other senders may
         // carry them. Never render/count garbage thinking.
         if (!delta.replace(/\uFFFD/g, '').trim()) break;
+        // Context compression pauses the session between LLM calls. Surface it
+        // as a visible system notice (chat card + toast) instead of burying the
+        // progress line inside the collapsible thinking block.
+        const compressMatch = delta
+          .trim()
+          .toLowerCase()
+          .match(/^(summarizing|truncating|snapshotting) context \(round (\d+)\)/);
+        if (compressMatch) {
+          renderCompressNotice(compressMatch[1] as 'summarizing' | 'truncating' | 'snapshotting', Number(compressMatch[2]));
+          break;
+        }
         // Strip leading whitespace exactly once (one blank line per pending
         // tool call), then preserve all real internal \n / \t formatting.
         if (!curThinking?.cleaned) {
@@ -2727,6 +2738,29 @@ function showToast(msg: string, type?: 'success' | 'error' | 'warning', duration
   toastTimer = setTimeout(() => {
     toastEl?.classList.remove('show');
   }, duration);
+}
+
+let lastCompressNoticeKey = '';
+/** Show a system notice when context compression pauses the session. */
+function renderCompressNotice(strategy: 'summarizing' | 'truncating' | 'snapshotting', round: number): void {
+  const key = `${strategy}:${round}`;
+  if (key === lastCompressNoticeKey) return;
+  lastCompressNoticeKey = key;
+  const text =
+    strategy === 'summarizing'
+      ? t('compressNoticeSummarize', { round })
+      : strategy === 'truncating'
+        ? t('compressNoticeTruncate', { round })
+        : t('compressNoticeSnapshot', { round });
+  const wrap = document.createElement('div');
+  wrap.className = 'msg system compress-notice';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+  wrap.appendChild(bubble);
+  messagesEl.appendChild(wrap);
+  scrollToBottom();
+  showToast(text, 'warning', 4000);
 }
 
 function wireCopy(el: HTMLElement, getText: () => string, msg: () => string): void {
@@ -4823,6 +4857,29 @@ collapseBtn.addEventListener('click', () => {
 });
 loadSidebarState();
 collapseBtn.textContent = sidebarEl.classList.contains('collapsed') ? '▶' : '◀';
+
+// ---------- right sidebar collapse/expand ----------
+const RIGHT_SIDEBAR_COLLAPSED_KEY = 'nexus.right-sidebar.collapsed';
+const rightSidebarEl = $('#right-sidebar') as HTMLElement;
+const rightCollapseBtn = $('#btn-collapse-right-sidebar') as HTMLButtonElement;
+function loadRightSidebarState(): void {
+  try {
+    const collapsed = localStorage.getItem(RIGHT_SIDEBAR_COLLAPSED_KEY) !== '0';
+    if (collapsed) rightSidebarEl.classList.add('collapsed');
+  } catch {}
+}
+function saveRightSidebarState(collapsed: boolean): void {
+  try {
+    localStorage.setItem(RIGHT_SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {}
+}
+rightCollapseBtn.addEventListener('click', () => {
+  const isCollapsed = rightSidebarEl.classList.toggle('collapsed');
+  saveRightSidebarState(isCollapsed);
+  rightCollapseBtn.textContent = isCollapsed ? '◀' : '▶';
+});
+loadRightSidebarState();
+rightCollapseBtn.textContent = rightSidebarEl.classList.contains('collapsed') ? '◀' : '▶';
 pagerPrevEl.addEventListener('click', () => {
   if (sessionPage <= 0) return;
   sessionPage--;
@@ -5106,12 +5163,14 @@ window.nexusDesktop.onTabsChanged((open) => {
     sidebarRegistry.register({
       id: SubAgentsPage.id,
       title: SubAgentsPage.title,
+      titleKey: SubAgentsPage.titleKey,
       icon: SubAgentsPage.icon,
       mount: mountSubAgentsPage,
     });
     sidebarRegistry.register({
       id: SideChatPage.id,
       title: SideChatPage.title,
+      titleKey: SideChatPage.titleKey,
       icon: SideChatPage.icon,
       mount: mountSideChatPage,
     });
