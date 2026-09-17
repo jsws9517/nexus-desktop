@@ -45,7 +45,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   fileBrowser: { 'zh-CN': '文件浏览器', en: 'File Browser' },
   fbCollapse: { 'zh-CN': '折叠文件浏览器', en: 'Collapse file browser' },
   fbExpand: { 'zh-CN': '展开文件浏览器', en: 'Expand file browser' },
-  fbFilterPlaceholder: { 'zh-CN': '搜索文件名，如 index 或 .ts', en: 'Filter by name, e.g. index or .ts' },
+  fbFilterPlaceholder: { 'zh-CN': '搜索文件名，支持 * ? ^ $，如 ^_*.py', en: 'Filter by name; supports * ? ^ $, e.g. ^_*.py' },
   fbShowHidden: { 'zh-CN': '显示隐藏', en: 'Show hidden' },
   fbEmpty: { 'zh-CN': '暂无文件', en: 'No files' },
   fbEmptyFilter: { 'zh-CN': '无匹配文件', en: 'No matching files' },

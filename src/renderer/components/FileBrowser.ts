@@ -9,7 +9,9 @@
  *     the filesystem itself);
  *   - files open externally with the OS default app;
  *   - a filter hides non-matching files (directories stay visible): each token
- *     matches by filename keyword (case-insensitive substring) or by extension;
+ *     is a filename keyword (case-insensitive substring), an extension
+ *     (e.g. `.ts`), or a small glob pattern with `^`/`$` anchors and
+ *     `*`/`?` wildcards (e.g. `^_*.py` selects underscore-prefixed py files);
  *   - hidden entries (dotfiles + common noise dirs) are folded away unless the
  *     "show hidden" toggle is on;
  *   - the panel starts collapsed and opens only on an explicit user click
@@ -107,7 +109,7 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Normalize a filter input like "ts, .js index" → ['ts','js','index']. */
+/** Normalize a filter input like "ts, .js ^_*.py index" → ['ts','js','^_*.py','index']. */
 function parseFilter(raw: string): string[] {
   return raw
     .split(/[,，\s]+/)
@@ -121,16 +123,49 @@ function fileExt(name: string): string {
   return name.slice(i + 1).toLowerCase();
 }
 
+/**
+ * Turn a small glob-like pattern into a RegExp. Only tokens containing at
+ * least one of `^ $ * ?` are treated as patterns; a plain token keeps the
+ * substring / extension rules (see matchesFilter). Semantics:
+ *   ^  anchor to the start of the name
+ *   $  anchor to the end of the name
+ *   *  any run of characters (including none)
+ *   ?  exactly one character
+ * Without anchors the pattern matches anywhere in the name, so `*.py`
+ * selects every .py file and `^_*.py` selects py names starting with `_`.
+ */
+function patternToRegExp(raw: string): RegExp | null {
+  if (!/[*?^$]/.test(raw)) return null;
+  let src = raw;
+  let anchoredStart = false;
+  let anchoredEnd = false;
+  if (src[0] === '^') { anchoredStart = true; src = src.slice(1); }
+  if (src.endsWith('$')) { anchoredEnd = true; src = src.slice(0, -1); }
+  let out = '';
+  for (const ch of src) {
+    if (ch === '*') out += '.*';
+    else if (ch === '?') out += '.';
+    else out += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  if (anchoredStart) out = '^' + out;
+  if (anchoredEnd) out += '$';
+  return new RegExp(out);
+}
+
 function isHiddenEntry(e: FileBrowserEntry): boolean {
   if (e.name.startsWith('.')) return true;
   return e.type === 'directory' && HIDDEN_DIR_NAMES.has(e.name);
 }
 
-function matchesFilter(e: FileBrowserEntry, exts: string[]): boolean {
-  if (exts.length === 0) return true;
+function matchesFilter(e: FileBrowserEntry, tokens: string[]): boolean {
+  if (tokens.length === 0) return true;
   if (e.type === 'directory') return true;
   const name = e.name.toLowerCase();
-  return exts.some((t) => name.includes(t) || fileExt(e.name) === t);
+  return tokens.some((t) => {
+    const re = patternToRegExp(t);
+    if (re) return re.test(name);
+    return name.includes(t) || fileExt(e.name) === t;
+  });
 }
 
 /**

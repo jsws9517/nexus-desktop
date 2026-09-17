@@ -122,6 +122,13 @@ function findEls(root, { cls, text } = {}) {
 function treeRowTexts(root) {
   return findEls(root, { cls: 'filebrowser-row' }).map((el) => el.textContent).join('|');
 }
+// Row names with the emoji prefix stripped, so `_main.py` vs `main.py` are
+// distinguishable ((sub)string checks on raw text would collide).
+function treeRowNames(root) {
+  return findEls(root, { cls: 'filebrowser-name' }).map((el) =>
+    (el.textContent || '').replace(/^[^\p{L}\p{N}\s._-]+/u, '').trim(),
+  );
+}
 
 /** Build a mountable context + bridge with scripted directory listings. */
 function makeHarness({ entries = [], monitor = false, projectDir = '/proj' } = {}) {
@@ -255,6 +262,54 @@ test('keyword filter matches filename substrings, not just extensions', async ()
   const text2 = treeRowTexts(h.container);
   assert.ok(text2.includes('readme.md'), 'different keyword matches');
   assert.ok(!text2.includes('index.html'), 'earlier match now hidden');
+});
+
+test('glob pattern filter supports ^ $ * ? wildcards', async () => {
+  const h = makeHarness({
+    entries: [
+      { name: '_main.py', type: 'file', size: 1 },
+      { name: 'main.py', type: 'file', size: 2 },
+      { name: 'utils.py', type: 'file', size: 3 },
+      { name: '_notes.txt', type: 'file', size: 4 },
+      { name: 'pack.pyc', type: 'file', size: 5 },
+    ],
+  });
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS();
+  assert.ok(treeRowTexts(h.container).includes('main.py'), 'baseline');
+
+  const input = findEls(h.container, { cls: 'filebrowser-filter' })[0];
+
+  // ^_*.py → names starting with `_` and ending in `.py`.
+  input.value = '^_*.py';
+  input.dispatch('input');
+  let names = treeRowNames(h.container);
+  assert.ok(names.includes('_main.py'), 'underscore-prefixed py kept');
+  assert.ok(!names.includes('main.py'), 'non-underscore py filtered');
+  assert.ok(!names.includes('utils.py'), 'plain py filtered by start anchor');
+  assert.ok(!names.includes('_notes.txt'), 'wrong extension filtered');
+  assert.ok(!names.includes('pack.pyc'), '.pyc must not match *.py');
+
+  // *.py → every .py file, regardless of prefix.
+  input.value = '*.py';
+  input.dispatch('input');
+  names = treeRowNames(h.container);
+  assert.ok(names.includes('_main.py') && names.includes('utils.py') && names.includes('main.py'), 'all py files shown');
+  assert.ok(!names.includes('_notes.txt'), 'txt filtered out');
+
+  // ^main? → "main" + exactly one more character.
+  input.value = '^main?';
+  input.dispatch('input');
+  names = treeRowNames(h.container);
+  assert.ok(names.includes('main.py'), 'single-char wildcard matches');
+  assert.ok(!names.includes('_main.py'), 'leading char blocks start anchor');
+
+  // Trailing $ anchor.
+  input.value = 'py$';
+  input.dispatch('input');
+  names = treeRowNames(h.container);
+  assert.ok(names.includes('utils.py'), 'ends-with matches py file');
+  assert.ok(!names.includes('pack.pyc'), 'ends-with rejects pyc');
 });
 
 test('show hidden toggle reveals dotfiles and noise dirs', async () => {
