@@ -78,10 +78,10 @@ class FakeEl {
     return s;
   }
   set textContent(v) { this._textContent = String(v); this.children = []; }
-  appendChild(el) { this.children.push(el); return el; }
+  appendChild(el) { el._parent = this; this.children.push(el); return el; }
   replaceChildren(...els) {
     this.children = [];
-    for (const e of els) if (e) this.children.push(e);
+    for (const e of els) if (e) { e._parent = this; this.children.push(e); }
   }
   addEventListener(ev, fn, opts) { (this._listeners[ev] ??= []).push(fn); if (opts?.passive) this._passive = true; }
   removeEventListener(ev, fn) {
@@ -89,6 +89,11 @@ class FakeEl {
     if (arr) this._listeners[ev] = arr.filter((f) => f !== fn);
   }
   setAttribute(k, v) { this[k] = v; }
+  contains(node) {
+    if (this === node) return true;
+    for (const c of this.children) if (c.contains?.(node)) return true;
+    return false;
+  }
   remove() {
     const parent = this._parent;
     if (parent) parent.children = parent.children.filter((c) => c !== this);
@@ -100,12 +105,22 @@ class FakeEl {
 class FakeContainer extends FakeEl {
   constructor() { super('div'); }
 }
+const docListeners = {};
 globalThis.document = {
+  _listeners: docListeners,
+  body: new FakeEl('body'),
   createElement(tag) { return new FakeEl(tag); },
   createDocumentFragment() { return new FakeEl('#fragment'); },
+  addEventListener(ev, fn) { (docListeners[ev] ??= []).push(fn); },
+  removeEventListener(ev, fn) {
+    if (docListeners[ev]) docListeners[ev] = docListeners[ev].filter((f) => f !== fn);
+  },
+  dispatch(ev, arg) {
+    for (const fn of [...(docListeners[ev] ?? [])]) fn(arg ?? {});
+  },
 };
 
-const { mountFileBrowser } = await import(pathToFileURL(join(dist, 'renderer', 'components', 'FileBrowser.js')));
+const { mountFileBrowser, FILE_DRAG_MIME } = await import(pathToFileURL(join(dist, 'renderer', 'components', 'FileBrowser.js')));
 
 function findEls(root, { cls, text } = {}) {
   const out = [];
@@ -145,6 +160,10 @@ function makeHarness({ entries = [], monitor = false, projectDir = '/proj' } = {
       calls.push(['open', path]);
       return { ok: true };
     },
+    openInEditor: async (path) => {
+      calls.push(['editor', path]);
+      return { ok: true };
+    },
     getGitStatus: async (root) => {
       calls.push(['git', root]);
       const g = gitData.get(root);
@@ -152,6 +171,7 @@ function makeHarness({ entries = [], monitor = false, projectDir = '/proj' } = {
       return { ok: true, isRepo: true, branch: g.branch ?? 'main', statuses: g.statuses ?? [] };
     },
   };
+  const chatAdds = [];
   let handler = null;
   let currentDir = projectDir;
   let monitorNeeded = () => monitor;
@@ -163,10 +183,11 @@ function makeHarness({ entries = [], monitor = false, projectDir = '/proj' } = {
       return () => { handler = null; };
     },
     isMonitorNeeded: () => monitorNeeded(),
+    addFileToChat: (path) => { chatAdds.push(path); },
   };
   const container = new FakeContainer();
   return {
-    container, bridge, calls, ctx,
+    container, bridge, calls, ctx, chatAdds,
     get handler() { return handler; },
     setProjectDir(d) { currentDir = d; },
     setMonitor(fn) { monitorNeeded = fn; },
@@ -655,6 +676,117 @@ test('non-git project is probed once and not polled again', async () => {
   h.handler({ type: 'session_changed', sessionId: 'x' });
   await TICKS(); await TICKS();
   assert.equal(probes(), 1, 'no further git requests for a non-repo root');
+});
+
+test('right-click menu adds a file to chat and opens it in an editor', async () => {
+  const h = makeHarness({
+    entries: [
+      { name: 'a.ts', type: 'file', size: 10 },
+      { name: 'src', type: 'directory', size: 0 },
+    ],
+  });
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS();
+
+  const menuEls = () => findEls(document.body, { cls: 'fb-context-menu' });
+  const row = findEls(h.container, { cls: 'filebrowser-row', text: 'a.ts' })[0];
+  row.dispatch('contextmenu', { preventDefault() {}, clientX: 12, clientY: 34 });
+  await TICKS();
+  let menu = menuEls()[0];
+  assert.ok(menu, 'menu shown on contextmenu');
+  assert.deepEqual(
+    findEls(menu, { cls: 'fb-context-item' }).map((i) => i.textContent),
+    ['Add to chat', 'Open in editor'],
+    'both actions listed',
+  );
+
+  const firstItem = findEls(menu, { cls: 'fb-context-item' })[0];
+  document.dispatch('pointerdown', { target: firstItem });
+  assert.ok(menuEls()[0], 'press inside the menu keeps it open');
+  firstItem.dispatch('click');
+  assert.deepEqual(h.chatAdds, ['/proj/a.ts'], 'add-to-chat invoked with the row path');
+  assert.equal(menuEls().length, 0, 'menu closed after action');
+
+  row.dispatch('contextmenu', { preventDefault() {}, clientX: 1, clientY: 2 });
+  await TICKS();
+  menu = menuEls()[0];
+  const secondItem = findEls(menu, { cls: 'fb-context-item' })[1];
+  document.dispatch('pointerdown', { target: secondItem });
+  secondItem.dispatch('click');
+  assert.ok(h.calls.some(([m, p]) => m === 'editor' && p === '/proj/a.ts'), 'open-in-editor invoked');
+  assert.equal(menuEls().length, 0, 'menu closed after action');
+});
+
+test('right-click menu closes on Escape / outside press and on dispose', async () => {
+  const h = makeHarness({ entries: [{ name: 'a.ts', type: 'file', size: 10 }] });
+  const dispose = mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS();
+  const menuEls = () => findEls(document.body, { cls: 'fb-context-menu' });
+  const row = findEls(h.container, { cls: 'filebrowser-row', text: 'a.ts' })[0];
+  const openMenu = async () => {
+    row.dispatch('contextmenu', { preventDefault() {}, clientX: 0, clientY: 0 });
+    await TICKS();
+    return menuEls()[0];
+  };
+
+  assert.ok(await openMenu(), 'menu shown');
+  document.dispatch('keydown', { key: 'Escape', preventDefault() {} });
+  assert.equal(menuEls().length, 0, 'Escape closes menu');
+
+  assert.ok(await openMenu(), 'menu shown again');
+  document.dispatch('pointerdown', {});
+  assert.equal(menuEls().length, 0, 'outside press closes menu');
+
+  assert.ok(await openMenu(), 'menu shown before dispose');
+  dispose();
+  assert.equal(menuEls().length, 0, 'dispose removes menu');
+});
+
+test('file rows are draggable with the absolute path on the drag payload', async () => {
+  const h = makeHarness({
+    entries: [
+      { name: 'a.ts', type: 'file', size: 10 },
+      { name: 'src', type: 'directory', size: 0 },
+    ],
+  });
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS();
+
+  const fileRow = findEls(h.container, { cls: 'filebrowser-row', text: 'a.ts' })[0];
+  const dirRow = findEls(h.container, { cls: 'filebrowser-row', text: 'src' })[0];
+  assert.equal(fileRow.draggable, true, 'file row draggable');
+  assert.ok(!dirRow.draggable, 'directory row not draggable');
+
+  const seen = {};
+  const dt = { setData: (t, v) => { seen[t] = v; }, effectAllowed: '' };
+  fileRow.dispatch('dragstart', { dataTransfer: dt });
+  assert.equal(seen[FILE_DRAG_MIME], '/proj/a.ts', 'custom MIME carries the path');
+  assert.equal(seen['text/plain'], '/proj/a.ts', 'plain-text fallback carries the path');
+  assert.equal(dt.effectAllowed, 'copy', 'copy effect');
+});
+
+test('open-in-editor falls back to the OS default app on failure', async () => {
+  const h = makeHarness({ entries: [{ name: 'a.ts', type: 'file', size: 10 }] });
+  delete h.bridge.openInEditor; // e.g. an older preload without the method
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS();
+
+  const openSecondItem = async () => {
+    const row = findEls(h.container, { cls: 'filebrowser-row', text: 'a.ts' })[0];
+    row.dispatch('contextmenu', { preventDefault() {}, clientX: 0, clientY: 0 });
+    await TICKS();
+    const menu = findEls(document.body, { cls: 'fb-context-menu' })[0];
+    findEls(menu, { cls: 'fb-context-item' })[1].dispatch('click');
+    await TICKS();
+  };
+
+  await openSecondItem();
+  assert.ok(h.calls.some(([m, p]) => m === 'open' && p === '/proj/a.ts'), 'missing method → default app');
+
+  h.bridge.openInEditor = async (p) => { h.calls.push(['editor', p]); return { ok: false, error: 'no handler' }; };
+  await openSecondItem();
+  assert.equal(h.calls.filter(([m, p]) => m === 'editor' && p === '/proj/a.ts').length, 1, 'editor attempted');
+  assert.equal(h.calls.filter(([m, p]) => m === 'open' && p === '/proj/a.ts').length, 2, 'editor failure → default app');
 });
 
 test('dispose removes DOM and unsubscribes from the event bus', async () => {

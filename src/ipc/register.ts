@@ -13,6 +13,7 @@ import { access, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, sep } from 'node:path';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import type { WorkerHost } from '../main/worker-host.js';
 import type { SessionWorkers, OpenTabInfo } from '../main/session-workers.js';
 import type { RateLimitRegistry } from '../main/rate-limit-registry.js';
@@ -48,6 +49,39 @@ async function imageDataUrl(path: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/** Spawn a detached GUI app; resolves false when the binary is missing so the
+ *  caller can fall back to the OS default handler. */
+function spawnDetached(command: string, args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
+      child.once('error', () => resolve(false));
+      child.once('spawn', () => {
+        child.unref();
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/** macOS → default text editor; Linux → $VISUAL/$EDITOR, else xdg-open.
+ *  Returns false when no suitable launcher exists, or on Windows so the caller
+ *  uses the OS association via shell.openPath: `notepad.exe` is an app
+ *  execution alias there and spawning it from Electron never surfaces a window
+ *  (the promise still resolves, so it cannot be detected as a failure). */
+async function openInTextEditor(path: string): Promise<boolean> {
+  if (process.platform === 'win32') return false;
+  if (process.platform === 'darwin') return spawnDetached('open', ['-t', path]);
+  const editor = process.env.VISUAL || process.env.EDITOR;
+  if (editor) {
+    const parts = editor.split(/\s+/).filter(Boolean);
+    if (parts.length > 0 && (await spawnDetached(parts[0], [...parts.slice(1), path]))) return true;
+  }
+  return spawnDetached('xdg-open', [path]);
 }
 
 /** Mutable app bindings injected by src/main/index.ts (worker is a `let` ref). */
@@ -459,6 +493,23 @@ export function registerIpc(ctx: IpcContext): void {
     try {
       const st = await stat(path);
       if (!st.isFile()) return { ok: false, error: 'not a file' };
+      const err = await shell.openPath(path);
+      return err ? { ok: false, error: err } : { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // Open a file in a text editor (right-panel file browser "Open in editor").
+  // On Windows the OS association (via shell.openPath) is used because that is
+  // the only reliable way to surface the editor; elsewhere a dedicated editor
+  // is spawned with a fallback to the OS default application.
+  ipcMain.handle(CHANNELS.openInEditor, async (_e, path: unknown): Promise<{ ok: boolean; error?: string }> => {
+    if (!isNonEmptyString(path) || path.length > 4096 || !isAbsolute(path)) return { ok: false, error: 'invalid path' };
+    try {
+      const st = await stat(path);
+      if (!st.isFile()) return { ok: false, error: 'not a file' };
+      if (await openInTextEditor(path)) return { ok: true };
       const err = await shell.openPath(path);
       return err ? { ok: false, error: err } : { ok: true };
     } catch (e) {

@@ -11,7 +11,7 @@ import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
 import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
-import { mountFileBrowser } from './components/FileBrowser.js';
+import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext } from './components/FileBrowser.js';
 
 interface SessionInfo {
@@ -208,6 +208,7 @@ declare global {
       getFileInfos(paths: string[]): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>>;
       listDirectory(root: string, path: string): Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }>;
       openExternalFile(path: string): Promise<{ ok: boolean; error?: string }>;
+      openInEditor(path: string): Promise<{ ok: boolean; error?: string }>;
       readImagePreview(path: string): Promise<string | undefined>;
       // Paste image from system clipboard (consistent with coder-core ALT+V).
       pasteImage(): Promise<{ path: string; preview: string } | null>;
@@ -2709,6 +2710,9 @@ function makeFileBrowserContext(): FileBrowserContext {
       return () => eventSubscribers.delete(wrapped);
     },
     isMonitorNeeded: () => isTaskMonitorNeeded(),
+    addFileToChat: (path) => {
+      void attachFiles([path]);
+    },
   };
 }
 
@@ -5083,6 +5087,12 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-ove
 dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
   dropZone.classList.remove('drag-over');
+  // A row dragged from the in-app file browser carries its absolute path.
+  const internal = e.dataTransfer?.getData?.(FILE_DRAG_MIME);
+  if (internal) {
+    void attachFiles([internal]);
+    return;
+  }
   const files = Array.from(e.dataTransfer?.files ?? []);
   const paths = files.map((f) => window.nexusDesktop.getPathForFile(f)).filter(Boolean);
   if (paths.length > 0) void attachFiles(paths);

@@ -49,6 +49,9 @@ export interface GitStatusResult {
   error?: string;
 }
 
+/** Drag payload written by a file row and read by the chat drop zone. */
+export const FILE_DRAG_MIME = 'application/x-nexus-path';
+
 /** IPC surface (defaults to window.nexusDesktop; injected in tests). */
 export interface FileBrowserBridge {
   listDirectory(
@@ -56,6 +59,10 @@ export interface FileBrowserBridge {
     path: string,
   ): Promise<{ ok: boolean; entries?: FileBrowserEntry[]; truncated?: boolean; error?: string }>;
   openExternalFile(path: string): Promise<{ ok: boolean; error?: string }>;
+  /** Open a file in a text editor (notepad on Windows, the platform default
+   *  elsewhere). Optional: absent on an older preload, in which case the caller
+   *  falls back to `openExternalFile`. */
+  openInEditor?(path: string): Promise<{ ok: boolean; error?: string }>;
   /** Absolute-path-indexed entries; a missing path means the working tree is
    *  clean. `ignored` entries are excluded from badges entirely. */
   getGitStatus(root: string): Promise<GitStatusResult>;
@@ -70,6 +77,9 @@ export interface FileBrowserContext {
   subscribe(fn: (event: AgentEvent) => void): () => void;
   /** True while any task is running/pending (progress monitoring window). */
   isMonitorNeeded(): boolean;
+  /** Host-owned hook that adds an absolute file path to the chat composer
+   *  (as an attachment). Optional so the component stays standalone. */
+  addFileToChat?(path: string): void;
 }
 
 export interface FileBrowserMountOptions {
@@ -200,7 +210,7 @@ export function mountFileBrowser(
   ctx: FileBrowserContext,
   opts: FileBrowserMountOptions = {},
 ): () => void {
-  const bridge: FileBrowserBridge = opts.bridge ?? (window as unknown as { nexusDesktop?: FileBrowserBridge }).nexusDesktop ?? { listDirectory: async () => ({ ok: false, error: 'bridge missing' }), openExternalFile: async () => ({ ok: false, error: 'bridge missing' }), getGitStatus: async () => ({ ok: false, isRepo: false, error: 'bridge missing' }) };
+  const bridge: FileBrowserBridge = opts.bridge ?? (window as unknown as { nexusDesktop?: FileBrowserBridge }).nexusDesktop ?? { listDirectory: async () => ({ ok: false, error: 'bridge missing' }), openExternalFile: async () => ({ ok: false, error: 'bridge missing' }), openInEditor: async () => ({ ok: false, error: 'bridge missing' }), getGitStatus: async () => ({ ok: false, isRepo: false, error: 'bridge missing' }) };
   const idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
   const getLang = () => ctx.getUiLang() || 'zh-CN';
 
@@ -275,6 +285,8 @@ export function mountFileBrowser(
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   // Pointer/focus inside the panel pauses the idle countdown (re-armed on leave).
   let interacting = false;
+  // Open row context menu (pauses the countdown while shown).
+  let contextMenu: HTMLElement | null = null;
   // Non-git roots are probed exactly once — no further git requests until the
   // project directory actually changes.
   let gitProbedDir = '';
@@ -323,11 +335,11 @@ export function mountFileBrowser(
 
   function armIdle(): void {
     cancelIdle();
-    // While the pointer/focus is inside the panel the countdown is suspended.
-    if (disposed || collapsed || interacting) return;
+    // Pointer/focus inside the panel (or an open menu) suspends the countdown.
+    if (disposed || collapsed || interacting || contextMenu) return;
     idleTimer = setTimeout(() => {
       idleTimer = null;
-      if (!disposed && !collapsed && !interacting) setCollapsed(true);
+      if (!disposed && !collapsed && !interacting && !contextMenu) setCollapsed(true);
     }, idleMs);
   }
 
@@ -459,6 +471,17 @@ export function mountFileBrowser(
           el.addEventListener('click', () => {
             void onClickFile(row.path);
           });
+          el.draggable = true;
+          el.addEventListener('dragstart', (ev: DragEvent) => {
+            const dt = ev.dataTransfer;
+            if (!dt) return;
+            dt.setData(FILE_DRAG_MIME, row.path);
+            dt.setData('text/plain', row.path);
+            dt.effectAllowed = 'copy';
+          });
+          el.addEventListener('contextmenu', (ev: MouseEvent) => {
+            openContextMenu(row.path, ev);
+          });
         }
         frag.appendChild(el);
       }
@@ -484,14 +507,119 @@ export function mountFileBrowser(
 
   async function onClickFile(path: string): Promise<void> {
     const res = await bridge.openExternalFile(path);
-    if (!res.ok) {
-      const empty = document.createElement('div');
-      empty.className = 'filebrowser-toast';
-      empty.textContent = `${str('fbOpenFailed', getLang())}: ${res.error ?? ''}`;
-      body.appendChild(empty);
-      setTimeout(() => empty.remove(), 2500);
-    }
+    if (!res.ok) showToast(`${str('fbOpenFailed', getLang())}: ${res.error ?? ''}`);
     armIdle();
+  }
+
+  /** Open a file in an editor (context menu). Any failure — missing IPC handler
+   *  or editor launch error — falls back to the OS default app so the action
+   *  never ends silently; only a double failure surfaces a toast. */
+  function openFileInEditor(path: string): void {
+    const fail = (msg: string) => showToast(`${str('fbOpenFailed', getLang())}: ${msg}`);
+    const fallback = () => {
+      void bridge.openExternalFile(path)
+        .then((res) => { if (!res.ok) fail(res.error ?? ''); })
+        .catch((e: unknown) => fail(e instanceof Error ? e.message : String(e)));
+    };
+    if (typeof bridge.openInEditor !== 'function') {
+      fallback();
+      return;
+    }
+    void bridge.openInEditor(path)
+      .then((res) => { if (!res.ok) fallback(); })
+      .catch(() => fallback());
+  }
+
+  // ---- row context menu ----
+  // Dismissal listeners live only while the menu is open and are attached on
+  // the next tick — the opening gesture must not dismiss the menu (pointerdown
+  // vs. contextmenu ordering differs by platform/input device).
+  let menuTeardown: (() => void) | null = null;
+
+  function onDocPointerDown(ev: Event): void {
+    if (!contextMenu) return;
+    const target = ev.target as Node | null;
+    if (target && typeof contextMenu.contains === 'function' && contextMenu.contains(target)) return;
+    closeContextMenu();
+  }
+  function onDocKeyDown(ev: KeyboardEvent): void {
+    if (contextMenu && ev.key === 'Escape') {
+      ev.preventDefault?.();
+      closeContextMenu();
+    }
+  }
+  function onDocContextMenu(ev: Event): void {
+    if (!contextMenu) return;
+    const target = ev.target as Node | null;
+    if (target && typeof contextMenu.contains === 'function' && contextMenu.contains(target)) return;
+    closeContextMenu();
+  }
+
+  function closeContextMenu(): void {
+    if (menuTeardown) {
+      menuTeardown();
+      menuTeardown = null;
+    }
+    if (!contextMenu) return;
+    contextMenu.remove();
+    contextMenu = null;
+    if (!interacting) armIdle();
+  }
+
+  function contextMenuItem(label: string, onSelect: () => void): HTMLElement {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'fb-context-item';
+    item.textContent = label;
+    item.addEventListener('click', () => {
+      closeContextMenu();
+      onSelect();
+    });
+    return item;
+  }
+
+  function openContextMenu(path: string, ev: MouseEvent): void {
+    ev.preventDefault?.();
+    closeContextMenu();
+    const menu = document.createElement('div');
+    menu.className = 'fb-context-menu';
+    menu.style.left = `${Math.max(0, ev.clientX ?? 0)}px`;
+    menu.style.top = `${Math.max(0, ev.clientY ?? 0)}px`;
+    menu.appendChild(contextMenuItem(str('fbAddToChat', getLang()), () => ctx.addFileToChat?.(path)));
+    menu.appendChild(contextMenuItem(str('fbOpenInEditor', getLang()), () => openFileInEditor(path)));
+    // Mount at the document root so panel overflow / re-renders can't clip it.
+    (document.body ?? container).appendChild(menu);
+    contextMenu = menu;
+    // Keep the fixed-position menu inside the viewport near the bottom/right.
+    const view = container.ownerDocument?.defaultView;
+    if (view && typeof menu.getBoundingClientRect === 'function') {
+      const rect = menu.getBoundingClientRect();
+      const left = Math.max(0, Math.min(ev.clientX ?? 0, view.innerWidth - rect.width - 4));
+      const top = Math.max(0, Math.min(ev.clientY ?? 0, view.innerHeight - rect.height - 4));
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+    }
+    const doc = document;
+    menuTeardown = () => {
+      doc.removeEventListener('pointerdown', onDocPointerDown, true);
+      doc.removeEventListener('keydown', onDocKeyDown, true);
+      doc.removeEventListener('contextmenu', onDocContextMenu, true);
+    };
+    setTimeout(() => {
+      if (!contextMenu) return;
+      doc.addEventListener('pointerdown', onDocPointerDown, true);
+      doc.addEventListener('keydown', onDocKeyDown, true);
+      doc.addEventListener('contextmenu', onDocContextMenu, true);
+    }, 0);
+    cancelIdle();
+  }
+
+  function showToast(message: string): void {
+    const el = document.createElement('div');
+    el.className = 'filebrowser-toast';
+    el.textContent = message;
+    body.appendChild(el);
+    setTimeout(() => el.remove(), 2500);
   }
 
   // ---- events ----
@@ -659,8 +787,11 @@ export function mountFileBrowser(
 
   const onPointerDown = () => armIdle();
   const onPointerMove = () => armIdle();
-  const onWheel = () => armIdle();
-  const onKeyDown = () => armIdle();
+  const onWheel = () => {
+    armIdle();
+    closeContextMenu();
+  };
+  const onScroll = () => closeContextMenu();
   // Suspended countdown while the user is working inside the panel.
   const onEnter = () => { interacting = true; cancelIdle(); };
   const onLeave = () => { interacting = false; armIdle(); };
@@ -669,11 +800,11 @@ export function mountFileBrowser(
   container.addEventListener('pointerdown', onPointerDown, true);
   container.addEventListener('pointermove', onPointerMove, true);
   container.addEventListener('wheel', onWheel, { passive: true });
-  container.addEventListener('keydown', onKeyDown, true);
   container.addEventListener('pointerenter', onEnter);
   container.addEventListener('pointerleave', onLeave);
   container.addEventListener('focusin', onFocusIn);
   container.addEventListener('focusout', onFocusOut);
+  tree.addEventListener('scroll', onScroll);
 
   const unsubscribe = ctx.subscribe(onEvent);
   resetUi();
@@ -682,6 +813,7 @@ export function mountFileBrowser(
   return () => {
     if (disposed) return;
     disposed = true;
+    closeContextMenu();
     cancelIdle();
     if (gitTimer !== null) {
       clearTimeout(gitTimer);
@@ -691,11 +823,11 @@ export function mountFileBrowser(
     container.removeEventListener('pointerdown', onPointerDown, true);
     container.removeEventListener('pointermove', onPointerMove, true);
     container.removeEventListener('wheel', onWheel);
-    container.removeEventListener('keydown', onKeyDown, true);
     container.removeEventListener('pointerenter', onEnter);
     container.removeEventListener('pointerleave', onLeave);
     container.removeEventListener('focusin', onFocusIn);
     container.removeEventListener('focusout', onFocusOut);
+    tree.removeEventListener('scroll', onScroll);
     container.classList.remove('collapsed');
     container.replaceChildren();
   };

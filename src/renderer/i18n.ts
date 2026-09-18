@@ -55,6 +55,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   fbLoading: { 'zh-CN': '加载中…', en: 'Loading…' },
   fbTruncated: { 'zh-CN': '条目过多，已截断', en: 'Too many entries, truncated' },
   fbOpenFailed: { 'zh-CN': '打开文件失败', en: 'Failed to open file' },
+  fbAddToChat: { 'zh-CN': '添加到对话', en: 'Add to chat' },
+  fbOpenInEditor: { 'zh-CN': '用编辑器打开', en: 'Open in editor' },
   fbGitCommitted: { 'zh-CN': '已提交', en: 'Committed' },
   fbGitModified: { 'zh-CN': '已修改', en: 'Modified' },
   fbGitUntracked: { 'zh-CN': '未跟踪', en: 'Untracked' },

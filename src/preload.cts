@@ -65,6 +65,8 @@ const api = {
     ipcRenderer.invoke('nexus:listDirectory', { root, path }) as Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }>,
   openExternalFile: (path: string) =>
     ipcRenderer.invoke('nexus:openExternalFile', path) as Promise<{ ok: boolean; error?: string }>,
+  openInEditor: (path: string) =>
+    ipcRenderer.invoke('nexus:openInEditor', path) as Promise<{ ok: boolean; error?: string }>,
   getGitStatus: (root: string) =>
     ipcRenderer.invoke('nexus:getGitStatus', root) as Promise<{
       ok: boolean;

@@ -1487,6 +1487,31 @@ body {
 .fb-git-tag.git-committed, .fb-git-dot.git-committed { color: var(--ok); }
 .fb-git-tag.git-modified,  .fb-git-dot.git-modified  { color: var(--warn); }
 .fb-git-tag.git-untracked, .fb-git-dot.git-untracked { color: var(--accent); }
+.fb-context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 150px;
+  padding: 4px;
+  background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+}
+.fb-context-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.fb-context-item:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .filebrowser-empty, .filebrowser-note {
   font-size: 11px;
   color: var(--text-dim);
