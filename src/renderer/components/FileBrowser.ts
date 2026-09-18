@@ -165,8 +165,17 @@ function fileExt(name: string): string {
  *   ?  exactly one character
  * Without anchors the pattern matches anywhere in the name, so `*.py`
  * selects every .py file and `^_*.py` selects py names starting with `_`.
+ *
+ * A token containing `(?` (lookahead / lookbehind / atomic / non-capturing
+ * group) is compiled as a FULL JavaScript regex instead, so negative and
+ * positive assertions work: `^(?!_).*\.py$` hides py names starting with `_`.
+ * Full-regex tokens are length-capped to keep catastrophic backtracking out.
  */
 function patternToRegExp(raw: string): RegExp | null {
+  // Full-regex mode: `(?` signals real JS regex syntax (e.g. `(?!_)`).
+  if (raw.includes('(?') && raw.length <= 64) {
+    try { return new RegExp(raw); } catch { /* invalid pattern -> fall through */ }
+  }
   if (!/[*?^$]/.test(raw)) return null;
   let src = raw;
   let anchoredStart = false;
@@ -193,6 +202,8 @@ function matchesFilter(e: FileBrowserEntry, tokens: string[]): boolean {
   if (tokens.length === 0) return true;
   if (e.type === 'directory') return true;
   const name = e.name.toLowerCase();
+  // OR semantics: any matching token (plain substring / extension / glob /
+  // full regex with `(?`) keeps the file visible.
   return tokens.some((t) => {
     const re = patternToRegExp(t);
     if (re) return re.test(name);
