@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { INTERNAL_TOOLS, ALL_TOOL_DEFS, callBuiltinTool } from '../tools/index.js';
-import { loadConstitution, CONSTITUTION_MARKER } from '../tools/agents.js';
+import { loadConstitution, CONSTITUTION_MARKER, loadGlobalRules, ensureGlobalRules, GLOBAL_RULES_MARKER } from '../tools/agents.js';
 import {
   readModelCapabilities,
   getModelCapability,
@@ -560,6 +560,30 @@ export class AgentService {
             ctx.prependToSystem(buildDebugDisciplineOverride());
           }
 
+          // --- Global Rules (user-level working discipline) ---
+          // User-level rules that apply to EVERY session the agent creates,
+          // regardless of the active project (or no project at all). Loaded
+          // from ~/.nexus/rules/GLOBAL.md; injected BEFORE the project
+          // constitution so the project layer is read later and can override.
+          try {
+            const globalRules = await loadGlobalRules();
+            if (globalRules.reason === 'ok' && globalRules.text) {
+              if (!firstContent.includes(GLOBAL_RULES_MARKER)) {
+                ctx.prependToSystem(
+                  `\n\n${GLOBAL_RULES_MARKER}\n${globalRules.text}\n${GLOBAL_RULES_MARKER}\n`,
+                );
+              }
+            } else if (globalRules.reason === 'too-large') {
+              this.onLog?.('warn', `Global rules at ${globalRules.file} > 32 KB �?refused (no silent context bloat)`);
+            }
+            if (globalRules.reason !== 'ok' && firstContent.includes(GLOBAL_RULES_MARKER)) {
+              // Rules removed / no longer resolvable �?clear the block.
+              ctx.replaceSystemByMarker(GLOBAL_RULES_MARKER, null);
+            }
+          } catch {
+            // Prompt decoration must never break a turn.
+          }
+
           // --- Project constitution (P0, from Tolten Aegis) ---
           // Inject the .nexus project constitution into EVERY model step,
           // under a clearly delimited marker so it is strippable/auditable.
@@ -776,6 +800,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       .catch(() => {});
     // 首次启动：若 ~/.nexus/provider-models.yaml 不存在则创建默认模板
     AgentService.ensureProviderModelsYaml();
+    // 首次启动：创建用户级全局规则 ~/.nexus/rules/GLOBAL.md（若缺失）。
+    // 不覆盖用户已编辑的内容；仅写入缺失的默认模板。
+    ensureGlobalRules();
     this.initialized = true;
     this.onLog?.('info', `Nexus core initialized (cwd=${process.cwd()}, deferMcp=${defer})`);
   }

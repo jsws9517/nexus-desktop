@@ -238,6 +238,8 @@ declare global {
       getInputRows(): Promise<number>;
       setInputRows(rows: number): Promise<{ ok: boolean }>;
       readRecentLogs(maxLines?: number): Promise<string[]>;
+      getGlobalRulesPath(): Promise<{ ok: boolean; path: string }>;
+      resetGlobalRules(): Promise<{ ok: boolean; path: string; backup?: string }>;
       getMaxTabs(): Promise<number>;
       setMaxTabs(n: number): Promise<{ ok: boolean }>;
       getMemThreshold(): Promise<number>;
@@ -3978,6 +3980,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
     { id: 'speech', label: t('speechSection') },
     { id: 'vision', label: t('visionSection') },
     { id: 'startup', label: t('startupSection') },
+    { id: 'rules', label: t('rulesSection') },
     { id: 'resource', label: t('resourceSection') },
     { id: 'appearance', label: t('appearanceSection') },
     { id: 'update', label: t('updateSection') },
@@ -4117,6 +4120,10 @@ function buildSettings(providersList: ProviderInfo[]): void {
   const startupSection = sectionElements['startup'];
   buildStartupSection(startupSection);
 
+  // Build rules section (user-level global rules)
+  const rulesSection = sectionElements['rules'];
+  buildRulesSection(rulesSection);
+
   // Build resource section
   const resourceSection = sectionElements['resource'];
   buildResourceSection(resourceSection);
@@ -4148,6 +4155,88 @@ function buildStartupSection(container?: HTMLElement): void {
     settingsMsg.textContent = v ? t('restoreSessionEnabled') : t('restoreSessionDisabled');
     return window.nexusDesktop.setRestoreSessionOnLaunch(v);
   }, target);
+}
+
+/**
+ * User-level (global) rules — `~/.nexus/rules/GLOBAL.md`. Applies to EVERY
+ * session regardless of the active project. Exposes the file location, an
+ * "open in folder" action, and a reset-to-default (with backup).
+ */
+function buildRulesSection(container?: HTMLElement): void {
+  const target = container || settingsBody;
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('rulesSection');
+  target.appendChild(title);
+
+  const hint = document.createElement('div');
+  hint.className = 'startup-hint';
+  hint.textContent = t('rulesGlobalHint');
+  target.appendChild(hint);
+
+  const pathRow = document.createElement('div');
+  pathRow.className = 'startup-row';
+  const pathLabel = document.createElement('span');
+  pathLabel.className = 'update-info';
+  pathLabel.textContent = t('rulesPathLabel');
+  const pathValue = document.createElement('code');
+  pathValue.className = 'rules-path';
+  pathValue.textContent = '…';
+  pathRow.appendChild(pathLabel);
+  pathRow.appendChild(pathValue);
+  target.appendChild(pathRow);
+
+  const refreshPath = () => {
+    void window.nexusDesktop
+      .getGlobalRulesPath()
+      .then((r) => {
+        pathValue.textContent = r.path;
+      })
+      .catch(() => {
+        pathValue.textContent = t('rulesUnavailable');
+      });
+  };
+  refreshPath();
+
+  const actions = document.createElement('div');
+  actions.className = 'startup-row rules-actions';
+  const openBtn = document.createElement('button');
+  openBtn.className = 'btn ghost small';
+  openBtn.textContent = t('rulesOpenFile');
+  openBtn.addEventListener('click', () => {
+    openBtn.disabled = true;
+    void window.nexusDesktop
+      .getGlobalRulesPath()
+      .then((r) => window.nexusDesktop.revealFile(r.path))
+      .catch((err: unknown) => {
+        settingsMsg.textContent = `⚠️ ${errText(err)}`;
+      })
+      .finally(() => {
+        openBtn.disabled = false;
+      });
+  });
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'btn ghost small';
+  resetBtn.textContent = t('rulesReset');
+  resetBtn.addEventListener('click', () => {
+    if (!window.confirm(t('rulesResetConfirm'))) return;
+    resetBtn.disabled = true;
+    void window.nexusDesktop
+      .resetGlobalRules()
+      .then((r) => {
+        settingsMsg.textContent = r.ok ? t('rulesResetDone') : t('rulesUnavailable');
+        refreshPath();
+      })
+      .catch((err: unknown) => {
+        settingsMsg.textContent = `⚠️ ${errText(err)}`;
+      })
+      .finally(() => {
+        resetBtn.disabled = false;
+      });
+  });
+  actions.appendChild(openBtn);
+  actions.appendChild(resetBtn);
+  target.appendChild(actions);
 }
 
 /** Render a labeled checkbox settings row that persists immediately on change. */

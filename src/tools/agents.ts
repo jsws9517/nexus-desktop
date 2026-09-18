@@ -34,13 +34,21 @@
  *   - No interactive Approval gate is raised by these tools (unattended-safe).
  */
 
+import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { getAuthorizedRoots, getSandboxRoots } from 'nexus-coder/dist/src/security/path-authorizer.js';
 import type { ToolDef, ToolResult } from './types.js';
 
 /** Marker delimiters used by AgentService for constitution prompt decoration. */
 export const CONSTITUTION_MARKER = '[Project Constitution]';
+
+/** Marker for the user-level (global) rules block injected into EVERY session. */
+export const GLOBAL_RULES_MARKER = '[Global Rules]';
+
+/** Filename of the user-level rules file, under `<data-dir>/rules/`. */
+export const GLOBAL_RULES_FILENAME = 'GLOBAL.md';
 
 /** Hard cap on constitution size — larger files are refused (no silent bloat). */
 export const MAX_CONSTITUTION_BYTES = 32 * 1024;
@@ -162,6 +170,127 @@ export async function loadConstitution(root: string): Promise<ConstitutionLoad> 
     return { file, text, reason: 'ok' };
   } catch {
     return { file: null, text: null, reason: 'not-found' };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// User-level (global) rules — `~/.nexus/rules/GLOBAL.md`
+//
+// Unlike the project constitution, this file is user-scoped and applies to
+// EVERY session the agent creates, regardless of the current project (or the
+// absence of one). It is injected into every model step under the
+// `[Global Rules]` marker and is deliberately NOT gated by `isAuthorizedRoot`
+// (it lives in the user's own data directory). Sub-agents inherit it because
+// the Orchestrator merges it into the constitution text it passes down.
+// ---------------------------------------------------------------------------
+
+/** User-level data dir; honours `LLMA_DATA_DIR` so tests can isolate. */
+function globalDataDir(): string {
+  return process.env.LLMA_DATA_DIR
+    ? join(process.env.LLMA_DATA_DIR, '.nexus')
+    : join(homedir(), '.nexus');
+}
+
+/** Absolute path of the user-level rules file. */
+export function globalRulesPath(): string {
+  return join(globalDataDir(), 'rules', GLOBAL_RULES_FILENAME);
+}
+
+/**
+ * Default user-level rules — the four working disciplines (file management,
+ * git discipline, temp-file recycling, naming conventions). Written only when
+ * the file is absent; user edits are never overwritten.
+ */
+export const DEFAULT_GLOBAL_RULES = `# Nexus Global Rules (user-level)
+
+> Location: \`~/.nexus/rules/GLOBAL.md\`. Loaded by the Nexus agent into EVERY
+> session's system prompt under the \`[Global Rules]\` marker, regardless of the
+> active project. Edit freely. A project constitution (\`.nexus/rules/NEXUS.md\`)
+> is layered on top and may override project-specific points.
+
+## 1. File Management
+- Before creating a file, search for an existing one that already does the job
+  (grep/glob). Never duplicate a module that exists — extend it instead.
+- Keep one responsibility per file; place new files in the idiomatic location
+  for the project (src/, docs/, scripts/, test/) — never loose in the repo root.
+- Never write outside the authorized project root without an explicit grant.
+- Prefer editing existing files over creating near-duplicates (\`old/\`, \`new/\`,
+  \`_backup\` variants are forbidden).
+
+## 2. Git Discipline
+- One coherent feature per commit; include its tests in the same commit.
+- Commit messages: Conventional Commits — \`<type>(<scope>): <summary>\`
+  (feat|fix|chore|docs|refactor|test|perf|build|ci). No bare version numbers.
+- Do not commit unrelated changes together. Do not finish a task with a dirty
+  working tree — commit or revert first.
+- NEVER push automatically; push only on an explicit user request.
+- Never rewrite shared history (no force-push) without explicit user approval.
+
+## 3. Temporary File Recycling
+- All scratch/temp/draft files go under \`.nexus/trash/\` (or the OS temp dir),
+  date-prefixed; never into the repo root or any tracked path.
+- Delete the temp artifacts you created before finishing a task.
+- Temp files are never committed; \`.nexus/trash/\` stays git-ignored.
+
+## 4. File Naming Conventions
+- Follow the project's existing naming style; match the language conventions.
+- Tests: \`*.test.mjs\` under \`test/\`; one-off scripts under \`scripts/*.mjs\`.
+- Use \`.mjs\` by default; \`.cjs\` only when CommonJS is genuinely required.
+- Forbidden suffixes: \`final\`, \`verify\`, \`tmp\`, \`temp\`, \`new\`, \`old\`, \`copy\`,
+  \`backup\`, \`bak\`, \`_v2\`; no timestamp-named scratch files in tracked paths.
+`;
+
+/**
+ * Ensure the user-level rules file exists, writing the default template on
+ * first run. Never overwrites user-edited content. Best-effort (errors are
+ * swallowed — prompt decoration must never break a turn).
+ */
+export function ensureGlobalRules(): void {
+  const p = globalRulesPath();
+  if (existsSync(p)) return;
+  try {
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, DEFAULT_GLOBAL_RULES, 'utf8');
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Load the user-level rules file. Mirrors {@link loadConstitution} but is not
+ * gated by project-root authorization (it lives in the user's own data dir).
+ */
+export async function loadGlobalRules(): Promise<ConstitutionLoad> {
+  const p = globalRulesPath();
+  try {
+    const st = await stat(p);
+    if (st.size > MAX_CONSTITUTION_BYTES) {
+      return { file: p, text: null, reason: 'too-large' };
+    }
+    const text = await readFile(p, 'utf8');
+    return { file: p, text, reason: 'ok' };
+  } catch {
+    return { file: null, text: null, reason: 'not-found' };
+  }
+}
+
+/**
+ * Reset the user-level rules file to its default template, backing up the
+ * existing file to `<path>.bak` first.
+ */
+export function resetGlobalRules(): { ok: boolean; path: string; backup?: string } {
+  const p = globalRulesPath();
+  let backup: string | undefined;
+  try {
+    if (existsSync(p)) {
+      backup = `${p}.bak`;
+      renameSync(p, backup);
+    }
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, DEFAULT_GLOBAL_RULES, 'utf8');
+    return { ok: true, path: p, backup };
+  } catch {
+    return { ok: false, path: p };
   }
 }
 

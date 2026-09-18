@@ -318,7 +318,7 @@ async function handleParallelRequest(sessionId: string, event: { type: string; p
   const { OrchestratorAgent } = await import('../agent/sub-agent/orchestrator.js');
   const { WorkerHost } = await import('./worker-host.js');
   const { workerScriptPath } = await import('./session-workers.js');
-  const { loadConstitution } = await import('../tools/agents.js');
+  const { loadConstitution, loadGlobalRules, GLOBAL_RULES_MARKER } = await import('../tools/agents.js');
   
   // Send progress event to renderer — deferred until after decomposition
   // so that declarative prompts (empty task list) never open useless cards.
@@ -327,11 +327,20 @@ async function handleParallelRequest(sessionId: string, event: { type: string; p
     // Load the project constitution ONCE here, in the main process, and pass
     // the text down into every sub-task prompt (§3.7). The child workers never
     // discover the constitution themselves — the Orchestrator passes it down.
+    // The user-level (global) rules are merged in FIRST so they apply to every
+    // parallel sub-agent too; the project constitution follows and may
+    // override project-specific points (read-later = higher priority).
     let constitutionText: string | null = null;
     try {
+      const parts: string[] = [];
+      const global = await loadGlobalRules();
+      if (global.reason === 'ok' && global.text) {
+        parts.push(`${GLOBAL_RULES_MARKER}\n${global.text}\n${GLOBAL_RULES_MARKER}`);
+      }
       const { dir } = await sessionWorkers.request<{ dir: string }>(sessionId, 'getDefaultProjectDir');
       const loaded = await loadConstitution(dir ?? process.cwd());
-      if (loaded.reason === 'ok' && loaded.text) constitutionText = loaded.text;
+      if (loaded.reason === 'ok' && loaded.text) parts.push(loaded.text);
+      if (parts.length > 0) constitutionText = parts.join('\n\n');
     } catch {
       // Constitution is best-effort for parallel runs; never block the run.
     }

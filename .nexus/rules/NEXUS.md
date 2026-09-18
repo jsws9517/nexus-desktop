@@ -65,3 +65,33 @@
     before any log line hits disk.
   - Token-estimate caches are bounded (≤ 200 entries); in-memory caches must
     never grow without an eviction cap.
+
+## 4. File, Git & Naming Discipline
+
+> The same four disciplines are shipped as the user-level default
+> (`~/.nexus/rules/GLOBAL.md`, injected under `[Global Rules]` for EVERY
+> session). This section is the project-level layer and may tighten them.
+
+1. **File management**
+   - Before creating a file, search for an existing one that already does the
+     job (grep/glob); never duplicate a module that exists — extend it instead.
+   - One responsibility per file. Place new files in the idiomatic location
+     (`src/`, `docs/`, `scripts/`, `test/`) — never loose in the repo root.
+   - Prefer editing existing files over creating near-duplicates (`old/`,
+     `new/`, `_backup` variants are forbidden).
+2. **Git discipline**
+   - One coherent feature per commit; ship its unit tests in the same commit.
+   - Messages: Conventional Commits `<type>(<scope>): <summary>` (feat|fix|chore|
+     docs|refactor|test|perf|build|ci). No bare version-number commits — a
+     release is `chore: release x.y.z`.
+   - Never leave a task with a dirty working tree; never auto-push (law §2.3).
+3. **Temporary file recycling**
+   - All scratch/temp/draft files go under `.nexus/trash/` (date-prefixed),
+     never the repo root; delete the artifacts you created before finishing.
+   - `.nexus/trash/` is git-ignored and never committed.
+4. **File naming conventions**
+   - Unit tests: `test/*.test.mjs` (never `*.test.mjs` under `scripts/`).
+     One-off/dev scripts: `scripts/*.mjs`.
+   - `.mjs` by default; `.cjs` only when CommonJS is genuinely required.
+   - Forbidden suffixes in tracked paths: `final`, `verify`, `tmp`, `temp`,
+     `new`, `old`, `copy`, `backup`, `bak`, `_v2`; no timestamp-named scratch.

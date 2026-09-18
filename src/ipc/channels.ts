@@ -80,6 +80,8 @@ export const CHANNELS = {
   getInputRows: 'nexus:getInputRows',
   setInputRows: 'nexus:setInputRows',
   readRecentLogs: 'nexus:readRecentLogs',
+  getGlobalRulesPath: 'nexus:getGlobalRulesPath',
+  resetGlobalRules: 'nexus:resetGlobalRules',
   getMaxTabs: 'nexus:getMaxTabs',
   setMaxTabs: 'nexus:setMaxTabs',
   getMemThreshold: 'nexus:getMemThreshold',

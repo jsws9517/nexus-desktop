@@ -35,6 +35,10 @@ function makeFakeAgent() {
   const agent = {};
   agent.context = { getTokenCount: () => 130 };
   agent.provider = { model: 'e2e-test-model' };
+  agent.config = {
+    getActiveProvider: () => 'e2e-test',
+    getProvider: () => ({ baseUrl: 'http://localhost:9999', model: 'e2e-test-model' }),
+  };
   agent.aborted = 0;
   agent.chatInputs = [];
   agent.script = [];
