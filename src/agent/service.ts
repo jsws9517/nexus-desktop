@@ -1066,7 +1066,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       const ctx = this.agent.context;
       if (cw && ctx) {
         const delta = ctx.getTokenCount() - ctx.getLastSummaryTokenCount();
-        if (delta >= cw.summaryThreshold && ctx.getMessages().length >= ctx.getSummaryAfterMsgs() && ctx.getSummaryCount() < 20) {
+        if (delta >= ctx.getSummaryThresholdTokens() && ctx.getMessages().length >= ctx.getSummaryAfterMsgs() && ctx.getSummaryCount() < 20) {
           await ctx.proactiveSummarize();
         }
       }

@@ -99,6 +99,10 @@ const api = {
   getInputRows: () => ipcRenderer.invoke('nexus:getInputRows'),
   setInputRows: (rows: number) => ipcRenderer.invoke('nexus:setInputRows', rows),
   readRecentLogs: (maxLines?: number) => ipcRenderer.invoke('nexus:readRecentLogs', maxLines),
+  getGlobalRulesPath: () =>
+    ipcRenderer.invoke('nexus:getGlobalRulesPath') as Promise<{ ok: boolean; path: string }>,
+  resetGlobalRules: () =>
+    ipcRenderer.invoke('nexus:resetGlobalRules') as Promise<{ ok: boolean; path: string; backup?: string }>,
 
   // Resource / session governance (desktop.json + live watchdog).
   getMaxTabs: () => ipcRenderer.invoke('nexus:getMaxTabs'),

@@ -18,6 +18,7 @@ import type { SessionWorkers, OpenTabInfo } from '../main/session-workers.js';
 import type { RateLimitRegistry } from '../main/rate-limit-registry.js';
 import type { ResourceMonitor, ResourceState } from '../main/resource-monitor.js';
 import { Updater } from '../main/updater.js';
+import { globalRulesPath, ensureGlobalRules, resetGlobalRules } from '../tools/agents.js';
 import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList } from '../shared/ipc-validation.js';
 import { CHANNELS } from './channels.js';
@@ -262,6 +263,18 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle(CHANNELS.readRecentLogs, (_e, maxLines: unknown): string[] => {
     const n = isFiniteNumber(maxLines) ? Math.max(1, Math.floor(maxLines)) : 200;
     return recentLogLines(n);
+  });
+
+  // User-level (global) rules: expose the path + reset-to-default. The file is
+  // created on first run by ensureGlobalRules() (also called from AgentService
+  // init); here we make sure it exists before revealing so the user never hits
+  // a missing file. Applies to every session (see service.ts preLlmCall).
+  ipcMain.handle(CHANNELS.getGlobalRulesPath, async (): Promise<{ ok: boolean; path: string }> => {
+    ensureGlobalRules();
+    return { ok: true, path: globalRulesPath() };
+  });
+  ipcMain.handle(CHANNELS.resetGlobalRules, (): { ok: boolean; path: string; backup?: string } => {
+    return resetGlobalRules();
   });
 
   // Resource / session governance (desktop.json + live resource watchdog).
