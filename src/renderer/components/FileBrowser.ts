@@ -8,6 +8,9 @@
  *     the injected bridge (IPC to the main process — the renderer never reads
  *     the filesystem itself);
  *   - files open externally with the OS default app;
+ *   - git badges show working-tree state per path (✓ committed / M modified /
+ *     U untracked, plus an aggregate dot on directories), refreshed from
+ *     `getGitStatus` on mount, session change, and debounced on task events;
  *   - a filter hides non-matching files (directories stay visible): each token
  *     is a filename keyword (case-insensitive substring), an extension
  *     (e.g. `.ts`), or a small glob pattern with `^`/`$` anchors and
@@ -32,6 +35,20 @@ export interface FileBrowserEntry {
   size: number;
 }
 
+/** Working-tree state of one path, keyed by absolute path. */
+export type GitState = 'committed' | 'modified' | 'untracked';
+
+/** Raw status reported by the engine; `ignored` paths get no badge. */
+type GitFileState = GitState | 'ignored';
+
+export interface GitStatusResult {
+  ok: boolean;
+  isRepo: boolean;
+  branch?: string;
+  statuses?: Array<{ path: string; state: GitFileState }>;
+  error?: string;
+}
+
 /** IPC surface (defaults to window.nexusDesktop; injected in tests). */
 export interface FileBrowserBridge {
   listDirectory(
@@ -39,6 +56,9 @@ export interface FileBrowserBridge {
     path: string,
   ): Promise<{ ok: boolean; entries?: FileBrowserEntry[]; truncated?: boolean; error?: string }>;
   openExternalFile(path: string): Promise<{ ok: boolean; error?: string }>;
+  /** Absolute-path-indexed entries; a missing path means the working tree is
+   *  clean. `ignored` entries are excluded from badges entirely. */
+  getGitStatus(root: string): Promise<GitStatusResult>;
 }
 
 export interface FileBrowserContext {
@@ -81,6 +101,8 @@ interface RowItem {
 }
 
 const DEFAULT_IDLE_MS = 10_000;
+/** Debounce for re-fetching git status after task events that touch files. */
+const GIT_REFRESH_DEBOUNCE_MS = 500;
 
 /** Common build/dependency dirs that bloat a project tree; hidden by default. */
 const HIDDEN_DIR_NAMES = new Set([
@@ -178,7 +200,7 @@ export function mountFileBrowser(
   ctx: FileBrowserContext,
   opts: FileBrowserMountOptions = {},
 ): () => void {
-  const bridge: FileBrowserBridge = opts.bridge ?? (window as unknown as { nexusDesktop?: FileBrowserBridge }).nexusDesktop ?? { listDirectory: async () => ({ ok: false, error: 'bridge missing' }), openExternalFile: async () => ({ ok: false, error: 'bridge missing' }) };
+  const bridge: FileBrowserBridge = opts.bridge ?? (window as unknown as { nexusDesktop?: FileBrowserBridge }).nexusDesktop ?? { listDirectory: async () => ({ ok: false, error: 'bridge missing' }), openExternalFile: async () => ({ ok: false, error: 'bridge missing' }), getGitStatus: async () => ({ ok: false, isRepo: false, error: 'bridge missing' }) };
   const idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
   const getLang = () => ctx.getUiLang() || 'zh-CN';
 
@@ -217,7 +239,20 @@ export function mountFileBrowser(
   hiddenLabel.appendChild(hiddenCheck);
   const hiddenSpan = document.createElement('span');
   hiddenLabel.appendChild(hiddenSpan);
-  tools.appendChild(hiddenLabel);
+
+  const untrackedLabel = document.createElement('label');
+  untrackedLabel.className = 'filebrowser-hide-untracked';
+  const untrackedCheck = document.createElement('input');
+  untrackedCheck.type = 'checkbox';
+  untrackedLabel.appendChild(untrackedCheck);
+  const untrackedSpan = document.createElement('span');
+  untrackedLabel.appendChild(untrackedSpan);
+
+  const toggles = document.createElement('div');
+  toggles.className = 'filebrowser-toggles';
+  toggles.appendChild(hiddenLabel);
+  toggles.appendChild(untrackedLabel);
+  tools.appendChild(toggles);
 
   const tree = document.createElement('div');
   tree.className = 'filebrowser-tree';
@@ -229,10 +264,20 @@ export function mountFileBrowser(
 
   // ---- state ----
   const nodes = new Map<string, DirNode>();
+  const gitStatus = new Map<string, GitFileState>();
+  let gitIsRepo = false;
+  let gitBranch = '';
+  let gitTimer: ReturnType<typeof setTimeout> | null = null;
   let collapsed = false;
   let showHidden = false;
+  let hideUntracked = false;
   let filterExts: string[] = [];
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  // Pointer/focus inside the panel pauses the idle countdown (re-armed on leave).
+  let interacting = false;
+  // Non-git roots are probed exactly once — no further git requests until the
+  // project directory actually changes.
+  let gitProbedDir = '';
   let disposed = false;
   let projectDir = '';
 
@@ -277,11 +322,12 @@ export function mountFileBrowser(
   }
 
   function armIdle(): void {
-    if (disposed || collapsed) return;
     cancelIdle();
+    // While the pointer/focus is inside the panel the countdown is suspended.
+    if (disposed || collapsed || interacting) return;
     idleTimer = setTimeout(() => {
       idleTimer = null;
-      if (!disposed && !collapsed) setCollapsed(true);
+      if (!disposed && !collapsed && !interacting) setCollapsed(true);
     }, idleMs);
   }
 
@@ -308,13 +354,24 @@ export function mountFileBrowser(
   }
 
   // ---- rendering ----
-  function visibleEntries(entries: FileBrowserEntry[]): FileBrowserEntry[] {
-    return entries.filter((e) => (showHidden || !isHiddenEntry(e)) && matchesFilter(e, filterExts));
+  /** True when `path` is itself untracked/ignored (or sits inside such a dir). */
+  function isUntrackedPath(path: string): boolean {
+    if (!gitIsRepo || !hideUntracked) return false;
+    const state = ancestorState(path);
+    return state === 'untracked' || state === 'ignored';
+  }
+
+  function visibleEntries(entries: FileBrowserEntry[], basePath: string): FileBrowserEntry[] {
+    return entries.filter((e) => {
+      if (!showHidden && isHiddenEntry(e)) return false;
+      if (isUntrackedPath(joinPath(basePath, e.name))) return false;
+      return matchesFilter(e, filterExts);
+    });
   }
 
   function collectRows(node: DirNode, depth: number, out: RowItem[]): void {
     if (!node.entries) return;
-    for (const e of visibleEntries(node.entries)) {
+    for (const e of visibleEntries(node.entries, node.path)) {
       if (e.type === 'directory') {
         const child = childNode(joinPath(node.path, e.name));
         out.push({ type: 'directory', name: e.name, size: 0, depth, path: child.path, node: child });
@@ -334,10 +391,12 @@ export function mountFileBrowser(
       title: str('fileBrowser', getLang()),
       filterPlaceholder: str('fbFilterPlaceholder', getLang()),
       hidden: str('fbShowHidden', getLang()),
+      hideUntracked: str('fbHideUntracked', getLang()),
     };
     titleEl.textContent = labels.title;
     filterInput.placeholder = labels.filterPlaceholder;
     hiddenSpan.textContent = labels.hidden;
+    untrackedSpan.textContent = labels.hideUntracked;
 
     const rows: RowItem[] = [];
     if (!projectDir) {
@@ -381,6 +440,8 @@ export function mountFileBrowser(
           name.textContent = `${row.node!.loading ? '⏳ ' : ''}${row.node!.expanded ? '📂' : '📁'} ${row.name}`;
           el.appendChild(arrow);
           el.appendChild(name);
+          const dirState = gitStateOf(row);
+          if (dirState) renderGitBadge(el, dirState, false);
           el.addEventListener('click', () => {
             onClickDir(row.node!);
           });
@@ -392,6 +453,8 @@ export function mountFileBrowser(
           size.className = 'filebrowser-size';
           size.textContent = formatBytes(row.size);
           el.appendChild(name);
+          const fileState = gitStateOf(row);
+          if (fileState) renderGitBadge(el, fileState, true);
           el.appendChild(size);
           el.addEventListener('click', () => {
             void onClickFile(row.path);
@@ -433,14 +496,113 @@ export function mountFileBrowser(
 
   // ---- events ----
   async function refreshProjectDir(): Promise<void> {
-    const dir = await ctx.getProjectDir();
+    const dir = normPath(await ctx.getProjectDir());
     if (disposed) return;
     if (dir !== projectDir) {
       projectDir = dir;
       nodes.clear();
+      gitStatus.clear();
+      gitIsRepo = false;
+      gitBranch = '';
       renderTree();
       if (projectDir) void loadDir(rootNode());
+      void refreshGitStatus();
     }
+  }
+
+  // ---- git status ----
+  function stateLabel(state: GitState): string {
+    return state === 'modified' ? str('fbGitModified', getLang())
+      : state === 'untracked' ? str('fbGitUntracked', getLang())
+        : str('fbGitCommitted', getLang());
+  }
+
+  /** Nearest own-or-ancestor status: git collapses untracked and ignored
+   *  directories to a single entry, so every child inside one inherits it. */
+  function ancestorState(path: string): GitFileState | null {
+    let p = path;
+    while (p) {
+      const s = gitStatus.get(p);
+      if (s) return s;
+      const cut = p.lastIndexOf('/');
+      if (cut <= 0) return null;
+      p = p.slice(0, cut);
+    }
+    return null;
+  }
+
+  /** Strongest state among a directory's own entry and its descendants.
+   *  Ignored paths are excluded — they never contribute a badge. */
+  function descendantState(path: string): GitState | null {
+    const prefix = path.endsWith('/') ? path : path + '/';
+    let untracked = false;
+    for (const [p, state] of gitStatus) {
+      if (state === 'ignored') continue;
+      if (p !== path && !p.startsWith(prefix)) continue;
+      if (state === 'modified') return 'modified';
+      untracked = true;
+    }
+    return untracked ? 'untracked' : null;
+  }
+
+  function gitStateOf(row: RowItem): GitState | null {
+    if (!gitIsRepo) return null;
+    const inherited = ancestorState(row.path);
+    // Ignored paths (and everything under an ignored directory) are unbadged.
+    if (inherited === 'ignored') return null;
+    if (row.type === 'file') return inherited ?? 'committed';
+    const descendant = descendantState(row.path);
+    if (descendant === 'modified' || inherited === 'modified') return 'modified';
+    if (descendant === 'untracked' || inherited === 'untracked') return 'untracked';
+    return 'committed';
+  }
+
+  function renderGitBadge(el: HTMLElement, state: GitState, file: boolean): void {
+    const badge = document.createElement('span');
+    if (file) {
+      badge.className = `fb-git-tag git-${state}`;
+      badge.textContent = state === 'committed' ? '✓' : state === 'modified' ? 'M' : 'U';
+    } else {
+      badge.className = `fb-git-dot git-${state}`;
+      badge.textContent = '';
+    }
+    badge.title = stateLabel(state);
+    el.appendChild(badge);
+  }
+
+  async function refreshGitStatus(): Promise<void> {
+    const dir = normPath(await ctx.getProjectDir());
+    if (disposed || !dir || dir !== projectDir) return;
+    // Non-git roots are detected once: no further git requests until the
+    // project directory actually changes.
+    if (dir === gitProbedDir && !gitIsRepo) return;
+    gitProbedDir = dir;
+    const res = await bridge.getGitStatus(dir);
+    if (disposed || projectDir !== dir) return;
+    gitStatus.clear();
+    if (res.ok && res.isRepo) {
+      gitIsRepo = true;
+      gitBranch = res.branch ?? '';
+      for (const s of res.statuses ?? []) {
+        if (s && s.path && (s.state === 'untracked' || s.state === 'modified' || s.state === 'ignored')) {
+          gitStatus.set(normPath(s.path), s.state);
+        }
+      }
+    } else {
+      gitIsRepo = false;
+      gitBranch = '';
+    }
+    renderTree();
+  }
+
+  /** Debounced re-fetch after task events that may have touched files. */
+  function scheduleGitRefresh(): void {
+    if (disposed || !gitIsRepo) return;
+    if (gitTimer !== null) clearTimeout(gitTimer);
+    gitTimer = setTimeout(() => {
+      gitTimer = null;
+      void refreshGitStatus();
+    }, GIT_REFRESH_DEBOUNCE_MS);
   }
 
   function onEvent(event: AgentEvent): void {
@@ -453,6 +615,8 @@ export function mountFileBrowser(
       void refreshProjectDir();
       return;
     }
+    // Task events commonly rewrite files — refresh the status badges.
+    if (event.type.startsWith('task')) scheduleGitRefresh();
     // Any task activity that needs progress monitoring collapses the browser.
     if (ctx.isMonitorNeeded()) setCollapsed(true);
   }
@@ -463,6 +627,10 @@ export function mountFileBrowser(
     filterInput.value = '';
     showHidden = false;
     hiddenCheck.checked = false;
+    hideUntracked = false;
+    untrackedCheck.checked = false;
+    interacting = false;
+    gitProbedDir = '';
     setCollapsed(opts.defaultCollapsed ?? true);
     renderTree();
     if (!collapsed) armIdle();
@@ -478,6 +646,11 @@ export function mountFileBrowser(
     renderTree();
     armIdle();
   });
+  untrackedCheck.addEventListener('change', () => {
+    hideUntracked = untrackedCheck.checked;
+    renderTree();
+    armIdle();
+  });
   toggleBtn.addEventListener('click', (ev) => {
     ev?.stopPropagation?.();
     setCollapsed(!collapsed);
@@ -488,10 +661,19 @@ export function mountFileBrowser(
   const onPointerMove = () => armIdle();
   const onWheel = () => armIdle();
   const onKeyDown = () => armIdle();
+  // Suspended countdown while the user is working inside the panel.
+  const onEnter = () => { interacting = true; cancelIdle(); };
+  const onLeave = () => { interacting = false; armIdle(); };
+  const onFocusIn = () => { interacting = true; cancelIdle(); };
+  const onFocusOut = () => { interacting = false; armIdle(); };
   container.addEventListener('pointerdown', onPointerDown, true);
   container.addEventListener('pointermove', onPointerMove, true);
   container.addEventListener('wheel', onWheel, { passive: true });
   container.addEventListener('keydown', onKeyDown, true);
+  container.addEventListener('pointerenter', onEnter);
+  container.addEventListener('pointerleave', onLeave);
+  container.addEventListener('focusin', onFocusIn);
+  container.addEventListener('focusout', onFocusOut);
 
   const unsubscribe = ctx.subscribe(onEvent);
   resetUi();
@@ -501,14 +683,31 @@ export function mountFileBrowser(
     if (disposed) return;
     disposed = true;
     cancelIdle();
+    if (gitTimer !== null) {
+      clearTimeout(gitTimer);
+      gitTimer = null;
+    }
     unsubscribe();
     container.removeEventListener('pointerdown', onPointerDown, true);
     container.removeEventListener('pointermove', onPointerMove, true);
     container.removeEventListener('wheel', onWheel);
     container.removeEventListener('keydown', onKeyDown, true);
+    container.removeEventListener('pointerenter', onEnter);
+    container.removeEventListener('pointerleave', onLeave);
+    container.removeEventListener('focusin', onFocusIn);
+    container.removeEventListener('focusout', onFocusOut);
     container.classList.remove('collapsed');
     container.replaceChildren();
   };
+}
+
+/** Normalize separators + trailing slashes so Windows roots compare/key
+ *  against git's paths and repeated `getProjectDir` calls stay stable. */
+function normPath(p: string): string {
+  let s = p.replace(/\\/g, '/');
+  if (/^[A-Za-z]:$/.test(s)) return s + '/';
+  if (s.length > 1 && s.endsWith('/')) s = s.replace(/\/+$/, '');
+  return s || '/';
 }
 
 /** Single accessor for path building (kept atomic for test hostability). */

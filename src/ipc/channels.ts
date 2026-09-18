@@ -104,6 +104,7 @@ export const CHANNELS = {
   getFileInfos: 'nexus:getFileInfos',
   listDirectory: 'nexus:listDirectory',
   openExternalFile: 'nexus:openExternalFile',
+  getGitStatus: 'nexus:getGitStatus',
   readImagePreview: 'nexus:readImagePreview',
   pasteImage: 'nexus:pasteImage',
   saveArtifact: 'nexus:saveArtifact',

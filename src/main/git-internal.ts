@@ -1132,3 +1132,75 @@ export async function callGitTool(name: string, args: unknown): Promise<GitToolR
     return { content: `Git tool "${name}" failed: ${msg}`, isError: true };
   }
 }
+
+// ---- file-browser git status (lightweight, no MCP/MCP tool parity) ----
+
+export interface RepoStatusEntry {
+  /** Absolute path (forward slashes). A missing path means a clean file. */
+  path: string;
+  /** 'untracked' for `??`, 'ignored' for `!!`, 'modified' for any other
+   *  non-clean state. */
+  state: 'untracked' | 'modified' | 'ignored';
+}
+
+export interface RepoStatusResult {
+  ok: boolean;
+  isRepo: boolean;
+  branch?: string;
+  statuses?: RepoStatusEntry[];
+  error?: string;
+}
+
+const MAX_STATUS_ENTRIES = 5000;
+
+/**
+ * Snapshot the repo status for the file browser. Resolves the repo root from
+ * `dir` (fails → `isRepo:false`) and parses `git status --porcelain=v1 -z`
+ * records. Rename/copy entries carry a second NUL field (the origin path),
+ * which is skipped; the visible (destination) path is what we report. Paths
+ * are absolute (forward slashes) so the renderer can key them directly
+ * against the rows it renders.
+ */
+export async function getRepoGitStatus(dir: string): Promise<RepoStatusResult> {
+  const toplevel = await gitRun(['rev-parse', '--show-toplevel'], dir, 10_000);
+  if (toplevel.exitCode !== 0) return { ok: true, isRepo: false };
+  const repoRoot = toplevel.stdout.trim();
+  if (!repoRoot) return { ok: false, isRepo: false, error: 'empty repo root' };
+
+  const branchRes = await gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, 10_000);
+  const branch = branchRes.exitCode === 0 ? branchRes.stdout.trim() : undefined;
+
+  const st = await gitRun(
+    // --ignored lets the browser leave git-ignored files unbadged instead of
+    // mislabelling them as committed.
+    ['-c', 'core.quotepath=off', 'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignored=matching'],
+    repoRoot,
+    30_000,
+  );
+  if (st.exitCode !== 0) return { ok: false, isRepo: true, error: st.stderr.trim() || 'git status failed' };
+
+  const statuses: RepoStatusEntry[] = [];
+  const fields = st.stdout.split('\0');
+  for (let i = 0; i < fields.length && statuses.length < MAX_STATUS_ENTRIES; i++) {
+    const field = fields[i];
+    if (!field) continue;
+    const xy = field.slice(0, 2);
+    // porcelain v1 records are `XY<space>path`; drop the separator.
+    let rel = field.slice(2).replace(/^ /, '');
+    if (rel && (xy[0] === 'R' || xy[0] === 'C')) {
+      // The origin path is the next NUL field — the tree only shows the
+      // current (destination) file, so the extra field is consumed here.
+      i++;
+    }
+    if (!rel) continue;
+    rel = rel.replace(/\\/g, '/');
+    // Ignored directories arrive with a trailing slash; strip it so the path
+    // matches the renderer's row paths (which have none).
+    if (rel.endsWith('/')) rel = rel.slice(0, -1);
+    const abs = resolvePath(repoRoot, rel).replace(/\\/g, '/');
+    const state: RepoStatusEntry['state'] =
+      xy[0] === '!' ? 'ignored' : xy[0] === '?' && xy[1] === '?' ? 'untracked' : 'modified';
+    statuses.push({ path: abs, state });
+  }
+  return { ok: true, isRepo: true, branch, statuses };
+}

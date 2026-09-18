@@ -18,6 +18,7 @@ import type { SessionWorkers, OpenTabInfo } from '../main/session-workers.js';
 import type { RateLimitRegistry } from '../main/rate-limit-registry.js';
 import type { ResourceMonitor, ResourceState } from '../main/resource-monitor.js';
 import { Updater } from '../main/updater.js';
+import { getRepoGitStatus, type RepoStatusResult } from '../main/git-internal.js';
 import { globalRulesPath, ensureGlobalRules, resetGlobalRules } from '../tools/agents.js';
 import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList } from '../shared/ipc-validation.js';
@@ -462,6 +463,18 @@ export function registerIpc(ctx: IpcContext): void {
       return err ? { ok: false, error: err } : { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // Git working-tree status for the right-panel file browser badges. Entry
+  // paths are absolute (forward slashes); git-internal resolves the repo root
+  // from 	oot itself, so a path outside any repo just returns isRepo:false.
+  ipcMain.handle(CHANNELS.getGitStatus, async (_e, root: unknown): Promise<RepoStatusResult> => {
+    if (!isNonEmptyString(root) || root.length > 4096) return { ok: false, isRepo: false, error: 'invalid path' };
+    try {
+      return await getRepoGitStatus(root);
+    } catch (e) {
+      return { ok: false, isRepo: false, error: e instanceof Error ? e.message : String(e) };
     }
   });
 

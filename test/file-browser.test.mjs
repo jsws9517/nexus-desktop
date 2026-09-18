@@ -134,6 +134,7 @@ function treeRowNames(root) {
 function makeHarness({ entries = [], monitor = false, projectDir = '/proj' } = {}) {
   const calls = [];
   const listing = new Map([[projectDir, entries]]);
+  const gitData = new Map();
   const bridge = {
     listDirectory: async (root, path) => {
       calls.push(['list', root, path]);
@@ -143,6 +144,12 @@ function makeHarness({ entries = [], monitor = false, projectDir = '/proj' } = {
     openExternalFile: async (path) => {
       calls.push(['open', path]);
       return { ok: true };
+    },
+    getGitStatus: async (root) => {
+      calls.push(['git', root]);
+      const g = gitData.get(root);
+      if (!g || !g.repo) return { ok: true, isRepo: false };
+      return { ok: true, isRepo: true, branch: g.branch ?? 'main', statuses: g.statuses ?? [] };
     },
   };
   let handler = null;
@@ -164,6 +171,7 @@ function makeHarness({ entries = [], monitor = false, projectDir = '/proj' } = {
     setProjectDir(d) { currentDir = d; },
     setMonitor(fn) { monitorNeeded = fn; },
     setListing(dir, list) { listing.set(dir, list); },
+    setGitStatus(dir, statuses, { branch = 'main' } = {}) { gitData.set(dir, { repo: true, statuses, branch }); },
   };
 }
 
@@ -415,6 +423,238 @@ test('session_changed reloads the tree for the new project root', async () => {
   assert.ok(text.includes('main.rs'), 'new root listed');
   assert.ok(!text.includes('a.ts'), 'old root cleared');
   assert.ok(h.calls.some(([m, root, path]) => m === 'list' && root === '/proj2'), 'listed under new root');
+});
+
+test('git status badges: ✓ committed / M modified / U untracked + dir aggregate', async () => {
+  const h = makeHarness({
+    entries: [
+      { name: 'src', type: 'directory', size: 0 },
+      { name: 'clean.ts', type: 'file', size: 1 },
+      { name: 'dirty.ts', type: 'file', size: 2 },
+      { name: 'new.js', type: 'file', size: 3 },
+    ],
+  });
+  h.setGitStatus('/proj', [
+    { path: '/proj/dirty.ts', state: 'modified' },
+    { path: '/proj/new.js', state: 'untracked' },
+    { path: '/proj/src/child.ts', state: 'modified' },
+  ]);
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS(); await TICKS();
+
+  const badgeOf = (name) => {
+    const row = findEls(h.container, { cls: 'filebrowser-row', text: name })[0];
+    return findEls(row, { cls: 'fb-git-tag' })[0];
+  };
+
+  const clean = badgeOf('clean.ts');
+  assert.ok(clean, 'clean file badge exists');
+  assert.equal(clean.textContent, '\u2713', 'committed marker');
+  assert.ok(clean.classList.contains('git-committed'));
+  assert.equal(clean.title, 'Committed');
+
+  const dirty = badgeOf('dirty.ts');
+  assert.equal(dirty.textContent, 'M', 'modified marker');
+  assert.ok(dirty.classList.contains('git-modified'));
+  assert.equal(dirty.title, 'Modified');
+
+  const fresh = badgeOf('new.js');
+  assert.equal(fresh.textContent, 'U', 'untracked marker');
+  assert.ok(fresh.classList.contains('git-untracked'));
+  assert.equal(fresh.title, 'Untracked');
+
+  const srcRow = findEls(h.container, { cls: 'filebrowser-row', text: 'src' })[0];
+  const srcDot = findEls(srcRow, { cls: 'fb-git-dot' })[0];
+  assert.ok(srcDot, 'dir aggregate dot present');
+  assert.ok(srcDot.classList.contains('git-modified'), 'dir inherits modified from a changed descendant');
+
+  assert.ok(h.calls.some(([m, root]) => m === 'git' && root === '/proj'), 'git status fetched once on load');
+});
+
+test('not a git repo renders no status badges', async () => {
+  const h = makeHarness({ entries: PROJ });
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS(); await TICKS();
+  assert.equal(findEls(h.container, { cls: 'fb-git-tag' }).length, 0, 'no file badges');
+  assert.equal(findEls(h.container, { cls: 'fb-git-dot' }).length, 0, 'no dir dots');
+  assert.ok(h.calls.some(([m, root]) => m === 'git' && root === '/proj'), 'still probed for a repo');
+});
+
+test('task events debounce a git-status refresh', async () => {
+  const h = makeHarness({
+    entries: [
+      { name: 'a.ts', type: 'file', size: 10 },
+      { name: 'b.ts', type: 'file', size: 20 },
+    ],
+  });
+  h.setGitStatus('/proj', [{ path: '/proj/a.ts', state: 'untracked' }]);
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS(); await TICKS();
+  const badgeOf = (name) => {
+    const row = findEls(h.container, { cls: 'filebrowser-row', text: name })[0];
+    return findEls(row, { cls: 'fb-git-tag' })[0];
+  };
+  assert.equal(badgeOf('a.ts').textContent, 'U', 'initial untracked');
+
+  const gitCallsBefore = h.calls.filter(([m]) => m === 'git').length;
+  h.setGitStatus('/proj', [{ path: '/proj/a.ts', state: 'modified' }]);
+  h.handler({ type: 'task_completed', taskId: 't' });
+  await new Promise((r) => setTimeout(r, 700));
+  await TICKS();
+  assert.ok(h.calls.filter(([m]) => m === 'git').length > gitCallsBefore, 'git refetched after task event');
+  assert.equal(badgeOf('a.ts').textContent, 'M', 'badge reflects refreshed state');
+});
+
+test('session_changed re-fetches git status for the new project root', async () => {
+  const h = makeHarness({ entries: PROJ });
+  h.setGitStatus('/proj', [{ path: '/proj/a.ts', state: 'modified' }]);
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS(); await TICKS();
+
+  h.setListing('/proj2', [{ name: 'main.rs', type: 'file', size: 7 }]);
+  h.setGitStatus('/proj2', [{ path: '/proj2/main.rs', state: 'untracked' }]);
+  const projProbesBefore = h.calls.filter(([m, root]) => m === 'git' && root === '/proj').length;
+  h.setProjectDir('/proj2');
+  h.handler({ type: 'session_changed', sessionId: 'x' });
+  await TICKS(); await TICKS(); await TICKS(); await TICKS();
+
+  const mainRow = findEls(h.container, { cls: 'filebrowser-row', text: 'main.rs' })[0];
+  assert.ok(mainRow, 'new root listed');
+  const badge = findEls(mainRow, { cls: 'fb-git-tag' })[0];
+  assert.ok(badge, 'badge rendered for new root');
+  assert.equal(badge.textContent, 'U', 'status for new root applied');
+  assert.ok(h.calls.some(([m, root]) => m === 'git' && root === '/proj2'), 'git refetched under new root');
+  assert.ok(
+    h.calls.filter(([m, root]) => m === 'git' && root === '/proj').length === projProbesBefore,
+    'old root not re-probed',
+  );
+});
+
+test('files inside an untracked directory inherit the untracked state', async () => {
+  const h = makeHarness({
+    entries: [
+      { name: 'untracked_dir', type: 'directory', size: 0 },
+      { name: 'clean.ts', type: 'file', size: 1 },
+    ],
+  });
+  // git collapses an untracked directory to a single entry — descendants are
+  // absent from the porcelain output and must inherit the parent state.
+  h.setGitStatus('/proj', [{ path: '/proj/untracked_dir', state: 'untracked' }]);
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS(); await TICKS();
+
+  const dirRow = findEls(h.container, { cls: 'filebrowser-row', text: 'untracked_dir' })[0];
+  assert.ok(findEls(dirRow, { cls: 'fb-git-dot' })[0].classList.contains('git-untracked'), 'dir is untracked');
+
+  h.setListing('/proj/untracked_dir', [
+    { name: 'a.txt', type: 'file', size: 3 },
+    { name: 'nested', type: 'directory', size: 0 },
+  ]);
+  dirRow.dispatch('click');
+  await TICKS(); await TICKS(); await TICKS();
+
+  const fileRow = findEls(h.container, { cls: 'filebrowser-row', text: 'a.txt' })[0];
+  const badge = findEls(fileRow, { cls: 'fb-git-tag' })[0];
+  assert.equal(badge.textContent, 'U', 'child file inherits untracked');
+  const nestedRow = findEls(h.container, { cls: 'filebrowser-row', text: 'nested' })[0];
+  assert.ok(findEls(nestedRow, { cls: 'fb-git-dot' })[0].classList.contains('git-untracked'), 'child dir inherits untracked');
+});
+
+test('git-ignored paths get no badge and do not taint parent dots', async () => {
+  const h = makeHarness({
+    entries: [
+      { name: 'generated', type: 'directory', size: 0 },
+      { name: 'sub', type: 'directory', size: 0 },
+      { name: 'clean.ts', type: 'file', size: 1 },
+    ],
+  });
+  h.setGitStatus('/proj', [
+    { path: '/proj/generated', state: 'ignored' },
+    { path: '/proj/sub/skip.log', state: 'ignored' },
+  ]);
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS(); await TICKS();
+
+  const row = (name) => findEls(h.container, { cls: 'filebrowser-row', text: name })[0];
+  const generated = row('generated');
+  assert.equal(findEls(generated, { cls: 'fb-git-dot' }).length, 0, 'ignored dir has no dot');
+  const clean = row('clean.ts');
+  assert.equal(findEls(clean, { cls: 'fb-git-tag' })[0].textContent, '\u2713', 'clean file still committed');
+
+  h.setListing('/proj/generated', [{ name: 'out.js', type: 'file', size: 2 }]);
+  generated.dispatch('click');
+  await TICKS(); await TICKS();
+  assert.equal(findEls(row('out.js'), { cls: 'fb-git-tag' }).length, 0, 'file in ignored dir is unbadged');
+
+  const sub = row('sub');
+  assert.ok(findEls(sub, { cls: 'fb-git-dot' })[0].classList.contains('git-committed'), 'ignored descendant leaves dir clean');
+  h.setListing('/proj/sub', [{ name: 'skip.log', type: 'file', size: 3 }]);
+  sub.dispatch('click');
+  await TICKS(); await TICKS();
+  assert.equal(findEls(row('skip.log'), { cls: 'fb-git-tag' }).length, 0, 'ignored file is unbadged');
+});
+
+test('hide-untracked toggle hides untracked and ignored entries', async () => {
+  const h = makeHarness({
+    entries: [
+      { name: 'src', type: 'directory', size: 0 },
+      { name: 'clean.ts', type: 'file', size: 1 },
+      { name: 'new.js', type: 'file', size: 3 },
+      { name: 'generated', type: 'directory', size: 0 },
+    ],
+  });
+  h.setGitStatus('/proj', [
+    { path: '/proj/new.js', state: 'untracked' },
+    { path: '/proj/generated', state: 'ignored' },
+  ]);
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS(); await TICKS();
+  const names = () => treeRowNames(h.container);
+  assert.ok(names().includes('new.js') && names().includes('generated'), 'visible before filtering');
+
+  const check = findEls(h.container, { cls: 'filebrowser-hide-untracked' })[0].children[0];
+  check.checked = true;
+  check.dispatch('change');
+  await TICKS();
+  const after = names();
+  assert.ok(!after.includes('new.js'), 'untracked file hidden');
+  assert.ok(!after.includes('generated'), 'ignored dir hidden');
+  assert.ok(after.includes('clean.ts') && after.includes('src'), 'tracked entries remain');
+
+  check.checked = false;
+  check.dispatch('change');
+  await TICKS();
+  assert.ok(names().includes('new.js'), 'restored when unchecked');
+});
+
+test('pointer inside the panel suspends the idle countdown', async () => {
+  const h = makeHarness({ entries: PROJ });
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge, idleMs: 40 });
+  await TICKS(); await TICKS();
+  findEls(h.container, { cls: 'filebrowser-toggle' })[0].dispatch('click');
+  assert.ok(!h.container.classList.contains('collapsed'), 'expanded');
+
+  h.container.dispatch('pointerenter');
+  await new Promise((r) => setTimeout(r, 90));
+  assert.ok(!h.container.classList.contains('collapsed'), 'stays open while pointer is inside');
+
+  h.container.dispatch('pointerleave');
+  await new Promise((r) => setTimeout(r, 90));
+  assert.ok(h.container.classList.contains('collapsed'), 'collapses after pointer leaves');
+});
+
+test('non-git project is probed once and not polled again', async () => {
+  const h = makeHarness({ entries: PROJ });
+  mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS(); await TICKS();
+  const probes = () => h.calls.filter(([m, root]) => m === 'git' && root === '/proj').length;
+  assert.equal(probes(), 1, 'probed once on load');
+
+  h.handler({ type: 'task_completed', taskId: 't' });
+  await new Promise((r) => setTimeout(r, 700));
+  h.handler({ type: 'session_changed', sessionId: 'x' });
+  await TICKS(); await TICKS();
+  assert.equal(probes(), 1, 'no further git requests for a non-repo root');
 });
 
 test('dispose removes DOM and unsubscribes from the event bus', async () => {
