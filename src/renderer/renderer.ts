@@ -554,7 +554,7 @@ function blacklistPath(): string {
   return join(base, 'model-blacklist.json');
 }
 function epochToIso(ms: number): string {
-  return new Date(ms).toISOString();
+  return new Date(ms).toLocaleString('sv-SE');
 }
 function isoToEpoch(s: string): number {
   const d = new Date(s);
