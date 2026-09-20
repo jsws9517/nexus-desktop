@@ -4834,7 +4834,7 @@ async function remediateUnavailableModel(providerName: string, modelId: string, 
 /** Remove `modelId` from the provider's cached list and re-render the dropdown. */
 function retireUnavailableModel(providerName: string, modelId: string): void {
   if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Map());
-  modelBlacklist.get(providerName)!.set(modelId, 0);
+  modelBlacklist.get(providerName)!.set(modelId, Date.now());
   void persistBlacklist();
   const cached = modelsCache.get(providerName);
   if (!cached) return;
