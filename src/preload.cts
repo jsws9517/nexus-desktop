@@ -183,6 +183,8 @@ const api = {
   onUpdateState: (cb: (state: Record<string, unknown>) => void) => {
     ipcRenderer.on('nexus:updateState', (_e, state) => cb(state));
   },
+  blacklistRead: () => ipcRenderer.invoke('nexus:blacklistRead'),
+  blacklistWrite: (data: Record<string, Record<string, string>>) => ipcRenderer.invoke('nexus:blacklistWrite', data),
 };
 
 contextBridge.exposeInMainWorld('nexusDesktop', api);

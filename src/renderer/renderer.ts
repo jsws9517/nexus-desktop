@@ -1,9 +1,5 @@
 /// <reference lib="dom" />
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-
 import { initFx } from './fx.js';
 import { isWorkerBlockText, stripProtocolXml } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
@@ -274,6 +270,8 @@ declare global {
       onUpdateState(cb: (state: Record<string, unknown>) => void): void;
       getRateLimitStatus(): Promise<{ providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }>;
       onRateLimitUpdate(cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }) => void): void;
+      blacklistRead(): Promise<Record<string, Record<string, string>>>;
+      blacklistWrite(data: Record<string, Record<string, string>>): Promise<void>;
     };
   }
 }
@@ -547,12 +545,6 @@ const modelsCache = new Map<string, ModelsCacheEntry>();
 // Value = lastProbe epoch (0 = never probed).
 const BLACKLIST_PROBE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 h
 const modelBlacklist = new Map<string, Map<string, number>>();
-function blacklistPath(): string {
-  const base = process.env.LLMA_DATA_DIR
-    ? join(process.env.LLMA_DATA_DIR, '.nexus')
-    : join(homedir(), '.nexus');
-  return join(base, 'model-blacklist.json');
-}
 function epochToIso(ms: number): string {
   return new Date(ms).toLocaleString('sv-SE');
 }
@@ -560,20 +552,17 @@ function isoToEpoch(s: string): number {
   const d = new Date(s);
   return isNaN(d.getTime()) ? 0 : d.getTime();
 }
-(function restoreBlacklist() {
+(async function restoreBlacklist() {
   try {
-    const raw = readFileSync(blacklistPath(), 'utf8');
-    if (raw) {
-      const obj = JSON.parse(raw) as Record<string, Record<string, string>>;
-      for (const [k, v] of Object.entries(obj)) {
-        const inner = new Map<string, number>();
-        for (const [id, iso] of Object.entries(v)) inner.set(id, isoToEpoch(iso));
-        modelBlacklist.set(k, inner);
-      }
+    const obj = await window.nexusDesktop.blacklistRead();
+    for (const [k, v] of Object.entries(obj)) {
+      const inner = new Map<string, number>();
+      for (const [id, iso] of Object.entries(v)) inner.set(id, isoToEpoch(iso));
+      modelBlacklist.set(k, inner);
     }
   } catch {}
 })();
-function persistBlacklist(): void {
+async function persistBlacklist(): Promise<void> {
   try {
     const obj: Record<string, Record<string, string>> = {};
     for (const [k, v] of modelBlacklist) {
@@ -581,9 +570,7 @@ function persistBlacklist(): void {
       for (const [id, ts] of v) inner[id] = epochToIso(ts);
       obj[k] = inner;
     }
-    const dir = blacklistPath().split('\\').slice(0, -1).join('\\');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(blacklistPath(), JSON.stringify(obj, null, 2));
+    await window.nexusDesktop.blacklistWrite(obj);
   } catch {}
 }
 
@@ -612,12 +599,12 @@ function probeBlacklistedModels(): void {
       if (bl.has(modelId)) {
         bl.delete(modelId);
         if (bl.size === 0) modelBlacklist.delete(activeProvider);
-        persistBlacklist();
+        void persistBlacklist();
       }
     } catch {
       if (bl.has(modelId)) {
         bl.set(modelId, Date.now());
-        persistBlacklist();
+        void persistBlacklist();
       }
     } finally {
       if (status.model !== savedModel) {
@@ -3611,7 +3598,7 @@ function drain(): void {
       const bl = modelBlacklist.get(attemptProvider);
       if (bl?.has(attemptModel)) {
         bl.delete(attemptModel);
-        persistBlacklist();
+        void persistBlacklist();
       }
       await refreshSessions(currentSessionId);
       await syncMsgCache(currentSessionId);
@@ -4848,7 +4835,7 @@ async function remediateUnavailableModel(providerName: string, modelId: string, 
 function retireUnavailableModel(providerName: string, modelId: string): void {
   if (!modelBlacklist.has(providerName)) modelBlacklist.set(providerName, new Map());
   modelBlacklist.get(providerName)!.set(modelId, 0);
-  persistBlacklist();
+  void persistBlacklist();
   const cached = modelsCache.get(providerName);
   if (!cached) return;
   const filtered = filterBlacklisted(providerName, cached.list);

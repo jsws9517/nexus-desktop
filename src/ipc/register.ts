@@ -12,7 +12,7 @@ import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import { access, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, sep } from 'node:path';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import type { WorkerHost } from '../main/worker-host.js';
 import type { SessionWorkers, OpenTabInfo } from '../main/session-workers.js';
@@ -627,5 +627,21 @@ export function registerIpc(ctx: IpcContext): void {
   // Cross-session rate-limit status (aggregated from all open session workers).
   ipcMain.handle(CHANNELS.getRateLimitStatus, (): { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> } => {
     return { providers: rateLimitRegistry.getAggregated() };
+  });
+
+  // Model blacklist: read/write persisted to ~/.nexus/model-blacklist.json.
+  const BLACKLIST_FILE = join(homedir(), '.nexus', 'model-blacklist.json');
+  ipcMain.handle(CHANNELS.blacklistRead, async (): Promise<Record<string, Record<string, string>>> => {
+    try {
+      const raw = await readFile(BLACKLIST_FILE, 'utf8');
+      if (!raw) return {};
+      return JSON.parse(raw);
+    } catch { return {}; }
+  });
+  ipcMain.handle(CHANNELS.blacklistWrite, (_e, data: Record<string, Record<string, string>>): void => {
+    try {
+      mkdirSync(join(homedir(), '.nexus'), { recursive: true });
+      writeFileSync(BLACKLIST_FILE, JSON.stringify(data, null, 2));
+    } catch {}
   });
 }

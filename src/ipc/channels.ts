@@ -118,6 +118,10 @@ export const CHANNELS = {
   downloadUpdate: 'nexus:downloadUpdate',
   installUpdate: 'nexus:installUpdate',
 
+  // model blacklist (persisted to ~/.nexus/model-blacklist.json via main process).
+  blacklistRead: 'nexus:blacklistRead',
+  blacklistWrite: 'nexus:blacklistWrite',
+
   // main → renderer: event pushes.
   events: 'nexus:events',
   event: 'nexus:event',
