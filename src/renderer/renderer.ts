@@ -1,5 +1,9 @@
 /// <reference lib="dom" />
 
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
 import { initFx } from './fx.js';
 import { isWorkerBlockText, stripProtocolXml } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
@@ -541,12 +545,17 @@ const modelsCache = new Map<string, ModelsCacheEntry>();
 // Persisted to localStorage so the blacklist survives renderer restarts
 // (e.g. window minimize → taskbar restore).
 // Value = lastProbe epoch (0 = never probed).
-const BLACKLIST_STORAGE_KEY = 'nexus-model-blacklist';
 const BLACKLIST_PROBE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 h
 const modelBlacklist = new Map<string, Map<string, number>>();
+function blacklistPath(): string {
+  const base = process.env.LLMA_DATA_DIR
+    ? join(process.env.LLMA_DATA_DIR, '.nexus')
+    : join(homedir(), '.nexus');
+  return join(base, 'model-blacklist.json');
+}
 (function restoreBlacklist() {
   try {
-    const raw = localStorage.getItem(BLACKLIST_STORAGE_KEY);
+    const raw = readFileSync(blacklistPath(), 'utf8');
     if (raw) {
       const obj = JSON.parse(raw) as Record<string, Record<string, number>>;
       for (const [k, v] of Object.entries(obj)) {
@@ -565,7 +574,9 @@ function persistBlacklist(): void {
       for (const [id, ts] of v) inner[id] = ts;
       obj[k] = inner;
     }
-    localStorage.setItem(BLACKLIST_STORAGE_KEY, JSON.stringify(obj));
+    const dir = blacklistPath().split('\\').slice(0, -1).join('\\');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(blacklistPath(), JSON.stringify(obj, null, 2));
   } catch {}
 }
 
