@@ -553,14 +553,21 @@ function blacklistPath(): string {
     : join(homedir(), '.nexus');
   return join(base, 'model-blacklist.json');
 }
+function epochToIso(ms: number): string {
+  return new Date(ms).toISOString();
+}
+function isoToEpoch(s: string): number {
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+}
 (function restoreBlacklist() {
   try {
     const raw = readFileSync(blacklistPath(), 'utf8');
     if (raw) {
-      const obj = JSON.parse(raw) as Record<string, Record<string, number>>;
+      const obj = JSON.parse(raw) as Record<string, Record<string, string>>;
       for (const [k, v] of Object.entries(obj)) {
         const inner = new Map<string, number>();
-        for (const [id, ts] of Object.entries(v)) inner.set(id, ts);
+        for (const [id, iso] of Object.entries(v)) inner.set(id, isoToEpoch(iso));
         modelBlacklist.set(k, inner);
       }
     }
@@ -568,10 +575,10 @@ function blacklistPath(): string {
 })();
 function persistBlacklist(): void {
   try {
-    const obj: Record<string, Record<string, number>> = {};
+    const obj: Record<string, Record<string, string>> = {};
     for (const [k, v] of modelBlacklist) {
-      const inner: Record<string, number> = {};
-      for (const [id, ts] of v) inner[id] = ts;
+      const inner: Record<string, string> = {};
+      for (const [id, ts] of v) inner[id] = epochToIso(ts);
       obj[k] = inner;
     }
     const dir = blacklistPath().split('\\').slice(0, -1).join('\\');
