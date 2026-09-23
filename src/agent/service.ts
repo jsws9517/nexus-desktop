@@ -1196,7 +1196,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const sessionId = this.agent.getCurrentSessionId?.() ?? 'unknown';
     
     // Decompose the prompt into sub-tasks (fallback: split by conjunctions)
-    const subTasks = this.fallbackDecompose(prompt);
+    const subTasks = await this.fallbackDecompose(prompt);
 
     if (subTasks.length <= 1 || this.isDeclarativePrompt(prompt)) {
       // Declarative statement or single coherent task — skip parallel UI,
@@ -1463,11 +1463,15 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    * Only splits when the prompt contains multiple independent clause patterns
    * (e.g. "分析A和生成B"), not when conjunctions connect paired nouns (e.g. "A和B").
    */
-  private fallbackDecompose(prompt: string): Array<{
+  private async fallbackDecompose(prompt: string): Promise<Array<{
     id: string;
     description: string;
     prompt: string;
-  }> {
+  }>> {
+    // Detect language for bilingual-aware description generation.
+    const { detectLanguage } = await import('../shared/lang-detect.js');
+    const lang = detectLanguage(prompt);
+    const isZh = lang === 'zh-CN';
     // Detect if prompt has multiple independent action clauses
     const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释';
     const hasMultiClause = new RegExp(`\\b(${actionVerbs})\\b.*(?:和|与|以及|&|and).*.?\\b(${actionVerbs})\\b`, 'i').test(prompt);
@@ -1476,7 +1480,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       // Single coherent task — do NOT split on noun conjunctions
       return [{
         id: 'task_1',
-        description: 'Complete user request',
+        description: isZh ? '完成用户请求' : 'Complete user request',
         prompt: prompt,
       }];
     }
@@ -1490,27 +1494,26 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (parts.length <= 1) {
       return [{
         id: 'task_1',
-        description: 'Complete user request',
+        description: isZh ? '完成用户请求' : 'Complete user request',
         prompt: prompt,
       }];
     }
 
-    return parts.map((part, index) => ({
+    return Promise.all(parts.map(async (part, index) => ({
       id: `task_${index + 1}`,
-      description: this.generateTaskDescription(part, index + 1),
+      description: await this.generateTaskDescription(part, index + 1, isZh),
       prompt: part,
-    }));
+    })));
   }
 
   /**
    * Generate a meaningful description for a sub-task.
-   * All descriptions follow the same format: "Task N: <content>"
+   * Adapts to the detected language (zh-CN or en).
    */
-  private generateTaskDescription(part: string, index: number): string {
-    // Truncate to consistent length
+  private async generateTaskDescription(part: string, index: number, isZh: boolean): Promise<string> {
     const maxLen = 50;
     const truncated = part.length > maxLen ? part.substring(0, maxLen) + '...' : part;
-    return `Task ${index}: ${truncated}`;
+    return isZh ? `任务 ${index}：${truncated}` : `Task ${index}: ${truncated}`;
   }
 
   // ---------------------------------------------------------------- DAG bridge

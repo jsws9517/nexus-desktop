@@ -9,6 +9,7 @@ import { Updater } from './updater.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import { SessionWorkers } from './session-workers.js';
 import { RateLimitRegistry } from './rate-limit-registry.js';
+import { BgJobManager } from './bg-job-manager.js';
 import { mcpHub } from './mcp-hub.js';
 import { createDesktopState } from './desktop-state.js';
 import type { AgentEvent } from '../agent-service.js';
@@ -42,7 +43,9 @@ let worker: WorkerHost | null = null;
 // the settings UI; each opened tab runs its own WorkerHost via this registry.
 const sessionWorkers = new SessionWorkers();
 const rateLimitRegistry = new RateLimitRegistry();
+const bjm = new BgJobManager();
 sessionWorkers.rateLimitRegistry = rateLimitRegistry;
+sessionWorkers.bgJobManager = bjm;
 rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
 const updater = new Updater();
 // System resource watchdog for the multi-session protection (see resource-monitor.ts).
@@ -350,6 +353,7 @@ async function handleParallelRequest(sessionId: string, event: { type: string; p
       {
         workerFactory: (scriptPath: string) => new WorkerHost(scriptPath),
         workerScriptPath: workerScriptPath(),
+        bgJobManager: bjm,
       }
     );
     
@@ -548,6 +552,24 @@ if (gotLock) {
       sessionWorkers.size < desktopState.getMaxTabs();
     resourceMon.start();
     void sessionWorkers.warmSpare();
+    // Wire bg_job completion events into the renderer so the user gets notified
+    // even when the owning tab is closed or the worker crashed.
+    bjm.subscribe((job) => {
+      if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled') {
+        send(CHANNELS.tabEvent, {
+          sessionId: job.sessionId,
+          event: {
+            type: 'bg_job_complete',
+            jobId: job.id,
+            title: job.title,
+            status: job.status,
+            output: job.output,
+            error: job.error,
+            lang: job._lang as 'zh-CN' | 'en' | undefined,
+          } as AgentEvent,
+        });
+      }
+    });
     registerIpc({
       worker,
       sessionWorkers,
@@ -586,6 +608,7 @@ if (gotLock) {
       getLazyWorker: desktopState.getLazyWorker,
       setLazyWorker: desktopState.setLazyWorker,
       rateLimitRegistry,
+      bgJobManager: bjm,
     });
     createWindow();
 

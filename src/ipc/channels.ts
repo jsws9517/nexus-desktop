@@ -63,6 +63,14 @@ export const CHANNELS = {
   getSubAgentStatus: 'nexus:getSubAgentStatus',
   cancelSubAgent: 'nexus:cancelSubAgent',
   subAgentProgress: 'nexus:subAgentProgress',
+  // bg_job: persistent background job lifecycle (main-process owned).
+  bgJobCreate: 'nexus:bgJobCreate',
+  bgJobQuery: 'nexus:bgJobQuery',
+  bgJobList: 'nexus:bgJobList',
+  bgJobCancel: 'nexus:bgJobCancel',
+  bgJobProgress: 'nexus:bgJobProgress',
+  // acp_router: multi-agent role routing tool (worker-side dispatch).
+  routeViaAcp: 'nexus:routeViaAcp',
   shutdown: 'nexus:shutdown',
 
   // renderer → main: desktop-only (desktop.json state) channels.

@@ -58,6 +58,14 @@ type WorkerRequest =
   | { id: number; method: 'runSubAgent'; params: { taskId: string; prompt: string; tools?: string[]; maxTurns?: number; timeoutMs?: number; constitution?: string } }
   | { id: number; method: 'getSubAgentStatus'; params: { taskId: string } }
   | { id: number; method: 'cancelSubAgent'; params: { taskId: string } }
+  // bg_job lifecycle (delegate to main-process BgJobManager via post()).
+  | { id: number; method: 'bgJobCreate'; params: { title: string; prompt: string; sessionId: string; maxDurationMs?: number; maxTurns?: number } }
+  | { id: number; method: 'bgJobQuery'; params: { jobId: string } }
+  | { id: number; method: 'bgJobList'; params?: { sessionId?: string; status?: string } }
+  | { id: number; method: 'bgJobCancel'; params: { jobId: string } }
+  | { id: number; method: 'bgJobProgress'; params: { jobId: string; progress?: number; note?: string } }
+  // acp_router: route a prompt to a named agent role.
+  | { id: number; method: 'routeViaAcp'; params: { roleId: string; prompt: string; sessionId: string; background?: boolean } }
   | { id: number; method: 'shutdown' };
 
 /** JSON-RPC transport. stdio (dev/system node) or parentPort (Electron utilityProcess). */
@@ -107,6 +115,35 @@ function resolveMcpResult(msg: {
   mcpPending.delete(msg.id);
   if (msg.ok) p.resolve(msg.data);
   else p.reject(new Error(msg.error || 'MCP proxy request failed'));
+}
+
+// Worker → main bg_job request channel. The worker cannot access BgJobManager
+// directly (it lives in main), so it posts a 'bgJobRequest' that the main
+// process's WorkerHost forwards to BgJobManager and replies with 'bgJobResult'.
+type BgJobOp = 'create' | 'query' | 'list' | 'cancel' | 'progress';
+let bgJobNextId = 2e9;
+const bgJobPending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+
+function sendBgJobRequest(op: BgJobOp, params?: Record<string, unknown>): Promise<unknown> {
+  const id = bgJobNextId++;
+  send({ type: 'bgJobRequest', id, op, data: params ?? {} });
+  return new Promise((resolve, reject) => {
+    bgJobPending.set(id, { resolve, reject });
+  });
+}
+
+function resolveBgJobResult(msg: {
+  id?: number;
+  ok?: boolean;
+  data?: unknown;
+  error?: string;
+}): void {
+  if (msg.id == null) return;
+  const p = bgJobPending.get(msg.id);
+  if (!p) return;
+  bgJobPending.delete(msg.id);
+  if (msg.ok) p.resolve(msg.data);
+  else p.reject(new Error(msg.error || 'bg_job request failed'));
 }
 
 const service = new AgentService();
@@ -345,6 +382,67 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     subAgentStates.set(req.params.taskId, { status: 'cancelled', startTime: Date.now() });
     return { success: true };
   },
+  // bg_job lifecycle: forward to main-process BgJobManager via sendBgJobRequest.
+  // The worker cannot create its own BgJobManager (it lives in main); instead
+  // it posts a 'bgJobRequest' that the main process's WorkerHost forwards to
+  // BgJobManager and replies with 'bgJobResult'.
+  bgJobCreate: async (req: WorkerRequest & { method: 'bgJobCreate' }) => {
+    const { title, prompt, sessionId, maxDurationMs, maxTurns } = req.params;
+    return sendBgJobRequest('create', { title, prompt, sessionId, maxDurationMs, maxTurns });
+  },
+  bgJobQuery: async (req: WorkerRequest & { method: 'bgJobQuery' }) => {
+    return sendBgJobRequest('query', { jobId: req.params.jobId });
+  },
+  bgJobList: async (req: WorkerRequest & { method: 'bgJobList' }) => {
+    return sendBgJobRequest('list', req.params);
+  },
+  bgJobCancel: async (req: WorkerRequest & { method: 'bgJobCancel' }) => {
+    return sendBgJobRequest('cancel', { jobId: req.params.jobId });
+  },
+  bgJobProgress: async (req: WorkerRequest & { method: 'bgJobProgress' }) => {
+    return sendBgJobRequest('progress', req.params);
+  },
+  // acp_router: resolve role config inline (read-only), then hand off via bgJobRequest
+  // when background:true is requested.
+  routeViaAcp: async (req: WorkerRequest & { method: 'routeViaAcp' }) => {
+    const { roleId, prompt, sessionId, background } = req.params;
+    // Read role config from .nexus/agents/<roleId>/SKILL.md
+    const { discoverRoles } = await import('./tools/acp-router.js');
+    const roles = await discoverRoles(process.cwd());
+    const role = roles.find((r: { name: string }) => r.name === roleId);
+    if (!role) {
+      return { ok: false, error: `Role "${roleId}" not found` };
+    }
+    if (background) {
+      // Enqueue as a persistent bg_job — survives worker crashes.
+      return sendBgJobRequest('create', {
+        title: `[${roleId}] ${prompt.slice(0, 80)}`,
+        prompt: `[Role: ${roleId}]\n${role.systemPrompt}\n\n---\n\n${prompt}`,
+        sessionId,
+        toolAllowlist: role.frontmatter.tools,
+        maxDurationMs: role.frontmatter.maxDurationMs,
+        maxTurns: role.frontmatter.maxTurns,
+        constitution: role.frontmatter.constitution,
+      });
+    }
+    // Inline execution: spawn a temp service with the role's system prompt.
+    const tempService = new AgentService();
+    await tempService.earlyInit();
+    if (role.frontmatter.tools?.length) {
+      tempService.setToolAllowlist(new Set(role.frontmatter.tools));
+    }
+    if (role.frontmatter.constitution) {
+      tempService.setConstitutionOverride(role.frontmatter.constitution);
+    }
+    // Inject the role system prompt into the temp agent.
+    const { Agent } = await import('nexus-coder/dist/src/agent.js');
+    try {
+      const usage = await tempService.chatForUsage(prompt);
+      return { ok: true, roleId, output: `Role ${roleId} completed`, tokenUsage: usage };
+    } catch (e) {
+      return { ok: false, roleId, error: e instanceof Error ? e.message : String(e) };
+    }
+  },
   shutdown: () => service.shutdown(),
 };
 
@@ -415,9 +513,16 @@ if (useParentPort) {
   const pp = (process as unknown as { parentPort: { on: (ev: 'message', cb: (e: { data: string | { type: string; id?: number; ok?: boolean; data?: unknown; error?: string } }) => void) => void } }).parentPort;
   pp.on('message', (e) => {
     const d = e.data as unknown;
-    if (d && typeof d === 'object' && 'type' in d && (d as { type: string }).type === 'mcpResult') {
-      resolveMcpResult(d as { id?: number; ok?: boolean; data?: unknown; error?: string });
-      return;
+    if (d && typeof d === 'object' && 'type' in d) {
+      const msg = d as { type?: string; id?: number; ok?: boolean; data?: unknown; error?: string };
+      if (msg.type === 'mcpResult') {
+        resolveMcpResult(msg);
+        return;
+      }
+      if (msg.type === 'bgJobResult') {
+        resolveBgJobResult(msg);
+        return;
+      }
     }
     void handleRequest(d as string | Record<string, unknown>);
   });
@@ -431,7 +536,11 @@ if (useParentPort) {
         resolveMcpResult(msg as { id?: number; ok?: boolean; data?: unknown; error?: string });
         return;
       }
-    } catch { /* not JSON �?fall through */ }
+      if (msg.type === 'bgJobResult') {
+        resolveBgJobResult(msg as { id?: number; ok?: boolean; data?: unknown; error?: string });
+        return;
+      }
+    } catch { /* not JSON — fall through */ }
     void handleRequest(line);
   });
 }

@@ -1,6 +1,8 @@
 import type { AgentService } from '../service.js';
 import { SubAgentExecutor, type WorkerFactory } from './executor.js';
 import type { SubTask, SubTaskResult, ParallelConfig, OrchestrationResult } from './types.js';
+import type { BgJobManager } from '../../main/bg-job-manager.js';
+import { detectLanguage, type PromptLang } from '../../shared/lang-detect.js';
 import { logger } from '../../shared/logger.js';
 
 /**
@@ -13,7 +15,8 @@ import { logger } from '../../shared/logger.js';
  */
 export class OrchestratorAgent {
   private executor: SubAgentExecutor;
-  
+  private _bgJobs: BgJobManager | null = null;
+
   constructor(
     private agentService: AgentService | null,
     config?: {
@@ -21,58 +24,129 @@ export class OrchestratorAgent {
       timeoutMs?: number;
       workerFactory?: WorkerFactory;
       workerScriptPath?: string;
+      /** Optional persistent job tracker — when provided, each sub-task is
+       *  registered as a bg_job so progress survives worker crashes. */
+      bgJobManager?: BgJobManager;
     }
   ) {
     this.executor = new SubAgentExecutor(
       { maxConcurrent: config?.maxConcurrent, timeoutMs: config?.timeoutMs },
       config?.workerFactory,
-      config?.workerScriptPath
+      config?.workerScriptPath,
     );
+    this._bgJobs = config?.bgJobManager ?? null;
+  }
+
+  /** Expose bgJobManager for external status queries. */
+  get bgJobManager(): BgJobManager | null {
+    return this._bgJobs;
   }
 
   /**
-   * Orchestrate parallel task execution.
-   *
-   * @param constitutionText Optional project-constitution text to pass into
-   *   every sub-task prompt (adoption plan §3.7): sub-agents inherit the
-   *   constitution explicitly from the Orchestrator — they never re-discover
-   *   it via the filesystem inside the isolated child worker.
-   */
-  async orchestrate(
-    userPrompt: string,
-    sessionId: string,
-    constitutionText?: string
-  ): Promise<OrchestrationResult> {
-    const subTasks = await this.decomposeTasks(userPrompt, sessionId);
+    * Orchestrate parallel task execution.
+    *
+    * @param constitutionText Optional project-constitution text to pass into
+    *   every sub-task prompt (adoption plan §3.7): sub-agents inherit the
+    *   constitution explicitly from the Orchestrator — they never re-discover
+    *   it via the filesystem inside the isolated child worker.
+    *
+    * When a BgJobManager is wired in, each sub-task is registered as a
+    * persistent bg_job so progress survives worker crashes and can be polled
+     * via `nexus:bgJobQuery` even after the owning tab is closed.
+     */
+    async orchestrate(
+      userPrompt: string,
+      sessionId: string,
+      constitutionText?: string,
+    ): Promise<OrchestrationResult & { jobIds?: string[]; lang?: PromptLang }> {
+      const subTasks = await this.decomposeTasks(userPrompt, sessionId);
+      const lang = detectLanguage(userPrompt);
 
     if (subTasks.length === 0) {
       return {
         success: true,
-        output: 'No parallelizable tasks detected — treat as a single declarative prompt.',
+        output: lang === 'zh-CN'
+          ? '未检测到可并行的子任务 — 按单一连续任务处理。'
+          : 'No parallelizable tasks detected — treat as a single declarative prompt.',
         tasks: [],
         tokenUsage: { prompt: 0, completion: 0 },
+        lang,
       };
     }
-    
-    const results = await this.executor.executeParallel(subTasks, sessionId, constitutionText);
-    
-    const output = await this.aggregateResults(results, userPrompt);
-    
-    const totalUsage = results.reduce(
-      (acc, r) => ({
-        prompt: acc.prompt + r.tokenUsage.prompt,
-        completion: acc.completion + r.tokenUsage.completion,
-      }),
-      { prompt: 0, completion: 0 }
-    );
-    
-    return {
-      success: results.every(r => r.status === 'succeeded'),
-      output,
-      tasks: results,
-      tokenUsage: totalUsage,
-    };
-  }
+
+     // Register each sub-task as a persistent bg_job when a manager is available.
+     const jobIds: string[] = [];
+     if (this._bgJobs) {
+       for (const task of subTasks) {
+          const job = this._bgJobs.create({
+            title: task.description,
+            prompt: task.prompt,
+            sessionId,
+            toolAllowlist: task.tools,
+            maxDurationMs: task.timeoutMs ?? 60_000,
+            maxTurns: task.maxTurns ?? 10,
+            constitution: constitutionText,
+            _lang: lang,
+          });
+         jobIds.push(job.id);
+       }
+     }
+
+     // Wire progress callbacks into the executor when bg_jobs exist.
+     let originalProgress = this.executor['onProgress'];
+     if (this._bgJobs && jobIds.length > 0) {
+       this.executor['onProgress'] = (taskId: string, status: string) => {
+         const idx = subTasks.findIndex((t) => t.id === taskId);
+         if (idx === -1 || !jobIds[idx]) return;
+         const bgStatus: import('./types.js').BgJobStatus =
+           status === 'running' ? 'running'
+           : status === 'succeeded' ? 'succeeded'
+           : status === 'failed' ? 'failed'
+           : status === 'timeout' ? 'timeout'
+           : status === 'cancelled' ? 'cancelled'
+           : 'queued';
+          this._bgJobs!.notify(jobIds[idx], { status: bgStatus });
+          originalProgress?.(taskId, status as import('./types.js').SubTaskStatus);
+       };
+     }
+
+     const results = await this.executor.executeParallel(subTasks, sessionId, constitutionText);
+
+     // Update bg_jobs with final statuses.
+     if (this._bgJobs) {
+       for (let i = 0; i < results.length; i++) {
+         const jobId = jobIds[i];
+         if (!jobId) continue;
+         const r = results[i];
+         if (r.status === 'succeeded') {
+           this._bgJobs.onComplete(jobId, r.output, r.tokenUsage);
+         } else if (r.status === 'failed' || r.status === 'timeout') {
+           this._bgJobs.onFailure(jobId, r.error ?? `task ${r.taskId} ${r.status}`);
+         } else if (r.status === 'cancelled') {
+           this._bgJobs.advanceProgress(jobId, { status: 'cancelled' });
+         }
+       }
+     }
+
+     const output = await this.aggregateResults(results, userPrompt);
+
+     const totalUsage = results.reduce(
+       (acc, r) => ({
+         prompt: acc.prompt + r.tokenUsage.prompt,
+         completion: acc.completion + r.tokenUsage.completion,
+       }),
+       { prompt: 0, completion: 0 },
+     );
+
+      return {
+        success: results.every((r) => r.status === 'succeeded'),
+        output,
+        tasks: results,
+        tokenUsage: totalUsage,
+        lang,
+        ...(jobIds.length > 0 ? { jobIds } : {}),
+      };
+   }
 
   /**
    * Decompose user request into parallel sub-tasks via LLM.

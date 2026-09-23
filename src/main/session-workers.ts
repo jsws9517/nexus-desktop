@@ -44,6 +44,8 @@ export class SessionWorkers {
 
   /** Optional cross-session rate-limit aggregator. Wired by main/index.ts. */
   rateLimitRegistry?: RateLimitRegistry;
+  /** Optional bg_job manager. Wired by main/index.ts. */
+  bgJobManager?: import('./bg-job-manager.js').BgJobManager;
 
   /**
    * Health gate for the pre-warmed spare. Wired by main/index.ts (needs the
@@ -116,6 +118,9 @@ export class SessionWorkers {
     w.onRateLimitReport = (data: unknown) => {
       const rl = data as import('../agent/types.js').RateLimitStatus;
       if (rl && this.rateLimitRegistry) this.rateLimitRegistry.report(bound.sessionId, rl);
+    };
+    w.onBgJobRequest = async (op: string, params?: Record<string, unknown>) => {
+      return this.bgJobManager?.handleWorkerRequest(op, params as Record<string, unknown> ?? {}) as Promise<unknown>;
     };
     w.onExit = (code: number | null) => {
       this.onLog?.('warn', `Session worker exited (sessionId=${bound.sessionId}, code=${code})`);

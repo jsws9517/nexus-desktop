@@ -103,6 +103,23 @@ export const WORKER_METHODS = {
   },
   getSubAgentStatus: { fields: { taskId: S.str(200) } },
   cancelSubAgent: { fields: { taskId: S.str(200) } },
+  // bg_job lifecycle (route through main-process BgJobManager).
+  bgJobCreate: {
+    fields: { title: S.str(500), prompt: S.str(65536), sessionId: S.str(200), maxDurationMs: S.num(), maxTurns: S.num() },
+    optional: ['maxDurationMs', 'maxTurns'],
+  },
+  bgJobQuery: { fields: { jobId: S.str(200) } },
+  bgJobList: {
+    fields: { sessionId: S.str(200), status: S.en(['created', 'queued', 'running', 'succeeded', 'failed', 'timeout', 'cancelled', 'stale']) },
+    optional: ['sessionId', 'status'],
+  },
+  bgJobCancel: { fields: { jobId: S.str(200) } },
+  bgJobProgress: { fields: { jobId: S.str(200), progress: S.num(), note: S.str(500) }, optional: ['progress', 'note'] },
+  // acp_router: route a prompt to a named agent role (worker dispatches to bg_job or inline).
+  routeViaAcp: {
+    fields: { roleId: S.str(200), prompt: S.str(65536), sessionId: S.str(200), background: S.bool() },
+    optional: ['background'],
+  },
   shutdown: { fields: {} },
 } satisfies Record<string, MethodSpec>;
 

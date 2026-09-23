@@ -16,7 +16,7 @@ const WORKER_V8_FLAG = '--max-old-space-size=1024';
 const SHUTDOWN_TIMEOUT_MS = 3000;
 
 interface WorkerResponse {
-  type: 'result' | 'event' | 'permission' | 'log' | 'mcpRequest' | 'rateLimitReport';
+  type: 'result' | 'event' | 'permission' | 'log' | 'mcpRequest' | 'rateLimitReport' | 'bgJobRequest' | 'bgJobResult';
   id?: number;
   ok?: boolean;
   data?: unknown;
@@ -71,6 +71,8 @@ export class WorkerHost {
   onMcpRequest?: (op: string, params?: Record<string, unknown>) => Promise<unknown>;
   /** Fired after every callLlm() so the main process can aggregate across sessions. */
   onRateLimitReport?: (data: unknown) => void;
+  /** Worker → main bg_job request handler. Set by main/index.ts to wire BgJobManager. */
+  onBgJobRequest?: (op: string, params?: Record<string, unknown>) => Promise<unknown>;
 
   constructor(private workerPath: string) {}
 
@@ -256,6 +258,25 @@ export class WorkerHost {
       }
       case 'rateLimitReport':
         this.onRateLimitReport?.(msg.data);
+        break;
+      case 'bgJobRequest': {
+        const id = msg.id ?? 0;
+        const op = msg.op ?? '';
+        const params = msg.data as Record<string, unknown> | undefined;
+        void (async () => {
+          try {
+            const res = this.onBgJobRequest ? await this.onBgJobRequest(op, params) : undefined;
+            this.post({ type: 'bgJobResult', id, ok: true, data: res });
+          } catch (e) {
+            this.post({ type: 'bgJobResult', id, ok: false, error: e instanceof Error ? e.message : String(e) });
+          }
+        })();
+        break;
+      }
+      case 'bgJobResult':
+        // Worker-side bg_job responses are handled by the session-workers wiring;
+        // they pass through to the pending promise set up by sendBgJobRequest.
+        this.resolveResult(msg.id!, msg.ok!, msg.data, msg.error);
         break;
     }
   }
