@@ -11,6 +11,7 @@ import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
 import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
+import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext } from './components/FileBrowser.js';
 
@@ -151,7 +152,47 @@ type AgentEvent =
   // Renderer-synthesized events (not emitted by the worker) driven by local state:
   | { type: 'task_progress'; taskId: string; status: string; description?: string; error?: string }
   | { type: 'session_changed'; sessionId: string }
-  | { type: 'language_changed' };
+  | { type: 'language_changed' }
+  // Background job lifecycle — desktop bj_ (BgJobManager) and core bg_ (JobManager).
+  | {
+      type: 'bg_job_complete';
+      jobId: string;
+      title: string;
+      status: string;
+      output?: string;
+      error?: string;
+      progress?: number;
+      progressNote?: string;
+      lang?: 'zh-CN' | 'en';
+    }
+  | {
+      type: 'bg_job_progress';
+      jobId: string;
+      title: string;
+      status: string;
+      output?: string;
+      error?: string;
+      progress?: number;
+      progressNote?: string;
+      lang?: 'zh-CN' | 'en';
+    }
+  | { type: 'bg_job_event'; kind: 'completed' | 'status' | 'stalled'; job: CoreBgJobView; idleMs?: number };
+
+/** Serializable subset of a core JobManager BgJob (shell `bg_` jobs). */
+interface CoreBgJobView {
+  id: string;
+  label: string;
+  status: string;
+  pid?: number;
+  command?: string;
+  cwd?: string;
+  logBytes?: number;
+  startedAt?: number;
+  finishedAt?: number;
+  exitCode?: number | null;
+  error?: string;
+  sessionId?: string;
+}
 
 declare global {
   interface Window {
@@ -241,6 +282,14 @@ declare global {
       readRecentLogs(maxLines?: number): Promise<string[]>;
       getGlobalRulesPath(): Promise<{ ok: boolean; path: string }>;
       resetGlobalRules(): Promise<{ ok: boolean; path: string; backup?: string }>;
+      bgJobList(params?: { sessionId?: string; status?: string }): Promise<{ ok: boolean; jobs?: unknown[]; error?: string }>;
+      bgJobQuery(jobId: string): Promise<{ ok: boolean; job?: unknown; error?: string }>;
+      bgJobCancel(jobId: string): Promise<{ ok: boolean; error?: string }>;
+      bgJobRemove(jobId: string): Promise<{ ok: boolean; error?: string }>;
+      coreBgList(params?: { sessionId?: string }): Promise<{ ok: boolean; jobs?: unknown[]; error?: string }>;
+      coreBgKill(jobId: string, sessionId?: string): Promise<{ ok: boolean; text?: string; error?: string }>;
+      coreBgTail(jobId: string, lines?: number, sessionId?: string): Promise<{ ok: boolean; text?: string; error?: string }>;
+      coreBgRemove(jobId: string, sessionId?: string): Promise<{ ok: boolean; text?: string; error?: string }>;
       getMaxTabs(): Promise<number>;
       setMaxTabs(n: number): Promise<{ ok: boolean }>;
       getMemThreshold(): Promise<number>;
@@ -654,6 +703,78 @@ const parallelSessions = new Map<string, ParallelSession>();
 // sub-task's agent.chat() emits must NOT clear busy until parallel_end lands.
 const parallelBatches = new Set<string>();
 let parallelCardEl: HTMLElement | null = null;
+
+// ---------- background job status line ----------
+/** Non-terminal job ids (core bg_ + desktop bj_) — drives the idle status line. */
+const activeBgJobIds = new Set<string>();
+/** True while #input-status currently shows our jobs text (only we clear it). */
+let jobsStatusLineActive = false;
+
+const CORE_TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'timeout', 'killed', 'lost']);
+const DESKTOP_TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'timeout', 'cancelled', 'stale']);
+
+/** Idempotently fold a bg job event into the active-id set + status line. */
+function trackBgJobForStatusLine(event: AgentEvent): void {
+  let id: string | undefined;
+  let status: string | undefined;
+  let terminal = false;
+  if (event.type === 'bg_job_complete' || event.type === 'bg_job_progress') {
+    id = event.jobId ? String(event.jobId) : undefined;
+    status = event.status ? String(event.status) : undefined;
+    terminal = event.type === 'bg_job_complete' || DESKTOP_TERMINAL_JOB_STATUSES.has(String(status));
+  } else if (event.type === 'bg_job_event') {
+    const job = event.job;
+    id = job?.id;
+    status = job?.status;
+    const kindTerminal =
+      event.kind === 'completed' && CORE_TERMINAL_JOB_STATUSES.has(String(status));
+    terminal = kindTerminal;
+  } else {
+    return;
+  }
+  if (!id) return;
+  if (terminal) activeBgJobIds.delete(id);
+  else activeBgJobIds.add(id);
+  updateJobsStatusLine();
+}
+
+/** Write "N background jobs" into #input-status when idle; clear only our text. */
+function updateJobsStatusLine(): void {
+  const n = activeBgJobIds.size;
+  if (busy) {
+    // The chat busy indicator owns the line — drop our claim so setBusy's
+    // clear path won't fight us; we re-apply when the turn ends.
+    jobsStatusLineActive = false;
+    return;
+  }
+  if (n > 0) {
+    inputStatus.textContent = t('jobsRunning', { n });
+    inputStatus.classList.add('running');
+    jobsStatusLineActive = true;
+  } else if (jobsStatusLineActive) {
+    if (!stopRequested) {
+      inputStatus.textContent = '';
+      inputStatus.classList.remove('running');
+    }
+    jobsStatusLineActive = false;
+  }
+}
+
+/** Terminal bg-job toast (active-tab path; inactive tabs toast from applyTabEvent). */
+function toastBgJobTerminal(
+  title: string,
+  status: string,
+  error?: string,
+  kind?: 'completed' | 'stalled',
+): void {
+  if (kind === 'stalled') {
+    showToast(t('bgJobStalled', { label: title }), 'warning', 8000);
+    return;
+  }
+  const ok = status === 'succeeded';
+  const msg = error && !ok ? `${title}: ${error}` : t('bgJobDone', { title, status });
+  showToast(msg, ok ? 'success' : 'error', 5000);
+}
 
 // Finished parallel sessions are recycled automatically: either TTL-swept once
 // they've sat complete for PARALLEL_SESSION_TTL_MS, or hard-capped so the map
@@ -1337,6 +1458,22 @@ function handleEvent(event: AgentEvent): void {
         void refreshSidebarSession();
       }
       break;
+    case 'bg_job_complete':
+      // Desktop bj_ terminal (or core path routed here): toast + status line.
+      trackBgJobForStatusLine(event);
+      toastBgJobTerminal(event.title || event.jobId, event.status, event.error);
+      break;
+    case 'bg_job_progress':
+      trackBgJobForStatusLine(event);
+      break;
+    case 'bg_job_event':
+      // Core bg_ structured event. Active tab already gets the human text
+      // summary from the core — only warn on stall here (completed: no toast).
+      trackBgJobForStatusLine(event);
+      if (event.kind === 'stalled') {
+        toastBgJobTerminal(event.job?.label || event.job?.id || 'bg', event.job?.status || 'running', undefined, 'stalled');
+      }
+      break;
     case 'text':
       if (event.text) {
         const asst = ensureAssistant();
@@ -1629,6 +1766,8 @@ function setBusy(value: boolean): void {
   if (!value) {
     stopRequested = false;
     (stopBtn as HTMLButtonElement).disabled = false;
+    // Re-apply the background-jobs idle line if any job is still non-terminal.
+    updateJobsStatusLine();
   }
 }
 
@@ -2657,6 +2796,33 @@ function applyTabEvent(sessionId: string, event: AgentEvent): void {
     // Per-sub-task heartbeat: keep the batch's stuck-detector alive and flip
     // the shared task status so scoped sidebar cards track progress live.
     handleTaskProgress(sessionId, event.taskId, event.status);
+  }
+  // Fan out EVERY tab event to sidebar pages (Jobs/Sub-Agents) so background
+  // tabs' job lifecycle still updates the panel — handleEvent stays active-tab
+  // only below.
+  notifySidebarSubscribers(event);
+  if (
+    event.type === 'bg_job_complete' ||
+    event.type === 'bg_job_progress' ||
+    event.type === 'bg_job_event'
+  ) {
+    // Status-line tracking for all tabs (idempotent vs the active-tab path).
+    trackBgJobForStatusLine(event);
+    if (sessionId !== activeTabId) {
+      // Inactive tab: the chat stream won't show the core text summary — toast
+      // terminal completions / stalls so they aren't silent.
+      if (event.type === 'bg_job_complete') {
+        toastBgJobTerminal(event.title || event.jobId, event.status, event.error);
+      } else if (event.type === 'bg_job_event' && event.kind === 'stalled') {
+        toastBgJobTerminal(event.job?.label || event.job?.id || 'bg', event.job?.status || 'running', undefined, 'stalled');
+      } else if (
+        event.type === 'bg_job_event' &&
+        event.kind === 'completed' &&
+        CORE_TERMINAL_JOB_STATUSES.has(String(event.job?.status))
+      ) {
+        toastBgJobTerminal(event.job?.label || event.job?.id || 'bg', event.job?.status || 'failed', event.job?.error);
+      }
+    }
   }
   const touchesBusy = event.type === 'turn_start' || event.type === 'session_end'
     || event.type === 'parallel_start' || event.type === 'parallel_end' || event.type === 'parallel_error';
@@ -5270,6 +5436,13 @@ window.nexusDesktop.onTabsChanged((open) => {
       titleKey: SubAgentsPage.titleKey,
       icon: SubAgentsPage.icon,
       mount: mountSubAgentsPage,
+    });
+    sidebarRegistry.register({
+      id: JobsPage.id,
+      title: JobsPage.title,
+      titleKey: JobsPage.titleKey,
+      icon: JobsPage.icon,
+      mount: mountJobsPage,
     });
     sidebarRegistry.register({
       id: SideChatPage.id,

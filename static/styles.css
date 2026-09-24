@@ -188,6 +188,101 @@
   margin-bottom: 0;
 }
 
+/* ---- Jobs page (core bg_ shell + desktop bj_ sub-agent jobs) ---- */
+.jobs-page { padding: 10px; }
+.jobs-root { display: flex; flex-direction: column; gap: 10px; }
+.jobs-header { display: flex; flex-direction: column; gap: 2px; }
+.jobs-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.jobs-legend { font-size: 11px; color: var(--text-dim); }
+.jobs-scope {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.jobs-list { display: flex; flex-direction: column; gap: 10px; }
+.jobs-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+}
+.jobs-section { display: flex; flex-direction: column; gap: 6px; }
+.jobs-section-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.jobs-section .parallel-task-card,
+.jobs-section .job-card-wrapper .parallel-task-card {
+  border-width: 1px;
+  border-radius: 8px;
+  margin-bottom: 0;
+}
+.job-card-wrapper { display: block; }
+.job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.job-source-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.job-source-badge.source-core {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.job-source-badge.source-subagent {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.job-meta { font-size: 10px; color: var(--text-dim); }
+.job-action-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.job-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.job-action-remove {
+  opacity: 0.85;
+}
+.job-action-remove:hover {
+  border-color: var(--danger, #e5484d);
+  color: var(--danger, #e5484d);
+}
+.job-tail {
+  margin-top: 6px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text);
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-tail.hidden { display: none; }
+
 /* ---- Side Chat page (P1 built-in) ---- */
 .sidechat-page { padding: 10px; }
 .sidechat-root { display: flex; flex-direction: column; gap: 8px; height: 100%; }

@@ -63,7 +63,13 @@ type WorkerRequest =
   | { id: number; method: 'bgJobQuery'; params: { jobId: string } }
   | { id: number; method: 'bgJobList'; params?: { sessionId?: string; status?: string } }
   | { id: number; method: 'bgJobCancel'; params: { jobId: string } }
+  | { id: number; method: 'bgJobRemove'; params: { jobId: string } }
   | { id: number; method: 'bgJobProgress'; params: { jobId: string; progress?: number; note?: string } }
+  // core bg_ shell jobs (worker-local JobManager).
+  | { id: number; method: 'coreBgList'; params?: { sessionId?: string } }
+  | { id: number; method: 'coreBgKill'; params: { jobId: string; sessionId?: string } }
+  | { id: number; method: 'coreBgTail'; params: { jobId: string; lines?: number; sessionId?: string } }
+  | { id: number; method: 'coreBgRemove'; params: { jobId: string; sessionId?: string } }
   // acp_router: route a prompt to a named agent role.
   | { id: number; method: 'routeViaAcp'; params: { roleId: string; prompt: string; sessionId: string; background?: boolean } }
   | { id: number; method: 'shutdown' };
@@ -120,7 +126,7 @@ function resolveMcpResult(msg: {
 // Worker → main bg_job request channel. The worker cannot access BgJobManager
 // directly (it lives in main), so it posts a 'bgJobRequest' that the main
 // process's WorkerHost forwards to BgJobManager and replies with 'bgJobResult'.
-type BgJobOp = 'create' | 'query' | 'list' | 'cancel' | 'progress';
+type BgJobOp = 'create' | 'query' | 'list' | 'cancel' | 'remove' | 'progress';
 let bgJobNextId = 2e9;
 const bgJobPending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 
@@ -399,8 +405,25 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   bgJobCancel: async (req: WorkerRequest & { method: 'bgJobCancel' }) => {
     return sendBgJobRequest('cancel', { jobId: req.params.jobId });
   },
+  bgJobRemove: async (req: WorkerRequest & { method: 'bgJobRemove' }) => {
+    return sendBgJobRequest('remove', { jobId: req.params.jobId });
+  },
   bgJobProgress: async (req: WorkerRequest & { method: 'bgJobProgress' }) => {
     return sendBgJobRequest('progress', req.params);
+  },
+  // core bg_ shell jobs: hit this worker's JobManager (reconcile first so a
+  // prior restart re-adopts RUNNING rows before we list/kill/tail them).
+  coreBgList: async (req: WorkerRequest & { method: 'coreBgList' }) => {
+    return service.listCoreBgJobs(req.params?.sessionId);
+  },
+  coreBgKill: async (req: WorkerRequest & { method: 'coreBgKill' }) => {
+    return service.killCoreBgJob(req.params.jobId);
+  },
+  coreBgTail: async (req: WorkerRequest & { method: 'coreBgTail' }) => {
+    return service.tailCoreBgJob(req.params.jobId, req.params.lines);
+  },
+  coreBgRemove: async (req: WorkerRequest & { method: 'coreBgRemove' }) => {
+    return service.removeCoreBgJob(req.params.jobId);
   },
   // acp_router: resolve role config inline (read-only), then hand off via bgJobRequest
   // when background:true is requested.

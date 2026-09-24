@@ -45,7 +45,7 @@
     "better-sqlite3": "^13.0.1",
     "electron-updater": "^6.8.9",
     "exceljs": "^3.4.0",
-    "nexus-coder": "^1.1.20",
+    "nexus-coder": "^1.1.21",
     "vega": "^6.4.0",
     "vega-embed": "^7.2.0",
     "vega-lite": "^6.4.3"
@@ -122,7 +122,8 @@
   "allowScripts": {
     "better-sqlite3": true,
     "electron-winstaller": true,
-    "exceljs@3.10.0": true
+    "exceljs@3.10.0": true,
+    "protobufjs@7.6.5": true
   },
   "overrides": {
     "exceljs": {

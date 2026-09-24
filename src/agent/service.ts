@@ -2549,6 +2549,69 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.agent.session.updateMetadata(sessionId, metadata);
   }
 
+  /**
+   * Core bg_ shell jobs from this worker's JobManager. reconcile() re-adopts
+   * RUNNING rows after a worker restart so list/kill/tail see them. Jobs are
+   * filtered by sessionId when provided (JobManager stores the owning session).
+   */
+  listCoreBgJobs(sessionId?: string): { ok: boolean; jobs?: unknown[]; error?: string } {
+    if (!this.agent) return { ok: false, error: 'Agent not initialized' };
+    try {
+      const mgr = this.agent.getBgJobManager();
+      try { mgr.reconcile(); } catch { /* visibility best-effort */ }
+      let jobs = mgr.list();
+      if (sessionId) jobs = jobs.filter((j) => j.sessionId === sessionId);
+      return { ok: true, jobs };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async killCoreBgJob(jobId: string): Promise<{ ok: boolean; text?: string; error?: string }> {
+    if (!this.agent) return { ok: false, error: 'Agent not initialized' };
+    try {
+      const mgr = this.agent.getBgJobManager();
+      try { mgr.reconcile(); } catch { /* best-effort */ }
+      const text = await mgr.kill(jobId);
+      const unknown = text.startsWith('unknown job');
+      return unknown ? { ok: false, error: text } : { ok: true, text };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  tailCoreBgJob(jobId: string, lines?: number): { ok: boolean; text?: string; error?: string } {
+    if (!this.agent) return { ok: false, error: 'Agent not initialized' };
+    try {
+      const mgr = this.agent.getBgJobManager();
+      try { mgr.reconcile(); } catch { /* best-effort */ }
+      const job = mgr.status(jobId);
+      if (!job) return { ok: false, error: `unknown job: ${jobId}` };
+      const n = Number.isFinite(lines) && (lines ?? 0) > 0 ? Math.min(200, lines as number) : 20;
+      return { ok: true, text: mgr.tailText(jobId, { lines: n }) };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  removeCoreBgJob(jobId: string): { ok: boolean; text?: string; error?: string } {
+    if (!this.agent) return { ok: false, error: 'Agent not initialized' };
+    try {
+      const mgr = this.agent.getBgJobManager();
+      const job = mgr.status(jobId);
+      if (!job) return { ok: false, error: `unknown job: ${jobId}` };
+      if (job.status === 'running' || job.status === 'queued') {
+        return { ok: false, error: `job ${jobId} is ${job.status} — kill it first` };
+      }
+      const ok = mgr.remove(jobId);
+      return ok
+        ? { ok: true, text: `removed ${job.label || jobId}` }
+        : { ok: false, error: `unknown job: ${jobId}` };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   getProviders(): ProviderInfo[] {
     if (!this.agent) return [];
     const cfg = this.agent.config.get();

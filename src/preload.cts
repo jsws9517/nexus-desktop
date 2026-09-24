@@ -114,6 +114,24 @@ const api = {
   resetGlobalRules: () =>
     ipcRenderer.invoke('nexus:resetGlobalRules') as Promise<{ ok: boolean; path: string; backup?: string }>,
 
+  // Background jobs — desktop bj_ (main BgJobManager) + core bg_ (worker JobManager).
+  bgJobList: (params?: { sessionId?: string; status?: string }) =>
+    ipcRenderer.invoke('nexus:bgJobList', params ?? {}) as Promise<{ ok: boolean; jobs?: unknown[]; error?: string }>,
+  bgJobQuery: (jobId: string) =>
+    ipcRenderer.invoke('nexus:bgJobQuery', { jobId }) as Promise<{ ok: boolean; job?: unknown; error?: string }>,
+  bgJobCancel: (jobId: string) =>
+    ipcRenderer.invoke('nexus:bgJobCancel', { jobId }) as Promise<{ ok: boolean; error?: string }>,
+  bgJobRemove: (jobId: string) =>
+    ipcRenderer.invoke('nexus:bgJobRemove', { jobId }) as Promise<{ ok: boolean; error?: string }>,
+  coreBgList: (params?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:coreBgList', params ?? {}) as Promise<{ ok: boolean; jobs?: unknown[]; error?: string }>,
+  coreBgKill: (jobId: string, sessionId?: string) =>
+    ipcRenderer.invoke('nexus:coreBgKill', { jobId, sessionId }) as Promise<{ ok: boolean; text?: string; error?: string }>,
+  coreBgTail: (jobId: string, lines?: number, sessionId?: string) =>
+    ipcRenderer.invoke('nexus:coreBgTail', { jobId, lines, sessionId }) as Promise<{ ok: boolean; text?: string; error?: string }>,
+  coreBgRemove: (jobId: string, sessionId?: string) =>
+    ipcRenderer.invoke('nexus:coreBgRemove', { jobId, sessionId }) as Promise<{ ok: boolean; text?: string; error?: string }>,
+
   // Resource / session governance (desktop.json + live watchdog).
   getMaxTabs: () => ipcRenderer.invoke('nexus:getMaxTabs'),
   setMaxTabs: (n: number) => ipcRenderer.invoke('nexus:setMaxTabs', n),

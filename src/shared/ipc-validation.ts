@@ -115,7 +115,14 @@ export const WORKER_METHODS = {
   },
   bgJobCancel: { fields: { jobId: S.str(200) } },
   bgJobProgress: { fields: { jobId: S.str(200), progress: S.num(), note: S.str(500) }, optional: ['progress', 'note'] },
-  // acp_router: route a prompt to a named agent role (worker dispatches to bg_job or inline).
+  bgJobRemove: { fields: { jobId: S.str(200) } },
+  // core bg_ shell jobs (worker-local JobManager; reconcile+list/kill/tail/remove).
+  // sessionId routes callForSession to the owning session worker (same as list).
+  coreBgList: { fields: { sessionId: S.str(200) }, optional: ['sessionId'] },
+  coreBgKill: { fields: { jobId: S.str(200), sessionId: S.str(200) }, optional: ['sessionId'] },
+  coreBgTail: { fields: { jobId: S.str(200), lines: S.num(), sessionId: S.str(200) }, optional: ['lines', 'sessionId'] },
+  coreBgRemove: { fields: { jobId: S.str(200), sessionId: S.str(200) }, optional: ['sessionId'] },
+  // acp_router: route a prompt to a named agent role (worker-side dispatch).
   routeViaAcp: {
     fields: { roleId: S.str(200), prompt: S.str(65536), sessionId: S.str(200), background: S.bool() },
     optional: ['background'],

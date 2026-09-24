@@ -553,23 +553,27 @@ if (gotLock) {
       sessionWorkers.size < desktopState.getMaxTabs();
     resourceMon.start();
     void sessionWorkers.warmSpare();
-    // Wire bg_job completion events into the renderer so the user gets notified
-    // even when the owning tab is closed or the worker crashed.
+    // Wire bg_job lifecycle events into the renderer: terminal statuses become
+    // bg_job_complete (toast + panel), non-terminal mutations become
+    // bg_job_progress (live panel/status line). Sent on the tab channel so the
+    // user gets notified even when the owning tab is closed or the worker crashed.
     bjm.subscribe((job) => {
-      if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled') {
-        send(CHANNELS.tabEvent, {
-          sessionId: job.sessionId,
-          event: {
-            type: 'bg_job_complete',
-            jobId: job.id,
-            title: job.title,
-            status: job.status,
-            output: job.output,
-            error: job.error,
-            lang: job._lang as 'zh-CN' | 'en' | undefined,
-          } as AgentEvent,
-        });
-      }
+      const terminal =
+        job.status === 'succeeded' || job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled';
+      send(CHANNELS.tabEvent, {
+        sessionId: job.sessionId,
+        event: {
+          type: terminal ? 'bg_job_complete' : 'bg_job_progress',
+          jobId: job.id,
+          title: job.title,
+          status: job.status,
+          output: job.output,
+          error: job.error,
+          progress: job.progress,
+          progressNote: job.progressNote,
+          lang: job._lang as 'zh-CN' | 'en' | undefined,
+        } as AgentEvent,
+      });
     });
     registerIpc({
       worker,

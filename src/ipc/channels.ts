@@ -69,6 +69,12 @@ export const CHANNELS = {
   bgJobList: 'nexus:bgJobList',
   bgJobCancel: 'nexus:bgJobCancel',
   bgJobProgress: 'nexus:bgJobProgress',
+  bgJobRemove: 'nexus:bgJobRemove',
+  // core bg_ shell jobs (worker-local JobManager).
+  coreBgList: 'nexus:coreBgList',
+  coreBgKill: 'nexus:coreBgKill',
+  coreBgTail: 'nexus:coreBgTail',
+  coreBgRemove: 'nexus:coreBgRemove',
   // acp_router: multi-agent role routing tool (worker-side dispatch).
   routeViaAcp: 'nexus:routeViaAcp',
   shutdown: 'nexus:shutdown',

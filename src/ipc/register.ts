@@ -649,21 +649,9 @@ export function registerIpc(ctx: IpcContext): void {
   // These handlers are main-process-only — they talk directly to BgJobManager,
   // bypassing any worker.  Workers that need bg_job access go through their
   // own IPC channel which is proxied by WorkerHost.onBgJobRequest.
-
-  const BG_JOB_BROADCAST_INTERVAL_MS = 5_000;
-  let _bgJobPollTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function broadcastBgJobEvents(bjm: BgJobManager): void {
-    // Emit bg_job_progress events for all active jobs so the renderer can
-    // update the job list UI in real time without polling.
-    for (const job of bjm.list()) {
-      if (job.status === 'running' || job.status === 'queued') {
-        for (const fn of bjm._getSubscribers()) {
-          try { fn(job); } catch {}
-        }
-      }
-    }
-  }
+  // Progress fan-out is event-driven: bjm._emit fires subscribers on every
+  // mutation (create/advance/notify), and main/index.ts forwards those to the
+  // renderer as bg_job_progress / bg_job_complete — no poll timer needed.
 
   ipcMain.handle(CHANNELS.bgJobCreate, (_e, params?: Record<string, unknown>): { ok: boolean; jobId?: string; error?: string } => {
     if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
@@ -704,6 +692,13 @@ export function registerIpc(ctx: IpcContext): void {
     return bjm.cancel(jobId);
   });
 
+  ipcMain.handle(CHANNELS.bgJobRemove, (_e, params?: Record<string, unknown>): { ok: boolean; error?: string } => {
+    if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
+    const jobId = isNonEmptyString(params?.jobId) ? params.jobId : '';
+    if (!jobId) return { ok: false, error: 'jobId is required' };
+    return bjm.remove(jobId);
+  });
+
   ipcMain.handle(CHANNELS.bgJobProgress, (_e, params?: Record<string, unknown>): { ok: boolean; error?: string } => {
     if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
     const jobId = isNonEmptyString(params?.jobId) ? params.jobId : '';
@@ -714,4 +709,12 @@ export function registerIpc(ctx: IpcContext): void {
     });
     return { ok: true };
   });
+
+  // ── Core bg_ shell jobs (worker-local JobManager) ------------------------------
+  // Routed to the owning session's worker so list/kill/tail/remove hit the same
+  // process that launched the job (JobManager is a per-worker singleton).
+  ipcMain.handle(CHANNELS.coreBgList, callForSession('coreBgList'));
+  ipcMain.handle(CHANNELS.coreBgKill, callForSession('coreBgKill'));
+  ipcMain.handle(CHANNELS.coreBgTail, callForSession('coreBgTail'));
+  ipcMain.handle(CHANNELS.coreBgRemove, callForSession('coreBgRemove'));
 }

@@ -165,6 +165,18 @@ export class BgJobManager {
     return { ok: true };
   }
 
+  /** Remove a finished job from the list + desktop.json. Running jobs must be cancelled first. */
+  remove(id: string): { ok: boolean; error?: string } {
+    const job = this.jobs.get(id);
+    if (!job) return { ok: false, error: 'job not found' };
+    if (!(job.status === 'succeeded' || job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled' || job.status === 'stale')) {
+      return { ok: false, error: `job is ${job.status} — cancel it first` };
+    }
+    this.jobs.delete(id);
+    this._save();
+    return { ok: true };
+  }
+
   advanceProgress(
     id: string,
     opts: { progress?: number; note?: string; status?: BgJobStatus; output?: string; error?: string },
@@ -257,6 +269,10 @@ export class BgJobManager {
         const jobId = String(params?.jobId ?? '');
         const res = this.cancel(jobId);
         return res;
+      }
+      case 'remove': {
+        const jobId = String(params?.jobId ?? '');
+        return this.remove(jobId);
       }
       case 'progress': {
         const jobId = String(params?.jobId ?? '');
