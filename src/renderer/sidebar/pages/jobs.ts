@@ -1,6 +1,6 @@
 /**
  * Jobs sidebar page — unified background-job list over two backends:
- *   - core `bg_` shell jobs (worker-local JobManager, launched via /bg)
+ *   - core `bg_` shell jobs (worker-local JobManager, launched via /jobs)
  *   - desktop `bj_` sub-agent jobs (main-process BgJobManager)
  *
  * Driven by the agent event bus (bg_job_event / bg_job_complete /
@@ -473,7 +473,7 @@ export function mountJobsPage(
 
   const unsubscribe = ctx.subscribe(onEvent);
   // Reconcile against the authoritative stores periodically (covers kill from
-  // /bg, worker restarts, and anything that mutates outside this page).
+  // /jobs, worker restarts, and anything that mutates outside this page).
   const autoRecycle = setInterval(() => { void pull(); }, 10_000);
 
   return () => {

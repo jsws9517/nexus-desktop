@@ -303,8 +303,8 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   jobsPanel: { 'zh-CN': '⚙ 后台任务面板', en: '⚙ Background Jobs' },
   jobsLegend: { 'zh-CN': 'Shell 与子代理任务实时状态', en: 'live shell + sub-agent job status' },
   jobsEmpty: {
-    'zh-CN': '暂无后台任务 —— 用 /bg launch 或发起子代理后，任务会显示在这里。',
-    en: 'No background jobs yet — run /bg launch or dispatch a sub-agent and cards appear here.',
+    'zh-CN': '暂无后台任务 —— 用 /jobs launch 或发起子代理后，任务会显示在这里。',
+    en: 'No background jobs yet — run /jobs launch or dispatch a sub-agent and cards appear here.',
   },
   jobsScopedEmpty: {
     'zh-CN': '当前会话（{session}）暂无后台任务 —— 切换工作区后自动关联。',
