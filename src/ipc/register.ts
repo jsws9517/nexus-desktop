@@ -632,19 +632,16 @@ export function registerIpc(ctx: IpcContext): void {
     return { providers: rateLimitRegistry.getAggregated() };
   });
 
-  // Model blacklist: read/write persisted to ~/.nexus/model-blacklist.json.
-  const BLACKLIST_FILE = join(homedir(), '.nexus', 'model-blacklist.json');
+  // Model blacklist: persisted via desktop-state (desktop.json `modelBlacklist`
+  // section, migrated from the former model-blacklist.json).
   ipcMain.handle(CHANNELS.blacklistRead, async (): Promise<Record<string, Record<string, string>>> => {
     try {
-      const raw = await readFile(BLACKLIST_FILE, 'utf8');
-      if (!raw) return {};
-      return JSON.parse(raw);
+      return ctx.getModelBlacklist();
     } catch { return {}; }
   });
   ipcMain.handle(CHANNELS.blacklistWrite, (_e, data: Record<string, Record<string, string>>): void => {
     try {
-      mkdirSync(join(homedir(), '.nexus'), { recursive: true });
-      writeFileSync(BLACKLIST_FILE, JSON.stringify(data, null, 2));
+      if (data && typeof data === 'object' && !Array.isArray(data)) ctx.setModelBlacklist(data);
     } catch {}
   });
 

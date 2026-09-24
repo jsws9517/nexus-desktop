@@ -5,7 +5,8 @@
  * interrupted by gate timeouts or wall-clock kills:
  *
  * 1. **No unified progress tracking** — each worker process dies on its own,
- *    leaving no trace.  Jobs are now persisted to ~/.nexus/jobs.json so the
+ *    leaving no trace.  Jobs are now persisted via the desktop-state store
+ *    (desktop.json `jobs` section, migrated from the former jobs.json) so the
  *    main process (which survives tab closes) can drive polling and recovery.
  *
  * 2. **No automatic reporting** — when a job finishes (or fails) outside the
@@ -27,10 +28,8 @@
  *   are auto-failed with a note so the UI never shows a permanent spinner.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
+import type { DesktopStateAccess } from './desktop-state.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,12 +93,8 @@ export interface BgJobListFilter {
 }
 
 // ---------------------------------------------------------------------------
-// Persistence path
+// Persistence (desktop-state jobs section; jobsFilePath() removed)
 // ---------------------------------------------------------------------------
-
-function jobsFilePath(): string {
-  return join(homedir(), '.nexus', 'jobs.json');
-}
 
 const STUCK_THRESHOLD_MS = 5 * 60_000; // jobs older than 5 min without update → stale
 const DEFAULT_MAX_DURATION_MS = 10 * 60_000;
@@ -112,8 +107,10 @@ const DEFAULT_MAX_TURNS = 50;
 export class BgJobManager {
   private jobs = new Map<string, BgJobDef>();
   private subscribers = new Set<(job: BgJobDef) => void>();
+  private readonly store: DesktopStateAccess;
 
-  constructor() {
+  constructor(store: DesktopStateAccess) {
+    this.store = store;
     this._load();
     this._recoveryScan();
   }
@@ -305,9 +302,10 @@ export class BgJobManager {
 
   private _load(): void {
     try {
-      const raw = readFileSync(jobsFilePath(), 'utf8');
-      const arr = JSON.parse(raw) as BgJobDef[];
-      for (const j of arr) this.jobs.set(j.id, j);
+      const arr = this.store.getJobs() as BgJobDef[];
+      for (const j of arr) {
+        if (j && typeof j.id === 'string') this.jobs.set(j.id, j);
+      }
     } catch {
       // fresh install — nothing to load
     }
@@ -315,9 +313,7 @@ export class BgJobManager {
 
   private _save(): void {
     try {
-      const dir = join(homedir(), '.nexus');
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(jobsFilePath(), JSON.stringify([...this.jobs.values()], null, 2), 'utf8');
+      this.store.setJobs([...this.jobs.values()]);
     } catch {
       // best-effort persistence
     }

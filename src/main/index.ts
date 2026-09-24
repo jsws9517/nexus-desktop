@@ -43,7 +43,11 @@ let worker: WorkerHost | null = null;
 // the settings UI; each opened tab runs its own WorkerHost via this registry.
 const sessionWorkers = new SessionWorkers();
 const rateLimitRegistry = new RateLimitRegistry();
-const bjm = new BgJobManager();
+// Desktop-only settings store (~/.nexus/desktop.json). Single owner of the
+// read/write cache; IPC handlers and the bootstrap share this same instance.
+// Must be constructed BEFORE BgJobManager (jobs persist into desktop.json).
+const desktopState = createDesktopState();
+const bjm = new BgJobManager(desktopState);
 sessionWorkers.rateLimitRegistry = rateLimitRegistry;
 sessionWorkers.bgJobManager = bjm;
 rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
@@ -55,9 +59,6 @@ const resourceMon = new ResourceMonitor({
   // Session tabs + the pre-warmed spare (+1 for the main process).
   getWorkerCount: () => sessionWorkers.residentCount + 1,
 });
-// Desktop-only settings store (~/.nexus/desktop.json). Single owner of the
-// read/write cache; IPC handlers and the bootstrap share this same instance.
-const desktopState = createDesktopState();
 let readyPromise: Promise<void> = Promise.resolve();
 // Phase-1 readiness (Agent constructed): read-only session/config IPC can run
 // while MCP/skills are still connecting in the background (see startWorker()).
@@ -607,6 +608,10 @@ if (gotLock) {
       setMonitorEnabled: desktopState.setMonitorEnabled,
       getLazyWorker: desktopState.getLazyWorker,
       setLazyWorker: desktopState.setLazyWorker,
+      getJobs: desktopState.getJobs,
+      setJobs: desktopState.setJobs,
+      getModelBlacklist: desktopState.getModelBlacklist,
+      setModelBlacklist: desktopState.setModelBlacklist,
       rateLimitRegistry,
       bgJobManager: bjm,
     });

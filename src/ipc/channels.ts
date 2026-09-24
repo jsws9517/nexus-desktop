@@ -126,7 +126,7 @@ export const CHANNELS = {
   downloadUpdate: 'nexus:downloadUpdate',
   installUpdate: 'nexus:installUpdate',
 
-  // model blacklist (persisted to ~/.nexus/model-blacklist.json via main process).
+  // model blacklist (persisted via desktop-state → desktop.json modelBlacklist).
   blacklistRead: 'nexus:blacklistRead',
   blacklistWrite: 'nexus:blacklistWrite',
 

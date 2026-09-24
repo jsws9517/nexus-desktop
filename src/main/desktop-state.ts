@@ -5,15 +5,24 @@
  * fields, so a desktop-only flag would be dropped on the next config
  * save/parse. Desktop state therefore lives in its own file, behind a memory
  * cache so per-IPC reads never touch the disk.
+ *
+ * Also absorbs the former top-level jobs.json / model-blacklist.json as
+ * namespaced sections so ~/.nexus keeps ~4 config-type JSON files
+ * (config / engines / state / desktop). Legacy files are migrated on first
+ * read with the crash-safe rename→rm retire pattern (a complete copy exists
+ * at every instant; a failed write leaves the legacy file untouched).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ResourceMonitor } from './resource-monitor.js';
 
-const DESKTOP_CONFIG_PATH = join(homedir(), '.nexus', 'desktop.json');
+// Resolved at call time so tests can point NEXUS_CONFIG_DIR at a temp dir.
+function configDir(): string {
+  return process.env.NEXUS_CONFIG_DIR || join(homedir(), '.nexus');
+}
+function desktopConfigPath(): string { return join(configDir(), 'desktop.json'); }
 
 interface DesktopStateData {
   deferMcp?: boolean;
@@ -30,6 +39,9 @@ interface DesktopStateData {
   cpuThresholdPct?: number;
   monitorEnabled?: boolean;
   lazyWorker?: boolean;
+  // Namespaced sections absorbed from former top-level files.
+  jobs?: unknown[];
+  modelBlacklist?: Record<string, Record<string, string>>;
 }
 
 export type WindowBounds = { x?: number; y?: number; width?: number; height?: number };
@@ -61,6 +73,12 @@ export interface DesktopStateAccess {
   setMonitorEnabled(enabled: boolean): void;
   getLazyWorker(): boolean;
   setLazyWorker(enabled: boolean): void;
+  /** Background jobs (absorbed from jobs.json). */
+  getJobs(): unknown[];
+  setJobs(jobs: unknown[]): void;
+  /** Model capability blacklist (absorbed from model-blacklist.json). */
+  getModelBlacklist(): Record<string, Record<string, string>>;
+  setModelBlacklist(data: Record<string, Record<string, string>>): void;
 }
 
 /** Full store: the 20 IPC accessors plus the app-bootstrap helpers. */
@@ -75,28 +93,92 @@ export interface DesktopStateStore extends DesktopStateAccess {
 export function createDesktopState(): DesktopStateStore {
   let cache: DesktopStateData | null = null;
 
+  /** Crash-safe legacy retire: rename → rm keeps a complete copy at every instant. */
+  const retireLegacy = (legacyPath: string): void => {
+    try {
+      if (existsSync(`${legacyPath}.legacy`)) rmSync(`${legacyPath}.legacy`, { force: true });
+      renameSync(legacyPath, `${legacyPath}.legacy`);
+      rmSync(`${legacyPath}.legacy`, { force: true });
+    } catch {
+      // Rename failed — leave the original; next startup retries.
+    }
+  };
+
+  /** One-time section migration from a former top-level file. */
+  const migrateLegacy = <T>(
+    section: keyof DesktopStateData,
+    legacyPath: string,
+    parse: (raw: string) => T,
+  ): void => {
+    if (!cache || cache[section] !== undefined) return;
+    if (!existsSync(legacyPath)) return;
+    let parsed: T;
+    try {
+      parsed = parse(readFileSync(legacyPath, 'utf-8'));
+    } catch {
+      try { renameSync(legacyPath, `${legacyPath}.corrupt.${Date.now()}`); } catch { /* best-effort */ }
+      return;
+    }
+    // Durably write the section FIRST, then retire the legacy file.
+    (cache as Record<string, unknown>)[section] = parsed;
+    try {
+      flushSync();
+    } catch {
+      // New write failed — leave legacy untouched (no config gap).
+      return;
+    }
+    retireLegacy(legacyPath);
+  };
+
+  /** Synchronous durable write of the full cache (atomic tmp→rename). */
+  const flushSync = (): void => {
+    const path = desktopConfigPath();
+    mkdirSync(configDir(), { recursive: true });
+    const tmp = `${path}.tmp`;
+    writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf-8');
+    try {
+      renameSync(tmp, path);
+    } catch {
+      try { writeFileSync(path, JSON.stringify(cache, null, 2), 'utf-8'); }
+      finally { try { rmSync(tmp, { force: true }); } catch { /* ignore */ } }
+    }
+  };
+
   const read = (): DesktopStateData => {
     if (cache) return cache;
+    const path = desktopConfigPath();
     try {
-      if (!existsSync(DESKTOP_CONFIG_PATH)) {
+      if (!existsSync(path)) {
         cache = {};
-        return cache;
+      } else {
+        const parsed = JSON.parse(readFileSync(path, 'utf-8')) as DesktopStateData;
+        cache = parsed && typeof parsed === 'object' ? parsed : {};
       }
-      cache = JSON.parse(readFileSync(DESKTOP_CONFIG_PATH, 'utf-8')) as DesktopStateData;
-      return cache;
     } catch {
+      // Corrupt desktop.json — quarantine (never delete) and start fresh.
+      try { renameSync(path, `${path}.corrupt.${Date.now()}`); } catch { /* best-effort */ }
       cache = {};
-      return cache;
     }
+    const dir = configDir();
+    migrateLegacy<unknown[]>('jobs', join(dir, 'jobs.json'), (raw) => {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v : [];
+    });
+    migrateLegacy<Record<string, Record<string, string>>>(
+      'modelBlacklist', join(dir, 'model-blacklist.json'),
+      (raw) => {
+        const v = JSON.parse(raw);
+        return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+      },
+    );
+    return cache;
   };
 
   const write = (patch: DesktopStateData): void => {
     try {
       const cur = read();
       cache = { ...cur, ...patch };
-      // Async write to disk (non-blocking); the in-memory cache is updated first.
-      const payload = JSON.stringify(cache, null, 2);
-      writeFile(DESKTOP_CONFIG_PATH, payload).catch(() => {});
+      flushSync();
     } catch {}
   };
 
@@ -181,6 +263,20 @@ export function createDesktopState(): DesktopStateStore {
     getLazyWorker,
     setLazyWorker(enabled: boolean): void {
       write({ lazyWorker: enabled });
+    },
+    getJobs(): unknown[] {
+      const jobs = read().jobs;
+      return Array.isArray(jobs) ? jobs : [];
+    },
+    setJobs(jobs: unknown[]): void {
+      write({ jobs });
+    },
+    getModelBlacklist(): Record<string, Record<string, string>> {
+      const bl = read().modelBlacklist;
+      return bl && typeof bl === 'object' && !Array.isArray(bl) ? bl : {};
+    },
+    setModelBlacklist(data: Record<string, Record<string, string>>): void {
+      write({ modelBlacklist: data });
     },
     loadSavedCwd(): string | undefined {
       const cwd = read().lastCwd;
