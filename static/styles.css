@@ -1705,6 +1705,8 @@ html[data-theme='tech'] #fx-vignette {
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-corner { background: transparent; }
+#messages::-webkit-scrollbar { width: 20px; }
+#messages::-webkit-scrollbar-thumb { border-width: 3px; }
 
 @media (prefers-reduced-motion: reduce) {
   .busy,
