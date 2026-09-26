@@ -71,7 +71,7 @@ test('registry: mount calls page factory and dispose runs exactly once on close'
     return () => { disposes++; };
   }));
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getSubAgentRuns: () => new Map(), subscribe: () => () => {} };
   const disposeViaRegistry = reg.mount('m', container, ctx);
   assert.equal(mounts, 1);
   assert.equal(disposes, 0);
@@ -88,7 +88,7 @@ test('registry: mounting a different tab disposes the previous page (no leaks)',
   reg.register(quickTab('t1', 'T1', undefined, () => () => { disposes.push('t1'); }));
   reg.register(quickTab('t2', 'T2', undefined, () => () => { disposes.push('t2'); }));
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getSubAgentRuns: () => new Map(), subscribe: () => () => {} };
   reg.mount('t1', container, ctx);
   reg.mount('t2', container, ctx);
   assert.deepEqual(disposes, ['t1']);
@@ -101,7 +101,7 @@ test('registry: unregister disposes the mounted page and removes it', () => {
   let disposes = 0;
   reg.register(quickTab('u', 'U', undefined, () => () => { disposes++; }));
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getSubAgentRuns: () => new Map(), subscribe: () => () => {} };
   reg.mount('u', container, ctx);
   assert.equal(reg.unregister('u'), true);
   assert.equal(disposes, 1);
@@ -115,7 +115,7 @@ test('registry: clear disposes every mounted page and empties the registry', () 
   reg.register(quickTab('c1', 'C1', undefined, () => () => { disposes++; }));
   reg.register(quickTab('c2', 'C2', undefined, () => () => { disposes++; }));
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getSubAgentRuns: () => new Map(), subscribe: () => () => {} };
   reg.mount('c1', container, ctx);
   reg.mount('c2', container, ctx);
   assert.equal(reg.clear(), 2);
@@ -126,7 +126,7 @@ test('registry: clear disposes every mounted page and empties the registry', () 
 test('registry: mount for an unknown id returns undefined and does not throw', () => {
   const reg = new SidebarRegistryImpl();
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getSubAgentRuns: () => new Map(), subscribe: () => () => {} };
   assert.equal(reg.mount('ghost', container, ctx), undefined);
 });
 
@@ -134,10 +134,10 @@ test('registry: mount for an unknown id returns undefined and does not throw', (
 // 2. Sub-Agents page (plan §4.4)
 // ===========================================================================
 
-function makeCtx(fanoutSessions, subscriberRef) {
+function makeCtx(runs, subscriberRef) {
   return {
     sessionId: 's1',
-    getFanoutSessions: () => fanoutSessions,
+    getSubAgentRuns: () => runs,
     subscribe(fn) {
       subscriberRef.current = fn;
       return () => { subscriberRef.current = null; };
@@ -145,9 +145,24 @@ function makeCtx(fanoutSessions, subscriberRef) {
   };
 }
 
-function makeSessionMap(...sessions) {
+/** Build a run entry: the registry is keyed per RUN (not per session), so a
+ *  session can hold a graph, a standalone spawn and a fan-out batch at once. */
+function makeRun(overrides) {
+  return {
+    key: overrides.key,
+    kind: overrides.kind ?? 'fanout',
+    sessionId: overrides.sessionId ?? 's1',
+    prompt: overrides.prompt ?? '',
+    startTime: overrides.startTime ?? 1,
+    ...(overrides.graphId !== undefined ? { graphId: overrides.graphId } : {}),
+    ...(overrides.taskOrder !== undefined ? { taskOrder: overrides.taskOrder } : {}),
+    tasks: overrides.tasks ?? new Map(),
+  };
+}
+
+function makeRunMap(...runs) {
   const m = new Map();
-  for (const s of sessions) m.set(s.sessionId ?? 'sid' + m.size, s);
+  for (const r of runs) m.set(r.key, r);
   return m;
 }
 
@@ -160,7 +175,19 @@ function findEl(root, className) {
   return undefined;
 }
 
-test('sub-agents page: renders empty state when no fan-out sessions', () => {
+/** Run sections in render order (group headers excluded). */
+function sectionsOf(listEl) {
+  return (listEl?.children ?? []).filter((el) => el.className === 'sub-agents-session');
+}
+
+/** Group headers in render order, as [kind, text] pairs. */
+function groupHeadsOf(listEl) {
+  return (listEl?.children ?? [])
+    .filter((el) => el.className === 'sub-agents-group-head')
+    .map((el) => [el.dataset.kind, el.textContent ?? '']);
+}
+
+test('sub-agents page: renders empty state when no runs exist', () => {
   const container = new FakeContainer();
   const subscriberRef = { current: null };
   const ctx = makeCtx(new Map(), subscriberRef);
@@ -173,20 +200,20 @@ test('sub-agents page: renders empty state when no fan-out sessions', () => {
   assert.equal(subscriberRef.current, null, 'dispose unsubscribes (unsubscribe hook called)');
 });
 
-test('sub-agents page: renders one section per session with task cards', () => {
+test('sub-agents page: renders one section per run with task cards', () => {
   const container = new FakeContainer();
   const subscriberRef = { current: null };
   let cardRenderCount = 0;
   const ctx = makeCtx(
-    makeSessionMap({
-      sessionId: 's1',
+    makeRunMap(makeRun({
+      key: 'fanout:s1',
       prompt: 'Fan-out run',
       startTime: 1000,
       tasks: new Map([
         ['t1', { description: 'Task one', status: 'running' }],
         ['t2', { description: 'Task two', status: 'succeeded', output: 'done!', durationMs: 1500 }],
       ]),
-    }),
+    })),
     subscriberRef,
   );
   const dispose = mountSubAgentsPage(container, ctx, {
@@ -198,34 +225,108 @@ test('sub-agents page: renders one section per session with task cards', () => {
   });
   const root = container.children[0];
   assert.ok(root, 'root rendered');
-  // list should contain one session section
   const list = root.children?.find?.((el) => el.className === 'sub-agents-list');
   assert.ok(list, 'list rendered');
-  assert.equal(list.children.length, 1, 'one session section');
-  const section = list.children[0];
-  assert.match(section.children[0].textContent ?? '', /Fan-out run/); // session head
+  // A single fan-out run → one group header + one run section.
+  assert.deepEqual(groupHeadsOf(list).map(([kind]) => kind), ['fanout']);
+  assert.equal(sectionsOf(list).length, 1, 'one run section');
+  const section = sectionsOf(list)[0];
+  assert.match(section.children[0].textContent ?? '', /Fan-out run/); // run head
   const cardEls = section.children.filter((el) => el.tagName === 'div' && el.innerHTML?.includes('fake-card'));
   assert.equal(cardEls.length, 2, 'two task cards rendered');
   assert.equal(cardRenderCount, 2);
-
-  // The panel is scoped to the ctx session (its own tasks, none from others).
-  const head = list.children[0];
-  assert.ok(head, 'scoped section rendered for ctx.sessionId');
   dispose();
+});
+
+test('sub-agents page: groups runs by kind in dag → standalone → fanout order', () => {
+  const container = new FakeContainer();
+  const runs = makeRunMap(
+    // Deliberately out of order: the fan-out batch is the NEWEST, yet its
+    // section must still come last.
+    makeRun({ key: 'fanout:s1', kind: 'fanout', prompt: 'Batch', startTime: 900, tasks: new Map([['f1', { status: 'running' }]]) }),
+    makeRun({ key: 'standalone:s1', kind: 'standalone', prompt: 'Lone spawn', startTime: 500, tasks: new Map([['x1', { status: 'running' }]]) }),
+    makeRun({ key: 'dag:g1', kind: 'dag', graphId: 'g1', prompt: 'g1', startTime: 100, tasks: new Map([['d1', { status: 'pending' }]]) }),
+  );
+  const ctx = makeCtx(runs, { current: null });
+  const dispose = mountSubAgentsPage(container, ctx, {
+    getUiLang: () => 'en',
+    renderCard: (props) => `<div class="fake-card" data-task="${props.taskId}"></div>`,
+  });
+  const list = findEl(container, 'sub-agents-list');
+  assert.deepEqual(
+    groupHeadsOf(list).map(([kind, text]) => [kind, text]),
+    [['dag', 'Task graph · 1'], ['standalone', 'Standalone · 1'], ['fanout', 'Fan-out · 1']],
+    'one labelled section per kind, in SECTION_ORDER',
+  );
+  // A graph section is headed by its graphId, not by a prompt.
+  const dagSection = sectionsOf(list).find((s) => s.dataset.runKind === 'dag');
+  assert.match(dagSection.children[0].textContent ?? '', /g1/);
+  dispose();
+});
+
+test('sub-agents page: a DAG run renders tasks in graph topological order', () => {
+  const container = new FakeContainer();
+  // Insertion order and status order both disagree with the graph order:
+  // t3 finished first, t1 is still pending, and t2 sits between them in the
+  // map. Only the graph's own order should win.
+  const runs = makeRunMap(makeRun({
+    key: 'dag:g1',
+    kind: 'dag',
+    graphId: 'g1',
+    taskOrder: ['t1', 't2', 't3'],
+    tasks: new Map([
+      ['t3', { description: 'third', status: 'succeeded' }],
+      ['t1', { description: 'first', status: 'pending' }],
+      ['t2', { description: 'second', status: 'running' }],
+    ]),
+  }));
+  const ctx = makeCtx(runs, { current: null });
+  const dispose = mountSubAgentsPage(container, ctx, {
+    getUiLang: () => 'en',
+    renderCard: (props) => `<div class="fake-card" data-task="${props.taskId}"></div>`,
+  });
+  const dagSection = sectionsOf(findEl(container, 'sub-agents-list'))[0];
+  const order = dagSection.children
+    .filter((el) => el.innerHTML?.includes('fake-card'))
+    .map((el) => el.dataset.taskId);
+  assert.deepEqual(order, ['t1', 't2', 't3'], 'graph order preserved, not sorted by status');
+
+  // A standalone run is a flat bag of independent tasks → running-first.
+  const flat = makeRunMap(makeRun({
+    key: 'standalone:s1',
+    kind: 'standalone',
+    prompt: 'Lone',
+    tasks: new Map([
+      ['a', { status: 'succeeded' }],
+      ['b', { status: 'running' }],
+      ['c', { status: 'pending' }],
+    ]),
+  }));
+  const container2 = new FakeContainer();
+  const dispose2 = mountSubAgentsPage(container2, makeCtx(flat, { current: null }), {
+    getUiLang: () => 'en',
+    renderCard: (props) => `<div class="fake-card" data-task="${props.taskId}"></div>`,
+  });
+  const flatOrder = sectionsOf(findEl(container2, 'sub-agents-list'))[0].children
+    .filter((el) => el.innerHTML?.includes('fake-card'))
+    .map((el) => el.dataset.taskId);
+  assert.deepEqual(flatOrder, ['b', 'c', 'a'], 'non-DAG runs still sort running-first');
+  dispose();
+  dispose2();
 });
 
 test('sub-agents page: re-associates to the active session on tab switch (session_changed)', () => {
   const container = new FakeContainer();
   const handlers = [];
   let active = 's1';
-  const sessions = makeSessionMap(
-    { sessionId: 's1', prompt: 'Batch A', startTime: 10, tasks: new Map([['a', { status: 'running' }]]) },
-    { sessionId: 's2', prompt: 'Batch B', startTime: 5, tasks: new Map([['b', { status: 'succeeded' }]]) },
+  const runs = makeRunMap(
+    makeRun({ key: 'fanout:s1', sessionId: 's1', prompt: 'Batch A', startTime: 10, tasks: new Map([['a', { status: 'running' }]]) }),
+    makeRun({ key: 'fanout:s2', sessionId: 's2', prompt: 'Batch B', startTime: 5, tasks: new Map([['b', { status: 'succeeded' }]]) }),
   );
   const ctx = {
     sessionId: 's1',
     getActiveSessionId: () => active,
-    getFanoutSessions: () => sessions,
+    getSubAgentRuns: () => runs,
     subscribe(fn) { handlers.push(fn); return () => { handlers.length = 0; }; },
   };
   let renders = 0;
@@ -237,16 +338,16 @@ test('sub-agents page: re-associates to the active session on tab switch (sessio
     const list = () => findEl(container, 'sub-agents-list');
     const scope = () => findEl(container, 'sub-agents-scope')?.textContent ?? '';
 
-    // Initially bound to s1 → only Batch A section.
-    assert.equal(list().children.length, 1);
-    assert.match(list().children[0].children[0].textContent ?? '', /Batch A/);
+    // Initially bound to s1 → only Batch A.
+    assert.equal(sectionsOf(list()).length, 1);
+    assert.match(sectionsOf(list())[0].children[0].textContent ?? '', /Batch A/);
     assert.match(scope(), /s1/, 'scope label shows the bound session');
 
     // User switches to s2 → the panel re-associates on the session_changed bus.
     active = 's2';
     for (const h of handlers) h({ type: 'session_changed', sessionId: 's2' });
-    assert.equal(list().children.length, 1, 'still one section after switch');
-    assert.match(list().children[0].children[0].textContent ?? '', /Batch B/, 'now tracks the active session');
+    assert.equal(sectionsOf(list()).length, 1, 'still one section after switch');
+    assert.match(sectionsOf(list())[0].children[0].textContent ?? '', /Batch B/, 'now tracks the active session');
     assert.match(scope(), /s2/, 'scope label follows the switch');
 
     // Switch to an untouched session → session-scoped empty state (global map non-empty).
@@ -259,13 +360,13 @@ test('sub-agents page: re-associates to the active session on tab switch (sessio
   }
 });
 
-test('sub-agents page: re-renders on fanout_start / fanout_end events', () => {
+test('sub-agents page: re-renders on fanout_start / subagent_task_progress events', () => {
   const container = new FakeContainer();
   let handlers = [];
-  const sessions = new Map();
+  const runs = new Map();
   const ctx = {
     sessionId: 's1',
-    getFanoutSessions: () => sessions,
+    getSubAgentRuns: () => runs,
     subscribe(fn) { handlers.push(fn); return () => { handlers = []; }; },
   };
   let renders = 0;
@@ -277,14 +378,19 @@ test('sub-agents page: re-renders on fanout_start / fanout_end events', () => {
 
   // simulate a fanout_start arriving on the bus
   const startEvt = { type: 'fanout_start', sessionId: 's1', prompt: 'Run!' };
-  sessions.set('s1', { sessionId: 's1', prompt: 'Run!', startTime: 5, tasks: new Map([['k1', { status: 'pending' }]]) });
+  runs.set('fanout:s1', makeRun({ key: 'fanout:s1', prompt: 'Run!', startTime: 5, tasks: new Map([['k1', { status: 'pending' }]]) }));
   for (const h of handlers) h(startEvt);
   assert.equal(renders, 1, 'one card after fanout_start');
 
   // task becomes succeeded → re-render
-  sessions.get('s1').tasks.set('k1', { status: 'succeeded', output: 'ok' });
+  runs.get('fanout:s1').tasks.set('k1', { status: 'succeeded', output: 'ok' });
   for (const h of handlers) h({ type: 'fanout_task_progress', taskId: 'k1', status: 'succeeded' });
   assert.equal(renders, 2, 're-rendered on fanout_task_progress');
+
+  // A mirrored core run (DAG / standalone) reports through the synthesized
+  // event — the page must refresh for those too.
+  for (const h of handlers) h({ type: 'subagent_task_progress', taskId: 'd1', status: 'running' });
+  assert.equal(renders, 3, 're-rendered on subagent_task_progress');
 
   dispose();
   assert.equal(handlers.length, 0, 'unsubscribed on dispose');
@@ -293,11 +399,11 @@ test('sub-agents page: re-renders on fanout_start / fanout_end events', () => {
 test('sub-agents page: self-heals stale runs by invoking forceCloseStaleTasks on render', () => {
   const container = new FakeContainer();
   let handlers = [];
-  const sessions = new Map();
+  const runs = new Map();
   let sweepCalls = 0;
   const ctx = {
     sessionId: 's1',
-    getFanoutSessions: () => sessions,
+    getSubAgentRuns: () => runs,
     // The page must consult the optional hook on every render so a stale
     // "running" card is force-closed even without a fresh fan-out event.
     forceCloseStaleTasks: () => { sweepCalls++; },
@@ -312,7 +418,7 @@ test('sub-agents page: self-heals stale runs by invoking forceCloseStaleTasks on
   assert.ok(sweepCalls >= 1, 'sweep hook consulted on initial render');
 
   // Any fan-out event re-renders → the page keeps sweeping stale runs.
-  sessions.set('s1', { sessionId: 's1', prompt: 'Run!', startTime: 5, tasks: new Map([['k1', { status: 'running' }]]) });
+  runs.set('fanout:s1', makeRun({ key: 'fanout:s1', prompt: 'Run!', startTime: 5, tasks: new Map([['k1', { status: 'running' }]]) }));
   const before = sweepCalls;
   for (const h of handlers) h({ type: 'fanout_start', sessionId: 's1', prompt: 'Run!' });
   assert.ok(sweepCalls > before, 'sweep hook re-consulted after a fan-out event');
@@ -323,12 +429,12 @@ test('sub-agents page: self-heals stale runs by invoking forceCloseStaleTasks on
 test('sub-agents page: re-paints static labels + empty state when the UI language changes', () => {
   const container = new FakeContainer();
   const handlers = [];
-  const sessions = new Map();
+  const runs = new Map();
   let lang = 'zh-CN';
   const ctx = {
     sessionId: 's1',
     getUiLang: () => lang,
-    getFanoutSessions: () => sessions,
+    getSubAgentRuns: () => runs,
     subscribe(fn) { handlers.push(fn); return () => { handlers.length = 0; }; },
   };
   const title = () => findEl(container, 'sub-agents-title')?.textContent ?? '';
@@ -345,6 +451,40 @@ test('sub-agents page: re-paints static labels + empty state when the UI languag
     for (const h of handlers) h({ type: 'language_changed' });
     assert.equal(title(), '🛰 Sub-Agent Panel', 'title repainted in English');
     assert.match(empty(), /No multi-task runs yet/, 'empty state repainted');
+  } finally {
+    dispose();
+  }
+});
+
+test('sub-agents page: section headers follow the UI language', () => {
+  const container = new FakeContainer();
+  const handlers = [];
+  let lang = 'zh-CN';
+  const runs = makeRunMap(
+    makeRun({ key: 'dag:g1', kind: 'dag', graphId: 'g1', taskOrder: ['d1'], tasks: new Map([['d1', { status: 'running' }]]) }),
+    makeRun({ key: 'standalone:s1', kind: 'standalone', prompt: 'Lone', tasks: new Map([['x1', { status: 'running' }]]) }),
+    makeRun({ key: 'fanout:s1', kind: 'fanout', prompt: 'Batch', tasks: new Map([['f1', { status: 'running' }]]) }),
+  );
+  const ctx = {
+    sessionId: 's1',
+    getUiLang: () => lang,
+    getSubAgentRuns: () => runs,
+    subscribe(fn) { handlers.push(fn); return () => { handlers.length = 0; }; },
+  };
+  const dispose = mountSubAgentsPage(container, ctx, {
+    renderCard: () => '<div class="fake-card"></div>',
+  });
+  try {
+    assert.deepEqual(
+      groupHeadsOf(findEl(container, 'sub-agents-list')).map(([, text]) => text),
+      ['任务图 · 1', '独立子代理 · 1', '多任务执行 · 1'],
+    );
+    lang = 'en';
+    for (const h of handlers) h({ type: 'language_changed' });
+    assert.deepEqual(
+      groupHeadsOf(findEl(container, 'sub-agents-list')).map(([, text]) => text),
+      ['Task graph · 1', 'Standalone · 1', 'Fan-out · 1'],
+    );
   } finally {
     dispose();
   }

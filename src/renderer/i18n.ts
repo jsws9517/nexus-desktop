@@ -295,6 +295,10 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   },
   subAgentsDefaultSession: { 'zh-CN': '默认会话', en: 'default session' },
   subAgentsTasks: { 'zh-CN': '{n} 个任务', en: '{n} tasks' },
+  // Sub-Agents run-kind section headers (one per kind actually in flight).
+  subAgentsSectionDag: { 'zh-CN': '任务图', en: 'Task graph' },
+  subAgentsSectionStandalone: { 'zh-CN': '独立子代理', en: 'Standalone' },
+  subAgentsSectionFanout: { 'zh-CN': '多任务执行', en: 'Fan-out' },
   // Background jobs (core bg_ shell jobs) — status line + Jobs sidebar page.
   jobsRunning: { 'zh-CN': '{n} 个后台任务运行中', en: '{n} background job(s) running' },
   bgJobDone: { 'zh-CN': '后台任务 {title}：{status}', en: 'Background job {title}: {status}' },

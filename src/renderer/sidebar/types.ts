@@ -35,21 +35,32 @@ export interface SidebarContext {
    *  running app's language changes. Provided by the renderer context; optional
    *  for dependency-injected tests that pin a language via page opts instead. */
   getUiLang?(): string;
-  /** Live fan-out execution state (same Map renderer.ts maintains). */
-  getFanoutSessions(): ReadonlyMap<string, FanoutSessionView>;
-  /** Recycle finished sessions (TTL sweep + hard cap). Optional guard for
+  /** Live sub-agent run state (same Map renderer.ts maintains), keyed by run
+   *  key — one session can host several runs at once (a DAG, a standalone
+   *  spawn and a fan-out batch), so pages group by `kind`, not by session. */
+  getSubAgentRuns(): ReadonlyMap<string, SubAgentRunView>;
+  /** Recycle finished runs (TTL sweep + hard cap). Optional guard for
    *  pages built against older contexts. */
-  pruneFanoutSessions?(ttlMs?: number): number;
-  /** Force-close stale fan-out runs (per-task timeout + dead-batch sweep) so a
-   *  task card never sits in "running" forever. Optional — pages may call it
-   *  from their own render/timer loop to self-heal. */
+  pruneSubAgentRuns?(ttlMs?: number): number;
+  /** Force-close stale runs (per-task timeout + dead-run sweep) so a task card
+   *  never sits in "running" forever. Optional — pages may call it from their
+   *  own render/timer loop to self-heal. */
   forceCloseStaleTasks?(): void;
   /** Subscribe to the agent event bus; returns an unsubscribe function. */
   subscribe(fn: (event: AgentEvent) => void): () => void;
 }
 
-/** Minimal structural view of a fan-out execution session (avoids importing renderer.ts). */
-export interface FanoutTaskView {
+/**
+ * Which subsystem produced a run. The Sub-Agents page renders one section per
+ * kind because the three are genuinely different things:
+ *   dag        — a core task graph; tasks render in graph topological order.
+ *   standalone — a core sub-agent run outside any graph.
+ *   fanout     — a desktop fan-out batch (one prompt → N serial sub-tasks).
+ */
+export type SubAgentRunKind = 'dag' | 'standalone' | 'fanout';
+
+/** Minimal structural view of a sub-agent task (avoids importing renderer.ts). */
+export interface SubAgentTaskView {
   description?: string;
   status: string;
   output?: string;
@@ -57,11 +68,19 @@ export interface FanoutTaskView {
   error?: string;
 }
 
-export interface FanoutSessionView {
+export interface SubAgentRunView {
+  /** Registry key: unique per run (e.g. `dag:g-1`, `fanout:s1`). */
+  key: string;
+  kind: SubAgentRunKind;
+  /** Owning session — the page scopes runs to the focused workspace tab. */
   sessionId: string;
+  /** Core task-graph id (dag runs only). */
+  graphId?: string;
   prompt: string;
   startTime: number;
-  tasks: ReadonlyMap<string, FanoutTaskView>;
+  /** DAG topological order of task ids, verbatim from the task_graph event. */
+  taskOrder?: string[];
+  tasks: ReadonlyMap<string, SubAgentTaskView>;
 }
 
 /** A registrable sidebar tab. Title/icon are read once at registration. */

@@ -8,7 +8,7 @@ import { tryMountArtifact } from './artifacts/index.js';
 import { TaskStatusCard, initTaskStatusCardTooltips } from './components/TaskStatusCard.js';
 import type { SubTaskResult, SubTaskStatus } from '../agent/types.js';
 import { SidebarRegistryImpl } from './sidebar/registry.js';
-import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
+import type { SidebarContext, SidebarTabRegistration, SubAgentRunKind } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
 import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
@@ -171,6 +171,10 @@ type AgentEvent =
   | { type: 'fanout_error'; sessionId: string; error: string }
   // Renderer-synthesized events (not emitted by the worker) driven by local state:
   | { type: 'fanout_task_progress'; taskId: string; status: string; description?: string; error?: string }
+  // Any sub-agent task card changed, whatever produced the run (dag /
+  // standalone / fanout). Pages re-render on it; the run's own state is the
+  // source of truth, not this event.
+  | { type: 'subagent_task_progress'; taskId: string; status: string; description?: string; error?: string }
   | { type: 'session_changed'; sessionId: string }
   | { type: 'language_changed' }
   // Core bg_ shell-job lifecycle (worker-local JobManager).
@@ -397,11 +401,11 @@ function makeSidebarContext(sessionId: string): SidebarContext {
     getActiveSessionId: () => currentSessionId,
     // Live language accessor so pages re-render with the running UI language.
     getUiLang: () => getUiLang(),
-    getFanoutSessions: () => fanoutSessions as ReadonlyMap<string, { sessionId: string; prompt: string; startTime: number; tasks: ReadonlyMap<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }> }>,
-    pruneFanoutSessions: (ttlMs?: number) => pruneFanoutSessions(ttlMs),
-    // Force-close stale running tasks (per-task timeout + dead-batch sweep) so
+    getSubAgentRuns: () => subAgentRuns as ReadonlyMap<string, SubAgentRun>,
+    pruneSubAgentRuns: (ttlMs?: number) => pruneSubAgentRuns(ttlMs),
+    // Force-close stale running tasks (per-task timeout + dead-run sweep) so
     // pages can self-heal by calling it from their own render/timer loops.
-    forceCloseStaleTasks: () => { sweepStuckFanoutSessions(); },
+    forceCloseStaleTasks: () => { sweepStuckSubAgentRuns(); },
     subscribe: (fn) => {
       const wrapped = (event: AgentEvent) => fn(event);
       eventSubscribers.add(wrapped);
@@ -680,18 +684,45 @@ interface TaskItem {
 }
 const tasks = new Map<string, TaskItem>();
 
-// ---------- fan-out execution state ----------
-interface FanoutSession {
+// ---------- sub-agent run registry ----------
+/**
+ * The run registry is keyed per RUN, not per session: one session can host a
+ * DAG, a standalone spawn and a fan-out batch at the same time. `kind` (see
+ * SubAgentRunKind in sidebar/types.ts) is what the Sub-Agents page groups by:
+ * the three are genuinely different things, so they get their own sections.
+ */
+interface SubAgentRun {
+  /** Registry key (see the runKey* helpers): unique per RUN, not per session —
+   *  one session can host several graphs, a graph, and a fan-out batch at once. */
+  key: string;
+  kind: SubAgentRunKind;
+  /** Owning session — scopes the run to a workspace tab. */
   sessionId: string;
+  /** Core task-graph id (dag runs only). */
+  graphId?: string;
   prompt: string;
   startTime: number;
-  /** Last time any activity touched this batch (start/progress/end/error). */
+  /** Last time any activity touched this run (start/progress/end/error). */
   lastActivityAt: number;
+  /** DAG topological order of task ids, captured verbatim from the task_graph
+   *  event. The panel renders these in this order — re-sorting by status would
+   *  destroy the dependency chain the graph encodes. */
+  taskOrder?: string[];
   tasks: Map<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number; updatedAt?: number }>;
 }
-const fanoutSessions = new Map<string, FanoutSession>();
+const subAgentRuns = new Map<string, SubAgentRun>();
+
+/** The core task graph currently reporting for a session. Bare task_* events
+ *  carry no graphId, so this is what files them under the right DAG run (and
+ *  routes them to `standalone` when the session has no graph at all). */
+const sessionGraphId = new Map<string, string>();
+
+const fanoutRunKey = (sessionId: string): string => `fanout:${sessionId}`;
+const dagRunKey = (graphId: string): string => `dag:${graphId}`;
+const standaloneRunKey = (sessionId: string): string => `standalone:${sessionId}`;
+
 // Session ids with a fan-out batch STILL EXECUTING. Distinct from
-// `fanoutSessions` (which keeps the completed batch for the progress card
+// `subAgentRuns` (which keeps the completed run for the progress card
 // until the user closes it): the running indicator must stay lit while a batch
 // is genuinely in flight, so the intermediate session_end events that each
 // sub-task's agent.chat() emits must NOT clear busy until fanout_end lands.
@@ -756,64 +787,69 @@ function toastBgJobTerminal(
   showToast(msg, ok ? 'success' : 'error', 5000);
 }
 
-// Finished fan-out sessions are recycled automatically: either TTL-swept once
-// they've sat complete for FANOUT_SESSION_TTL_MS, or hard-capped so the map
-// can never grow unbounded. In-flight batches are never evicted.
-const FANOUT_SESSION_TTL_MS = 10 * 60 * 1000;
-const FANOUT_SESSION_MAX = 20;
-/** A batch with NO activity at all for this long is treated as hung and
+// Finished sub-agent runs are recycled automatically: either TTL-swept once
+// they've sat complete for RUN_SESSION_TTL_MS, or hard-capped so the map
+// can never grow unbounded. In-flight fan-out batches are never evicted.
+const RUN_SESSION_TTL_MS = 10 * 60 * 1000;
+const RUN_SESSION_MAX = 20;
+/** A run with NO activity at all for this long is treated as hung and
  *  force-cancelled so stuck running cards + busy indicators close the loop. */
-const FANOUT_STUCK_TTL_MS = 30 * 60 * 1000;
+const RUN_STUCK_TTL_MS = 30 * 60 * 1000;
 /** A single sub-task that stays non-terminal with no progress of its own for
- *  this long is force-closed individually (the batch sweep above only catches a
- *  WHOLE batch going silent; a lone stuck task inside an otherwise busy batch
+ *  this long is force-closed individually (the run sweep above only catches a
+ *  WHOLE run going silent; a lone stuck task inside an otherwise busy run
  *  must still close its loop). */
-const FANOUT_TASK_STUCK_TTL_MS = 15 * 60 * 1000;
+const RUN_TASK_STUCK_TTL_MS = 15 * 60 * 1000;
 const TERMINAL_TASK_STATUS = new Set(['succeeded', 'failed', 'timeout', 'cancelled']);
 
 function isTerminalTask(t: { status: string }): boolean {
   return TERMINAL_TASK_STATUS.has(t.status);
 }
 
-function pruneFanoutSessions(ttlMs: number = FANOUT_SESSION_TTL_MS): number {
+/** True while this run's fan-out batch is still executing in the worker. */
+function isLiveFanout(run: SubAgentRun): boolean {
+  return run.kind === 'fanout' && fanoutBatches.has(run.sessionId);
+}
+
+function pruneSubAgentRuns(ttlMs: number = RUN_SESSION_TTL_MS): number {
   const now = Date.now();
   let removed = 0;
-  for (const [sid, session] of fanoutSessions) {
-    const done = session.tasks.size > 0 && [...session.tasks.values()].every(isTerminalTask);
-    if (done && !fanoutBatches.has(sid) && now - session.startTime >= ttlMs) {
-      fanoutSessions.delete(sid);
+  for (const [key, run] of subAgentRuns) {
+    const done = run.tasks.size > 0 && [...run.tasks.values()].every(isTerminalTask);
+    if (done && !isLiveFanout(run) && now - run.startTime >= ttlMs) {
+      subAgentRuns.delete(key);
       removed++;
     }
   }
-  if (fanoutSessions.size > FANOUT_SESSION_MAX) {
-    const newestFirst = [...fanoutSessions].sort((a, b) => (b[1].startTime ?? 0) - (a[1].startTime ?? 0));
-    for (const [sid, session] of newestFirst) {
-      if (fanoutSessions.size <= FANOUT_SESSION_MAX) break;
-      // Never evict a live batch: an in-flight core sub-agent (mirrored here
+  if (subAgentRuns.size > RUN_SESSION_MAX) {
+    const newestFirst = [...subAgentRuns].sort((a, b) => (b[1].startTime ?? 0) - (a[1].startTime ?? 0));
+    for (const [key, run] of newestFirst) {
+      if (subAgentRuns.size <= RUN_SESSION_MAX) break;
+      // Never evict a live batch: an in-flight core sub-agent run (mirrored here
       // without a fanoutBatches marker) would lose its task state mid-run —
       // the stuck sweep closes those first, then they become evictable.
-      if (fanoutBatches.has(sid) || [...session.tasks.values()].some((t) => !isTerminalTask(t))) continue;
-      fanoutSessions.delete(sid);
+      if (isLiveFanout(run) || [...run.tasks.values()].some((t) => !isTerminalTask(t))) continue;
+      subAgentRuns.delete(key);
       removed++;
     }
   }
   return removed;
 }
 
-/** Refresh the activity heartbeat of a batch (serializes to nothing when the
- *  session is unknown, so it is safe to call from any event stream). */
-function touchFanoutSession(sessionId: string): void {
-  const session = fanoutSessions.get(sessionId);
-  if (session) session.lastActivityAt = Date.now();
+/** Refresh the activity heartbeat of the session's fan-out run (serializes to
+ *  nothing when the run is unknown, so it is safe from any event stream). */
+function touchFanoutRun(sessionId: string): void {
+  const run = subAgentRuns.get(fanoutRunKey(sessionId));
+  if (run) run.lastActivityAt = Date.now();
 }
 
-/** Apply a per-task progress sample to the shared fan-out-session map so the
- *  sub-agent cards flip queued→running→succeeded live instead of at fanout_end. */
+/** Apply a per-task progress sample to the session's fan-out run so the
+ * sub-agent cards flip queued→running→succeeded live instead of at fanout_end. */
 function handleFanoutTaskProgress(sessionId: string, taskId: string, status: string): void {
-  touchFanoutSession(sessionId);
-  const session = fanoutSessions.get(sessionId);
-  if (!session) return;
-  const task = session.tasks.get(taskId);
+  touchFanoutRun(sessionId);
+  const run = subAgentRuns.get(fanoutRunKey(sessionId));
+  if (!run) return;
+  const task = run.tasks.get(taskId);
   if (task && status) {
     task.status = status;
     // Refresh the PER-TASK liveness heartbeat: the per-task force-close sweep
@@ -835,8 +871,8 @@ async function reconcileStaleFanoutMetadata(sessionId: string): Promise<void> {
     const meta = ((await window.nexusDesktop.getSessionMetadata(sessionId)) ?? {}) as Record<string, unknown>;
     const fanoutState = meta.fanoutExecution as { tasks?: Array<{ id: string; status: string }> } | undefined;
     if (!fanoutState?.tasks) return;
-    const session = fanoutSessions.get(sessionId);
-    if (!session) return;
+    const run = subAgentRuns.get(fanoutRunKey(sessionId));
+    if (!run) return;
 
     let changed = false;
     const tasks = fanoutState.tasks.map((t) => {
@@ -844,7 +880,7 @@ async function reconcileStaleFanoutMetadata(sessionId: string): Promise<void> {
       // terminal status (timeout/succeeded/failed/cancelled) is a straggler of
       // a dead run — reconcile the metadata so the next restore is a closed one.
       if (TERMINAL_TASK_STATUS.has(t.status)) return t;
-      const live = session.tasks.get(t.id);
+      const live = run.tasks.get(t.id);
       if (live && TERMINAL_TASK_STATUS.has(live.status)) {
         changed = true;
         return { ...t, status: live.status, error: live.error };
@@ -862,93 +898,100 @@ async function reconcileStaleFanoutMetadata(sessionId: string): Promise<void> {
 }
 
 /**
- * Force-close stale fan-out runs so the Sub-Agents task graph never leaves a
+ * Force-close stale sub-agent runs so the Sub-Agents task graph never leaves a
  * "running" state unclosed:
  *
  *   1. Per-task: any non-terminal sub-task with no progress of its own for
- *      FANOUT_TASK_STUCK_TTL_MS is force-closed (`timeout`) individually.
- *   2. Whole-batch: a batch with no activity at all for
+ *      RUN_TASK_STUCK_TTL_MS is force-closed (`timeout`) individually.
+ *   2. Whole-run: a run with no activity at all for
  *      `stuckTtlMs` (worker crash, abandoned request, restored stale metadata)
- *      is force-cancelled: delete the session + its in-flight marker, unstick
- *      busy, and — when the stuck batch is the ACTIVE session — surface a
- *      visible closure on its transcript card.
+ *      is force-cancelled: delete the run + its in-flight marker, unstick
+ *      busy, and — when the stuck fan-out batch is the ACTIVE session —
+ *      surface a visible closure on its transcript card.
  *
  * Reconciles the persisted metadata for any affected session so a stale run
- * cannot resurrect on the next session restore. Returns batches recycled.
+ * cannot resurrect on the next session restore. Returns runs recycled.
  */
-function sweepStuckFanoutSessions(stuckTtlMs: number = FANOUT_STUCK_TTL_MS): number {
+function sweepStuckSubAgentRuns(stuckTtlMs: number = RUN_STUCK_TTL_MS): number {
   const now = Date.now();
   const stuck: string[] = [];
-  const closed: Array<{ sessionId: string; taskId: string; status: string }> = [];
+  const closed: Array<{ runKey: string; sessionId: string; taskId: string; status: string }> = [];
 
-  for (const [sid, session] of fanoutSessions) {
+  for (const [key, run] of subAgentRuns) {
     // 1. Per-task force-close: a non-terminal task without liveness for
-    //    FANOUT_TASK_STUCK_TTL_MS is closed even when sibling tasks keep the
-    //    batch heartbeat alive.
-    for (const [taskId, task] of session.tasks) {
+    //    RUN_TASK_STUCK_TTL_MS is closed even when sibling tasks keep the
+    //    run heartbeat alive.
+    for (const [taskId, task] of run.tasks) {
       if (isTerminalTask(task)) continue;
-      const lastProgress = task.updatedAt ?? session.startTime;
-      if (now - lastProgress < FANOUT_TASK_STUCK_TTL_MS) continue;
+      const lastProgress = task.updatedAt ?? run.startTime;
+      if (now - lastProgress < RUN_TASK_STUCK_TTL_MS) continue;
       task.status = 'timeout';
       task.error = getUiLang() === 'zh-CN' ? '超过时限无进展，已强制闭环' : 'Force-closed: no progress within the time limit';
       task.durationMs = now - lastProgress;
       task.updatedAt = now;
-      closed.push({ sessionId: sid, taskId, status: task.status });
+      closed.push({ runKey: key, sessionId: run.sessionId, taskId, status: task.status });
     }
 
-    // 2. Whole-batch force-close (coarser backstop): NO activity at all.
-    const lastActivity = session.lastActivityAt ?? session.startTime;
+    // 2. Whole-run force-close (coarser backstop): NO activity at all.
+    const lastActivity = run.lastActivityAt ?? run.startTime;
     if (now - lastActivity < stuckTtlMs) continue;
-    const incomplete = [...session.tasks.values()].some((t) => !isTerminalTask(t));
-    if (incomplete || fanoutBatches.has(sid)) stuck.push(sid);
+    const incomplete = [...run.tasks.values()].some((t) => !isTerminalTask(t));
+    if (incomplete || isLiveFanout(run)) stuck.push(key);
   }
 
-  // Surface per-task closures: a fully-closed batch releases its in-flight
-  // marker and — when it is the active session — rebuilds the transcript card
-  // with the final (closed) state, exactly like a normal fanout_end.
+  // Surface per-task closures: a fully-closed run releases its in-flight
+  // marker and — when it is an active-session fan-out batch — rebuilds the
+  // transcript card with the final (closed) state, exactly like a normal
+  // fanout_end.
   if (closed.length > 0) {
-    const bySession = new Map<string, typeof closed>();
+    const byRun = new Map<string, typeof closed>();
     for (const c of closed) {
-      const arr = bySession.get(c.sessionId) ?? [];
+      const arr = byRun.get(c.runKey) ?? [];
       arr.push(c);
-      bySession.set(c.sessionId, arr);
+      byRun.set(c.runKey, arr);
     }
-    for (const [sid, closedTasks] of bySession) {
-      const session = fanoutSessions.get(sid);
-      if (session && [...session.tasks.values()].every(isTerminalTask)) {
-        fanoutBatches.delete(sid);
-        if (fanoutCardEl && sid === currentSessionId) {
-          handleFanoutEnd(sid, [...session.tasks].map(([taskId, t]) => ({
-            taskId,
-            status: t.status as SubTaskStatus,
-            output: t.output ?? '',
-            durationMs: t.durationMs ?? 0,
-            error: t.error,
-            tokenUsage: { prompt: 0, completion: 0 },
-          })));
+    for (const [key, closedTasks] of byRun) {
+      const run = subAgentRuns.get(key);
+      if (run && [...run.tasks.values()].every(isTerminalTask)) {
+        if (run.kind === 'fanout') {
+          fanoutBatches.delete(run.sessionId);
+          if (fanoutCardEl && run.sessionId === currentSessionId) {
+            handleFanoutEnd(run.sessionId, [...run.tasks].map(([taskId, t]) => ({
+              taskId,
+              status: t.status as SubTaskStatus,
+              output: t.output ?? '',
+              durationMs: t.durationMs ?? 0,
+              error: t.error,
+              tokenUsage: { prompt: 0, completion: 0 },
+            })));
+          }
         }
+        void reconcileStaleFanoutMetadata(run.sessionId);
       }
       for (const c of closedTasks) {
-        notifySidebarSubscribers({ type: 'fanout_task_progress', taskId: c.taskId, status: c.status });
+        notifySidebarSubscribers({ type: 'subagent_task_progress', taskId: c.taskId, status: c.status });
       }
-      void reconcileStaleFanoutMetadata(sid);
     }
   }
 
   if (stuck.length === 0 && closed.length === 0) return 0;
 
-  for (const sid of stuck) {
-    fanoutBatches.delete(sid);
-    const tab = tabs.get(sid);
-    if (tab) tab.busy = false;
-    // Only render the error closure on the singleton transcript card when the
-    // stuck batch is the one the user is looking at — never stomp a background
-    // session's card that happens to share the same DOM handle.
-    if (sid === currentSessionId || fanoutCardEl === null) {
-      handleFanoutError(sid, getUiLang() === 'zh-CN' ? '长时间无进展，已自动取消' : 'No progress for a long time — auto-cancelled');
+  for (const key of stuck) {
+    const run = subAgentRuns.get(key);
+    if (!run) continue;
+    if (run.kind === 'fanout') {
+      fanoutBatches.delete(run.sessionId);
+      const tab = tabs.get(run.sessionId);
+      if (tab) tab.busy = false;
+      // Only render the error closure on the singleton transcript card when the
+      // stuck batch is the one the user is looking at — never stomp a background
+      // session's card that happens to share the same DOM handle.
+      if (run.sessionId === currentSessionId || fanoutCardEl === null) {
+        handleFanoutError(run.sessionId, getUiLang() === 'zh-CN' ? '长时间无进展，已自动取消' : 'No progress for a long time — auto-cancelled');
+      }
     }
-    fanoutSessions.delete(sid);
-    void reconcileStaleFanoutMetadata(sid);
+    subAgentRuns.delete(key);
+    void reconcileStaleFanoutMetadata(run.sessionId);
   }
   if (!running && pendingQueue.length === 0) setBusy(false);
   renderTabBar();
@@ -1398,7 +1441,8 @@ function handleEvent(event: AgentEvent): void {
       break;
     case 'task_graph':
       // Replace the whole list with every task from the graph so pending tasks
-      // are visible alongside running/completed ones.
+      // are visible alongside running/completed ones. The event's array order IS
+      // the DAG's topological order, so it is handed to the mirror verbatim.
       tasks.clear();
       for (const t of event.tasks) {
         tasks.set(t.id, {
@@ -1408,7 +1452,12 @@ function handleEvent(event: AgentEvent): void {
           status: t.status === 'in_progress' ? 'running' : t.status === 'assigned' ? 'pending' : t.status,
           error: t.error,
         });
-        mirrorCoreRunToFanoutSessions({
+      }
+      declareCoreRun(currentSessionId, event.graphId, event.tasks.map((t) => t.id));
+      // Every graph task is mirrored in one pass so `taskOrder` is set before
+      // the individual task states land (a task_* event can arrive in between).
+      for (const t of event.tasks) {
+        mirrorCoreRun({
           sessionId: currentSessionId,
           taskId: t.id,
           description: t.description,
@@ -1422,7 +1471,7 @@ function handleEvent(event: AgentEvent): void {
     case 'task_completed':
     case 'task_failed':
       handleTaskEvent(event);
-      mirrorCoreRunToFanoutSessions({
+      mirrorCoreRun({
         sessionId: currentSessionId,
         taskId: event.taskId,
         description: event.type === 'task_started' ? event.description : undefined,
@@ -1432,7 +1481,7 @@ function handleEvent(event: AgentEvent): void {
       break;
     case 'task_interrupted':
       handleTaskEvent(event);
-      mirrorCoreRunToFanoutSessions({
+      mirrorCoreRun({
         sessionId: currentSessionId,
         taskId: event.taskId,
         status: 'interrupted',
@@ -1441,7 +1490,7 @@ function handleEvent(event: AgentEvent): void {
       break;
     case 'subagent_status': {
       const run = event.run;
-      mirrorCoreRunToFanoutSessions({
+      mirrorCoreRun({
         sessionId: currentSessionId,
         taskId: run.id,
         description: run.taskDesc,
@@ -1449,6 +1498,9 @@ function handleEvent(event: AgentEvent): void {
         error: run.error,
         output: run.result,
         durationMs: run.finishedAt && run.startedAt ? run.finishedAt - run.startedAt : undefined,
+        // A run with a graphId belongs to that DAG; without one it is a
+        // standalone spawn_subagent.
+        graphId: run.graphId,
       });
       break;
     }
@@ -3229,15 +3281,15 @@ function handleTaskEvent(event: Extract<AgentEvent, { type: `task_${string}` }>)
 
 // ---------- fan-out execution rendering ----------
 /**
- * Mirror a core sub-agent run into the shared fan-out-session map.
+ * Mirror a core sub-agent run into the shared run registry.
  *
- * The Sub-Agents sidebar page only renders `fanoutSessions`, which is written
- * by the desktop fan-out batches and — since the core started reporting its
- * own runs — by the core `spawn_subagent` / DAG events (task_graph,
- * task_started, task_completed, task_failed, task_interrupted,
- * subagent_status). Terminal states are never downgraded by a late heartbeat.
+ * Three core event families land here and each is filed under the run it
+ * actually belongs to: `task_graph` / `subagent_status` carry a graphId, while
+ * bare `task_*` events do not — those are attributed to the session's current
+ * graph, or to a `standalone` run when the session has no graph at all.
+ * Terminal states are never downgraded by a late heartbeat.
  */
-const CORE_TO_FANOUT_STATUS: Record<string, string> = {
+const CORE_TO_RUN_STATUS: Record<string, string> = {
   pending: 'pending',
   assigned: 'pending',
   in_progress: 'running',
@@ -3249,7 +3301,7 @@ const CORE_TO_FANOUT_STATUS: Record<string, string> = {
   timeout: 'timeout',
 };
 
-function mirrorCoreRunToFanoutSessions(update: {
+function mirrorCoreRun(update: {
   sessionId: string;
   taskId: string;
   description?: string;
@@ -3257,32 +3309,27 @@ function mirrorCoreRunToFanoutSessions(update: {
   error?: string;
   durationMs?: number;
   output?: string;
+  /** Graph id when the source event carries one. */
+  graphId?: string;
+  /** DAG topological task order, straight from the task_graph event. */
+  taskOrder?: string[];
 }): void {
   const { sessionId, taskId } = update;
   if (!sessionId || !taskId) return;
-  const status = CORE_TO_FANOUT_STATUS[update.status] ?? update.status;
+  const status = CORE_TO_RUN_STATUS[update.status] ?? update.status;
   const now = Date.now();
 
-  let session = fanoutSessions.get(sessionId);
-  if (!session) {
-    // Prune FIRST: the max-size eviction prefers the newest entry, so pruning
-    // after inserting would be able to drop the batch we just created.
-    pruneFanoutSessions();
-    session = {
-      sessionId,
-      prompt: update.description || update.sessionId,
-      startTime: now,
-      lastActivityAt: now,
-      tasks: new Map(),
-    };
-    fanoutSessions.set(sessionId, session);
-  }
+  const key = declareCoreRun(sessionId, update.graphId, update.taskOrder);
+  const run = subAgentRuns.get(key);
+  if (!run) return;
+  // A bare run's head reads best as its own task description.
+  if (run.kind === 'standalone' && update.description && run.tasks.size === 0) run.prompt = update.description;
 
-  const prev = session.tasks.get(taskId);
+  const prev = run.tasks.get(taskId);
   if (prev && isTerminalTask(prev) && !TERMINAL_TASK_STATUS.has(status)) return;
 
-  session.lastActivityAt = now;
-  session.tasks.set(taskId, {
+  run.lastActivityAt = now;
+  run.tasks.set(taskId, {
     description: update.description ?? prev?.description,
     status,
     output: update.output ?? prev?.output,
@@ -3290,8 +3337,15 @@ function mirrorCoreRunToFanoutSessions(update: {
     durationMs: update.durationMs ?? prev?.durationMs,
     updatedAt: now,
   });
+
+  // A finished graph stops claiming the session: a later bare spawn_subagent
+  // must open a `standalone` run instead of appending to a closed graph.
+  if (run.graphId && [...run.tasks.values()].every(isTerminalTask)) {
+    if (sessionGraphId.get(sessionId) === run.graphId) sessionGraphId.delete(sessionId);
+  }
+
   notifySidebarSubscribers({
-    type: 'fanout_task_progress',
+    type: 'subagent_task_progress',
     taskId,
     status,
     description: update.description,
@@ -3299,7 +3353,42 @@ function mirrorCoreRunToFanoutSessions(update: {
   });
 }
 
-function renderFanoutCard(session: FanoutSession): void {
+/**
+ * Create (or refresh) the run shell a core event belongs to, WITHOUT touching
+ * task state — the caller fills the tasks in afterwards. Returns the run key.
+ *
+ * A `task_graph` event is exactly this: it declares "this graph exists, in
+ * this topological order" before its individual task states arrive.
+ */
+function declareCoreRun(sessionId: string, graphId?: string, taskOrder?: string[]): string {
+  let resolved = graphId;
+  if (resolved) sessionGraphId.set(sessionId, resolved);
+  else resolved = sessionGraphId.get(sessionId);
+  const key = resolved ? dagRunKey(resolved) : standaloneRunKey(sessionId);
+
+  const existing = subAgentRuns.get(key);
+  if (existing) {
+    if (taskOrder) existing.taskOrder = taskOrder;
+    return key;
+  }
+  // Prune FIRST: the max-size eviction prefers the newest entry, so pruning
+  // after inserting would be able to drop the run we just created.
+  pruneSubAgentRuns();
+  subAgentRuns.set(key, {
+    key,
+    kind: resolved ? 'dag' : 'standalone',
+    sessionId,
+    graphId: resolved,
+    prompt: resolved ?? sessionId,
+    startTime: Date.now(),
+    lastActivityAt: Date.now(),
+    taskOrder,
+    tasks: new Map(),
+  });
+  return key;
+}
+
+function renderFanoutCard(run: SubAgentRun): void {
   if (!fanoutCardEl) {
     fanoutCardEl = document.createElement('div');
     fanoutCardEl.className = 'fanout-execution-card';
@@ -3325,7 +3414,7 @@ function renderFanoutCard(session: FanoutSession): void {
   const tasksContainer = document.createElement('div');
   tasksContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
   
-  for (const [taskId, taskData] of session.tasks) {
+  for (const [taskId, taskData] of run.tasks) {
     const card = document.createElement('div');
     card.innerHTML = TaskStatusCard({
       taskId,
@@ -3365,10 +3454,12 @@ async function restoreFanoutState(sessionId: string): Promise<void> {
       // in-flight marker or a fresh heartbeat — otherwise each restore keeps
       // feeding the sweep a brand-new timestamp and the "running" card survives
       // forever (§ force-closed loops).
-      const zombie = hasInFlight && fanoutState.startTime != null && batchAge >= FANOUT_STUCK_TTL_MS;
+      const zombie = hasInFlight && fanoutState.startTime != null && batchAge >= RUN_STUCK_TTL_MS;
 
-      // Create a fan-out session from metadata
-      const session: FanoutSession = {
+      // Create the fan-out run from metadata
+      const run: SubAgentRun = {
+        key: fanoutRunKey(sessionId),
+        kind: 'fanout',
         sessionId,
         prompt: fanoutState.prompt,
         startTime: fanoutState.startTime,
@@ -3378,7 +3469,7 @@ async function restoreFanoutState(sessionId: string): Promise<void> {
 
       for (const task of fanoutState.tasks) {
         const isStraggler = zombie && (task.status === 'pending' || task.status === 'running');
-        session.tasks.set(task.id, {
+        run.tasks.set(task.id, {
           description: task.description,
           status: isStraggler ? 'timeout' : task.status,
           error: isStraggler
@@ -3397,14 +3488,14 @@ async function restoreFanoutState(sessionId: string): Promise<void> {
         fanoutBatches.add(sessionId);
       }
 
-      fanoutSessions.set(sessionId, session);
+      subAgentRuns.set(run.key, run);
       if (zombie) {
         // Surface a visible force-closed closure and reconcile the persisted
         // metadata so the stale run stops resurrecting on every reopen.
         handleFanoutError(sessionId, getUiLang() === 'zh-CN' ? '超时未闭环，已强制取消' : 'Stale run force-closed after timeout');
         void reconcileStaleFanoutMetadata(sessionId);
       } else {
-        renderFanoutCard(session);
+        renderFanoutCard(run);
       }
     }
   } catch (err) {
@@ -3417,17 +3508,19 @@ function handleFanoutStart(
   prompt: string, 
   taskList?: Array<{ id: string; description: string; status: string }>
 ): void {
-  // Recycle long-finished sessions before adding the fresh batch.
-  pruneFanoutSessions();
-  // Force-cancel batches that died silently long ago (missing fanout_end).
-  sweepStuckFanoutSessions();
+  // Recycle long-finished runs before adding the fresh batch.
+  pruneSubAgentRuns();
+  // Force-cancel runs that died silently long ago (missing fanout_end).
+  sweepStuckSubAgentRuns();
   // A fan-out batch is genuinely executing — hold the running indicator across
   // the whole batch (see the session_end handler; intermediate sub-task spans
   // must not clear it) and keep the Stop affordance available.
   fanoutBatches.add(sessionId);
   setBusy(true);
 
-  const session: FanoutSession = {
+  const run: SubAgentRun = {
+    key: fanoutRunKey(sessionId),
+    kind: 'fanout',
     sessionId,
     prompt,
     startTime: Date.now(),
@@ -3438,7 +3531,7 @@ function handleFanoutStart(
   // Store task descriptions if provided
   if (taskList) {
     for (const task of taskList) {
-      session.tasks.set(task.id, {
+      run.tasks.set(task.id, {
         description: task.description,
         status: task.status,
         updatedAt: Date.now(),
@@ -3446,23 +3539,23 @@ function handleFanoutStart(
     }
   }
   
-  fanoutSessions.set(sessionId, session);
-  renderFanoutCard(session);
+  subAgentRuns.set(run.key, run);
+  renderFanoutCard(run);
 }
 
 function handleFanoutEnd(sessionId: string, tasks: SubTaskResult[]): void {
-  touchFanoutSession(sessionId);
+  touchFanoutRun(sessionId);
   // The batch is over. The final setBusy(false) is normally handled by drain()
   // once the chat() IPC resolves; this only rescues edge paths (restored state,
   // errors) where no serial turn is driving the busy transition any more.
   fanoutBatches.delete(sessionId);
   if (!running && pendingQueue.length === 0) setBusy(false);
 
-  const session = fanoutSessions.get(sessionId);
-  if (!session) return;
+  const run = subAgentRuns.get(fanoutRunKey(sessionId));
+  if (!run) return;
 
   for (const task of tasks) {
-    session.tasks.set(task.taskId, {
+    run.tasks.set(task.taskId, {
       status: task.status,
       output: task.output,
       error: task.error,
@@ -3518,21 +3611,21 @@ function handleFanoutEnd(sessionId: string, tasks: SubTaskResult[]): void {
     closeBtn.addEventListener('click', () => {
       fanoutCardEl?.remove();
       fanoutCardEl = null;
-      fanoutSessions.delete(sessionId);
+      subAgentRuns.delete(fanoutRunKey(sessionId));
     });
     fanoutCardEl.appendChild(closeBtn);
   }
 }
 
 function handleFanoutError(sessionId: string, error: string): void {
-  touchFanoutSession(sessionId);
-  // Release the in-flight marker even when the batch was never registered in
-  // fanoutSessions (e.g. it died before a card existed) so busy never sticks.
+  touchFanoutRun(sessionId);
+  // Release the in-flight marker even when the run was never registered (e.g. it
+  // died before a card existed) so busy never sticks.
   fanoutBatches.delete(sessionId);
   if (!running && pendingQueue.length === 0) setBusy(false);
 
-  const session = fanoutSessions.get(sessionId);
-  if (!session) return;
+  const run = subAgentRuns.get(fanoutRunKey(sessionId));
+  if (!run) return;
 
   if (fanoutCardEl) {
     fanoutCardEl.innerHTML = '';
@@ -3564,7 +3657,7 @@ function handleFanoutError(sessionId: string, error: string): void {
     closeBtn.addEventListener('click', () => {
       fanoutCardEl?.remove();
       fanoutCardEl = null;
-      fanoutSessions.delete(sessionId);
+      subAgentRuns.delete(fanoutRunKey(sessionId));
     });
     fanoutCardEl.appendChild(closeBtn);
   }
@@ -5568,11 +5661,11 @@ window.nexusDesktop.onTabsChanged((open) => {
     renderTabBar();
     // Periodic blacklist probe: test one stale blacklisted model per day.
     scheduleBlacklistProbe();
-    // Periodic housekeeping: recycle finished batches by TTL and force-cancel
-    // batches that hung silently, even when the Sub-Agents panel is closed.
+    // Periodic housekeeping: recycle finished runs by TTL and force-cancel
+    // runs that hung silently, even when the Sub-Agents panel is closed.
     setInterval(() => {
-      pruneFanoutSessions();
-      sweepStuckFanoutSessions();
+      pruneSubAgentRuns();
+      sweepStuckSubAgentRuns();
     }, 60_000);
   } catch (err) {
     addSystem(`${t('startFailed')}${errText(err)}`);
