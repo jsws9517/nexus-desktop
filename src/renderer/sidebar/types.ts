@@ -35,12 +35,12 @@ export interface SidebarContext {
    *  running app's language changes. Provided by the renderer context; optional
    *  for dependency-injected tests that pin a language via page opts instead. */
   getUiLang?(): string;
-  /** Live parallel-execution state (same Map renderer.ts maintains). */
-  getParallelSessions(): ReadonlyMap<string, ParallelSessionView>;
+  /** Live fan-out execution state (same Map renderer.ts maintains). */
+  getFanoutSessions(): ReadonlyMap<string, FanoutSessionView>;
   /** Recycle finished sessions (TTL sweep + hard cap). Optional guard for
    *  pages built against older contexts. */
-  pruneParallelSessions?(ttlMs?: number): number;
-  /** Force-close stale parallel runs (per-task timeout + dead-batch sweep) so a
+  pruneFanoutSessions?(ttlMs?: number): number;
+  /** Force-close stale fan-out runs (per-task timeout + dead-batch sweep) so a
    *  task card never sits in "running" forever. Optional — pages may call it
    *  from their own render/timer loop to self-heal. */
   forceCloseStaleTasks?(): void;
@@ -48,8 +48,8 @@ export interface SidebarContext {
   subscribe(fn: (event: AgentEvent) => void): () => void;
 }
 
-/** Minimal structural view of a parallel execution session (avoids importing renderer.ts). */
-export interface ParallelTaskView {
+/** Minimal structural view of a fan-out execution session (avoids importing renderer.ts). */
+export interface FanoutTaskView {
   description?: string;
   status: string;
   output?: string;
@@ -57,11 +57,11 @@ export interface ParallelTaskView {
   error?: string;
 }
 
-export interface ParallelSessionView {
+export interface FanoutSessionView {
   sessionId: string;
   prompt: string;
   startTime: number;
-  tasks: ReadonlyMap<string, ParallelTaskView>;
+  tasks: ReadonlyMap<string, FanoutTaskView>;
 }
 
 /** A registrable sidebar tab. Title/icon are read once at registration. */

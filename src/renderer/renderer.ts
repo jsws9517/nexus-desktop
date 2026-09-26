@@ -5,7 +5,7 @@ import { isWorkerBlockText, stripProtocolXml } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
-import { ParallelExecutionCard, initParallelCardTooltips } from './components/ParallelExecutionCard.js';
+import { TaskStatusCard, initTaskStatusCardTooltips } from './components/TaskStatusCard.js';
 import type { SubTaskResult, SubTaskStatus } from '../agent/types.js';
 import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
@@ -166,11 +166,11 @@ type AgentEvent =
   | { type: 'slash_start'; command: string; anchorId?: number }
   | { type: 'slash'; text: string }
   | { type: 'slash_end'; anchorId?: number; command: string }
-  | { type: 'parallel_start'; sessionId: string; prompt: string; tasks?: Array<{ id: string; description: string; status: string }> }
-  | { type: 'parallel_end'; sessionId: string; tasks: Array<{ taskId: string; status: SubTaskStatus; output: string; durationMs: number; error?: string; tokenUsage: { prompt: number; completion: number } }>; tokenUsage: { prompt: number; completion: number } }
-  | { type: 'parallel_error'; sessionId: string; error: string }
+  | { type: 'fanout_start'; sessionId: string; prompt: string; tasks?: Array<{ id: string; description: string; status: string }> }
+  | { type: 'fanout_end'; sessionId: string; tasks: Array<{ taskId: string; status: SubTaskStatus; output: string; durationMs: number; error?: string; tokenUsage: { prompt: number; completion: number } }>; tokenUsage: { prompt: number; completion: number } }
+  | { type: 'fanout_error'; sessionId: string; error: string }
   // Renderer-synthesized events (not emitted by the worker) driven by local state:
-  | { type: 'task_progress'; taskId: string; status: string; description?: string; error?: string }
+  | { type: 'fanout_task_progress'; taskId: string; status: string; description?: string; error?: string }
   | { type: 'session_changed'; sessionId: string }
   | { type: 'language_changed' }
   // Core bg_ shell-job lifecycle (worker-local JobManager).
@@ -397,11 +397,11 @@ function makeSidebarContext(sessionId: string): SidebarContext {
     getActiveSessionId: () => currentSessionId,
     // Live language accessor so pages re-render with the running UI language.
     getUiLang: () => getUiLang(),
-    getParallelSessions: () => parallelSessions as ReadonlyMap<string, { sessionId: string; prompt: string; startTime: number; tasks: ReadonlyMap<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }> }>,
-    pruneParallelSessions: (ttlMs?: number) => pruneParallelSessions(ttlMs),
+    getFanoutSessions: () => fanoutSessions as ReadonlyMap<string, { sessionId: string; prompt: string; startTime: number; tasks: ReadonlyMap<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number }> }>,
+    pruneFanoutSessions: (ttlMs?: number) => pruneFanoutSessions(ttlMs),
     // Force-close stale running tasks (per-task timeout + dead-batch sweep) so
     // pages can self-heal by calling it from their own render/timer loops.
-    forceCloseStaleTasks: () => { sweepStuckParallelSessions(); },
+    forceCloseStaleTasks: () => { sweepStuckFanoutSessions(); },
     subscribe: (fn) => {
       const wrapped = (event: AgentEvent) => fn(event);
       eventSubscribers.add(wrapped);
@@ -680,23 +680,23 @@ interface TaskItem {
 }
 const tasks = new Map<string, TaskItem>();
 
-// ---------- parallel execution state ----------
-interface ParallelSession {
+// ---------- fan-out execution state ----------
+interface FanoutSession {
   sessionId: string;
   prompt: string;
   startTime: number;
-  /** Last time any parallel activity touched this batch (start/progress/end/error). */
+  /** Last time any activity touched this batch (start/progress/end/error). */
   lastActivityAt: number;
   tasks: Map<string, { description?: string; status: string; output?: string; error?: string; durationMs?: number; updatedAt?: number }>;
 }
-const parallelSessions = new Map<string, ParallelSession>();
-// Session ids with a parallel batch STILL EXECUTING. Distinct from
-// `parallelSessions` (which keeps the completed batch for the progress card
+const fanoutSessions = new Map<string, FanoutSession>();
+// Session ids with a fan-out batch STILL EXECUTING. Distinct from
+// `fanoutSessions` (which keeps the completed batch for the progress card
 // until the user closes it): the running indicator must stay lit while a batch
 // is genuinely in flight, so the intermediate session_end events that each
-// sub-task's agent.chat() emits must NOT clear busy until parallel_end lands.
-const parallelBatches = new Set<string>();
-let parallelCardEl: HTMLElement | null = null;
+// sub-task's agent.chat() emits must NOT clear busy until fanout_end lands.
+const fanoutBatches = new Set<string>();
+let fanoutCardEl: HTMLElement | null = null;
 
 // ---------- background job status line ----------
 /** Non-terminal core bg_ job ids — drives the idle status line. */
@@ -756,44 +756,44 @@ function toastBgJobTerminal(
   showToast(msg, ok ? 'success' : 'error', 5000);
 }
 
-// Finished parallel sessions are recycled automatically: either TTL-swept once
-// they've sat complete for PARALLEL_SESSION_TTL_MS, or hard-capped so the map
+// Finished fan-out sessions are recycled automatically: either TTL-swept once
+// they've sat complete for FANOUT_SESSION_TTL_MS, or hard-capped so the map
 // can never grow unbounded. In-flight batches are never evicted.
-const PARALLEL_SESSION_TTL_MS = 10 * 60 * 1000;
-const PARALLEL_SESSION_MAX = 20;
-/** A batch with NO parallel activity for this long is treated as hung and
+const FANOUT_SESSION_TTL_MS = 10 * 60 * 1000;
+const FANOUT_SESSION_MAX = 20;
+/** A batch with NO activity at all for this long is treated as hung and
  *  force-cancelled so stuck running cards + busy indicators close the loop. */
-const PARALLEL_STUCK_TTL_MS = 30 * 60 * 1000;
+const FANOUT_STUCK_TTL_MS = 30 * 60 * 1000;
 /** A single sub-task that stays non-terminal with no progress of its own for
  *  this long is force-closed individually (the batch sweep above only catches a
  *  WHOLE batch going silent; a lone stuck task inside an otherwise busy batch
  *  must still close its loop). */
-const PARALLEL_TASK_STUCK_TTL_MS = 15 * 60 * 1000;
+const FANOUT_TASK_STUCK_TTL_MS = 15 * 60 * 1000;
 const TERMINAL_TASK_STATUS = new Set(['succeeded', 'failed', 'timeout', 'cancelled']);
 
 function isTerminalTask(t: { status: string }): boolean {
   return TERMINAL_TASK_STATUS.has(t.status);
 }
 
-function pruneParallelSessions(ttlMs: number = PARALLEL_SESSION_TTL_MS): number {
+function pruneFanoutSessions(ttlMs: number = FANOUT_SESSION_TTL_MS): number {
   const now = Date.now();
   let removed = 0;
-  for (const [sid, session] of parallelSessions) {
+  for (const [sid, session] of fanoutSessions) {
     const done = session.tasks.size > 0 && [...session.tasks.values()].every(isTerminalTask);
-    if (done && !parallelBatches.has(sid) && now - session.startTime >= ttlMs) {
-      parallelSessions.delete(sid);
+    if (done && !fanoutBatches.has(sid) && now - session.startTime >= ttlMs) {
+      fanoutSessions.delete(sid);
       removed++;
     }
   }
-  if (parallelSessions.size > PARALLEL_SESSION_MAX) {
-    const newestFirst = [...parallelSessions].sort((a, b) => (b[1].startTime ?? 0) - (a[1].startTime ?? 0));
+  if (fanoutSessions.size > FANOUT_SESSION_MAX) {
+    const newestFirst = [...fanoutSessions].sort((a, b) => (b[1].startTime ?? 0) - (a[1].startTime ?? 0));
     for (const [sid, session] of newestFirst) {
-      if (parallelSessions.size <= PARALLEL_SESSION_MAX) break;
+      if (fanoutSessions.size <= FANOUT_SESSION_MAX) break;
       // Never evict a live batch: an in-flight core sub-agent (mirrored here
-      // without a parallelBatches marker) would lose its task state mid-run —
+      // without a fanoutBatches marker) would lose its task state mid-run —
       // the stuck sweep closes those first, then they become evictable.
-      if (parallelBatches.has(sid) || [...session.tasks.values()].some((t) => !isTerminalTask(t))) continue;
-      parallelSessions.delete(sid);
+      if (fanoutBatches.has(sid) || [...session.tasks.values()].some((t) => !isTerminalTask(t))) continue;
+      fanoutSessions.delete(sid);
       removed++;
     }
   }
@@ -802,16 +802,16 @@ function pruneParallelSessions(ttlMs: number = PARALLEL_SESSION_TTL_MS): number 
 
 /** Refresh the activity heartbeat of a batch (serializes to nothing when the
  *  session is unknown, so it is safe to call from any event stream). */
-function touchParallelSession(sessionId: string): void {
-  const session = parallelSessions.get(sessionId);
+function touchFanoutSession(sessionId: string): void {
+  const session = fanoutSessions.get(sessionId);
   if (session) session.lastActivityAt = Date.now();
 }
 
-/** Apply a per-task progress sample to the shared parallel-session map so the
- *  sub-agent cards flip queued→running→succeeded live instead of at parallel_end. */
-function handleTaskProgress(sessionId: string, taskId: string, status: string): void {
-  touchParallelSession(sessionId);
-  const session = parallelSessions.get(sessionId);
+/** Apply a per-task progress sample to the shared fan-out-session map so the
+ *  sub-agent cards flip queued→running→succeeded live instead of at fanout_end. */
+function handleFanoutTaskProgress(sessionId: string, taskId: string, status: string): void {
+  touchFanoutSession(sessionId);
+  const session = fanoutSessions.get(sessionId);
   if (!session) return;
   const task = session.tasks.get(taskId);
   if (task && status) {
@@ -824,22 +824,22 @@ function handleTaskProgress(sessionId: string, taskId: string, status: string): 
 
 /**
  * Persist the renderer's force-closed task statuses back into the session's
- * `parallelExecution` metadata. Without this, a stale run whose metadata still
+ * `fanoutExecution` metadata. Without this, a stale run whose metadata still
  * claims non-terminal tasks (worker crashed / app closed mid-batch) is
  * re-created from scratch every time the session is reopened — the zombie batch
  * keeps resurrecting no matter how often the in-memory sweep deletes it.
  * Best-effort: any read/write error is swallowed.
  */
-async function reconcileStaleParallelMetadata(sessionId: string): Promise<void> {
+async function reconcileStaleFanoutMetadata(sessionId: string): Promise<void> {
   try {
     const meta = ((await window.nexusDesktop.getSessionMetadata(sessionId)) ?? {}) as Record<string, unknown>;
-    const parallelState = meta.parallelExecution as { tasks?: Array<{ id: string; status: string }> } | undefined;
-    if (!parallelState?.tasks) return;
-    const session = parallelSessions.get(sessionId);
+    const fanoutState = meta.fanoutExecution as { tasks?: Array<{ id: string; status: string }> } | undefined;
+    if (!fanoutState?.tasks) return;
+    const session = fanoutSessions.get(sessionId);
     if (!session) return;
 
     let changed = false;
-    const tasks = parallelState.tasks.map((t) => {
+    const tasks = fanoutState.tasks.map((t) => {
       // A persisted task that the renderer has since force-closed to a
       // terminal status (timeout/succeeded/failed/cancelled) is a straggler of
       // a dead run — reconcile the metadata so the next restore is a closed one.
@@ -854,7 +854,7 @@ async function reconcileStaleParallelMetadata(sessionId: string): Promise<void> 
     if (!changed) return;
     await window.nexusDesktop.setSessionMetadata(sessionId, {
       ...meta,
-      parallelExecution: { ...parallelState, tasks },
+      fanoutExecution: { ...fanoutState, tasks },
     });
   } catch {
     // Metadata reconciliation is best-effort; the in-memory panel is already closed.
@@ -862,12 +862,12 @@ async function reconcileStaleParallelMetadata(sessionId: string): Promise<void> 
 }
 
 /**
- * Force-close stale parallel runs so the Sub-Agents task graph never leaves a
+ * Force-close stale fan-out runs so the Sub-Agents task graph never leaves a
  * "running" state unclosed:
  *
  *   1. Per-task: any non-terminal sub-task with no progress of its own for
- *      PARALLEL_TASK_STUCK_TTL_MS is force-closed (`timeout`) individually.
- *   2. Whole-batch: a batch with no parallel activity at all for
+ *      FANOUT_TASK_STUCK_TTL_MS is force-closed (`timeout`) individually.
+ *   2. Whole-batch: a batch with no activity at all for
  *      `stuckTtlMs` (worker crash, abandoned request, restored stale metadata)
  *      is force-cancelled: delete the session + its in-flight marker, unstick
  *      busy, and — when the stuck batch is the ACTIVE session — surface a
@@ -876,19 +876,19 @@ async function reconcileStaleParallelMetadata(sessionId: string): Promise<void> 
  * Reconciles the persisted metadata for any affected session so a stale run
  * cannot resurrect on the next session restore. Returns batches recycled.
  */
-function sweepStuckParallelSessions(stuckTtlMs: number = PARALLEL_STUCK_TTL_MS): number {
+function sweepStuckFanoutSessions(stuckTtlMs: number = FANOUT_STUCK_TTL_MS): number {
   const now = Date.now();
   const stuck: string[] = [];
   const closed: Array<{ sessionId: string; taskId: string; status: string }> = [];
 
-  for (const [sid, session] of parallelSessions) {
+  for (const [sid, session] of fanoutSessions) {
     // 1. Per-task force-close: a non-terminal task without liveness for
-    //    PARALLEL_TASK_STUCK_TTL_MS is closed even when sibling tasks keep the
+    //    FANOUT_TASK_STUCK_TTL_MS is closed even when sibling tasks keep the
     //    batch heartbeat alive.
     for (const [taskId, task] of session.tasks) {
       if (isTerminalTask(task)) continue;
       const lastProgress = task.updatedAt ?? session.startTime;
-      if (now - lastProgress < PARALLEL_TASK_STUCK_TTL_MS) continue;
+      if (now - lastProgress < FANOUT_TASK_STUCK_TTL_MS) continue;
       task.status = 'timeout';
       task.error = getUiLang() === 'zh-CN' ? '超过时限无进展，已强制闭环' : 'Force-closed: no progress within the time limit';
       task.durationMs = now - lastProgress;
@@ -900,12 +900,12 @@ function sweepStuckParallelSessions(stuckTtlMs: number = PARALLEL_STUCK_TTL_MS):
     const lastActivity = session.lastActivityAt ?? session.startTime;
     if (now - lastActivity < stuckTtlMs) continue;
     const incomplete = [...session.tasks.values()].some((t) => !isTerminalTask(t));
-    if (incomplete || parallelBatches.has(sid)) stuck.push(sid);
+    if (incomplete || fanoutBatches.has(sid)) stuck.push(sid);
   }
 
   // Surface per-task closures: a fully-closed batch releases its in-flight
   // marker and — when it is the active session — rebuilds the transcript card
-  // with the final (closed) state, exactly like a normal parallel_end.
+  // with the final (closed) state, exactly like a normal fanout_end.
   if (closed.length > 0) {
     const bySession = new Map<string, typeof closed>();
     for (const c of closed) {
@@ -914,11 +914,11 @@ function sweepStuckParallelSessions(stuckTtlMs: number = PARALLEL_STUCK_TTL_MS):
       bySession.set(c.sessionId, arr);
     }
     for (const [sid, closedTasks] of bySession) {
-      const session = parallelSessions.get(sid);
+      const session = fanoutSessions.get(sid);
       if (session && [...session.tasks.values()].every(isTerminalTask)) {
-        parallelBatches.delete(sid);
-        if (parallelCardEl && sid === currentSessionId) {
-          handleParallelEnd(sid, [...session.tasks].map(([taskId, t]) => ({
+        fanoutBatches.delete(sid);
+        if (fanoutCardEl && sid === currentSessionId) {
+          handleFanoutEnd(sid, [...session.tasks].map(([taskId, t]) => ({
             taskId,
             status: t.status as SubTaskStatus,
             output: t.output ?? '',
@@ -929,26 +929,26 @@ function sweepStuckParallelSessions(stuckTtlMs: number = PARALLEL_STUCK_TTL_MS):
         }
       }
       for (const c of closedTasks) {
-        notifySidebarSubscribers({ type: 'task_progress', taskId: c.taskId, status: c.status });
+        notifySidebarSubscribers({ type: 'fanout_task_progress', taskId: c.taskId, status: c.status });
       }
-      void reconcileStaleParallelMetadata(sid);
+      void reconcileStaleFanoutMetadata(sid);
     }
   }
 
   if (stuck.length === 0 && closed.length === 0) return 0;
 
   for (const sid of stuck) {
-    parallelBatches.delete(sid);
+    fanoutBatches.delete(sid);
     const tab = tabs.get(sid);
     if (tab) tab.busy = false;
     // Only render the error closure on the singleton transcript card when the
     // stuck batch is the one the user is looking at — never stomp a background
     // session's card that happens to share the same DOM handle.
-    if (sid === currentSessionId || parallelCardEl === null) {
-      handleParallelError(sid, getUiLang() === 'zh-CN' ? '长时间无进展，已自动取消' : 'No progress for a long time — auto-cancelled');
+    if (sid === currentSessionId || fanoutCardEl === null) {
+      handleFanoutError(sid, getUiLang() === 'zh-CN' ? '长时间无进展，已自动取消' : 'No progress for a long time — auto-cancelled');
     }
-    parallelSessions.delete(sid);
-    void reconcileStaleParallelMetadata(sid);
+    fanoutSessions.delete(sid);
+    void reconcileStaleFanoutMetadata(sid);
   }
   if (!running && pendingQueue.length === 0) setBusy(false);
   renderTabBar();
@@ -1385,8 +1385,8 @@ function handleEvent(event: AgentEvent): void {
       if (event.sessionId !== currentSessionId) {
         tasks.clear();
         renderTasks();
-        // Restore parallel execution state from session metadata
-        void restoreParallelState(event.sessionId);
+        // Restore fan-out execution state from session metadata
+        void restoreFanoutState(event.sessionId);
       }
       currentSessionId = event.sessionId;
       void refreshSidebarSession();
@@ -1408,7 +1408,7 @@ function handleEvent(event: AgentEvent): void {
           status: t.status === 'in_progress' ? 'running' : t.status === 'assigned' ? 'pending' : t.status,
           error: t.error,
         });
-        mirrorCoreRunToParallel({
+        mirrorCoreRunToFanoutSessions({
           sessionId: currentSessionId,
           taskId: t.id,
           description: t.description,
@@ -1422,7 +1422,7 @@ function handleEvent(event: AgentEvent): void {
     case 'task_completed':
     case 'task_failed':
       handleTaskEvent(event);
-      mirrorCoreRunToParallel({
+      mirrorCoreRunToFanoutSessions({
         sessionId: currentSessionId,
         taskId: event.taskId,
         description: event.type === 'task_started' ? event.description : undefined,
@@ -1432,7 +1432,7 @@ function handleEvent(event: AgentEvent): void {
       break;
     case 'task_interrupted':
       handleTaskEvent(event);
-      mirrorCoreRunToParallel({
+      mirrorCoreRunToFanoutSessions({
         sessionId: currentSessionId,
         taskId: event.taskId,
         status: 'interrupted',
@@ -1441,7 +1441,7 @@ function handleEvent(event: AgentEvent): void {
       break;
     case 'subagent_status': {
       const run = event.run;
-      mirrorCoreRunToParallel({
+      mirrorCoreRunToFanoutSessions({
         sessionId: currentSessionId,
         taskId: run.id,
         description: run.taskDesc,
@@ -1713,25 +1713,26 @@ function handleEvent(event: AgentEvent): void {
       break;
     }
     case 'session_end':
-      // A session span ended. During a parallel batch every sub-task's
-      // agent.chat() emits its own session_start…session_end, so clearing busy
-      // here would make the send/stop hint flash "idle" while the remaining
-      // sub-tasks are still executing (the false-ending illusion). Only clear
-      // when NO parallel batch for this session is still in flight; the final
+    // A session span ended. During a fan-out batch every sub-task's
+    // agent.chat() emits its own session_start…session_end, so clearing busy
+    // here would make the send/stop hint flash "idle" while the remaining
+    // sub-tasks are still executing (the false-ending illusion). Only clear
+    // when NO fan-out batch for this session is still in flight; the final
+
       // drain() after chat() resolves does the real release.
-      if (!parallelBatches.has(currentSessionId)) setBusy(false);
+      if (!fanoutBatches.has(currentSessionId)) setBusy(false);
       break;
-    case 'parallel_start':
-      handleParallelStart(event.sessionId, event.prompt, event.tasks);
+    case 'fanout_start':
+      handleFanoutStart(event.sessionId, event.prompt, event.tasks);
       break;
-    case 'parallel_end':
-      handleParallelEnd(event.sessionId, event.tasks);
+    case 'fanout_end':
+      handleFanoutEnd(event.sessionId, event.tasks);
       break;
-    case 'parallel_error':
-      handleParallelError(event.sessionId, event.error);
+    case 'fanout_error':
+      handleFanoutError(event.sessionId, event.error);
       break;
-    case 'task_progress':
-      handleTaskProgress(currentSessionId, event.taskId, event.status);
+    case 'fanout_task_progress':
+      handleFanoutTaskProgress(currentSessionId, event.taskId, event.status);
       break;
   }
 }
@@ -2739,8 +2740,8 @@ async function switchTab(sessionId: string): Promise<void> {
     saveMsgCache(sessionId, fresh);
   } catch {}
   await refreshSlashLog(sessionId);
-  // Restore parallel execution state from session metadata
-  await restoreParallelState(sessionId);
+  // Restore fan-out execution state from session metadata
+  await restoreFanoutState(sessionId);
   const tab = tabs.get(sessionId);
   if (tab) {
     status = { cwd: status.cwd, busy: tab.busy, provider: tab.provider, model: tab.model };
@@ -2759,7 +2760,7 @@ async function switchTab(sessionId: string): Promise<void> {
   void refreshSessionStats();
   void refreshSessions(sessionId);
   // Re-broadcast after the async restore lands so the panel's session scope
-  // reflects a freshly restored parallel batch too.
+  // reflects a freshly restored fan-out batch too.
   notifyActiveSessionChanged(sessionId);
 }
 
@@ -2799,22 +2800,22 @@ async function closeTab(sessionId: string): Promise<void> {
 function applyTabEvent(sessionId: string, event: AgentEvent): void {
   const tab = tabs.get(sessionId);
   if (!tab) return;
-  if (event.type === 'parallel_start') {
-    parallelBatches.add(sessionId);
+  if (event.type === 'fanout_start') {
+    fanoutBatches.add(sessionId);
     tab.busy = true;
-  } else if (event.type === 'parallel_end' || event.type === 'parallel_error') {
-    parallelBatches.delete(sessionId);
+  } else if (event.type === 'fanout_end' || event.type === 'fanout_error') {
+    fanoutBatches.delete(sessionId);
     tab.busy = false;
   } else if (event.type === 'turn_start') {
     tab.busy = true;
   } else if (event.type === 'session_end') {
     // A sub-task span ended, not necessarily the whole batch — keep the tab
-    // busy until the owning parallel batch (if any) truly finishes.
-    tab.busy = parallelBatches.has(sessionId);
-  } else if (event.type === 'task_progress') {
+    // busy until the owning fan-out batch (if any) truly finishes.
+    tab.busy = fanoutBatches.has(sessionId);
+  } else if (event.type === 'fanout_task_progress') {
     // Per-sub-task heartbeat: keep the batch's stuck-detector alive and flip
     // the shared task status so scoped sidebar cards track progress live.
-    handleTaskProgress(sessionId, event.taskId, event.status);
+    handleFanoutTaskProgress(sessionId, event.taskId, event.status);
   }
   // Fan out EVERY tab event to sidebar pages (Jobs/Sub-Agents) so background
   // tabs' job lifecycle still updates the panel — handleEvent stays active-tab
@@ -2837,7 +2838,7 @@ function applyTabEvent(sessionId: string, event: AgentEvent): void {
     }
   }
   const touchesBusy = event.type === 'turn_start' || event.type === 'session_end'
-    || event.type === 'parallel_start' || event.type === 'parallel_end' || event.type === 'parallel_error';
+    || event.type === 'fanout_start' || event.type === 'fanout_end' || event.type === 'fanout_error';
   if (sessionId === activeTabId) {
     handleEvent(event);
   } else if (touchesBusy) {
@@ -3226,17 +3227,17 @@ function handleTaskEvent(event: Extract<AgentEvent, { type: `task_${string}` }>)
   renderTasks();
 }
 
-// ---------- parallel execution rendering ----------
+// ---------- fan-out execution rendering ----------
 /**
- * Mirror a core sub-agent run into the shared parallel-session map.
+ * Mirror a core sub-agent run into the shared fan-out-session map.
  *
- * The Sub-Agents sidebar page only renders `parallelSessions`, which until now
- * was written solely by the desktop decomposer's parallel_* batches — so core
- * `spawn_subagent` / DAG runs (task_graph, task_started, task_completed,
- * task_failed, task_interrupted, subagent_status) were invisible there.
- * Terminal states are never downgraded by a late heartbeat.
+ * The Sub-Agents sidebar page only renders `fanoutSessions`, which is written
+ * by the desktop fan-out batches and — since the core started reporting its
+ * own runs — by the core `spawn_subagent` / DAG events (task_graph,
+ * task_started, task_completed, task_failed, task_interrupted,
+ * subagent_status). Terminal states are never downgraded by a late heartbeat.
  */
-const CORE_TO_PARALLEL_STATUS: Record<string, string> = {
+const CORE_TO_FANOUT_STATUS: Record<string, string> = {
   pending: 'pending',
   assigned: 'pending',
   in_progress: 'running',
@@ -3248,7 +3249,7 @@ const CORE_TO_PARALLEL_STATUS: Record<string, string> = {
   timeout: 'timeout',
 };
 
-function mirrorCoreRunToParallel(update: {
+function mirrorCoreRunToFanoutSessions(update: {
   sessionId: string;
   taskId: string;
   description?: string;
@@ -3259,14 +3260,14 @@ function mirrorCoreRunToParallel(update: {
 }): void {
   const { sessionId, taskId } = update;
   if (!sessionId || !taskId) return;
-  const status = CORE_TO_PARALLEL_STATUS[update.status] ?? update.status;
+  const status = CORE_TO_FANOUT_STATUS[update.status] ?? update.status;
   const now = Date.now();
 
-  let session = parallelSessions.get(sessionId);
+  let session = fanoutSessions.get(sessionId);
   if (!session) {
     // Prune FIRST: the max-size eviction prefers the newest entry, so pruning
     // after inserting would be able to drop the batch we just created.
-    pruneParallelSessions();
+    pruneFanoutSessions();
     session = {
       sessionId,
       prompt: update.description || update.sessionId,
@@ -3274,7 +3275,7 @@ function mirrorCoreRunToParallel(update: {
       lastActivityAt: now,
       tasks: new Map(),
     };
-    parallelSessions.set(sessionId, session);
+    fanoutSessions.set(sessionId, session);
   }
 
   const prev = session.tasks.get(taskId);
@@ -3290,7 +3291,7 @@ function mirrorCoreRunToParallel(update: {
     updatedAt: now,
   });
   notifySidebarSubscribers({
-    type: 'task_progress',
+    type: 'fanout_task_progress',
     taskId,
     status,
     description: update.description,
@@ -3298,18 +3299,18 @@ function mirrorCoreRunToParallel(update: {
   });
 }
 
-function renderParallelCard(session: ParallelSession): void {
-  if (!parallelCardEl) {
-    parallelCardEl = document.createElement('div');
-    parallelCardEl.className = 'parallel-execution-card';
-    parallelCardEl.style.cssText = `
+function renderFanoutCard(session: FanoutSession): void {
+  if (!fanoutCardEl) {
+    fanoutCardEl = document.createElement('div');
+    fanoutCardEl.className = 'fanout-execution-card';
+    fanoutCardEl.style.cssText = `
       border: 1px solid #e5e7eb;
       border-radius: 8px;
       padding: 16px;
       margin: 8px 0;
       background-color: #f9fafb;
     `;
-    messagesEl.appendChild(parallelCardEl);
+    messagesEl.appendChild(fanoutCardEl);
   }
 
   const header = document.createElement('div');
@@ -3318,15 +3319,15 @@ function renderParallelCard(session: ParallelSession): void {
     margin-bottom: 12px;
     color: #374151;
   `;
-  header.textContent = `🔄 ${getUiLang() === 'zh-CN' ? '并行执行中...' : 'Parallel execution...'}`;
-  parallelCardEl.appendChild(header);
+  header.textContent = `🔄 ${getUiLang() === 'zh-CN' ? '分步执行中...' : 'Running tasks...'}`;
+  fanoutCardEl.appendChild(header);
 
   const tasksContainer = document.createElement('div');
   tasksContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
   
   for (const [taskId, taskData] of session.tasks) {
     const card = document.createElement('div');
-    card.innerHTML = ParallelExecutionCard({
+    card.innerHTML = TaskStatusCard({
       taskId,
       description: taskData.description,
       status: taskData.status as any,
@@ -3337,44 +3338,45 @@ function renderParallelCard(session: ParallelSession): void {
     tasksContainer.appendChild(card.firstElementChild!);
   }
 
-  parallelCardEl.appendChild(tasksContainer);
+  fanoutCardEl.appendChild(tasksContainer);
   scrollToBottom();
 }
 
 /**
- * Restore parallel execution state from session metadata.
- * Called when switching to a session that has an in-progress parallel execution.
+ * Restore fan-out execution state from session metadata.
+ * Called when switching to a session that has an in-progress fan-out.
  */
-async function restoreParallelState(sessionId: string): Promise<void> {
+async function restoreFanoutState(sessionId: string): Promise<void> {
   try {
     const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
-    const parallelState = meta.parallelExecution as {
+    // Sessions persisted before the fan-out rename carry `parallelExecution`.
+    const fanoutState = (meta.fanoutExecution ?? meta.parallelExecution) as {
       prompt: string;
       tasks: Array<{ id: string; description: string; status: string; prompt: string }>;
       startTime: number;
     } | undefined;
     
-    if (parallelState?.tasks && parallelState.tasks.length > 0) {
-      const batchAge = parallelState.startTime == null ? 0 : Date.now() - parallelState.startTime;
-      const hasInFlight = parallelState.tasks.some((t) => t.status === 'pending' || t.status === 'running');
+    if (fanoutState?.tasks && fanoutState.tasks.length > 0) {
+      const batchAge = fanoutState.startTime == null ? 0 : Date.now() - fanoutState.startTime;
+      const hasInFlight = fanoutState.tasks.some((t) => t.status === 'pending' || t.status === 'running');
       // A batch whose metadata still claims in-flight tasks but that started far
       // longer ago than the stuck TTL is a ZOMBIE (dead worker, abandoned run).
       // Close its loop NOW: mark the stragglers terminal and never re-arm the
       // in-flight marker or a fresh heartbeat — otherwise each restore keeps
       // feeding the sweep a brand-new timestamp and the "running" card survives
       // forever (§ force-closed loops).
-      const zombie = hasInFlight && parallelState.startTime != null && batchAge >= PARALLEL_STUCK_TTL_MS;
+      const zombie = hasInFlight && fanoutState.startTime != null && batchAge >= FANOUT_STUCK_TTL_MS;
 
-      // Create a parallel session from metadata
-      const session: ParallelSession = {
+      // Create a fan-out session from metadata
+      const session: FanoutSession = {
         sessionId,
-        prompt: parallelState.prompt,
-        startTime: parallelState.startTime,
+        prompt: fanoutState.prompt,
+        startTime: fanoutState.startTime,
         lastActivityAt: Date.now(),
         tasks: new Map(),
       };
 
-      for (const task of parallelState.tasks) {
+      for (const task of fanoutState.tasks) {
         const isStraggler = zombie && (task.status === 'pending' || task.status === 'running');
         session.tasks.set(task.id, {
           description: task.description,
@@ -3392,17 +3394,17 @@ async function restoreParallelState(sessionId: string): Promise<void> {
       // batches (all succeeded/failed) are historical — no marker, just the card.
       // Zombie batches must NOT re-arm: their loop is being force-closed.
       if (hasInFlight && !zombie) {
-        parallelBatches.add(sessionId);
+        fanoutBatches.add(sessionId);
       }
 
-      parallelSessions.set(sessionId, session);
+      fanoutSessions.set(sessionId, session);
       if (zombie) {
         // Surface a visible force-closed closure and reconcile the persisted
         // metadata so the stale run stops resurrecting on every reopen.
-        handleParallelError(sessionId, getUiLang() === 'zh-CN' ? '超时未闭环，已强制取消' : 'Stale run force-closed after timeout');
-        void reconcileStaleParallelMetadata(sessionId);
+        handleFanoutError(sessionId, getUiLang() === 'zh-CN' ? '超时未闭环，已强制取消' : 'Stale run force-closed after timeout');
+        void reconcileStaleFanoutMetadata(sessionId);
       } else {
-        renderParallelCard(session);
+        renderFanoutCard(session);
       }
     }
   } catch (err) {
@@ -3410,22 +3412,22 @@ async function restoreParallelState(sessionId: string): Promise<void> {
   }
 }
 
-function handleParallelStart(
+function handleFanoutStart(
   sessionId: string, 
   prompt: string, 
   taskList?: Array<{ id: string; description: string; status: string }>
 ): void {
   // Recycle long-finished sessions before adding the fresh batch.
-  pruneParallelSessions();
-  // Force-cancel batches that died silently long ago (missing parallel_end).
-  sweepStuckParallelSessions();
-  // A parallel batch is genuinely executing — hold the running indicator across
+  pruneFanoutSessions();
+  // Force-cancel batches that died silently long ago (missing fanout_end).
+  sweepStuckFanoutSessions();
+  // A fan-out batch is genuinely executing — hold the running indicator across
   // the whole batch (see the session_end handler; intermediate sub-task spans
   // must not clear it) and keep the Stop affordance available.
-  parallelBatches.add(sessionId);
+  fanoutBatches.add(sessionId);
   setBusy(true);
 
-  const session: ParallelSession = {
+  const session: FanoutSession = {
     sessionId,
     prompt,
     startTime: Date.now(),
@@ -3444,19 +3446,19 @@ function handleParallelStart(
     }
   }
   
-  parallelSessions.set(sessionId, session);
-  renderParallelCard(session);
+  fanoutSessions.set(sessionId, session);
+  renderFanoutCard(session);
 }
 
-function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
-  touchParallelSession(sessionId);
+function handleFanoutEnd(sessionId: string, tasks: SubTaskResult[]): void {
+  touchFanoutSession(sessionId);
   // The batch is over. The final setBusy(false) is normally handled by drain()
   // once the chat() IPC resolves; this only rescues edge paths (restored state,
   // errors) where no serial turn is driving the busy transition any more.
-  parallelBatches.delete(sessionId);
+  fanoutBatches.delete(sessionId);
   if (!running && pendingQueue.length === 0) setBusy(false);
 
-  const session = parallelSessions.get(sessionId);
+  const session = fanoutSessions.get(sessionId);
   if (!session) return;
 
   for (const task of tasks) {
@@ -3470,8 +3472,8 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
   }
 
   // Update the card with final results
-  if (parallelCardEl) {
-    parallelCardEl.innerHTML = '';
+  if (fanoutCardEl) {
+    fanoutCardEl.innerHTML = '';
     const interrupted = tasks.some((task) => task.status === 'cancelled');
     const header = document.createElement('div');
     header.style.cssText = `
@@ -3480,16 +3482,16 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
       color: ${interrupted ? '#f59e0b' : '#10b981'};
     `;
     header.textContent = interrupted
-      ? `⏹ ${getUiLang() === 'zh-CN' ? '并行执行已中断' : 'Parallel execution interrupted'}`
-      : `✅ ${getUiLang() === 'zh-CN' ? '并行执行完成' : 'Parallel execution completed'}`;
-    parallelCardEl.appendChild(header);
+      ? `⏹ ${getUiLang() === 'zh-CN' ? '分步执行已中断' : 'Tasks interrupted'}`
+      : `✅ ${getUiLang() === 'zh-CN' ? '分步执行完成' : 'Tasks completed'}`;
+    fanoutCardEl.appendChild(header);
 
     const tasksContainer = document.createElement('div');
     tasksContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
     
     for (const task of tasks) {
       const card = document.createElement('div');
-      card.innerHTML = ParallelExecutionCard({
+      card.innerHTML = TaskStatusCard({
         taskId: task.taskId,
         status: task.status,
         output: task.output,
@@ -3499,7 +3501,7 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
       tasksContainer.appendChild(card.firstElementChild!);
     }
 
-    parallelCardEl.appendChild(tasksContainer);
+    fanoutCardEl.appendChild(tasksContainer);
     
     // Add close button
     const closeBtn = document.createElement('button');
@@ -3514,39 +3516,39 @@ function handleParallelEnd(sessionId: string, tasks: SubTaskResult[]): void {
       font-size: 14px;
     `;
     closeBtn.addEventListener('click', () => {
-      parallelCardEl?.remove();
-      parallelCardEl = null;
-      parallelSessions.delete(sessionId);
+      fanoutCardEl?.remove();
+      fanoutCardEl = null;
+      fanoutSessions.delete(sessionId);
     });
-    parallelCardEl.appendChild(closeBtn);
+    fanoutCardEl.appendChild(closeBtn);
   }
 }
 
-function handleParallelError(sessionId: string, error: string): void {
-  touchParallelSession(sessionId);
+function handleFanoutError(sessionId: string, error: string): void {
+  touchFanoutSession(sessionId);
   // Release the in-flight marker even when the batch was never registered in
-  // parallelSessions (e.g. it died before a card existed) so busy never sticks.
-  parallelBatches.delete(sessionId);
+  // fanoutSessions (e.g. it died before a card existed) so busy never sticks.
+  fanoutBatches.delete(sessionId);
   if (!running && pendingQueue.length === 0) setBusy(false);
 
-  const session = parallelSessions.get(sessionId);
+  const session = fanoutSessions.get(sessionId);
   if (!session) return;
 
-  if (parallelCardEl) {
-    parallelCardEl.innerHTML = '';
+  if (fanoutCardEl) {
+    fanoutCardEl.innerHTML = '';
     const header = document.createElement('div');
     header.style.cssText = `
       font-weight: bold;
       margin-bottom: 12px;
       color: #ef4444;
     `;
-    header.textContent = `❌ ${getUiLang() === 'zh-CN' ? '并行执行失败' : 'Parallel execution failed'}`;
-    parallelCardEl.appendChild(header);
+    header.textContent = `❌ ${getUiLang() === 'zh-CN' ? '分步执行失败' : 'Tasks failed'}`;
+    fanoutCardEl.appendChild(header);
 
     const errorMsg = document.createElement('div');
     errorMsg.style.cssText = 'color: #dc2626; margin-bottom: 12px;';
     errorMsg.textContent = error;
-    parallelCardEl.appendChild(errorMsg);
+    fanoutCardEl.appendChild(errorMsg);
     
     // Add close button
     const closeBtn = document.createElement('button');
@@ -3560,11 +3562,11 @@ function handleParallelError(sessionId: string, error: string): void {
       font-size: 14px;
     `;
     closeBtn.addEventListener('click', () => {
-      parallelCardEl?.remove();
-      parallelCardEl = null;
-      parallelSessions.delete(sessionId);
+      fanoutCardEl?.remove();
+      fanoutCardEl = null;
+      fanoutSessions.delete(sessionId);
     });
-    parallelCardEl.appendChild(closeBtn);
+    fanoutCardEl.appendChild(closeBtn);
   }
 }
 
@@ -5475,7 +5477,7 @@ window.nexusDesktop.onTabsChanged((open) => {
     loadTheme();
     initFx();
     addSkipLink();
-    initParallelCardTooltips();
+    initTaskStatusCardTooltips();
     await loadLanguage();
     showOnboarding();
     // Kick off the sidebar list first: nexus:listSessions is served straight
@@ -5569,8 +5571,8 @@ window.nexusDesktop.onTabsChanged((open) => {
     // Periodic housekeeping: recycle finished batches by TTL and force-cancel
     // batches that hung silently, even when the Sub-Agents panel is closed.
     setInterval(() => {
-      pruneParallelSessions();
-      sweepStuckParallelSessions();
+      pruneFanoutSessions();
+      sweepStuckFanoutSessions();
     }, 60_000);
   } catch (err) {
     addSystem(`${t('startFailed')}${errText(err)}`);

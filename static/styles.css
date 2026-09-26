@@ -94,7 +94,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.parallel-task-card {
+.task-status-card {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
@@ -103,13 +103,13 @@
   color: var(--text);
   font-size: 12px;
 }
-.parallel-task-card .ptc-head {
+.task-status-card .ptc-head {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 4px;
 }
-.parallel-task-card .ptc-title {
+.task-status-card .ptc-title {
   font-weight: 600;
   color: var(--text);
   overflow: hidden;
@@ -118,15 +118,15 @@
   flex: 1;
   min-width: 0;
 }
-.parallel-task-card .ptc-status {
+.task-status-card .ptc-status {
   flex-shrink: 0;
 }
-.parallel-task-card .ptc-duration {
+.task-status-card .ptc-duration {
   flex-shrink: 0;
   color: var(--text-dim);
   font-size: 11px;
 }
-.parallel-task-card .ptc-taskid {
+.task-status-card .ptc-taskid {
   font-family: var(--mono, monospace);
   font-size: 10px;
   color: var(--text-dim);
@@ -135,19 +135,19 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.parallel-task-card .ptc-progress {
+.task-status-card .ptc-progress {
   height: 4px;
   background: var(--bg-input);
   border-radius: 2px;
   overflow: hidden;
 }
-.parallel-task-card .ptc-progress-bar {
+.task-status-card .ptc-progress-bar {
   height: 100%;
   width: 100%;
   background: var(--warn);
   animation: pulse 1.5s infinite;
 }
-.parallel-task-card .ptc-output {
+.task-status-card .ptc-output {
   margin-top: 8px;
   padding: 8px;
   background: var(--code-bg, var(--bg-input));
@@ -159,7 +159,7 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-.parallel-task-card .ptc-error {
+.task-status-card .ptc-error {
   margin-top: 8px;
   padding: 8px;
   background: color-mix(in srgb, var(--danger) 12%, transparent);
@@ -172,17 +172,17 @@
   word-break: break-word;
 }
 /* Status accent: cards tint their border + status label with the theme palette. */
-.parallel-task-card.status-running { border-color: var(--warn); }
-.parallel-task-card.status-running .ptc-status { color: var(--warn); }
-.parallel-task-card.status-succeeded { border-color: var(--ok); }
-.parallel-task-card.status-succeeded .ptc-status { color: var(--ok); }
-.parallel-task-card.status-failed, .parallel-task-card.status-timeout { border-color: var(--danger); }
-.parallel-task-card.status-failed .ptc-status, .parallel-task-card.status-timeout .ptc-status { color: var(--danger); }
-.parallel-task-card.status-queued { border-color: var(--accent); }
-.parallel-task-card.status-queued .ptc-status { color: var(--accent); }
-.parallel-task-card.status-pending, .parallel-task-card.status-cancelled { border-color: var(--text-dim); }
-.parallel-task-card.status-pending .ptc-status, .parallel-task-card.status-cancelled .ptc-status { color: var(--text-dim); }
-.sub-agents-session .parallel-task-card {
+.task-status-card.status-running { border-color: var(--warn); }
+.task-status-card.status-running .ptc-status { color: var(--warn); }
+.task-status-card.status-succeeded { border-color: var(--ok); }
+.task-status-card.status-succeeded .ptc-status { color: var(--ok); }
+.task-status-card.status-failed, .task-status-card.status-timeout { border-color: var(--danger); }
+.task-status-card.status-failed .ptc-status, .task-status-card.status-timeout .ptc-status { color: var(--danger); }
+.task-status-card.status-queued { border-color: var(--accent); }
+.task-status-card.status-queued .ptc-status { color: var(--accent); }
+.task-status-card.status-pending, .task-status-card.status-cancelled { border-color: var(--text-dim); }
+.task-status-card.status-pending .ptc-status, .task-status-card.status-cancelled .ptc-status { color: var(--text-dim); }
+.sub-agents-session .task-status-card {
   border-width: 1px;
   border-radius: 8px;
   margin-bottom: 0;
@@ -218,8 +218,8 @@
   font-weight: 600;
   color: var(--text-dim);
 }
-.jobs-section .parallel-task-card,
-.jobs-section .job-card-wrapper .parallel-task-card {
+.jobs-section .task-status-card,
+.jobs-section .job-card-wrapper .task-status-card {
   border-width: 1px;
   border-radius: 8px;
   margin-bottom: 0;
@@ -2261,8 +2261,8 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-/* Parallel Task Tooltip */
-.parallel-task-tooltip {
+/* Task Status Tooltip */
+.task-status-tooltip {
   position: fixed;
   background: var(--bg-panel);
   color: var(--text);
@@ -2279,14 +2279,14 @@ textarea:focus-visible,
   white-space: normal;
   word-wrap: break-word;
 }
-.parallel-task-tooltip .tooltip-header,
-.parallel-task-tooltip .tooltip-desc,
-.parallel-task-tooltip .tooltip-status,
-.parallel-task-tooltip .tooltip-duration {
+.task-status-tooltip .tooltip-header,
+.task-status-tooltip .tooltip-desc,
+.task-status-tooltip .tooltip-status,
+.task-status-tooltip .tooltip-duration {
   margin-bottom: 6px;
 }
-.parallel-task-tooltip .tooltip-output,
-.parallel-task-tooltip .tooltip-error {
+.task-status-tooltip .tooltip-output,
+.task-status-tooltip .tooltip-error {
   margin-top: 8px;
   padding: 8px;
   background: var(--code-bg, var(--bg-input));
@@ -2298,11 +2298,11 @@ textarea:focus-visible,
   white-space: pre-wrap;
   word-break: break-word;
 }
-.parallel-task-tooltip .tooltip-error {
+.task-status-tooltip .tooltip-error {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
-.parallel-task-tooltip pre {
+.task-status-tooltip pre {
   margin: 0;
   padding: 0;
   background: transparent;

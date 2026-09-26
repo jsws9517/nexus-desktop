@@ -6,12 +6,12 @@
  * read-only view plus kill/tail/remove controls routed to the owning worker.
  * Driven by the agent event bus (bg_job_event) with an initial pull + 10s
  * auto-recycle. Status vocabularies are normalized into the shared
- * SubTaskStatus set so ParallelExecutionCard can render them.
+ * SubTaskStatus set so TaskStatusCard can render them.
  *
  * Dependency-injected for unit tests (fake list/kill/tail fetchers).
  */
 
-import { ParallelExecutionCard } from '../../components/ParallelExecutionCard.js';
+import { TaskStatusCard } from '../../components/TaskStatusCard.js';
 import { STR } from '../../i18n.js';
 import type { SubTaskStatus } from '../../../agent/types.js';
 import type { AgentEvent } from '../../../agent/types.js';
@@ -41,7 +41,7 @@ export interface JobsPageOptions {
   /** Fetch a core job log tail (default: window.nexusDesktop.coreBgTail). sessionId routes to the owning worker. */
   tailCore?: (jobId: string, lines?: number, sessionId?: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
   getUiLang?: () => string;
-  renderCard?: typeof ParallelExecutionCard;
+  renderCard?: typeof TaskStatusCard;
 }
 
 const statusRank: Record<string, number> = {
@@ -138,7 +138,7 @@ export function mountJobsPage(
   ctx: SidebarContext,
   opts: JobsPageOptions = {},
 ): () => void {
-  const renderCard = opts.renderCard ?? ParallelExecutionCard;
+  const renderCard = opts.renderCard ?? TaskStatusCard;
   const listCore = opts.listCore ?? defaultListCore;
   const killCore = opts.killCore ?? defaultKillCore;
   const removeCore = opts.removeCore ?? defaultRemoveCore;

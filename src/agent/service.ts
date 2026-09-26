@@ -142,7 +142,7 @@ export function buildDebugDisciplineOverride(): string {
 export class AgentService {
   private agent: Agent | null = null;
   private initialized = false;
-  // Set by abort() so parallel batches can halt BETWEEN sub-tasks (the core's
+  // Set by abort() so a fan-out batch can halt BETWEEN sub-tasks (the core's
   // abort() only interrupts the currently running agent.chat(); without this
   // flag the next sub-task would start immediately with a fresh AbortController).
   // Reset at the start of every user-initiated chat() so a stale request never
@@ -865,14 +865,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
-   * Determine if parallel execution is appropriate.
+   * Determine if fan-out execution is appropriate.
    */
-  private shouldUseParallel(prompt: string): boolean {
+  private shouldUseFanout(prompt: string): boolean {
     // Declarative statements (conjunctions without action verbs) must not
-    // enter the parallel path at all — they belong in a single runTurn.
+    // enter the fan-out path at all — they belong in a single runTurn.
     if (this.isDeclarativePrompt(prompt)) return false;
 
-    // Universal: 2+ conjunctions → likely parallel task list
+    // Universal: 2+ conjunctions → likely a multi-task list
     const conjunctionRegex = /(?:和|与|以及|，|,|、|＆|&|and|et|y|и|أو)/gi;
     const conjunctionCount = (prompt.match(conjunctionRegex) || []).length;
     if (conjunctionCount >= 2) return true;
@@ -1007,7 +1007,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   /**
    * Run one raw agent turn under the turn monitor and report estimated usage.
    * This is the single choke point every agent.chat() in this service flows
-   * through (single turn, parallel sub-tasks), so `completion` reflects the
+   * through (single turn, fan-out sub-tasks), so `completion` reflects the
    * actual streamed text + thinking and `prompt` the live context size.
    */
   private async runTurn(input: string): Promise<TurnUsage> {
@@ -1043,7 +1043,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (this.agent.isBusy()) throw new Error('Agent is busy');
 
     // A fresh user send starts with a clean stop state: the flag only gates a
-    // parallel batch that is CURRENTLY executing, never the next turn.
+    // fan-out batch that is CURRENTLY executing, never the next turn.
     this.stopRequested = false;
 
     // Proactive progressive summary: compress incrementally before the LLM call
@@ -1060,9 +1060,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       }
     }
 
-    // Check if parallel execution should be used
-    if (this.shouldUseParallel(input)) {
-      await this.chatParallel(input);
+    // Check if fan-out execution should be used
+    if (this.shouldUseFanout(input)) {
+      await this.chatFanout(input);
       return;
     }
     
@@ -1144,13 +1144,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
-   * Parallel execution mode.
-   * 
-   * Since the worker process cannot create WorkerHost instances (Electron-only),
-   * we use fallback decomposition and execute tasks sequentially in the current
-   * worker. The UI still shows parallel cards for visual feedback.
+   * Fan-out execution mode.
+   *
+   * One prompt in, N sub-tasks out. Since the worker process cannot create
+   * WorkerHost instances (Electron-only), we use fallback decomposition and
+   * execute the sub-tasks SEQUENTIALLY in the current worker — this is a
+   * fan-out, not a parallel run. The UI still renders a card per sub-task.
    */
-  private async chatParallel(prompt: string): Promise<void> {
+  private async chatFanout(prompt: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy()) throw new Error('Agent is busy');
     
@@ -1160,7 +1161,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const subTasks = await this.fallbackDecompose(prompt);
 
     if (subTasks.length <= 1 || this.isDeclarativePrompt(prompt)) {
-      // Declarative statement or single coherent task — skip parallel UI,
+      // Declarative statement or single coherent task — skip the fan-out UI,
       // run a normal single turn so sequentialthinking handles the reasoning.
       await this.runTurn(prompt);
       return;
@@ -1169,8 +1170,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     // Persist the original user input exactly once (the visible transcript row)
     this.persistUserInput(prompt);
     
-    // Store parallel execution state in session metadata for persistence
-    const parallelState = {
+    // Store fan-out execution state in session metadata for persistence
+    const fanoutState = {
       prompt,
       tasks: subTasks.map(t => ({
         id: t.id,
@@ -1182,12 +1183,12 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     };
     this.setSessionMetadata(sessionId, { 
       ...this.getSessionMetadata(sessionId),
-      parallelExecution: parallelState 
+      fanoutExecution: fanoutState 
     });
     
-    // Emit parallel_start event
+    // Emit fanout_start event
     this.onEvent?.({ 
-      type: 'parallel_start', 
+      type: 'fanout_start', 
       sessionId, 
       prompt,
       tasks: subTasks.map(t => ({ id: t.id, description: t.description, status: 'pending' })),
@@ -1214,9 +1215,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         error: 'Stopped by user',
         tokenUsage: { prompt: 0, completion: 0 },
       });
-      this.updateParallelTaskStatus(sessionId, task.id, 'cancelled');
+      this.updateFanoutTaskStatus(sessionId, task.id, 'cancelled');
       this.onEvent?.({
-        type: 'task_progress',
+        type: 'fanout_task_progress',
         taskId: task.id,
         status: 'cancelled',
         description: task.description,
@@ -1241,11 +1242,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       const startTime = Date.now();
       
       // Update metadata: task running
-      this.updateParallelTaskStatus(sessionId, task.id, 'running');
+      this.updateFanoutTaskStatus(sessionId, task.id, 'running');
       
-      // Emit task_progress: running
+      // Emit fanout_task_progress: running
       this.onEvent?.({
-        type: 'task_progress',
+        type: 'fanout_task_progress',
         taskId: task.id,
         status: 'running',
         description: task.description,
@@ -1286,9 +1287,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
             error: 'Stopped by user',
             tokenUsage: { prompt: usage.prompt, completion: usage.completion },
           });
-          this.updateParallelTaskStatus(sessionId, task.id, 'cancelled');
+          this.updateFanoutTaskStatus(sessionId, task.id, 'cancelled');
           this.onEvent?.({
-            type: 'task_progress',
+            type: 'fanout_task_progress',
             taskId: task.id,
             status: 'cancelled',
             description: task.description,
@@ -1307,11 +1308,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         });
         
         // Update metadata: task succeeded
-        this.updateParallelTaskStatus(sessionId, task.id, 'succeeded');
+        this.updateFanoutTaskStatus(sessionId, task.id, 'succeeded');
         
-        // Emit task_progress: succeeded
+        // Emit fanout_task_progress: succeeded
         this.onEvent?.({
-          type: 'task_progress',
+          type: 'fanout_task_progress',
           taskId: task.id,
           status: 'succeeded',
           description: task.description,
@@ -1331,11 +1332,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         });
         
         // Update metadata: task failed
-        this.updateParallelTaskStatus(sessionId, task.id, 'failed');
+        this.updateFanoutTaskStatus(sessionId, task.id, 'failed');
         
-        // Emit task_progress: failed
+        // Emit fanout_task_progress: failed
         this.onEvent?.({
-          type: 'task_progress',
+          type: 'fanout_task_progress',
           taskId: task.id,
           status: 'failed',
           description: task.description,
@@ -1344,10 +1345,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       }
     }
     
-    // Keep parallel state in metadata for history (don't delete)
-    // This allows restoring the parallel execution info when switching back to this session
+    // Keep fan-out state in metadata for history (don't delete)
+    // This allows restoring the fan-out execution info when switching back to this session
 
-    // Aggregate the real (estimated) usage across every sub-task so parallel_end
+    // Aggregate the real (estimated) usage across every sub-task so fanout_end
     // reports an honest total instead of hardcoded zeros (§ token accounting).
     const totalUsage = taskResults.reduce<TurnUsage>(
       (acc, r) => ({
@@ -1361,9 +1362,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       { ...EMPTY_USAGE },
     );
 
-    // Emit parallel_end event
+    // Emit fanout_end event
     this.onEvent?.({
-      type: 'parallel_end',
+      type: 'fanout_end',
       sessionId,
       tasks: taskResults,
       tokenUsage: totalUsage,
@@ -1373,20 +1374,26 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   /**
    * Update task status in session metadata.
    */
-  private updateParallelTaskStatus(
+  private updateFanoutTaskStatus(
     sessionId: string, 
     taskId: string, 
     status: string
   ): void {
     const meta = this.getSessionMetadata(sessionId);
-    const parallelState = meta.parallelExecution as {
+    const fanoutState = (meta.fanoutExecution ?? meta.parallelExecution) as {
       tasks: Array<{ id: string; status: string }>;
     } | undefined;
     
-    if (parallelState?.tasks) {
-      const task = parallelState.tasks.find(t => t.id === taskId);
+    if (fanoutState?.tasks) {
+      const task = fanoutState.tasks.find(t => t.id === taskId);
       if (task) {
         task.status = status as any;
+        // Sessions written before the fan-out rename carry `parallelExecution`.
+        // Move them onto the new key so the legacy one drains away.
+        if (!meta.fanoutExecution && meta.parallelExecution) {
+          meta.fanoutExecution = meta.parallelExecution;
+          delete meta.parallelExecution;
+        }
         this.setSessionMetadata(sessionId, meta);
       }
     }
@@ -1407,7 +1414,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   /**
    * Detect purely declarative prompts — statement-like expressions with
    * no action verb (no 分析/读取/生成/查找 etc.) that merely describe or
-   * compare concepts. These should not spawn parallel tasks; just run a
+   * compare concepts. These should not spawn sub-tasks; just run a
    * normal single-turn reasoning pass via sequentialthinking.
    */
   private isDeclarativePrompt(prompt: string): boolean {

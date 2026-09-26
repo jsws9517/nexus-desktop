@@ -24,7 +24,7 @@ interface BoundWorker {
   provider: string;
   model: string;
   busy: boolean;
-  parallel: boolean;
+  fanout: boolean;
   worker: WorkerHost;
 }
 
@@ -97,16 +97,16 @@ export class SessionWorkers {
       if (event.type === 'session_start') {
         bound.sessionId = String(event.sessionId ?? bound.sessionId);
       }
-      if (event.type === 'parallel_start') {
-        bound.parallel = true;
+      if (event.type === 'fanout_start') {
+        bound.fanout = true;
         bound.busy = true;
       }
-      if (event.type === 'parallel_end' || event.type === 'parallel_error') {
-        bound.parallel = false;
+      if (event.type === 'fanout_end' || event.type === 'fanout_error') {
+        bound.fanout = false;
         bound.busy = false;
       }
       if (event.type === 'turn_start') bound.busy = true;
-      if (event.type === 'session_end') bound.busy = bound.parallel;
+      if (event.type === 'session_end') bound.busy = bound.fanout;
       this.onEvent?.(bound.sessionId, { ...event, sessionId: bound.sessionId });
     };
     w.onPermission = (req: { id: string; question: string }) => {
@@ -210,7 +210,7 @@ export class SessionWorkers {
       provider: '',
       model: '',
       busy: false,
-      parallel: false,
+      fanout: false,
       worker,
     };
     this.wire(bound);
@@ -288,7 +288,7 @@ export class SessionWorkers {
       provider: '',
       model: '',
       busy: false,
-      parallel: false,
+      fanout: false,
       worker,
     };
     this.wire(bound);

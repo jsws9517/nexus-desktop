@@ -7,8 +7,8 @@
  *   - registry guarantees dispose runs exactly once per mounted page (no
  *     leaked subscriptions or workers on close / replace / clear)
  *   - duplicate ids rejected; unknown ids no-op
- *   - Sub-Agents page renders live parallel-execution cards from the shared
- *     session map and re-renders on parallel_* events, with the passed-in
+ *   - Sub-Agents page renders live fan-out cards from the shared
+ *     session map and re-renders on fanout_* events, with the passed-in
  *     dispose unsubscribing from the event bus
  */
 
@@ -71,7 +71,7 @@ test('registry: mount calls page factory and dispose runs exactly once on close'
     return () => { disposes++; };
   }));
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getParallelSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
   const disposeViaRegistry = reg.mount('m', container, ctx);
   assert.equal(mounts, 1);
   assert.equal(disposes, 0);
@@ -88,7 +88,7 @@ test('registry: mounting a different tab disposes the previous page (no leaks)',
   reg.register(quickTab('t1', 'T1', undefined, () => () => { disposes.push('t1'); }));
   reg.register(quickTab('t2', 'T2', undefined, () => () => { disposes.push('t2'); }));
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getParallelSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
   reg.mount('t1', container, ctx);
   reg.mount('t2', container, ctx);
   assert.deepEqual(disposes, ['t1']);
@@ -101,7 +101,7 @@ test('registry: unregister disposes the mounted page and removes it', () => {
   let disposes = 0;
   reg.register(quickTab('u', 'U', undefined, () => () => { disposes++; }));
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getParallelSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
   reg.mount('u', container, ctx);
   assert.equal(reg.unregister('u'), true);
   assert.equal(disposes, 1);
@@ -115,7 +115,7 @@ test('registry: clear disposes every mounted page and empties the registry', () 
   reg.register(quickTab('c1', 'C1', undefined, () => () => { disposes++; }));
   reg.register(quickTab('c2', 'C2', undefined, () => () => { disposes++; }));
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getParallelSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
   reg.mount('c1', container, ctx);
   reg.mount('c2', container, ctx);
   assert.equal(reg.clear(), 2);
@@ -126,7 +126,7 @@ test('registry: clear disposes every mounted page and empties the registry', () 
 test('registry: mount for an unknown id returns undefined and does not throw', () => {
   const reg = new SidebarRegistryImpl();
   const container = new FakeContainer();
-  const ctx = { sessionId: '', getParallelSessions: () => new Map(), subscribe: () => () => {} };
+  const ctx = { sessionId: '', getFanoutSessions: () => new Map(), subscribe: () => () => {} };
   assert.equal(reg.mount('ghost', container, ctx), undefined);
 });
 
@@ -134,10 +134,10 @@ test('registry: mount for an unknown id returns undefined and does not throw', (
 // 2. Sub-Agents page (plan §4.4)
 // ===========================================================================
 
-function makeCtx(parallelSessions, subscriberRef) {
+function makeCtx(fanoutSessions, subscriberRef) {
   return {
     sessionId: 's1',
-    getParallelSessions: () => parallelSessions,
+    getFanoutSessions: () => fanoutSessions,
     subscribe(fn) {
       subscriberRef.current = fn;
       return () => { subscriberRef.current = null; };
@@ -160,7 +160,7 @@ function findEl(root, className) {
   return undefined;
 }
 
-test('sub-agents page: renders empty state when no parallel sessions', () => {
+test('sub-agents page: renders empty state when no fan-out sessions', () => {
   const container = new FakeContainer();
   const subscriberRef = { current: null };
   const ctx = makeCtx(new Map(), subscriberRef);
@@ -180,7 +180,7 @@ test('sub-agents page: renders one section per session with task cards', () => {
   const ctx = makeCtx(
     makeSessionMap({
       sessionId: 's1',
-      prompt: 'Parallel run',
+      prompt: 'Fan-out run',
       startTime: 1000,
       tasks: new Map([
         ['t1', { description: 'Task one', status: 'running' }],
@@ -203,7 +203,7 @@ test('sub-agents page: renders one section per session with task cards', () => {
   assert.ok(list, 'list rendered');
   assert.equal(list.children.length, 1, 'one session section');
   const section = list.children[0];
-  assert.match(section.children[0].textContent ?? '', /Parallel run/); // session head
+  assert.match(section.children[0].textContent ?? '', /Fan-out run/); // session head
   const cardEls = section.children.filter((el) => el.tagName === 'div' && el.innerHTML?.includes('fake-card'));
   assert.equal(cardEls.length, 2, 'two task cards rendered');
   assert.equal(cardRenderCount, 2);
@@ -225,7 +225,7 @@ test('sub-agents page: re-associates to the active session on tab switch (sessio
   const ctx = {
     sessionId: 's1',
     getActiveSessionId: () => active,
-    getParallelSessions: () => sessions,
+    getFanoutSessions: () => sessions,
     subscribe(fn) { handlers.push(fn); return () => { handlers.length = 0; }; },
   };
   let renders = 0;
@@ -253,19 +253,19 @@ test('sub-agents page: re-associates to the active session on tab switch (sessio
     active = 's3';
     for (const h of handlers) h({ type: 'session_changed', sessionId: 's3' });
     assert.equal(list().children.length, 1, 'empty state shown');
-    assert.match(list().children[0].textContent ?? '', /No parallel tasks in the current session/, 'scoped empty hint');
+    assert.match(list().children[0].textContent ?? '', /No sub-agent tasks in the current session/, 'scoped empty hint');
   } finally {
     dispose();
   }
 });
 
-test('sub-agents page: re-renders on parallel_start / parallel_end events', () => {
+test('sub-agents page: re-renders on fanout_start / fanout_end events', () => {
   const container = new FakeContainer();
   let handlers = [];
   const sessions = new Map();
   const ctx = {
     sessionId: 's1',
-    getParallelSessions: () => sessions,
+    getFanoutSessions: () => sessions,
     subscribe(fn) { handlers.push(fn); return () => { handlers = []; }; },
   };
   let renders = 0;
@@ -275,16 +275,16 @@ test('sub-agents page: re-renders on parallel_start / parallel_end events', () =
   });
   assert.equal(renders, 0, 'empty map → no cards');
 
-  // simulate a parallel_start arriving on the bus
-  const startEvt = { type: 'parallel_start', sessionId: 's1', prompt: 'Run!' };
+  // simulate a fanout_start arriving on the bus
+  const startEvt = { type: 'fanout_start', sessionId: 's1', prompt: 'Run!' };
   sessions.set('s1', { sessionId: 's1', prompt: 'Run!', startTime: 5, tasks: new Map([['k1', { status: 'pending' }]]) });
   for (const h of handlers) h(startEvt);
-  assert.equal(renders, 1, 'one card after parallel_start');
+  assert.equal(renders, 1, 'one card after fanout_start');
 
   // task becomes succeeded → re-render
   sessions.get('s1').tasks.set('k1', { status: 'succeeded', output: 'ok' });
-  for (const h of handlers) h({ type: 'task_progress', taskId: 'k1', status: 'succeeded' });
-  assert.equal(renders, 2, 're-rendered on task_progress');
+  for (const h of handlers) h({ type: 'fanout_task_progress', taskId: 'k1', status: 'succeeded' });
+  assert.equal(renders, 2, 're-rendered on fanout_task_progress');
 
   dispose();
   assert.equal(handlers.length, 0, 'unsubscribed on dispose');
@@ -297,9 +297,9 @@ test('sub-agents page: self-heals stale runs by invoking forceCloseStaleTasks on
   let sweepCalls = 0;
   const ctx = {
     sessionId: 's1',
-    getParallelSessions: () => sessions,
+    getFanoutSessions: () => sessions,
     // The page must consult the optional hook on every render so a stale
-    // "running" card is force-closed even without a fresh parallel event.
+    // "running" card is force-closed even without a fresh fan-out event.
     forceCloseStaleTasks: () => { sweepCalls++; },
     subscribe(fn) { handlers.push(fn); return () => { handlers = []; }; },
   };
@@ -311,11 +311,11 @@ test('sub-agents page: self-heals stale runs by invoking forceCloseStaleTasks on
   // Mount triggers an initial render → sweep hook consulted at least once.
   assert.ok(sweepCalls >= 1, 'sweep hook consulted on initial render');
 
-  // Any parallel event re-renders → the page keeps sweeping stale runs.
+  // Any fan-out event re-renders → the page keeps sweeping stale runs.
   sessions.set('s1', { sessionId: 's1', prompt: 'Run!', startTime: 5, tasks: new Map([['k1', { status: 'running' }]]) });
   const before = sweepCalls;
-  for (const h of handlers) h({ type: 'parallel_start', sessionId: 's1', prompt: 'Run!' });
-  assert.ok(sweepCalls > before, 'sweep hook re-consulted after a parallel event');
+  for (const h of handlers) h({ type: 'fanout_start', sessionId: 's1', prompt: 'Run!' });
+  assert.ok(sweepCalls > before, 'sweep hook re-consulted after a fan-out event');
 
   dispose();
 });
@@ -328,7 +328,7 @@ test('sub-agents page: re-paints static labels + empty state when the UI languag
   const ctx = {
     sessionId: 's1',
     getUiLang: () => lang,
-    getParallelSessions: () => sessions,
+    getFanoutSessions: () => sessions,
     subscribe(fn) { handlers.push(fn); return () => { handlers.length = 0; }; },
   };
   const title = () => findEl(container, 'sub-agents-title')?.textContent ?? '';
@@ -337,14 +337,14 @@ test('sub-agents page: re-paints static labels + empty state when the UI languag
     renderCard: () => '<div class="fake-card"></div>',
   });
   try {
-    assert.equal(title(), '🛰 子代理并行面板', 'mounts in the current language');
-    assert.match(empty(), /暂无并行执行/, 'empty state follows mount language');
+    assert.equal(title(), '🛰 子代理面板', 'mounts in the current language');
+    assert.match(empty(), /暂无多任务执行/, 'empty state follows mount language');
 
     // Language switch → the panel re-paints immediately (language_changed bus).
     lang = 'en';
     for (const h of handlers) h({ type: 'language_changed' });
     assert.equal(title(), '🛰 Sub-Agent Panel', 'title repainted in English');
-    assert.match(empty(), /No parallel executions yet/, 'empty state repainted');
+    assert.match(empty(), /No multi-task runs yet/, 'empty state repainted');
   } finally {
     dispose();
   }

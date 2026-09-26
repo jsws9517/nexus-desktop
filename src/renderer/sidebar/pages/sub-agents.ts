@@ -1,26 +1,28 @@
 /**
- * P1 — Sub-Agent sidebar page (flagship use case).
+ * Sub-Agent sidebar page (flagship use case).
  * See docs/dsh-plugin-adoption-plan.md §4.4.
  *
- * Renders a live overview of multi-agent parallel executions: one section per
- * active orchestration (from the shared parallel-session map) with a card per
- * task, driven by the agent event bus (parallel_start / task_progress /
- * parallel_end). It lives in its own sidebar container — completely outside
- * the chat stream — so parallel activity never blocks or pollutes the
- * conversation, and a heavy task fan-out cannot stall message rendering.
+ * Renders a live overview of multi-agent runs: one section per active run
+ * (from the shared fan-out-session map) with a card per task, driven by the
+ * agent event bus (fanout_start / fanout_task_progress / fanout_end) plus the
+ * core run events (task_graph / task_* / subagent_status) that the renderer
+ * mirrors into the same map. It lives in its own sidebar container —
+ * completely outside the chat stream — so multi-agent activity never blocks
+ * or pollutes the conversation, and a heavy task fan-out cannot stall message
+ * rendering.
  *
  * Dependency-injected so the page is unit-testable without Electron or a real
  * event bus: the test passes a fake context (scripted events + a plain Map).
  */
 
-import { ParallelExecutionCard } from '../../components/ParallelExecutionCard.js';
+import { TaskStatusCard } from '../../components/TaskStatusCard.js';
 import { STR } from '../../i18n.js';
 import type { AgentEvent } from '../../../agent/types.js';
-import type { ParallelSessionView, SidebarContext } from '../types.js';
+import type { FanoutSessionView, SidebarContext } from '../types.js';
 
 export interface SubAgentsPageOptions {
   /** Optional overrides for testing (inject a different card renderer). */
-  renderCard?: typeof ParallelExecutionCard;
+  renderCard?: typeof TaskStatusCard;
   getUiLang?: () => string;
 }
 
@@ -34,7 +36,7 @@ const statusRank: Record<string, number> = {
   cancelled: 5,
 };
 
-function sortSessions(a: [string, ParallelSessionView], b: [string, ParallelSessionView]): number {
+function sortSessions(a: [string, FanoutSessionView], b: [string, FanoutSessionView]): number {
   // Most-recently-started first (sessions store startTime).
   return (b[1]?.startTime ?? 0) - (a[1]?.startTime ?? 0);
 }
@@ -55,7 +57,7 @@ export function mountSubAgentsPage(
   ctx: SidebarContext,
   opts: SubAgentsPageOptions = {},
 ): () => void {
-  const renderCard = opts.renderCard ?? ParallelExecutionCard;
+  const renderCard = opts.renderCard ?? TaskStatusCard;
   // Live language: prefer the context accessor (renderer keeps it current) so
   // the page re-renders in the right language after a UI language change.
   const getLang = (): string => ctx.getUiLang?.() ?? opts.getUiLang?.() ?? 'zh-CN';
@@ -96,9 +98,9 @@ export function mountSubAgentsPage(
   const truncateId = (id: string, maxLen = 8): string =>
     id.length > maxLen ? id.slice(0, maxLen) + '…' : id;
 
-  /** Rebuild the whole list from the shared parallel-session map (cheap: card render is string-based). */
+  /** Rebuild the whole list from the shared fan-out-session map (cheap: card render is string-based). */
   const render = (): void => {
-    ctx.pruneParallelSessions?.();
+    ctx.pruneFanoutSessions?.();
     // Self-heal: close stale "running" tasks / dead batches before rendering so
     // the task graph never shows an unclosed slot after the timeout.
     ctx.forceCloseStaleTasks?.();
@@ -106,10 +108,10 @@ export function mountSubAgentsPage(
     titleEl.textContent = str('subAgentsPanel', getLang());
     legendEl.textContent = str('subAgentsLegend', getLang());
     // The panel is scoped to the FOCUSED workspace: switching tabs re-associates
-    // it to that session's parallel activity automatically.
+    // it to that session's multi-agent activity automatically.
     const activeSessionId = ctx.getActiveSessionId?.() ?? ctx.sessionId;
     scopedTracker.textContent = `🗂 ${activeSessionId ? truncateId(activeSessionId) : str('subAgentsDefaultSession', getLang())}`;
-    const all = [...ctx.getParallelSessions().entries()];
+    const all = [...ctx.getFanoutSessions().entries()];
     const sessions = all.filter(([sid]) => sid === activeSessionId).sort(sortSessions);
     list.replaceChildren();
     if (sessions.length === 0) {
@@ -160,10 +162,10 @@ export function mountSubAgentsPage(
   /** Incremental updates: a plain re-render is deterministic and O(running tasks). */
   const onEvent = (event: AgentEvent): void => {
     if (
-      event.type === 'parallel_start' || event.type === 'task_progress' || event.type === 'parallel_end' || event.type === 'parallel_error'
+      event.type === 'fanout_start' || event.type === 'fanout_task_progress' || event.type === 'fanout_end' || event.type === 'fanout_error'
       // Core sub-agent runs (spawn_subagent / DAG) are mirrored into the same
       // map by the renderer — refresh on those too, not just on the desktop
-      // decomposer's parallel_* batch events.
+      // fan-out batch events.
       || event.type === 'task_graph' || event.type === 'task_started' || event.type === 'task_completed'
       || event.type === 'task_failed' || event.type === 'task_interrupted' || event.type === 'subagent_status'
       || event.type === 'session_changed' || event.type === 'language_changed'
@@ -174,7 +176,7 @@ export function mountSubAgentsPage(
 
   const unsubscribe = ctx.subscribe(onEvent);
   // Auto-recycle: while the page is mounted, sweep finished sessions on a timer
-  // so expired cards disappear without needing a parallel event to re-render.
+  // so expired cards disappear without needing a fan-out event to re-render.
   const autoRecycle = setInterval(() => {
     render();
   }, 10_000);
@@ -186,7 +188,7 @@ export function mountSubAgentsPage(
   };
 }
 
-/** Assistant binding: constructs the page with the real ParallelExecutionCard. */
+/** Assistant binding: constructs the page with the real TaskStatusCard. */
 export const SubAgentsPage = {
   id: 'sub-agents',
   title: 'Sub-Agents',

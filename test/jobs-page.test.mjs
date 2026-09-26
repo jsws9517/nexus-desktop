@@ -138,7 +138,7 @@ function makeCtx(subscribers = []) {
     sessionId: 'sess-1',
     getActiveSessionId: () => 'sess-1',
     getUiLang: () => 'en',
-    getParallelSessions: () => new Map(),
+    getFanoutSessions: () => new Map(),
     subscribe(fn) {
       subscribers.push(fn);
       return () => {

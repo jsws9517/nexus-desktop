@@ -63,28 +63,35 @@ export interface SubTask {
   dependsOn?: string[];
 }
 
-/** Parallel execution events */
-export interface ParallelStartEvent {
-  type: 'parallel_start';
+/**
+ * Fan-out execution events.
+ *
+ * One user prompt is decomposed into N sub-tasks and each is run to
+ * completion. The sub-tasks are NOT run concurrently — they are executed
+ * one after another in the owning worker — so these are named fanout_*,
+ * not parallel_*, to keep the event stream honest about what happened.
+ */
+export interface FanoutStartEvent {
+  type: 'fanout_start';
   sessionId: string;
   prompt: string;
 }
 
-export interface ParallelEndEvent {
-  type: 'parallel_end';
+export interface FanoutEndEvent {
+  type: 'fanout_end';
   sessionId: string;
   tasks: SubTaskResult[];
   tokenUsage: TokenUsage;
 }
 
-export interface TaskProgressEvent {
-  type: 'task_progress';
+export interface FanoutTaskProgressEvent {
+  type: 'fanout_task_progress';
   taskId: string;
   status: string;
 }
 
-export interface ParallelErrorEvent {
-  type: 'parallel_error';
+export interface FanoutErrorEvent {
+  type: 'fanout_error';
   sessionId: string;
   error: string;
 }

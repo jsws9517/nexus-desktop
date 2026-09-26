@@ -1,6 +1,6 @@
 import type { SubTaskStatus } from '../../agent/types.js';
 
-interface ParallelExecutionCardProps {
+interface TaskStatusCardProps {
   taskId: string;
   description?: string;
   status: SubTaskStatus;
@@ -14,7 +14,7 @@ let tooltipElement: HTMLDivElement | null = null;
 function getTooltipElement(): HTMLDivElement {
   if (!tooltipElement) {
     tooltipElement = document.createElement('div');
-    tooltipElement.className = 'parallel-task-tooltip';
+    tooltipElement.className = 'task-status-tooltip';
     tooltipElement.style.display = 'none';
     document.body.appendChild(tooltipElement);
   }
@@ -31,7 +31,7 @@ function showTooltip(e: MouseEvent, content: string): void {
   tooltip.innerHTML = content;
   tooltip.style.display = 'block';
   
-  const card = (e.target as HTMLElement).closest('.parallel-task-card') as HTMLElement;
+  const card = (e.target as HTMLElement).closest('.task-status-card') as HTMLElement;
   const rect = card.getBoundingClientRect();
   const tooltipRect = tooltip.getBoundingClientRect();
   
@@ -71,14 +71,17 @@ function formatDuration(ms: number): string {
 }
 
 /**
- * Renders one sub-agent task card, styled exclusively through theme CSS
- * variables (`.parallel-task-card.status-*` in static/styles.css) — no
+ * Renders one task-status card, styled exclusively through theme CSS
+ * variables (`.task-status-card.status-*` in static/styles.css) — no
  * hardcoded hex/inline styles, so cards follow the app's palette in every
  * theme instead of the old grey-on-light look.
+ *
+ * Used for both a fan-out sub-task and a core bg_ shell job, so it is named
+ * for what it shows (a task's status) rather than for one caller.
  */
-export function ParallelExecutionCard({
+export function TaskStatusCard({
   taskId, description, status, output, durationMs, error,
-}: ParallelExecutionCardProps): string {
+}: TaskStatusCardProps): string {
   const displayTitle = description || taskId;
 
   const tooltipContent = `
@@ -91,7 +94,7 @@ export function ParallelExecutionCard({
   `;
 
   return `
-    <div class="parallel-task-card status-${status}" 
+    <div class="task-status-card status-${status}" 
          data-tooltip="${tooltipContent.replace(/"/g, '&quot;').replace(/\n/g, ' ')}">
       <div class="ptc-head">
         <span class="ptc-title">${displayTitle}</span>
@@ -120,11 +123,11 @@ export function ParallelExecutionCard({
   `;
 }
 
-export function initParallelCardTooltips(): void {
+export function initTaskStatusCardTooltips(): void {
   let currentCard: HTMLElement | null = null;
 
   document.addEventListener('mouseenter', (e) => {
-    const card = (e.target as HTMLElement).closest('.parallel-task-card') as HTMLElement | null;
+    const card = (e.target as HTMLElement).closest('.task-status-card') as HTMLElement | null;
     if (card && card !== currentCard) {
       currentCard = card;
       const tooltipContent = card.getAttribute('data-tooltip');
@@ -135,7 +138,7 @@ export function initParallelCardTooltips(): void {
   }, true);
 
   document.addEventListener('mouseleave', (e) => {
-    const card = (e.target as HTMLElement).closest('.parallel-task-card') as HTMLElement | null;
+    const card = (e.target as HTMLElement).closest('.task-status-card') as HTMLElement | null;
     if (card && card === currentCard) {
       const relatedTarget = e.relatedTarget as HTMLElement;
       if (!relatedTarget || !card.contains(relatedTarget)) {
