@@ -8,14 +8,15 @@ import { boundedSet } from './shared/bounded.js';
  * Desktop-only direct access to the core session DB (better-sqlite3).
  *
  * Used by regenerate()/withdraw() (the core exposes no "delete messages after
- * X" API) and by windowed message reads / token estimates that avoid pulling
- * every row of a long session into the renderer.
+ * X" API), by windowed message reads / token estimates that avoid pulling
+ * every row of a long session into the renderer, and by the main-process
+ * `nexus:listSessions` handler that serves the sidebar directly.
  *
  * Schema coupling: the SQL below mirrors core `src/session/store.ts` (messages
- * table). We verify the required columns via PRAGMA before any query and fail
- * soft (empty results + no throw) so a core schema rename degrades instead of
- * crashing the UI. TODO(收尾): if core renames/changes these columns (or the DB
- * path), this module must be updated in sync.
+ * + sessions tables). We verify the required columns via PRAGMA before any
+ * query and fail soft (empty results / null + no throw) so a core schema rename
+ * degrades instead of crashing the UI. TODO(收尾): if core renames/changes these
+ * columns (or the DB path), this module must be updated in sync.
  */
 
 export interface StoredRow {
@@ -42,11 +43,11 @@ const REQUIRED_COLUMNS = ['id', 'session_id', 'role', 'content'];
  * Connection lifecycle.
  *
  * Read connections are long-lived and shared across every call in this process
- * (each worker / test process gets its own module instance), so the expensive
- * open + PRAGMA column-verification cost is paid at most once instead of once
- * per IPC. Multi-worker concurrency is safe: this module is only imported by
- * agent workers, and the core enables journal_mode=WAL, so many processes can
- * read concurrently and writers only take a transient writer lock.
+ * (each worker / test process / the main process gets its own module instance),
+ * so the expensive open + PRAGMA column-verification cost is paid at most once
+ * instead of once per IPC. Multi-process concurrency is safe: the core enables
+ * journal_mode=WAL, so many processes can read concurrently and writers only
+ * take a transient writer lock.
  *
  * Deletions keep a fresh short-lived writer connection (rare, and busy_timeout
  * lets them wait out another process holding the WAL writer lock).
@@ -533,6 +534,121 @@ export function getNonEmptySessionIds(): Set<string> {
     return new Set(rows.map((r) => r.session_id));
   } catch {
     return new Set<string>();
+  }
+}
+
+/** One row of the user-facing session list (mirrors core `Session`). */
+export interface SessionListItem {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  createdAt: number;
+  updatedAt: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ListSessionsOptions {
+  limit?: number;
+  offset?: number;
+  excludeMock?: boolean;
+  excludeEmpty?: boolean;
+  search?: string;
+}
+
+// sessions-table schema check, same soft-fail pattern as the messages one.
+let sessionsSchemaOk = false;
+const SESSION_COLUMNS = ['id', 'name', 'provider', 'model', 'created_at', 'updated_at'];
+
+function checkSessionsSchema(db: Database.Database): boolean {
+  if (sessionsSchemaOk) return true;
+  try {
+    const cols = db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    sessionsSchemaOk = SESSION_COLUMNS.every((c) => names.has(c));
+    return sessionsSchemaOk;
+  } catch {
+    return false;
+  }
+}
+
+function toSessionItem(r: Record<string, unknown>): SessionListItem {
+  let metadata: Record<string, unknown> | undefined;
+  if (r.metadata) {
+    try {
+      const parsed = JSON.parse(String(r.metadata));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) metadata = parsed as Record<string, unknown>;
+    } catch {
+      // Corrupt metadata must not lose the row — the core's rowToSession throws
+      // here, but a sidebar entry with no metadata beats a missing entry.
+    }
+  }
+  return {
+    id: r.id ? String(r.id) : '',
+    name: r.name ? String(r.name) : '',
+    provider: r.provider ? String(r.provider) : '',
+    model: r.model ? String(r.model) : '',
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
+    ...(metadata ? { metadata } : {}),
+  };
+}
+
+/**
+ * The session list, straight from the DB — same SQL, filters and ordering as
+ * core `SessionStore.listSessions` plus the desktop-side filters the agent
+ * service used to apply *after* fetching every row:
+ *
+ * - ACP channel rows excluded (`metadata.isAcp` / legacy `'ACP Session'`).
+ * - `excludeMock` → `model NOT LIKE '%mock%'` (was: full fetch + `/mock/i`).
+ * - `excludeEmpty` → `EXISTS (SELECT 1 FROM messages ...)` (was: full fetch +
+ *   DISTINCT session_id set).
+ * - `search` → name/id LIKE plus the task-graph id set (all in SQL).
+ *
+ * Returns `null` when the DB (or its schema) is unreadable so callers can fall
+ * back to the worker path instead of reporting an empty sidebar. The read is
+ * side-effect free, so it is safe to serve from the main process while workers
+ * keep writing under WAL.
+ */
+export function listSessions(
+  opts: ListSessionsOptions = {},
+): { items: SessionListItem[]; total: number } | null {
+  const db = openDb();
+  if (!db || !checkSessionsSchema(db)) return null;
+  try {
+    const where = ["(COALESCE(json_extract(metadata, '$.isAcp'), 0) != 1 AND name != 'ACP Session')"];
+    const params: unknown[] = [];
+    if (opts.excludeMock) where.push(`model NOT LIKE '%mock%'`);
+    if (opts.excludeEmpty) where.push('EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id)');
+    const q = opts.search?.trim().toLowerCase();
+    if (q) {
+      const like = `%${likeEscape(q)}%`;
+      const parts = [`name LIKE ? ESCAPE '\\'`, `id LIKE ? ESCAPE '\\'`];
+      params.push(like, like);
+      const byTaskGraph = getSessionIdsByTaskGraph(q);
+      if (byTaskGraph.size > 0) {
+        parts.push(`id IN (${Array.from(byTaskGraph).map(() => '?').join(',')})`);
+        params.push(...byTaskGraph);
+      }
+      where.push(`(${parts.join(' OR ')})`);
+    }
+    const clause = where.join(' AND ');
+    const countRow = db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE ${clause}`).get(...params) as { n: number };
+    let sql = `SELECT id, name, provider, model, created_at, updated_at, metadata
+               FROM sessions WHERE ${clause} ORDER BY updated_at DESC`;
+    const rowParams = [...params];
+    if (opts.limit !== undefined && opts.limit >= 0) {
+      sql += ' LIMIT ?';
+      rowParams.push(opts.limit);
+      if (opts.offset !== undefined && opts.offset > 0) {
+        sql += ' OFFSET ?';
+        rowParams.push(opts.offset);
+      }
+    }
+    const rows = db.prepare(sql).all(...rowParams) as Array<Record<string, unknown>>;
+    return { items: rows.map(toSessionItem), total: Number(countRow.n ?? 0) };
+  } catch {
+    return null;
   }
 }
 

@@ -10,11 +10,19 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import * as vegaLite from 'vega-lite';
 import type { ToolDef, ToolResult, ToolContext } from '../tools/types.js';
 import { toArtifactContent, type Artifact } from '../shared/artifact.js';
 
 export type { ToolDef as ChartToolDef, ToolResult as ChartToolResult, ToolContext as ChartToolContext };
+
+// vega-lite costs ~0.5s of module graph; only the tool *defs* are needed when
+// the worker builds its tool list, so the compiler loads on first chart request
+// instead of on the earlyInit critical path (which gates the session list).
+type VegaLiteModule = typeof import('vega-lite');
+let vegaLitePromise: Promise<VegaLiteModule> | null = null;
+function loadVegaLite(): Promise<VegaLiteModule> {
+  return (vegaLitePromise ??= import('vega-lite'));
+}
 
 const MAX_CHART_ROWS = 5000;
 
@@ -235,6 +243,12 @@ export async function callChartTool(name: string, args: unknown, _ctx?: ToolCont
   const structuralError = validateSpecStructure(spec);
   if (structuralError) return chartFailed('bi.chart', `Invalid chart spec: ${structuralError}`);
 
+  let vegaLite: VegaLiteModule;
+  try {
+    vegaLite = await loadVegaLite();
+  } catch (e) {
+    return chartFailed('bi.chart', `vega-lite failed to load: ${e instanceof Error ? e.message : String(e)}`);
+  }
   let compiled: unknown;
   try {
     const result = vegaLite.compile(spec as never);

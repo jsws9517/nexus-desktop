@@ -2081,28 +2081,36 @@ function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void
   sessionListEl.appendChild(li);
 }
 
+/** Monotonic token so a superseded refresh (both were already in flight)
+ *  never overwrites the newer list with stale rows. */
+let refreshSessionsSeq = 0;
+
 async function refreshSessions(activeId?: string): Promise<void> {
   // Show skeleton loading state
   sessionListEl.innerHTML = '';
   for (let i = 0; i < 5; i++) {
     sessionListEl.appendChild(createSkeleton('session'));
   }
+  const seq = ++refreshSessionsSeq;
 
-  try {
-    pinnedIds = await window.nexusDesktop.getPinned();
-  } catch {}
   const opts = { excludeMock: true, search: searchQuery || undefined };
+  // Pinned lookup + both page reads run concurrently: listSessions is served
+  // straight from the DB by the main process, so these are three independent
+  // ~ms reads rather than a serial chain behind worker init.
+  const [pinned, pinnedRes, pageRes] = await Promise.all([
+    window.nexusDesktop.getPinned().catch(() => pinnedIds),
+    window.nexusDesktop.listSessions({ limit: 500, ...opts }).catch(() => null),
+    window.nexusDesktop.listSessions({
+      limit: SESSION_PAGE_SIZE,
+      offset: sessionPage * SESSION_PAGE_SIZE,
+      ...opts,
+    }),
+  ]);
+  if (seq !== refreshSessionsSeq) return;
+  pinnedIds = pinned;
   const pinnedSet = new Set(pinnedIds);
-  let pinnedItems: SessionInfo[] = [];
-  try {
-    const res = await window.nexusDesktop.listSessions({ limit: 500, ...opts });
-    pinnedItems = res.items.filter((s) => pinnedSet.has(s.id));
-  } catch {}
-  const { items: sessions, total } = await window.nexusDesktop.listSessions({
-    limit: SESSION_PAGE_SIZE,
-    offset: sessionPage * SESSION_PAGE_SIZE,
-    ...opts,
-  });
+  const pinnedItems: SessionInfo[] = pinnedRes ? pinnedRes.items.filter((s) => pinnedSet.has(s.id)) : [];
+  const { items: sessions, total } = pageRes;
   sessionTotal = total;
   for (const s of [...pinnedItems, ...sessions]) {
     if (s.name) tabNames.set(s.id, s.name);
@@ -5389,6 +5397,12 @@ window.nexusDesktop.onTabsChanged((open) => {
     initParallelCardTooltips();
     await loadLanguage();
     showOnboarding();
+    // Kick off the sidebar list first: nexus:listSessions is served straight
+    // from the DB by the main process, so it renders without waiting on the
+    // worker's earlyInit gate that blocks getStatus()/getProviders() below —
+    // the list no longer queues behind boot's serial awaits (and behind the
+    // per-tab restore that follows).
+    void refreshSessions().catch(() => {});
     void window.nexusDesktop.getInputRows().then((r) => applyInputRows(r)).catch(() => {});
     void window.nexusDesktop.getIntentRecognition().then((v) => (intentRecognitionEnabled = v)).catch(() => {});
     status = await window.nexusDesktop.getStatus();

@@ -12,7 +12,7 @@ const nexusDir = join(tmp, '.nexus');
 mkdirSync(nexusDir, { recursive: true });
 process.env.LLMA_DATA_DIR = tmp;
 
-const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph, estimateSessionTokensCached, recordTokenBaseline } =
+const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph, estimateSessionTokensCached, recordTokenBaseline, listSessions } =
   await import('../dist/session-db.js');
 
 let db;
@@ -250,4 +250,75 @@ test('recordTokenBaseline resets reported usage and counts only post-clear rows'
   r = estimateSessionTokensCached(sid, 'v1', est, 1);
   assert.equal(r.tokenEstimate, 5);
   assert.equal(r.messageCount, 1);
+});
+
+// ---- listSessions: the main-process fast path (mirrors core listSessions
+// ordering/ACP filter, with the desktop's mock/empty/search filters pushed
+// into SQL instead of filtering a full fetch). ----
+function seedListSessions() {
+  const ins = db.prepare(
+    'INSERT INTO sessions (id, name, provider, model, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+  const base = Date.now();
+  ins.run('ls-acp-meta', 'Acme channel', 'acp', 'acp-model', base, base, JSON.stringify({ isAcp: 1 }));
+  ins.run('ls-acp-legacy', 'ACP Session', 'acp', 'acp-model', base, base, null);
+  ins.run('ls-mock', 'Inner test run', 'anthropic', 'claude-mock-preview', base + 1, base + 1, null);
+  ins.run('ls-ghost', 'Ghost session', 'anthropic', 'claude-3', base + 2, base + 2, null);
+  ins.run('ls-real', 'Real session', 'anthropic', 'claude-3', base + 3, base + 3, null);
+  const insMsg = db.prepare('INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)');
+  insMsg.run('ls-mock', 'user', 'hi', base + 4);
+  insMsg.run('ls-real', 'user', 'hi', base + 5);
+  db.prepare('INSERT INTO task_graphs (id, session_id, root_request, nodes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run('graph-ls-1', 'ls-real', 'root', '[]', base, base);
+}
+
+test('listSessions drops ACP rows by default and orders newest-first', () => {
+  seedListSessions();
+  const res = listSessions({ limit: 1000 });
+  assert.ok(res, 'returns a result (not null) on a readable DB');
+  const ids = res.items.map((s) => s.id);
+  assert.ok(!ids.includes('ls-acp-meta'), 'metadata.isAcp rows excluded');
+  assert.ok(!ids.includes('ls-acp-legacy'), "legacy 'ACP Session' name rows excluded");
+  assert.ok(ids.includes('ls-real'));
+  assert.equal(res.total, ids.length, 'total matches the filtered row count');
+  const times = res.items.map((s) => s.updatedAt);
+  assert.deepEqual(times, [...times].sort((a, b) => b - a), 'updated_at DESC');
+  const real = res.items.find((s) => s.id === 'ls-real');
+  assert.equal(real.provider, 'anthropic');
+  assert.equal(real.model, 'claude-3');
+});
+
+test('listSessions pushes excludeMock / excludeEmpty into SQL', () => {
+  const noMock = listSessions({ limit: 1000, excludeMock: true }).items.map((s) => s.id);
+  assert.ok(!noMock.includes('ls-mock'), 'mock model rows dropped');
+  assert.ok(noMock.includes('ls-real'), 'non-mock rows kept');
+  const noEmpty = listSessions({ limit: 1000, excludeEmpty: true }).items.map((s) => s.id);
+  assert.ok(!noEmpty.includes('ls-ghost'), 'message-less session dropped');
+  assert.ok(noEmpty.includes('ls-real'));
+  assert.ok(noEmpty.includes('ls-mock'), 'mock session still has messages');
+});
+
+test('listSessions search matches name, id and task-graph ids', () => {
+  const byName = listSessions({ search: 'ghost' });
+  assert.deepEqual(byName.items.map((s) => s.id), ['ls-ghost']);
+  const byId = listSessions({ search: 'LS-REAL' });
+  assert.deepEqual(byId.items.map((s) => s.id), ['ls-real'], 'id match is case-insensitive');
+  const byGraph = listSessions({ search: 'graph-ls' });
+  assert.deepEqual(byGraph.items.map((s) => s.id), ['ls-real'], 'task_graphs id resolves the owning session');
+  // Search combines with the other filters (nothing empty/ACP/mocks leak in).
+  const combined = listSessions({ search: 'ghost', excludeEmpty: true, excludeMock: true });
+  assert.deepEqual(combined.items, [], 'search honours excludeEmpty');
+});
+
+test('listSessions pagination keeps total stable across offsets', () => {
+  const all = listSessions({});
+  const first = listSessions({ limit: 1, offset: 0 });
+  const second = listSessions({ limit: 1, offset: 1 });
+  assert.equal(first.items.length, 1);
+  assert.equal(second.items.length, 1);
+  assert.equal(first.total, all.total);
+  assert.equal(second.total, all.total);
+  assert.notEqual(first.items[0].id, second.items[0].id);
+  // Core semantics: offset is ignored unless a limit is given.
+  assert.equal(listSessions({ offset: 1 }).items.length, all.items.length);
 });

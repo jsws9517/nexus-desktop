@@ -22,7 +22,7 @@ import { Updater } from '../main/updater.js';
 import { getRepoGitStatus, type RepoStatusResult } from '../main/git-internal.js';
 import { globalRulesPath, ensureGlobalRules, resetGlobalRules } from '../tools/agents.js';
 import { recentLogLines } from '../shared/logger.js';
-import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList } from '../shared/ipc-validation.js';
+import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateWorkerParams } from '../shared/ipc-validation.js';
 import { CHANNELS } from './channels.js';
 import type { DesktopStateAccess } from '../main/desktop-state.js';
 import type { BgJobManager } from '../main/bg-job-manager.js';
@@ -109,6 +109,36 @@ export interface IpcContext extends DesktopStateAccess {
   bgJobManager: BgJobManager;
 }
 
+/**
+ * Coerce `nexus:listSessions` params for the direct DB read. Runs the same
+ * spec the worker would (`validateWorkerParams`) so an invalid payload produces
+ * the identical error message, then clamps the numeric pagination fields so a
+ * hostile/huge value can't turn into an unbounded query.
+ */
+function normalizeListSessionsParams(params?: Record<string, unknown>): {
+  limit?: number;
+  offset?: number;
+  excludeMock?: boolean;
+  excludeEmpty?: boolean;
+  search?: string;
+} {
+  const err = validateWorkerParams('listSessions', params);
+  if (err) throw new Error(`invalid request: ${err}`);
+  const rawLimit = params?.limit;
+  const rawOffset = params?.offset;
+  const rawSearch = params?.search;
+  const limit = isFiniteNumber(rawLimit) ? Math.max(0, Math.min(100000, Math.floor(rawLimit))) : undefined;
+  const offset = isFiniteNumber(rawOffset) ? Math.max(0, Math.min(100000000, Math.floor(rawOffset))) : undefined;
+  const search = isString(rawSearch) && rawSearch ? rawSearch.slice(0, 200) : undefined;
+  return {
+    limit,
+    offset,
+    excludeMock: params?.excludeMock === true,
+    excludeEmpty: params?.excludeEmpty === true,
+    search,
+  };
+}
+
 export function registerIpc(ctx: IpcContext): void {
   const { worker, sessionWorkers, resourceMon, updater, log, rateLimitRegistry, bgJobManager: bjm } = ctx;
   const call = (method: string) => async (_e: unknown, params?: Record<string, unknown>) => {
@@ -159,7 +189,27 @@ export function registerIpc(ctx: IpcContext): void {
     await call('abort')(_e, params);
   });
   ipcMain.handle(CHANNELS.startSession, call('startSession'));
-  ipcMain.handle(CHANNELS.listSessions, call('listSessions'));
+  // Session list: read straight from the core session DB in the main process
+  // instead of routing through the worker. Going through the worker made the
+  // sidebar wait on the phase-1 earlyInit gate (a cold worker spends ~4s on its
+  // module graph + Agent construction) and on whatever that worker already had
+  // queued — a cold getSessionStats scan measured at 854ms of added latency.
+  // The rows come from the same SQL the core runs (ACP filter, ordering,
+  // pagination, mock/empty/search filters pushed down); when the DB cannot be
+  // read (fresh install before the first session, schema drift) we fall back to
+  // the worker path below.
+  ipcMain.handle(CHANNELS.listSessions, async (_e, params?: Record<string, unknown>) => {
+    const opts = normalizeListSessionsParams(params);
+    try {
+      const { listSessions } = await import('../session-db.js');
+      const direct = listSessions(opts);
+      if (direct) return direct;
+      log('listSessions: direct DB read unavailable, falling back to worker');
+    } catch (err) {
+      log(`listSessions: direct DB read failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return call('listSessions')(_e, params);
+  });
   ipcMain.handle(CHANNELS.getMessages, call('getMessages'));
   ipcMain.handle(CHANNELS.getSlashLog, call('getSlashLog'));
   ipcMain.handle(CHANNELS.getSlashLogPath, call('getSlashLogPath'));

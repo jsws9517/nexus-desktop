@@ -19,12 +19,26 @@
 import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, normalize, resolve as resolvePath } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import ExcelJS from 'exceljs';
 import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
 import type { ToolDef, ToolResult, ToolContext } from '../tools/types.js';
 import { toArtifactContent, type Artifact } from '../shared/artifact.js';
 
 export type { ToolDef as SheetToolDef, ToolResult as SheetToolResult, ToolContext as SheetToolContext };
+
+// exceljs costs ~0.4-0.5s of module graph; the registry only needs the tool
+// *defs* at worker boot, so the implementation loads on first XLSX use instead
+// of on the earlyInit critical path (which gates the session list).
+type ExcelJSModule = typeof import('exceljs');
+let exceljsPromise: Promise<ExcelJSModule> | null = null;
+function loadExcelJS(): Promise<ExcelJSModule> {
+  return (exceljsPromise ??= import('exceljs').then((m) => {
+    // exceljs is CJS with no ESM default export: under dynamic import its
+    // `default` is module.exports, which is what the static default import
+    // resolved to before.
+    const ns = m as ExcelJSModule & { default?: ExcelJSModule };
+    return ns.default ?? m;
+  }));
+}
 
 // --- caps (zip-bomb / token-bomb guards) ---
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -184,6 +198,7 @@ async function readCsv(path: string): Promise<{ columns: string[]; rows: unknown
 async function readXlsx(path: string, sheetName?: string): Promise<{ columns: string[]; rows: unknown[][] }> {
   const st = await stat(path);
   if (st.size > MAX_FILE_BYTES) throw new Error(`XLSX exceeds ${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB cap`);
+  const ExcelJS = await loadExcelJS();
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(path);
   const ws = sheetName ? (wb.getWorksheet(sheetName) ?? wb.worksheets[0]) : wb.worksheets[0];
