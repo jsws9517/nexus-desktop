@@ -317,6 +317,11 @@ function forwardTabEvent(sessionId: string, event: AgentEvent): void {
 /**
  * Handle parallel execution request from a worker process.
  * The main process creates the OrchestratorAgent and executes the parallel tasks.
+ *
+ * DEAD PATH — no call site as of 2026-09-26 and no emitter for
+ * `parallel_request` (only the type exists, src/agent/types.ts). Kept for
+ * reference; the live path is `AgentService.chatParallel` (worker-side, serial).
+ * See docs/module-map-panels-and-runs.md §2 path (d).
  */
 async function handleParallelRequest(sessionId: string, event: { type: string; prompt: string }): Promise<void> {
   const { OrchestratorAgent } = await import('../agent/sub-agent/orchestrator.js');

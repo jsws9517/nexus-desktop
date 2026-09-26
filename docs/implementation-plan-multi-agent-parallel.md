@@ -1,6 +1,10 @@
 # Multi-Agent Parallel Architecture - Implementation Plan
 
-> Status: Ready for Implementation
+> Status: **SUPERSEDED — never executed, do not resume from this.**
+> The phases below describe `SubAgentExecutor` / `OrchestratorAgent` /
+> `nexus:runSubAgent`, none of which are reachable (no caller, no IPC handler,
+> no preload export). Current state of the four execution paths and the panels:
+> [module-map-panels-and-runs.md](./module-map-panels-and-runs.md).
 > Based on: `multi-agent-parallel-architecture.md`
 > Created: 2026
 

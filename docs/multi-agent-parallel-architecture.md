@@ -1,6 +1,12 @@
 # Multi-Agent Parallel Architecture Design
 
-> Status: Proposed
+> Status: **SUPERSEDED — planning artifact, do not implement from this.**
+> The design below was never wired: `OrchestratorAgent` / `SubAgentExecutor` /
+> `runSubAgent` / `parallel_request` are unreachable dead paths (see
+> `handleParallelRequest` in `src/main/index.ts`, which has no call site).
+> For what actually runs today — the four execution paths, the three sidebar
+> panels and the dead `bj_` job chain — see
+> [module-map-panels-and-runs.md](./module-map-panels-and-runs.md).
 > Created: 2026
 > Related: [Sub-Agent Architecture](./sub-agent-architecture.md)
 

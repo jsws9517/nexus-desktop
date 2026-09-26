@@ -2,6 +2,7 @@
 
 > Status: Finalized. M0 has been implemented per this plan; M1/M2 are placeholders awaiting real-world testing requirements.
 > Decision records follow below.
+> Related: [module-map-panels-and-runs.md](./module-map-panels-and-runs.md) — what actually runs today (panels, execution paths, dead paths), and [multi-agent-parallel-architecture.md](./multi-agent-parallel-architecture.md) (superseded).
 
 ## 1. Objective
 

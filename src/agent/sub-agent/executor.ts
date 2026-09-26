@@ -12,15 +12,22 @@ export type WorkerFactory = (scriptPath: string) => SubAgentWorker;
 
 /**
  * Manages the lifecycle of parallel sub-agent execution.
- * 
+ *
  * Key responsibilities:
  * - Dependency resolution via topological sort
  * - Concurrency control with batching
  * - Worker process lifecycle management
  * - Result aggregation
- * 
+ *
  * Note: Uses dependency injection for worker creation to avoid
  * circular imports with Electron main-process modules.
+ *
+ * DEAD PATH — unreachable as of 2026-09-26: only `OrchestratorAgent` constructs
+ * it, and that class has no reachable caller (see src/main/index.ts
+ * `handleParallelRequest`). Nothing in the app ever issues `runSubAgent` over
+ * the worker port. Real sub-agent execution is core `SubAgentWorker`
+ * (nexus-coder) or the serial `chatParallel` loop. See
+ * docs/module-map-panels-and-runs.md §2/§3.
  */
 export class SubAgentExecutor {
   private workers = new Map<string, SubAgentWorker>();

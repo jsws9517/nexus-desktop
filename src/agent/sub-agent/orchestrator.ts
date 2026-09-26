@@ -7,11 +7,18 @@ import { logger } from '../../shared/logger.js';
 
 /**
  * Coordinates task decomposition and result aggregation.
- * 
+ *
  * Responsibilities:
  * - Decompose user request into parallel sub-tasks
  * - Execute sub-tasks via SubAgentExecutor
  * - Aggregate results into final output
+ *
+ * DEAD PATH — unreachable as of 2026-09-26. Its only caller is
+ * `handleParallelRequest` (src/main/index.ts), which nothing invokes: no code
+ * emits `parallel_request` (the type exists only in src/agent/types.ts), so no
+ * `bj_` job is ever registered and `executeParallel` never runs. The live
+ * "parallel" path is `AgentService.shouldUseParallel` → `chatParallel`, a
+ * serial in-process loop. See docs/module-map-panels-and-runs.md §2/§3.
  */
 export class OrchestratorAgent {
   private executor: SubAgentExecutor;

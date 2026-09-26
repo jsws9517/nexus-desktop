@@ -343,6 +343,11 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   getMcpStatus: () => service.getMcpStatus(),
   getMcpServers: () => service.getMcpServers(),
   setMcpServer: (req: WorkerRequest & { method: 'setMcpServer' }) => service.setMcpServer(req.params.name, req.params.enabled),
+  // DEAD (2026-09-26): only `SubAgentExecutor` requests `runSubAgent`, and that
+  // class is unreachable (src/main/index.ts `handleParallelRequest` has no call
+  // site); `nexus:runSubAgent` has neither an ipcMain handler nor a preload
+  // export. Real sub-agent runs go through core `SubAgentWorker` (nexus-coder).
+  // See docs/module-map-panels-and-runs.md §3.
   runSubAgent: async (req: WorkerRequest & { method: 'runSubAgent' }) => {
     const { taskId, prompt, tools, maxTurns, timeoutMs, constitution } = req.params;
     subAgentStates.set(taskId, { status: 'running', startTime: Date.now() });
@@ -438,6 +443,12 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     }
     if (background) {
       // Enqueue as a persistent bg_job — survives worker crashes.
+      // ⚠️ DEAD BRANCH: `BgJobManager.create()` only records `queued` and no
+      // runner ever executes `prompt` (see src/main/bg-job-manager.ts header),
+      // so this job would decay to `stale` after STUCK_THRESHOLD. On top of
+      // that the whole `routeViaAcp` method has no caller (no ipcMain handler,
+      // no preload export) — `acp_router(action=route)` only returns config.
+      // See docs/module-map-panels-and-runs.md §3.
       return sendBgJobRequest('create', {
         title: `[${roleId}] ${prompt.slice(0, 80)}`,
         prompt: `[Role: ${roleId}]\n${role.systemPrompt}\n\n---\n\n${prompt}`,

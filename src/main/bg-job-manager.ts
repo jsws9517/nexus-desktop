@@ -26,6 +26,14 @@
  *   On init, any job whose status is `queued` or `running` is re-queued so
  *   the orchestrator picks it up again.  Stuck jobs older than STUCK_THRESHOLD
  *   are auto-failed with a note so the UI never shows a permanent spinner.
+ *
+ * ⚠️ REGISTRY ONLY — there is no runner (2026-09-26). `create()` records a job
+ * as `queued` and nothing in the app ever sets `running` or executes
+ * `def.prompt`: the only status writers are `OrchestratorAgent` (unreachable,
+ * see docs/module-map-panels-and-runs.md §2 path d) and the unexposed
+ * `nexus:bgJobProgress` handler. The lifecycle/recovery wording above describes
+ * the original design, not current behaviour — a job created today would sit in
+ * `queued` until STUCK_THRESHOLD marks it `stale`.
  */
 
 import { v4 as uuidv4 } from 'uuid';
