@@ -11,7 +11,7 @@
 - 消息排队：agent 繁忙时发送的消息立即上屏，当前轮次结束后逐条自动提交。
 - 多标签会话：每个标签页运行在独立 worker 进程中，一个标签的流式输出不会阻塞其他标签，各标签保持独立的 `cwd` 与 provider/model 覆盖。
 - 快速开标签：系统资源允许时预置一个**未绑定会话**的备用 worker，常见开标签路径跳过冷启动（进程 spawn + Agent 构造），并受资源监控与标签上限门禁。
-- **Sub-Agent 并行执行**：复杂请求由 `OrchestratorAgent` 经 LLM 分解为多个独立子任务，在各隔离 worker 进程中并发执行（支持依赖排序、并发上限控制、失败 graceful fallback）。
+- **子代理任务** — Sub-Agents 侧栏页面实时渲染所有进行中的任务卡：核心 DAG 图（依赖并行，按拓扑序）、独立的 `spawn_subagent` 调用，以及桌面启发式 fan-out 批次（同 worker 内顺序执行，提示含 "和"/"与"/"分别" 等时触发）。in-chat 的 fan-out 卡片只展示桌面 fan-out 批次；核心 DAG 任务出现在侧栏面板中。
 - **Skill / Artifact 流水线（M0）**：办公技能（`sheet.analyze`、`bi.chart`）返回结构化 `Artifact` 负载，直接以内联卡片形式渲染为 Vega-Lite 图表、CSV 表格或 markdown 内容。
 - 剪切板贴图：按 `Alt+V`（与 coder-core 一致）把剪切板截图/图片作为附件加入输入框；原生图片粘贴也会被识别。
 - Windows 安装包：带品牌图标。
@@ -41,8 +41,9 @@
                            ▼
 ┌────────────────────────────────────────────────────┐
 │ worker (Node AgentService)                         │
-│ AgentService — /plan → /go → /revise core          │
-│ Sub-Agent Executor — parallel tasks                │
+│ AgentService — /plan → /go → /revise DAG core      │
+│   · fan-out 批次（桌面启发式）                       │
+│   · DAG 桥接 → core executePlan*                    │
 │ Skills — sheet.read / sheet.analyze / bi.chart     │
 │ Built-in Tools — filesystem / sqlite / think       │
 │ Artifact Protocol — ToolResult.content             │
@@ -59,10 +60,7 @@
 - **预热备用 worker**：当资源监控状态健康且标签数低于上限时，预创建一个未绑定会话的 worker。它直到某个标签真正打开才被绑定，因此不可能被误判为"携带进行中轮次的空闲进程"。由 `open()`/`openNew()` 原子接管，关闭标签时自动补位。
 - **MCP 总线（hub）**：所有 MCP 服务器的连接与启动统一由主进程 `mcp-hub` 持有，各 worker 通过它代理工具调用（每服务器一个 OS 进程——无 per-tab 影子进程）。内置工具（文件系统 / sqlite / 顺序思考）通过统一注册表（`src/tools/`）在进程内运行。
 - **进程内内置服务**（`mcp-hub.ts`）：`memory`、`git`、`fetch`、`time` 四个 MCP 服务器由主进程内的单进程实现替代，设置 UI 中显示为"已连接"，无需 spawn 外部进程。
-- **Sub-Agent 并行**（`src/agent/sub-agent/`）：
-  - `OrchestratorAgent` 通过 LLM 将 prompt 分解为带依赖边的 `SubTask[]`。
-  - `SubAgentExecutor` 并发运行独立任务（默认并发上限 4，总超时 5 分钟），对有依赖的任务做拓扑排序，并聚合结果。
-  - 部分失败时优雅降级：已成功子任务的结果一并返回，失败子任务附带错误报告。
+- **Fan-out 批次执行**（`src/agent/service.ts:1103`）：当提示匹配分解启发式（例如"分析 A 和 B 和 C"）时，服务在同一 worker 内以顺序 `for` 循环执行 `runTurn()`，发出 `fanout_start / fanout_task_progress / fanout_end` 事件。桌面 Sub-Agents 面板和 in-chat 卡片均观察这些事件。该路径为顺序执行——不产生子 worker。
 - **Artifact 流水线**（`src/shared/artifact.ts` + `src/renderer/artifacts/`）：
   Skill 结果以 JSON 信封（`{"__artifactVersion":1,"artifact":{…}}`）嵌入 `ToolResult.content`。渲染器通过 `parseArtifactContent()` 解析后，分发给类型特定的视图组件（`chart-view.ts`、`table-view.ts`）。导出通过 `nexus:saveArtifact` 对话框完成。
 - 应用与 CLI 共享 `~/.nexus`（会话 DB + 会话配置），**不依赖** CLI 二进制。
@@ -76,8 +74,8 @@ src/
                   进程内工具（memory-kg / git-internal / fetch-tools / time-tools）
   ipc/            频道常量（channels.ts）+ registerIpc 处理器（register.ts）
   agent/          AgentService 与共享桥接类型
-    service.ts    核心对话循环、/plan /go /revise DAG、Sub-Agent 接线
-    sub-agent/    OrchestratorAgent、SubAgentExecutor、Decomposer、类型定义、指标
+    service.ts    核心对话循环、/plan /go /revise DAG、fan-out 启发式
+    sub-agent/    [已删除 — 见 c911e71] 从未接入，dead orchestrator 路径
   tools/          内置工具注册表（文件系统 / sqlite / 顺序思考）
   skills/         Artifact 生产型技能（sheet / chart）
   renderer/       渲染器 UI、i18n、markdown 流式渲染、artifact 渲染器

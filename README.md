@@ -23,10 +23,12 @@ replaces the terminal UI layer.
 - Fast tab opening: a pre-warmed, session-unbound spare worker is kept ready when
   system resources allow, so the common open-tab path skips a cold process
   spawn + Agent construction (gated on the resource monitor + tab ceiling).
-- **Sub-Agent parallel execution**: complex requests are decomposed by an
-  `OrchestratorAgent` into independent sub-tasks that run in isolated worker
-  processes concurrently (with dependency resolution, concurrency limits, and
-  graceful fallback to serial).
+- **Sub-agent runs** — the Sub-Agents sidebar page renders live task cards for every
+  in-flight run: core DAG graphs (dependency-parallel, topological order),
+  standalone `spawn_subagent` calls, and desktop heuristic fan-out batches
+  (serial in-process, triggered when a prompt contains "and"/"与"/"分别" etc.).
+  The in-chat fan-out card shows only desktop fan-out batches; core runs appear
+  in the sidebar panel.
 - **Skill / Artifact pipeline (M0)**: office skills (`sheet.analyze`,
   `bi.chart`) produce structured `Artifact` payloads that render inline as
   Vega-Lite charts, CSV tables, and markdown cards directly in the chat stream.
@@ -59,8 +61,9 @@ replaces the terminal UI layer.
                            ▼
 ┌────────────────────────────────────────────────────┐
 │ worker (Node AgentService)                         │
-│ AgentService — /plan → /go → /revise core          │
-│ Sub-Agent Executor — parallel tasks                │
+│ AgentService — /plan → /go → /revise DAG core      │
+│   · fan-out batches (desktop heuristic)            │
+│   · DAG bridge → core executePlan*                 │
 │ Skills — sheet.read / sheet.analyze / bi.chart     │
 │ Built-in Tools — filesystem / sqlite / think       │
 │ Artifact Protocol — ToolResult.content             │
@@ -94,14 +97,12 @@ replaces the terminal UI layer.
   servers are replaced by single-process implementations; their names are
   shadowed in the settings UI so they show as "connected" without spawning
   external processes.
-- **Sub-Agent parallelism** (`src/agent/sub-agent/`):
-  - `OrchestratorAgent` decomposes a prompt via LLM into `SubTask[]` with
-    dependency edges.
-  - `SubAgentExecutor` runs independent tasks concurrently (default fan-out = 4,
-    total timeout = 5 min), topologically sorts dependent tasks, and aggregates
-    results.
-  - Failed sub-tasks fall back gracefully; partial failure returns succeeded
-    results alongside error reports.
+- **Fan-out batch execution** (`src/agent/service.ts:1103`): when a prompt
+  matches decomposition heuristics (e.g. "analyze A and B and C"), the service
+  runs a serial `for` loop of `runTurn()` calls inside the *same* worker,
+  emitting `fanout_start / fanout_task_progress / fanout_end` events. The
+  desktop Sub-Agents panel and the in-chat card both observe these events.
+  This path is serial — it does not spawn child workers.
 - **Artifact pipeline** (`src/shared/artifact.ts` + `src/renderer/artifacts/`):
   Skill results embed a JSON envelope (`{"__artifactVersion":1,"artifact":{…}}`)
   inside `ToolResult.content`. The renderer parses it with
@@ -119,8 +120,8 @@ src/
                   in-process tools (memory-kg / git-internal / fetch-tools / time-tools)
   ipc/            channel constants (channels.ts) + registerIpc handlers (register.ts)
   agent/          AgentService + shared bridge types
-    service.ts    core conversation loop, /plan /go /revise DAG, sub-agent wiring
-    sub-agent/    OrchestratorAgent, SubAgentExecutor, Decomposer, types, metrics
+    service.ts    core conversation loop, /plan /go /revise DAG, fan-out heuristic
+    sub-agent/    [DELETED — see commit c911e71] was never wired; dead orchestrator path
   tools/          built-in tool registries (filesystem / sqlite / sequential-thinking)
   skills/         artifact-producing skills (sheet / chart)
   renderer/       renderer UI, i18n, markdown streaming, artifact renderers

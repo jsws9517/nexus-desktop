@@ -1,6 +1,17 @@
 # Multi-Agent Parallel Architecture - Phase Execution Plan
 
-> Status: Ready for Execution
+> ⚠️ **SUPERSEDED** — this document describes the *original* planning scaffold
+> (with a never-wired `OrchestratorAgent` / `SubAgentExecutor` / `runSubAgent`
+> chain). It was overwritten in-place during P1-P3 by the actual implementation
+> path: shared types in `src/agent/types.ts`, a serial-in-worker fan-out in
+> `AgentService.chatFanout` (`src/agent/service.ts:1103`), and a three-kind run
+> registry in the Sub-Agents sidebar (`src/renderer/renderer.ts:702`).
+>
+> **Do not implement from this document.** For the current state, see
+> [module-map-panels-and-runs.md](./module-map-panels-and-runs.md) and the
+> commit log (`c911e71`, `4825c92`, `b450170`).
+>
+> Status: **SUPERSEDED** — kept as a historical artifact.
 > Based on: `implementation-plan-multi-agent-parallel.md`
 > Created: 2026
 

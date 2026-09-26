@@ -15,7 +15,7 @@ This document specifies the requirements and design for selectively adopting ide
 | Priority | Source Plugin | Verdict | Rationale |
 |----------|---------------|---------|-----------|
 | P0 | Tolten Aegis | **Adopt (full)** | Deepest fit: "project constitution" enforced at every model step, directly complements the planned isolated sub-agent architecture |
-| P1 | DSH Better SideBar | **Adopt (full)** | Open sidebar extension API + dedicated sub-agent page aligns with the planned `ParallelExecutionCard` UI |
+| P1 | DSH Better SideBar | **Adopt (full)** | Open sidebar extension API + dedicated sub-agent page — today rendered as `TaskStatusCard` with three kind sections (`dag` / `standalone` / `fanout`) per P4b |
 | P2 | dsh-web (selective) | **Adopt (3 capabilities)** | Usage statistics, per-model capability declaration, task board (deferred) |
 | P3 | dsh-TUI (concepts only) | **Adopt (interaction patterns)** | Context progress bar, TPS gauge, double-Esc rewind — renderer-layer only |
 | P4 | ModLens | **Adopt (routing strategy only)** | Vision toolchain already exists (`ocr_extract` / `analyze_image`); borrow only the auto-detect-and-route idea |
@@ -34,7 +34,9 @@ This document specifies the requirements and design for selectively adopting ide
 - **Prompt decoration**: `AgentService` already supports `ctx.prependToSystem()` / `replaceSystemByMarker()` (see the WORK_MARKER work-mode enforcement precedent in `src/agent/service.ts`).
 - **Permissions & audit**: path authorizer + audit manager with an `askUser` bridge routed through the UI; auto/unattended modes treat audit gates as auto-approved.
 - **MCP**: single main-process hub (`mcp-hub.ts`) proxies MCP tools for all workers (one OS process per MCP server).
-- **Planned**: multi-agent parallel architecture (orchestrator + isolated sub-agent sessions) per `multi-agent-parallel-architecture.md`.
+- **Orchestrator path** (`multi-agent-parallel-architecture.md`): never wired — see §3 of `module-map-panels-and-runs.md`.
+- **Fan-out path** (desktop heuristic, `AgentService.chatFanout` at `src/agent/service.ts:1103`): serial-in-worker batches triggered by prompt heuristics, live since P2.
+- **Core DAG path** (`/go` → `executePlan*`): dependency-parallel in the core, surfaced in Sub-Agents panel with topological order per P4b.
 
 ### 2.2 Why DSH Plugins Are Relevant
 
@@ -237,7 +239,7 @@ that must survive any regeneration from this plan:
 | Better SideBar Concept | Nexus-Desktop Mapping |
 |---|---|
 | `registerTab()` / `registerFileViewer()` open API | Renderer sidebar registry + IPC bridge (`ipcMain.handle('sidebar:registerTab', …)`) |
-| Built-in pages: file render/edit, terminal, side chat, Git, **sub-agent** | File view → existing code viewer; terminal → new; side chat → new; Git → wrap existing 36 `git_*` tools; **sub-agent page → aggregate `ParallelExecutionCard` view** |
+| Built-in pages: file render/edit, terminal, side chat, Git, **sub-agent** | File view → existing code viewer; terminal → new; side chat → new; Git → wrap existing 36 `git_*` tools; **sub-agent page → `TaskStatusCard` view grouped into three sections (`dag` / `standalone` / `fanout`)** |
 | Extension model decoupled from core chat flow | Sidebar pages live outside the main conversation stream, keeping core context lean |
 
 ### 4.3 Sidebar Extension API (v1 Surface)
@@ -263,25 +265,26 @@ export interface SidebarRegistry {
 
 ### 4.4 Sub-Agent Page (Flagship Use Case)
 
-The sub-agent sidebar page is the **rendering surface for the multi-agent parallel architecture**
-(Phase 2/3 of `multi-agent-parallel-architecture.md`). It shows:
+The sub-agent sidebar page is the **rendering surface for all sub-agent runs** in the desktop app — core DAG graphs, standalone `spawn_subagent` calls, and desktop fan-out batches. Grouped into three sections (`SECTION_ORDER = ['dag','standalone','fanout']`), each with a header and count. DAG runs render tasks in graph topological order; non-DAG runs sort running-first.
 
 - Live task cards (per `SubTaskStatus`: pending / queued / running / succeeded / failed / timeout / cancelled).
 - Progress indicators and duration per task.
 - Aggregated result view with per-task token usage.
 - Drill-down into a finished task's output (markdown rendered).
 
-```tsx
-// src/renderer/components/SubAgentSidebarPage.tsx (new)
-// Renders <ParallelExecutionCard taskId={..} status={..} output={..} durationMs={..} error={..}/>
-// for every task in the active orchestration run, subscribed via the event bus
-// ('parallel_start' / 'task_progress' / 'parallel_end').
+```ts
+// src/renderer/sidebar/pages/sub-agents.ts
+// Renders <TaskStatusCard taskId={..} status={..} output={..} durationMs={..} error={..}/>
+// for every task in the active run, subscribed via the event bus
+// ('fanout_start' / 'fanout_task_progress' / 'fanout_end' / 'fanout_error'
+//  + core 'task_graph' / 'task_started' / 'task_completed' / 'task_failed'
+//  / 'task_interrupted' / 'subagent_status' + synthesized 'subagent_task_progress').
 ```
 
 ### 4.5 Acceptance Criteria
 
 - [ ] Arbitrary built-in pages register through a single `registerTab` surface.
-- [ ] Sub-agent page renders live parallel-execution cards with no blocking of the chat stream.
+- [ ] Sub-agent page renders live task cards for all run kinds with no blocking of the chat stream.
 - [ ] IPC channel is typed end-to-end (shared `SidebarEvent` types between main and renderer).
 - [ ] Registry cleanup on tab close (no leaked subscriptions or workers).
 
@@ -407,8 +410,9 @@ excluding native-multimodal models. Nexus-Desktop equivalent (small, high-value)
 |---|---|---|---|
 | **P0-Quick Wins** | Week 1 | Aegis constitution injection + `agents_*` tools; context progress bar + TPS; model capability declaration + vision-route hint | None |
 | **P1-UX Extensions** | Week 2–3 | Sidebar registry + sub-agent page; usage statistics panel | P0-Quick Wins (constitution passes into sub-tasks) |
-| **P2-Parallel Sync** | Week 4–6 | Multi-agent parallel executor (per existing doc); constitution inheritance in sub-agent prompts; task cards live in sidebar | P1-UX Extensions |
-| **P3-Operations** | Later | Task board + cron; session archive | P2-Parallel Sync |
+| **P2-Fan-out** | Week 4 | Desktop heuristic fan-out (serial in-worker batches, `chatFanout` + `fanout_*` events) | P1-UX Extensions |
+| **P3-Core boundary** | Week 5 | Draw core/desktop boundary; delete dead orchestrator path; keep core DAG / bg_ jobs | P2-Fan-out |
+| **P4-Naming + grouping** | Week 6 | Fan-out rename (P4a) + run registry grouped by kind / DAG topological order (P4b) | P3-Core boundary |
 
 ### 8.1 Sequencing Rules
 
@@ -429,9 +433,9 @@ Week 2–3 ─ P1-UX Extensions
 │            ├─ Sidebar registry + sub-agent page (needs: constitution for sub-task injection)
 │            └─ Usage statistics panel (needs: capability declaration for cost attribution)
 │                    │
-Week 4–6 ─ P2-Parallel Sync
-│            ├─ Multi-agent parallel executor (multi-agent-parallel-architecture.md)
-│            ├─ Constitution inheritance in sub-agent prompts (explicit, orchestrator-passed)
+Week 4 ─ P2-Fan-out
+│            ├─ Desktop heuristic fan-out (serial in-worker batches)
+│            └─ Constitution inheritance in sub-agent prompts (explicit, orchestrator-passed)
 │            └─ Task cards live in sidebar page
 │                    │
 Later ──── P3-Operations

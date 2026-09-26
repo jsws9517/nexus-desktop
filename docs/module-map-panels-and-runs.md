@@ -6,8 +6,9 @@
 > **Line numbers are pointers, not contracts** — re-verify with grep after any refactor.
 >
 > ⚠️ The older design docs in this folder
-> (`multi-agent-parallel-architecture.md`, `implementation-plan-multi-agent-parallel.md`)
-> describe a path that was **never wired** — see §3. They are marked `SUPERSEDED`.
+> (`multi-agent-parallel-architecture.md`, `implementation-plan-multi-agent-parallel.md`,
+> `phase-execution-plan.md`) describe a path that was **never wired** — see §3. They
+> are marked `SUPERSEDED`.
 
 ---
 
@@ -15,32 +16,23 @@
 
 | Panel | Data source | Events that re-render it | Written by |
 |---|---|---|---|
-| **Tasks (“task progress”)** — chat stream right rail | `tasks: Map<taskId, TaskItem>` (`src/renderer/renderer.ts:707`) | `task_graph`, `task_started/completed/failed/interrupted` (`src/renderer/renderer.ts:1419` `handleEvent`, `:3251` `handleTaskEvent`, `:3167` `renderTasks`) | core events only |
-| **Sub-Agents** — `src/renderer/sidebar/pages/sub-agents.ts` | `parallelSessions: Map<sessionId, ParallelSession>` (`src/renderer/renderer.ts:718`) | `parallel_start / task_progress / parallel_end / parallel_error` **plus** core `task_graph / task_started / task_completed / task_failed / task_interrupted / subagent_status` (`sub-agents.ts:161`) | (a) desktop `chatParallel`, (b) `mirrorCoreRunToParallel` (`renderer.ts:3306`) for core runs |
-| **Jobs** — `src/renderer/sidebar/pages/jobs.ts` | two backends merged: core `bg_` rows (`nexus:coreBgList`, `register.ts:766`) + desktop `bj_` rows (`nexus:bgJobList`, `register.ts:730`) | `bg_job_event / bg_job_progress / bg_job_complete` (`jobs.ts:457`) | core `JobManager`, desktop `BgJobManager` |
+| **Tasks ("task progress")** — chat stream right rail | `tasks: Map<taskId, TaskItem>` (`src/renderer/renderer.ts:707`) | `task_graph`, `task_started/completed/failed/interrupted` (`src/renderer/renderer.ts:1419` `handleEvent`, `:3251` `handleTaskEvent`, `:3167` `renderTasks`) | core events only |
+| **Sub-Agents** — `src/renderer/sidebar/pages/sub-agents.ts` | `subAgentRuns: Map<runKey, SubAgentRun>` (`src/renderer/renderer.ts:702`) — runs keyed per RUN (`dag:<graphId>`, `standalone:<sessionId>`, `fanout:<sessionId>`) so a single session can host all three kinds at once | `fanout_start / fanout_task_progress / fanout_end / fanout_error` **plus** core `task_graph / task_started / task_completed / task_failed / task_interrupted / subagent_status` plus the synthesized `subagent_task_progress` (`sub-agents.ts:224`) | (a) desktop `chatFanout` (`service.ts:1103`), (b) `mirrorCoreRun` (`renderer.ts:3347`) for core DAG / standalone runs |
+| **Jobs** — `src/renderer/sidebar/pages/jobs.ts` | core `bg_` rows only (`nexus:coreBgList`, `register.ts:766`) — desktop `bj_` chain is dead-end (§3) | `bg_job_event` (`jobs.ts:457`) | core `JobManager` |
 
 Rendering rules worth knowing:
 
-- Sub-Agents cards are sorted by **status**, not by graph order:
-  `statusRank` (`sub-agents.ts:27-34`) + sort (`sub-agents.ts:135-139`).
-- Sections are keyed by **session**, not by graph: everything mirrored for one
-  session id lands in one section (`renderer.ts:3306`), including DAG nodes,
-  standalone `spawn_*` runs and quality-gate `qg-*` runs.
-- Jobs page renders two sections: `jobsShellSection` (core `bg_`) and
-  `jobsSubagentSection` (desktop `bj_`) — `jobs.ts:450-451`.
-- Sidebar fan-out: every tab event reaches sidebar subscribers
-  (`src/renderer/renderer.ts:2850` / `notifySidebarSubscribers` `:506`).
+- The Sub-Agents page renders **one labelled section per run kind** (`SECTION_ORDER = ['dag','standalone','fanout']`) with a group header and count; runs within a section are newest-first.
+- **DAG runs render in graph topological order** (`taskOrder`, captured verbatim from the `task_graph` event) so a dependency chain reads top-to-bottom. Non-DAG runs sort running-first (`statusRank`).
+- The **in-chat fan-out card** (`renderFanoutCard`, `renderer.ts:3396`) shows ONLY the desktop fan-out batch (`fanout:<sessionId>`), never a core DAG or standalone run — a bug that existed before P4b has been fixed.
+- Jobs page: only the core `jobsShellSection` renders today; the `jobsSubagentSection` is always empty because the `bj_` chain is dead (§3).
+- Sidebar fan-out: every tab event reaches sidebar subscribers (`src/renderer/renderer.ts:2850` / `notifySidebarSubscribers` `:506`).
 
 ### Where the panels overlap
 
-- One DAG run shows up **twice**: the Tasks list (core `tasks` map) and the
-  Sub-Agents panel (via `mirrorCoreRunToParallel`).
-- The Jobs page *claims* to show sub-agents (`jobsSubagentSection`), but that
-  section is fed by `bj_` jobs, which today have neither a live creator nor a
-  runner (§3) → it renders empty in practice.
-- The desktop “parallel” path (§2c) feeds the Sub-Agents panel while being a
-  **serial** in-process loop — so “Sub-Agents” does not imply parallel or
-  DAG-driven.
+- A DAG run shows up **twice**: the Tasks list (core `tasks` map) and the Sub-Agents panel (via `mirrorCoreRun`).
+- A desktop fan-out batch shows up **twice**: the in-chat `fanout-execution-card` and the Sub-Agents panel.
+- The Jobs page *appears* to show sub-agents via `jobsSubagentSection`, but that section is fed by `bj_` jobs, which today have neither a live creator nor a runner (§3) → it renders empty in practice.
 
 ---
 
@@ -50,7 +42,7 @@ Rendering rules worth knowing:
 |---|---|---|---|---|---|
 | **a** | DAG node | `/go` → `executePlan*` → `DAGScheduler` | `SubAgentWorker` → child `Agent` | `subagent_runs` + `task_graphs` | **live**, dependency-parallel (core) |
 | **b** | `spawn_subagent` / `spawn_tester` / … tools | model tool call | `SubAgentWorker` **inline** in the parent turn (`src/…` core `task-tools.ts:297`) | `subagent_runs` + standalone `task_graphs` | **live**, foreground/serial |
-| **c** | Desktop heuristic fan-out | `shouldUseParallel(prompt)` (`src/agent/service.ts:897`, called at `:1103`) → `chatParallel` (`src/agent/service.ts:1192`) | **same `AgentService`, serial `for` loop with `await this.runTurn(...)`** (`src/agent/service.ts:1310`) | session metadata only (`parallelExecution`); **no** `subagent_runs`, **no** job row | **live but serial** — no child agent, no dependencies |
+| **c** | Desktop heuristic fan-out | `shouldUseFanout(prompt)` (`src/agent/service.ts:897`, called at `:1103`) → `chatFanout` (`src/agent/service.ts:1192`) | **same `AgentService`, serial `for` loop with `await this.runTurn(...)`** (`src/agent/service.ts:1310`) | session metadata only (`fanoutExecution`); **no** `subagent_runs`, **no** job row | **live but serial** — no child agent, no dependencies |
 | **d** | Main-process orchestrator | `OrchestratorAgent.orchestrate` (`src/main/index.ts:366`) inside `handleParallelRequest` (`src/main/index.ts:326`) | `SubAgentExecutor.executeParallel` (`src/agent/sub-agent/executor.ts:46`) → `worker.request('runSubAgent', …)` (`executor.ts:126`) | would register `bj_` jobs (`src/agent/sub-agent/orchestrator.ts:84`) | **dead**: nothing emits `parallel_request` (the type exists only at `src/agent/types.ts:22`) and `handleParallelRequest` has no call site |
 
 `acp_router` is **not** a fifth path: `callAcpRouterTool` with `action=route`
@@ -83,7 +75,7 @@ Also unreachable (declared but never exposed or handled):
 
 | Core / desktop raw status | Normalized (`SubTaskStatus`) | Where |
 |---|---|---|
-| `assigned`, `pending` | `pending` | `CORE_TO_PARALLEL_STATUS` (`src/renderer/renderer.ts:3294`) |
+| `assigned`, `pending` | `pending` | `CORE_TO_RUN_STATUS` (`src/renderer/renderer.ts:3300`) |
 | `in_progress`, `running` | `running` | same |
 | `completed` | `succeeded` | same |
 | `failed` | `failed` | same |
@@ -93,8 +85,8 @@ Also unreachable (declared but never exposed or handled):
 | `bj_` `stale` / `created` | `timeout` / `pending` | same |
 
 `TERMINAL_TASK_STATUS = {succeeded, failed, timeout, cancelled}`
-(`src/renderer/renderer.ts`) is the single “don't downgrade” guard used by both
-the parallel sweeper and `mirrorCoreRunToParallel`.
+(`src/renderer/renderer.ts`) is the single "don't downgrade" guard used by both
+the run sweep and `mirrorCoreRun`.
 
 ---
 
@@ -104,54 +96,47 @@ the parallel sweeper and `mirrorCoreRunToParallel`.
 |---|---|---|
 | DAG bridge | `src/agent/service.ts:1582 handleDagCommand` → `runPlanWithLoop` (`:1853`) | desktop `/go` input → core `executePlan*` |
 | Event stream | core `Agent.onEvent` → `AgentService` → worker → `SessionWorkers.onEvent` → `forwardTabEvent` → renderer (`applyTabEvent`, `src/renderer/renderer.ts:2850`) | `task_*`, `subagent_status`, `bg_job_event` |
-| Run mirroring | `mirrorCoreRunToParallel` (`src/renderer/renderer.ts:3306`) | core runs → `parallelSessions` so the Sub-Agents panel sees them |
+| Run mirroring | `mirrorCoreRun` (`src/renderer/renderer.ts:3347`) | core runs → `subAgentRuns` so the Sub-Agents panel sees them |
 | Direct DB reads | `src/session-db.ts` (sessions/messages + `task_graphs`) and `listSessions` served from main (`src/ipc/register.ts:118`) | read-only, no event |
 | Job control IPC | `nexus:coreBgList/Kill/Tail/Remove` (`src/ipc/register.ts:766`, `src/preload.cts:126`) | routed to the owning tab's worker |
 
 ---
 
-## 6. Known gap — the Sub-Agents panel does **not** follow DAG dependencies
+## 6. Sub-Agents panel — structure (P4b resolved most open gaps)
 
-Execution *is* dependency-parallel in the core
-(`DAGScheduler`, `nexus-coder/src/task/dag-scheduler.ts:163-166`), but the panel
-is a flat status-sorted card list:
+The panel groups runs into three labelled sections (`SECTION_ORDER = ['dag','standalone','fanout']`) with a header per kind:
 
-1. **The event contract carries no dependencies.** `Agent.emitTaskGraph` emits
-   only `id / description / role / status / error`
-   (`nexus-coder/src/agent.ts:4407-4416`); `TaskNode.dependencies` never leaves
-   the core.
-2. **The mirror drops structure.** `mirrorCoreRunToParallel`
-   (`src/renderer/renderer.ts:3306`) stores `description/status/error/duration/output`
-   only — not even `graphId`, so multiple graphs of one session merge into one
-   section.
-3. **Rendering sorts by status, not topology.** `statusRank`
-   (`src/renderer/sidebar/pages/sub-agents.ts:27`) + sort (`:135-139`) erases
-   layer order.
-4. **The card model cannot express “waiting on”** — `ParallelExecutionCard`
-   takes `taskId/description/status/output/durationMs/error` only, so
-   *blocked-pending* and *unlocked-pending* are indistinguishable.
-5. **A serial path shares the same panel.** Path (c) in §2 has no DAG at all,
-   yet emits `parallel_*` / `task_progress` into the same map.
+1. **Task graph** — DAG runs keyed by `graphId`; tasks render in the graph's own topological order (`taskOrder`, from the `task_graph` event), not by status.
+2. **Standalone** — a single `spawn_subagent` outside any graph.
+3. **Fan-out** — a desktop fan-out batch (one prompt → N serial sub-tasks), sorted running-first.
+
+Within each section, runs are newest-first by `startTime`. A session can host all three kinds at once; scoping to the active workspace tab filters by `sessionId`.
+
+What the panel **does not yet** express:
+
+- **Dependencies**. The `task_graph` event omits `dependencies` per node (`TaskNode.dependencies` stays in the core). A *blocked-pending* and an *unlocked-pending* look identical on the card. Fixing this requires a core change (`emitTaskGraph` → add optional `level`).
+- **Fan-out / standalone share the same panel**. Path (c) in §2 has no DAG at all, yet renders alongside real sub-agent runs. That is intentional (the desktop UI surface unifies all sub-agent activity) but worth calling out.
 
 For contrast: the chat-side Tasks list iterates `tasks` in insertion order
 (`src/renderer/renderer.ts:3167`), which *is* `graph.nodes` order — closer to a
 topological read, still without dependency edges.
 
-### Candidate fixes (deliberately **not** done in this pass)
+### Previously-open gaps (now resolved)
 
-| Level | Change | Scope |
-|---|---|---|
-| **L0** | Group by `graphId`, keep `graph.nodes` insertion order, use the graph root request as the section title | desktop only (`renderer.ts`, `sub-agents.ts`) |
-| **L1** | Add `dependencies: string[]` (optional `level`) to the `task_graph` payload, mirror it, render `⏳ waiting on A,B` | core `emitTaskGraph` + desktop mirror + card |
-| **L2** | Emit level boundaries from `DAGScheduler`, render swimlanes; decide whether path (c) keeps sharing the panel | core scheduler + desktop UI |
+| Before P4b | After P4b |
+|---|---|
+| All runs keyed by `sessionId` — multiple DAGs in one session merged into one section | Runs keyed by `dag:<graphId>` / `standalone:<sid>` / `fanout:<sid>` — multiple concurrent graphs separate cleanly |
+| Cards sorted by `statusRank` everywhere — erased graph topology | DAG runs honour `taskOrder` (graph nodes order); non-DAG runs still sort running-first |
+| Core DAG / standalone runs leaked into the in-chat fan-out transcript card | `renderFanoutCard` now looks up the run by its `fanout:` key, so only real desktop batches appear there |
 
 ---
 
 ## 7. Known rough edges (unchanged, documented)
 
 1. `bj_` registry with no runner and no exposed creator (§3).
-2. Path (c) is named “parallel” but is serial and shares its panel with real
-   sub-agent runs (§2).
+2. Path (c) is named "fan-out" but is serial and shares its panel with real
+   sub-agent runs (§2). (The rename from "parallel" to "fan-out" in P4a corrected
+   the lie; the structural sharing remains by design.)
 3. Jobs page mixes two semantics under one heading: shell processes (`bg_`) and
    agent runs (`bj_`) — `jobs.ts:450-451`.
 4. Stale design docs in this folder describe the unwired orchestrator path; see
