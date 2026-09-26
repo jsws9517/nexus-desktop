@@ -9,7 +9,6 @@ import { Updater } from './updater.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import { SessionWorkers } from './session-workers.js';
 import { RateLimitRegistry } from './rate-limit-registry.js';
-import { BgJobManager } from './bg-job-manager.js';
 import { mcpHub } from './mcp-hub.js';
 import { createDesktopState } from './desktop-state.js';
 import type { AgentEvent } from '../agent-service.js';
@@ -45,11 +44,8 @@ const sessionWorkers = new SessionWorkers();
 const rateLimitRegistry = new RateLimitRegistry();
 // Desktop-only settings store (~/.nexus/desktop.json). Single owner of the
 // read/write cache; IPC handlers and the bootstrap share this same instance.
-// Must be constructed BEFORE BgJobManager (jobs persist into desktop.json).
 const desktopState = createDesktopState();
-const bjm = new BgJobManager(desktopState);
 sessionWorkers.rateLimitRegistry = rateLimitRegistry;
-sessionWorkers.bgJobManager = bjm;
 rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
 const updater = new Updater();
 // System resource watchdog for the multi-session protection (see resource-monitor.ts).
@@ -299,10 +295,6 @@ function flushTabEventBatch(): void {
   }
 }
 function forwardTabEvent(sessionId: string, event: AgentEvent): void {
-  // Parallel request events are now handled directly in the worker process
-  // (chatParallel in service.ts handles decomposition and execution locally)
-  // So we don't need to forward parallel_request events anymore
-  
   if (event.type === 'text' || event.type === 'thinking') {
     tabEventBatch.push({ sessionId, event });
     if (!tabEventBatchTimer) {
@@ -311,96 +303,6 @@ function forwardTabEvent(sessionId: string, event: AgentEvent): void {
   } else {
     flushTabEventBatch();
     send(CHANNELS.tabEvent, { sessionId, event });
-  }
-}
-
-/**
- * Handle parallel execution request from a worker process.
- * The main process creates the OrchestratorAgent and executes the parallel tasks.
- *
- * DEAD PATH — no call site as of 2026-09-26 and no emitter for
- * `parallel_request` (only the type exists, src/agent/types.ts). Kept for
- * reference; the live path is `AgentService.chatParallel` (worker-side, serial).
- * See docs/module-map-panels-and-runs.md §2 path (d).
- */
-async function handleParallelRequest(sessionId: string, event: { type: string; prompt: string }): Promise<void> {
-  const { OrchestratorAgent } = await import('../agent/sub-agent/orchestrator.js');
-  const { WorkerHost } = await import('./worker-host.js');
-  const { workerScriptPath } = await import('./session-workers.js');
-  const { loadConstitution, loadGlobalRules, GLOBAL_RULES_MARKER } = await import('../tools/agents.js');
-  
-  // Send progress event to renderer — deferred until after decomposition
-  // so that declarative prompts (empty task list) never open useless cards.
-  
-  try {
-    // Load the project constitution ONCE here, in the main process, and pass
-    // the text down into every sub-task prompt (§3.7). The child workers never
-    // discover the constitution themselves — the Orchestrator passes it down.
-    // The user-level (global) rules are merged in FIRST so they apply to every
-    // parallel sub-agent too; the project constitution follows and may
-    // override project-specific points (read-later = higher priority).
-    let constitutionText: string | null = null;
-    try {
-      const parts: string[] = [];
-      const global = await loadGlobalRules();
-      if (global.reason === 'ok' && global.text) {
-        parts.push(`${GLOBAL_RULES_MARKER}\n${global.text}\n${GLOBAL_RULES_MARKER}`);
-      }
-      const { dir } = await sessionWorkers.request<{ dir: string }>(sessionId, 'getDefaultProjectDir');
-      const loaded = await loadConstitution(dir ?? process.cwd());
-      if (loaded.reason === 'ok' && loaded.text) parts.push(loaded.text);
-      if (parts.length > 0) constitutionText = parts.join('\n\n');
-    } catch {
-      // Constitution is best-effort for parallel runs; never block the run.
-    }
-
-    const orchestrator = new OrchestratorAgent(
-      null, // No AgentService in main process - use fallback decomposition
-      {
-        workerFactory: (scriptPath: string) => new WorkerHost(scriptPath),
-        workerScriptPath: workerScriptPath(),
-        bgJobManager: bjm,
-      }
-    );
-    
-    const result = await orchestrator.orchestrate(event.prompt, sessionId, constitutionText ?? undefined);
-
-    // Only open task cards when decomposition actually produced tasks.
-    // Declarative statements or single-coherent-task prompts return an empty
-    // array and should not trigger any parallel UI at all.
-    if (result.tasks.length > 0) {
-      send(CHANNELS.tabEvent, {
-        sessionId,
-        event: { type: 'parallel_start', sessionId, prompt: event.prompt },
-      });
-    }
-    
-    send(CHANNELS.tabEvent, { 
-      sessionId, 
-      event: { 
-        type: 'parallel_end', 
-        sessionId,
-        tasks: result.tasks,
-        tokenUsage: result.tokenUsage
-      } 
-    });
-    
-    // Output the aggregated result
-    if (result.output) {
-      send(CHANNELS.tabEvent, { 
-        sessionId, 
-        event: { type: 'text', text: result.output } 
-      });
-    }
-  } catch (error) {
-    send(CHANNELS.tabEvent, { 
-      sessionId, 
-      event: { 
-        type: 'parallel_error', 
-        sessionId,
-        error: error instanceof Error ? error.message : String(error)
-      } 
-    });
   }
 }
 
@@ -558,28 +460,6 @@ if (gotLock) {
       sessionWorkers.size < desktopState.getMaxTabs();
     resourceMon.start();
     void sessionWorkers.warmSpare();
-    // Wire bg_job lifecycle events into the renderer: terminal statuses become
-    // bg_job_complete (toast + panel), non-terminal mutations become
-    // bg_job_progress (live panel/status line). Sent on the tab channel so the
-    // user gets notified even when the owning tab is closed or the worker crashed.
-    bjm.subscribe((job) => {
-      const terminal =
-        job.status === 'succeeded' || job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled';
-      send(CHANNELS.tabEvent, {
-        sessionId: job.sessionId,
-        event: {
-          type: terminal ? 'bg_job_complete' : 'bg_job_progress',
-          jobId: job.id,
-          title: job.title,
-          status: job.status,
-          output: job.output,
-          error: job.error,
-          progress: job.progress,
-          progressNote: job.progressNote,
-          lang: job._lang as 'zh-CN' | 'en' | undefined,
-        } as AgentEvent,
-      });
-    });
     registerIpc({
       worker,
       sessionWorkers,
@@ -617,12 +497,9 @@ if (gotLock) {
       setMonitorEnabled: desktopState.setMonitorEnabled,
       getLazyWorker: desktopState.getLazyWorker,
       setLazyWorker: desktopState.setLazyWorker,
-      getJobs: desktopState.getJobs,
-      setJobs: desktopState.setJobs,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
       rateLimitRegistry,
-      bgJobManager: bjm,
     });
     createWindow();
 

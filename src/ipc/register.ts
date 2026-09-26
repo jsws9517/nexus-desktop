@@ -25,7 +25,6 @@ import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateWorkerParams } from '../shared/ipc-validation.js';
 import { CHANNELS } from './channels.js';
 import type { DesktopStateAccess } from '../main/desktop-state.js';
-import type { BgJobManager } from '../main/bg-job-manager.js';
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.avif']);
 const IMAGE_MIME: Record<string, string> = {
@@ -105,8 +104,6 @@ export interface IpcContext extends DesktopStateAccess {
   countOpenTabs: () => number;
   log: (msg: string) => void;
   rateLimitRegistry: RateLimitRegistry;
-  /** Background job manager — main-process singleton owning all persistent jobs. */
-  bgJobManager: BgJobManager;
 }
 
 /**
@@ -140,7 +137,7 @@ function normalizeListSessionsParams(params?: Record<string, unknown>): {
 }
 
 export function registerIpc(ctx: IpcContext): void {
-  const { worker, sessionWorkers, resourceMon, updater, log, rateLimitRegistry, bgJobManager: bjm } = ctx;
+  const { worker, sessionWorkers, resourceMon, updater, log, rateLimitRegistry } = ctx;
   const call = (method: string) => async (_e: unknown, params?: Record<string, unknown>) => {
     if (method === 'resolvePermission') log(`invoke resolvePermission params=${JSON.stringify(params)}`);
     await (ctx.earlyMethods.has(method) ? ctx.earlyReady() : ctx.fullReady());
@@ -693,71 +690,6 @@ export function registerIpc(ctx: IpcContext): void {
     try {
       if (data && typeof data === 'object' && !Array.isArray(data)) ctx.setModelBlacklist(data);
     } catch {}
-  });
-
-  // ── Background Job Manager (bg_job) -------------------------------------------------
-  // These handlers are main-process-only — they talk directly to BgJobManager,
-  // bypassing any worker.  Workers that need bg_job access go through their
-  // own IPC channel which is proxied by WorkerHost.onBgJobRequest.
-  // Progress fan-out is event-driven: bjm._emit fires subscribers on every
-  // mutation (create/advance/notify), and main/index.ts forwards those to the
-  // renderer as bg_job_progress / bg_job_complete — no poll timer needed.
-
-  ipcMain.handle(CHANNELS.bgJobCreate, (_e, params?: Record<string, unknown>): { ok: boolean; jobId?: string; error?: string } => {
-    if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
-    const title = isNonEmptyString(params?.title) ? params.title : 'Untitled job';
-    const prompt = isNonEmptyString(params?.prompt) ? params.prompt : '';
-    const sessionId = isNonEmptyString(params?.sessionId) ? params.sessionId : '';
-    if (!prompt) return { ok: false, error: 'prompt is required' };
-    const job = bjm.create({
-      title,
-      prompt,
-      sessionId,
-      maxDurationMs: isFiniteNumber(params?.maxDurationMs) ? params.maxDurationMs : undefined,
-      maxTurns: isFiniteNumber(params?.maxTurns) ? params.maxTurns : undefined,
-    });
-    return { ok: true, jobId: job.id };
-  });
-
-  ipcMain.handle(CHANNELS.bgJobQuery, (_e, params?: Record<string, unknown>): { ok: boolean; job?: unknown; error?: string } => {
-    if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
-    const jobId = isNonEmptyString(params?.jobId) ? params.jobId : '';
-    if (!jobId) return { ok: false, error: 'jobId is required' };
-    const job = bjm.query(jobId);
-    return { ok: true, job };
-  });
-
-  ipcMain.handle(CHANNELS.bgJobList, (_e, params?: Record<string, unknown>): { ok: boolean; jobs?: unknown[]; error?: string } => {
-    if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
-    const sessionId = isNonEmptyString(params?.sessionId) ? params.sessionId : undefined;
-    const status = params?.status as string | undefined;
-    const jobs = bjm.list({ sessionId, status: status as any });
-    return { ok: true, jobs };
-  });
-
-  ipcMain.handle(CHANNELS.bgJobCancel, (_e, params?: Record<string, unknown>): { ok: boolean; error?: string } => {
-    if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
-    const jobId = isNonEmptyString(params?.jobId) ? params.jobId : '';
-    if (!jobId) return { ok: false, error: 'jobId is required' };
-    return bjm.cancel(jobId);
-  });
-
-  ipcMain.handle(CHANNELS.bgJobRemove, (_e, params?: Record<string, unknown>): { ok: boolean; error?: string } => {
-    if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
-    const jobId = isNonEmptyString(params?.jobId) ? params.jobId : '';
-    if (!jobId) return { ok: false, error: 'jobId is required' };
-    return bjm.remove(jobId);
-  });
-
-  ipcMain.handle(CHANNELS.bgJobProgress, (_e, params?: Record<string, unknown>): { ok: boolean; error?: string } => {
-    if (!bjm) return { ok: false, error: 'BgJobManager not initialized' };
-    const jobId = isNonEmptyString(params?.jobId) ? params.jobId : '';
-    if (!jobId) return { ok: false, error: 'jobId is required' };
-    bjm.advanceProgress(jobId, {
-      progress: isFiniteNumber(params?.progress) ? params.progress : undefined,
-      note: isString(params?.note) ? params.note : undefined,
-    });
-    return { ok: true };
   });
 
   // ── Core bg_ shell jobs (worker-local JobManager) ------------------------------

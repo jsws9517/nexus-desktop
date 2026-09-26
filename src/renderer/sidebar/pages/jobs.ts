@@ -1,19 +1,19 @@
 /**
- * Jobs sidebar page — unified background-job list over two backends:
- *   - core `bg_` shell jobs (worker-local JobManager, launched via /jobs)
- *   - desktop `bj_` sub-agent jobs (main-process BgJobManager)
+ * Jobs sidebar page — background-job list over core `bg_` shell jobs
+ * (worker-local JobManager, launched via /jobs).
  *
- * Driven by the agent event bus (bg_job_event / bg_job_complete /
- * bg_job_progress) with an initial pull + 10s auto-recycle, mirroring the
- * Sub-Agents page pattern. Status vocabularies are normalized into the
- * shared SubTaskStatus set so ParallelExecutionCard can render both.
+ * Core owns the jobs, their lifecycle and their persistence; this page is a
+ * read-only view plus kill/tail/remove controls routed to the owning worker.
+ * Driven by the agent event bus (bg_job_event) with an initial pull + 10s
+ * auto-recycle. Status vocabularies are normalized into the shared
+ * SubTaskStatus set so ParallelExecutionCard can render them.
  *
  * Dependency-injected for unit tests (fake list/kill/tail fetchers).
  */
 
 import { ParallelExecutionCard } from '../../components/ParallelExecutionCard.js';
 import { STR } from '../../i18n.js';
-import type { SubTaskStatus } from '../../../agent/sub-agent/types.js';
+import type { SubTaskStatus } from '../../../agent/types.js';
 import type { AgentEvent } from '../../../agent/types.js';
 import type { SidebarContext } from '../types.js';
 
@@ -21,14 +21,9 @@ export interface JobRow {
   id: string;
   title: string;
   status: SubTaskStatus;
-  source: 'core' | 'subagent';
   sessionId?: string;
   command?: string;
-  prompt?: string;
-  output?: string;
   error?: string;
-  progress?: number;
-  progressNote?: string;
   pid?: number;
   logBytes?: number;
   startedAt?: number;
@@ -39,16 +34,10 @@ export interface JobRow {
 export interface JobsPageOptions {
   /** Pull core bg_ jobs (default: window.nexusDesktop.coreBgList). */
   listCore?: (sessionId?: string) => Promise<{ ok: boolean; jobs?: unknown[]; error?: string }>;
-  /** Pull desktop bj_ jobs (default: window.nexusDesktop.bgJobList). */
-  listDesktop?: (sessionId?: string) => Promise<{ ok: boolean; jobs?: unknown[]; error?: string }>;
   /** Kill a core job (default: window.nexusDesktop.coreBgKill). sessionId routes to the owning worker. */
   killCore?: (jobId: string, sessionId?: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
-  /** Cancel a desktop job (default: window.nexusDesktop.bgJobCancel). */
-  cancelDesktop?: (jobId: string) => Promise<{ ok: boolean; error?: string }>;
   /** Remove a finished core job (default: window.nexusDesktop.coreBgRemove). sessionId routes to the owning worker. */
   removeCore?: (jobId: string, sessionId?: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
-  /** Remove a finished desktop job (default: window.nexusDesktop.bgJobRemove). */
-  removeDesktop?: (jobId: string) => Promise<{ ok: boolean; error?: string }>;
   /** Fetch a core job log tail (default: window.nexusDesktop.coreBgTail). sessionId routes to the owning worker. */
   tailCore?: (jobId: string, lines?: number, sessionId?: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
   getUiLang?: () => string;
@@ -65,7 +54,7 @@ const statusRank: Record<string, number> = {
   cancelled: 5,
 };
 
-/** Normalize core/desktop status vocabularies into SubTaskStatus. */
+/** Normalize core JobManager status vocabulary into SubTaskStatus. */
 export function normalizeJobStatus(raw: unknown): SubTaskStatus {
   const s = String(raw ?? '').toLowerCase();
   switch (s) {
@@ -120,10 +109,8 @@ export function coreJobToRow(raw: unknown): JobRow | null {
     id,
     title: strOr(j.label) || strOr(j.command) || id,
     status: normalizeJobStatus(j.status),
-    source: 'core',
     sessionId: strOr(j.sessionId),
     command: strOr(j.command),
-    output: undefined,
     error: strOr(j.error),
     pid: num(j.pid),
     logBytes: num(j.logBytes),
@@ -133,51 +120,14 @@ export function coreJobToRow(raw: unknown): JobRow | null {
   };
 }
 
-/** Map a raw desktop BgJobDef JSON object into a JobRow. */
-export function desktopJobToRow(raw: unknown): JobRow | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const j = raw as Record<string, unknown>;
-  const id = strOr(j.id);
-  if (!id) return null;
-  const createdAtMs = num(j.createdAtMs);
-  const finishedAtMs = num(j.finishedAtMs);
-  return {
-    id,
-    title: strOr(j.title) || id,
-    status: normalizeJobStatus(j.status),
-    source: 'subagent',
-    sessionId: strOr(j.sessionId),
-    prompt: strOr(j.prompt),
-    output: strOr(j.output),
-    error: strOr(j.error),
-    progress: num(j.progress),
-    progressNote: strOr(j.progressNote),
-    startedAt: num(j.startedAtMs) ?? createdAtMs,
-    finishedAt: finishedAtMs,
-    durationMs:
-      createdAtMs != null && finishedAtMs != null
-        ? finishedAtMs - createdAtMs
-        : undefined,
-  };
-}
-
 async function defaultListCore(sessionId?: string) {
   return window.nexusDesktop.coreBgList(sessionId ? { sessionId } : {});
-}
-async function defaultListDesktop(sessionId?: string) {
-  return window.nexusDesktop.bgJobList(sessionId ? { sessionId } : {});
 }
 async function defaultKillCore(jobId: string, sessionId?: string) {
   return window.nexusDesktop.coreBgKill(jobId, sessionId);
 }
-async function defaultCancelDesktop(jobId: string) {
-  return window.nexusDesktop.bgJobCancel(jobId);
-}
 async function defaultRemoveCore(jobId: string, sessionId?: string) {
   return window.nexusDesktop.coreBgRemove(jobId, sessionId);
-}
-async function defaultRemoveDesktop(jobId: string) {
-  return window.nexusDesktop.bgJobRemove(jobId);
 }
 async function defaultTailCore(jobId: string, lines?: number, sessionId?: string) {
   return window.nexusDesktop.coreBgTail(jobId, lines, sessionId);
@@ -190,11 +140,8 @@ export function mountJobsPage(
 ): () => void {
   const renderCard = opts.renderCard ?? ParallelExecutionCard;
   const listCore = opts.listCore ?? defaultListCore;
-  const listDesktop = opts.listDesktop ?? defaultListDesktop;
   const killCore = opts.killCore ?? defaultKillCore;
-  const cancelDesktop = opts.cancelDesktop ?? defaultCancelDesktop;
   const removeCore = opts.removeCore ?? defaultRemoveCore;
-  const removeDesktop = opts.removeDesktop ?? defaultRemoveDesktop;
   const tailCore = opts.tailCore ?? defaultTailCore;
   const getLang = (): string => ctx.getUiLang?.() ?? opts.getUiLang?.() ?? 'zh-CN';
 
@@ -229,7 +176,7 @@ export function mountJobsPage(
   empty.className = 'jobs-empty';
   list.appendChild(empty);
 
-  /** Latest pulled rows (both backends), keyed by id for O(1) event merges. */
+  /** Latest pulled rows, keyed by id for O(1) event merges. */
   const rows = new Map<string, JobRow>();
   /** Tombstones: ids the user removed this mount — late events / stale pulls must not re-add them. */
   const removedIds = new Set<string>();
@@ -244,20 +191,13 @@ export function mountJobsPage(
     const seq = ++pullSeq;
     const sid = ctx.getActiveSessionId?.() ?? ctx.sessionId;
     boundSessionId = sid || '';
-    const [core, desktop] = await Promise.all([
-      listCore(sid || undefined).catch(() => ({ ok: false as const, jobs: [] as unknown[] })),
-      listDesktop(sid || undefined).catch(() => ({ ok: false as const, jobs: [] as unknown[] })),
-    ]);
+    const core = await listCore(sid || undefined).catch(() => ({ ok: false as const, jobs: [] as unknown[] }));
     if (seq !== pullSeq) return; // a newer pull superseded this one
     // Rebuild from scratch: the authoritative snapshot for this render pass.
     // Event-driven merges below keep the map warm between pulls.
     const keep = new Map<string, JobRow>();
     for (const j of core.jobs ?? []) {
       const row = coreJobToRow(j);
-      if (row && !removedIds.has(row.id)) keep.set(row.id, row);
-    }
-    for (const j of desktop.jobs ?? []) {
-      const row = desktopJobToRow(j);
       if (row && !removedIds.has(row.id)) keep.set(row.id, row);
     }
     // Preserve any event-only rows the pull might have missed (e.g. just-launched
@@ -272,59 +212,30 @@ export function mountJobsPage(
 
   /** Fold a bg job lifecycle event into the local map (no full re-pull). */
   function applyEvent(event: AgentEvent): void {
-    if (event.type === 'bg_job_complete' || event.type === 'bg_job_progress') {
-      const id = String(event.jobId || '');
-      if (!id || removedIds.has(id)) return;
-      const prev = rows.get(id);
-      rows.set(id, {
-        id,
-        title: strOr(event.title) || prev?.title || id,
-        status: normalizeJobStatus(event.status),
-        source: 'subagent',
-        sessionId: prev?.sessionId ?? (boundSessionId || undefined),
-        prompt: prev?.prompt,
-        output: strOr(event.output) ?? prev?.output,
-        error: strOr(event.error),
-        progress: num(event.progress) ?? prev?.progress,
-        progressNote: strOr(event.progressNote) ?? prev?.progressNote,
-        startedAt: prev?.startedAt,
-        finishedAt: TERMINAL.has(normalizeJobStatus(event.status)) ? Date.now() : prev?.finishedAt,
-        durationMs: prev?.durationMs,
-      });
-    } else if (event.type === 'bg_job_event') {
-      const row = coreJobToRow(event.job);
-      if (!row || removedIds.has(row.id)) return;
-      const prev = rows.get(row.id);
-      rows.set(row.id, {
-        ...row,
-        // Keep earlier duration if finishedAt not yet stamped.
-        durationMs: row.durationMs ?? prev?.durationMs,
-        prompt: prev?.prompt,
-      });
-    }
+    if (event.type !== 'bg_job_event') return;
+    const row = coreJobToRow(event.job);
+    if (!row || removedIds.has(row.id)) return;
+    const prev = rows.get(row.id);
+    rows.set(row.id, {
+      ...row,
+      // Keep earlier duration if finishedAt not yet stamped.
+      durationMs: row.durationMs ?? prev?.durationMs,
+    });
   }
 
   function killRow(row: JobRow): void {
     if (TERMINAL.has(row.status)) return;
-    const p =
-      row.source === 'core'
-        ? killCore(row.id, row.sessionId)
-        : cancelDesktop(row.id);
-    void p.then(() => {
+    void killCore(row.id, row.sessionId).then(() => {
       rows.set(row.id, { ...row, status: 'cancelled' });
       render();
     }).catch(() => {});
   }
 
-  /** Drop a terminal card. Tombstone the id so late bg_job_* events and the
+  /** Drop a terminal card. Tombstone the id so late bg_job_event events and the
    *  10s pull cannot re-add it (backend remove may race the event bus). */
   function removeRow(row: JobRow): void {
     if (!TERMINAL.has(row.status)) return;
-    const p =
-      row.source === 'core'
-        ? removeCore(row.id, row.sessionId)
-        : removeDesktop(row.id);
-    void p
+    void removeCore(row.id, row.sessionId)
       .then((res) => {
         const ok = res?.ok !== false;
         if (!ok) return; // keep card so the user can retry
@@ -338,7 +249,6 @@ export function mountJobsPage(
   }
 
   function tailRow(row: JobRow, body: HTMLElement): void {
-    if (row.source !== 'core') return;
     void tailCore(row.id, 40, row.sessionId).then((res) => {
       body.textContent = res.text || res.error || '';
       body.classList.remove('hidden');
@@ -359,13 +269,11 @@ export function mountJobsPage(
       card.className = `job-card-wrapper status-${row.status}`;
       card.dataset.jobId = row.id;
       card.dataset.status = row.status;
-      const badge = row.source === 'core' ? str('jobsSourceCore', getLang()) : str('jobsSourceSubagent', getLang());
-      const description = row.command || row.prompt || row.progressNote || row.title;
+      const description = row.command || row.title;
       card.innerHTML = renderCard({
-        taskId: `${badge} · ${row.id}`,
+        taskId: row.id,
         description,
         status: row.status,
-        output: row.output,
         durationMs: row.durationMs,
         error: row.error,
       });
@@ -373,13 +281,9 @@ export function mountJobsPage(
       const el = first ?? card;
       const tailBody = document.createElement('pre');
       tailBody.className = 'job-tail hidden';
-      // Source badge + actions (kill / log tail).
+      // Actions (kill / remove / log tail).
       const actions = document.createElement('div');
       actions.className = 'job-actions';
-      const badgeEl = document.createElement('span');
-      badgeEl.className = `job-source-badge source-${row.source}`;
-      badgeEl.textContent = badge;
-      actions.appendChild(badgeEl);
       if (row.pid != null) {
         const pid = document.createElement('span');
         pid.className = 'job-meta';
@@ -407,14 +311,12 @@ export function mountJobsPage(
         rmBtn.addEventListener('click', () => removeRow(row));
         actions.appendChild(rmBtn);
       }
-      if (row.source === 'core') {
-        const tailBtn = document.createElement('button');
-        tailBtn.type = 'button';
-        tailBtn.className = 'job-action-btn';
-        tailBtn.textContent = str('jobsTail', getLang());
-        tailBtn.addEventListener('click', () => tailRow(row, tailBody));
-        actions.appendChild(tailBtn);
-      }
+      const tailBtn = document.createElement('button');
+      tailBtn.type = 'button';
+      tailBtn.className = 'job-action-btn';
+      tailBtn.textContent = str('jobsTail', getLang());
+      tailBtn.addEventListener('click', () => tailRow(row, tailBody));
+      actions.appendChild(tailBtn);
       el.appendChild(actions);
       el.appendChild(tailBody);
       section.appendChild(el);
@@ -447,8 +349,7 @@ export function mountJobsPage(
       list.appendChild(empty);
       return;
     }
-    renderSection('jobsShellSection', scoped.filter((r) => r.source === 'core'), list);
-    renderSection('jobsSubagentSection', scoped.filter((r) => r.source === 'subagent'), list);
+    renderSection('jobsShellSection', scoped, list);
   };
 
   render();
@@ -457,8 +358,6 @@ export function mountJobsPage(
   const onEvent = (event: AgentEvent): void => {
     if (
       event.type === 'bg_job_event' ||
-      event.type === 'bg_job_complete' ||
-      event.type === 'bg_job_progress' ||
       event.type === 'session_changed' ||
       event.type === 'language_changed'
     ) {

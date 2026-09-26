@@ -1,11 +1,11 @@
 /**
- * Jobs sidebar page unit tests — dual-backend background job list.
+ * Jobs sidebar page unit tests — core `bg_` background job list.
  *
  * Covers:
- *   - status vocabulary normalization (core killed/lost, desktop created/stale)
- *   - core/desktop raw job → JobRow mapping
- *   - mount renders shell + subagent sections from injected pulls
- *   - bg_job_* events merge into the list without a full re-pull
+ *   - status vocabulary normalization (core killed/lost + unknown fallback)
+ *   - core raw job → JobRow mapping
+ *   - mount renders the shell-jobs section from injected pulls
+ *   - bg_job_event merges into the list without a full re-pull
  *   - dispose unsubscribes and clears the DOM + interval
  */
 
@@ -53,7 +53,6 @@ const {
   mountJobsPage,
   normalizeJobStatus,
   coreJobToRow,
-  desktopJobToRow,
 } = await import(pathToFileURL(join(dist, 'renderer', 'sidebar', 'pages', 'jobs.js')));
 
 function hasClass(el, className) {
@@ -89,7 +88,7 @@ test('normalizeJobStatus: core vocabulary maps to SubTaskStatus', () => {
   assert.equal(normalizeJobStatus('lost'), 'failed');
 });
 
-test('normalizeJobStatus: desktop vocabulary maps to SubTaskStatus', () => {
+test('normalizeJobStatus: unknown + edge vocabulary falls back to pending', () => {
   assert.equal(normalizeJobStatus('created'), 'pending');
   assert.equal(normalizeJobStatus('cancelled'), 'cancelled');
   assert.equal(normalizeJobStatus('stale'), 'timeout');
@@ -118,7 +117,6 @@ test('coreJobToRow: maps shell BgJob fields + duration', () => {
   assert.equal(row.id, 'bg_abc123');
   assert.equal(row.title, 'build');
   assert.equal(row.status, 'running');
-  assert.equal(row.source, 'core');
   assert.equal(row.command, 'npm run build');
   assert.equal(row.pid, 4242);
   assert.equal(row.durationMs, 3000);
@@ -131,29 +129,8 @@ test('coreJobToRow: null on garbage', () => {
   assert.equal(coreJobToRow('x'), null);
 });
 
-test('desktopJobToRow: maps BgJobDef fields', () => {
-  const row = desktopJobToRow({
-    id: 'bj_deadbeef',
-    title: 'Refactor parser',
-    status: 'created',
-    prompt: 'do the thing',
-    sessionId: 'sess-2',
-    createdAtMs: 500,
-    finishedAtMs: 2500,
-    progress: 40,
-    progressNote: 'halfway',
-  });
-  assert.ok(row);
-  assert.equal(row.id, 'bj_deadbeef');
-  assert.equal(row.title, 'Refactor parser');
-  assert.equal(row.status, 'pending');
-  assert.equal(row.source, 'subagent');
-  assert.equal(row.progress, 40);
-  assert.equal(row.durationMs, 2000);
-});
-
 // ===========================================================================
-// 3. Mount + dual-backend render
+// 3. Mount + render
 // ===========================================================================
 
 function makeCtx(subscribers = []) {
@@ -172,7 +149,7 @@ function makeCtx(subscribers = []) {
   };
 }
 
-test('mountJobsPage: renders shell + subagent sections from injected pulls', async () => {
+test('mountJobsPage: renders the shell-jobs section from an injected pull', async () => {
   const subscribers = [];
   const container = new FakeContainer();
   const ctx = makeCtx(subscribers);
@@ -184,33 +161,23 @@ test('mountJobsPage: renders shell + subagent sections from injected pulls', asy
         { id: 'bg_1', label: 'sleepy', status: 'running', command: 'sleep 99', pid: 1, logBytes: 10, startedAt: 1 },
       ],
     }),
-    listDesktop: async () => ({
-      ok: true,
-      jobs: [
-        { id: 'bj_1', title: 'sub task', status: 'running', sessionId: 'sess-1', createdAtMs: 1 },
-      ],
-    }),
     killCore: async () => ({ ok: true }),
-    cancelDesktop: async () => ({ ok: true }),
     tailCore: async () => ({ ok: true, text: 'tail…' }),
     getUiLang: () => 'en',
   });
 
   try {
-    // pull is async — wait a microtask turn for both list promises + render
+    // pull is async — wait a microtask turn for the list promise + render
     await new Promise((r) => setTimeout(r, 10));
+
+    const sections = findAll(container, 'jobs-section');
+    assert.equal(sections.length, 1, 'single shell-jobs section');
 
     const shellHead = findEl(container, 'jobs-section-head');
     assert.ok(shellHead, 'shell section rendered');
-    assert.match(shellHead.textContent, /Shell jobs/);
+    assert.match(shellHead.textContent, /Shell jobs — 1/);
 
-    const sections = findAll(container, 'jobs-section');
-    assert.equal(sections.length, 2, 'shell + subagent sections');
-
-    const badges = findAll(container, 'job-source-badge');
-    assert.equal(badges.length, 2);
-    assert.equal(badges[0].textContent, 'shell');
-    assert.equal(badges[1].textContent, 'subagent');
+    assert.equal(findAll(container, 'job-source-badge').length, 0, 'no per-card source badge');
 
     assert.equal(subscribers.length, 1, 'subscribed to the event bus');
   } finally {
@@ -228,9 +195,7 @@ test('mountJobsPage: bg_job_event merges a new core job without re-pull', async 
   let pulls = 0;
   const dispose = mountJobsPage(container, ctx, {
     listCore: async () => { pulls++; return { ok: true, jobs: [] }; },
-    listDesktop: async () => ({ ok: true, jobs: [] }),
     killCore: async () => ({ ok: true }),
-    cancelDesktop: async () => ({ ok: true }),
     tailCore: async () => ({ ok: true, text: '' }),
     getUiLang: () => 'en',
   });
@@ -285,7 +250,6 @@ test('mountJobsPage: dispose clears interval (no throw on later ticks)', async (
   const ctx = makeCtx([]);
   const dispose = mountJobsPage(container, ctx, {
     listCore: async () => ({ ok: true, jobs: [] }),
-    listDesktop: async () => ({ ok: true, jobs: [] }),
     getUiLang: () => 'en',
   });
   await new Promise((r) => setTimeout(r, 10));
@@ -308,11 +272,8 @@ test('mountJobsPage: terminal cards expose Remove and drop the row on success', 
         { id: 'bg_done', label: 'done', status: 'failed', command: 'false', startedAt: 1, finishedAt: 2, sessionId: 'sess-1' },
       ],
     }),
-    listDesktop: async () => ({ ok: true, jobs: [] }),
     killCore: async () => ({ ok: true }),
-    cancelDesktop: async () => ({ ok: true }),
     removeCore: async (id, sessionId) => { removed.push({ id, sessionId }); return { ok: true }; },
-    removeDesktop: async (id) => { removed.push({ id }); return { ok: true }; },
     tailCore: async () => ({ ok: true, text: '' }),
     getUiLang: () => 'en',
   });
@@ -357,7 +318,6 @@ test('mountJobsPage: pull after remove does not resurrect a tombstoned job', asy
         ],
       };
     },
-    listDesktop: async () => ({ ok: true, jobs: [] }),
     removeCore: async () => ({ ok: true }),
     getUiLang: () => 'en',
   });
@@ -394,11 +354,8 @@ test('mountJobsPage: non-terminal cards show Kill, not Remove', async () => {
       ok: true,
       jobs: [{ id: 'bg_run', label: 'run', status: 'running', command: 'sleep 9', pid: 1, startedAt: 1, sessionId: 'sess-1' }],
     }),
-    listDesktop: async () => ({ ok: true, jobs: [] }),
     killCore: async () => ({ ok: true }),
-    cancelDesktop: async () => ({ ok: true }),
     removeCore: async () => ({ ok: true }),
-    removeDesktop: async () => ({ ok: true }),
     tailCore: async () => ({ ok: true, text: '' }),
     getUiLang: () => 'en',
   });

@@ -59,29 +59,11 @@ export const CHANNELS = {
   getMcpServers: 'nexus:getMcpServers',
   setMcpServer: 'nexus:setMcpServer',
   sideChat: 'nexus:sideChat',
-  // DEAD (2026-09-26): no ipcMain.handle in src/ipc/register.ts and no preload
-  // export — nothing in the renderer can issue this. See docs/module-map-panels-and-runs.md §3.
-  runSubAgent: 'nexus:runSubAgent',
-  getSubAgentStatus: 'nexus:getSubAgentStatus',
-  cancelSubAgent: 'nexus:cancelSubAgent',
-  subAgentProgress: 'nexus:subAgentProgress',
-  // bg_job: persistent background job lifecycle (main-process owned).
-  // bgJobCreate: handler exists (src/ipc/register.ts) but is NOT exported by
-  // src/preload.cts, so no renderer caller — this is why no bj_ job is ever created.
-  bgJobCreate: 'nexus:bgJobCreate',
-  bgJobQuery: 'nexus:bgJobQuery',
-  bgJobList: 'nexus:bgJobList',
-  bgJobCancel: 'nexus:bgJobCancel',
-  bgJobProgress: 'nexus:bgJobProgress',
-  bgJobRemove: 'nexus:bgJobRemove',
   // core bg_ shell jobs (worker-local JobManager).
   coreBgList: 'nexus:coreBgList',
   coreBgKill: 'nexus:coreBgKill',
   coreBgTail: 'nexus:coreBgTail',
   coreBgRemove: 'nexus:coreBgRemove',
-  // acp_router: multi-agent role routing tool (worker-side dispatch).
-  // DEAD (2026-09-26): declared only — no ipcMain.handle and no preload export.
-  routeViaAcp: 'nexus:routeViaAcp',
   shutdown: 'nexus:shutdown',
 
   // renderer → main: desktop-only (desktop.json state) channels.

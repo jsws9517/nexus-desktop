@@ -295,7 +295,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   },
   subAgentsDefaultSession: { 'zh-CN': '默认会话', en: 'default session' },
   subAgentsTasks: { 'zh-CN': '{n} 个任务', en: '{n} tasks' },
-  // Background jobs (core bg_ + desktop bj_) — status line + Jobs sidebar page.
+  // Background jobs (core bg_ shell jobs) — status line + Jobs sidebar page.
   jobsRunning: { 'zh-CN': '{n} 个后台任务运行中', en: '{n} background job(s) running' },
   bgJobDone: { 'zh-CN': '后台任务 {title}：{status}', en: 'Background job {title}: {status}' },
   bgJobStalled: { 'zh-CN': '后台任务疑似卡住：{label}', en: 'Background job looks stalled: {label}' },
@@ -311,12 +311,9 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
     en: 'No background jobs in the current session ({session}). Switching workspaces re-associates.',
   },
   jobsShellSection: { 'zh-CN': 'Shell 任务', en: 'Shell jobs' },
-  jobsSubagentSection: { 'zh-CN': '子代理任务', en: 'Sub-agent jobs' },
   jobsKill: { 'zh-CN': '终止', en: 'Kill' },
   jobsRemove: { 'zh-CN': '移除', en: 'Remove' },
   jobsTail: { 'zh-CN': '日志', en: 'Log' },
-  jobsSourceCore: { 'zh-CN': 'shell', en: 'shell' },
-  jobsSourceSubagent: { 'zh-CN': 'subagent', en: 'subagent' },
   jobsNoSession: { 'zh-CN': '无会话', en: 'no session' },
   sideChatTitle: { 'zh-CN': '💬 旁路聊天', en: '💬 Side Chat' },
   sideChatLegend: { 'zh-CN': '快速提问，不打断主对话', en: 'quick prompts, main chat untouched' },

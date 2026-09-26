@@ -55,23 +55,11 @@ type WorkerRequest =
   | { id: number; method: 'getMcpStatus' }
   | { id: number; method: 'getMcpServers' }
   | { id: number; method: 'setMcpServer'; params: { name: string; enabled: boolean } }
-  | { id: number; method: 'runSubAgent'; params: { taskId: string; prompt: string; tools?: string[]; maxTurns?: number; timeoutMs?: number; constitution?: string } }
-  | { id: number; method: 'getSubAgentStatus'; params: { taskId: string } }
-  | { id: number; method: 'cancelSubAgent'; params: { taskId: string } }
-  // bg_job lifecycle (delegate to main-process BgJobManager via post()).
-  | { id: number; method: 'bgJobCreate'; params: { title: string; prompt: string; sessionId: string; maxDurationMs?: number; maxTurns?: number } }
-  | { id: number; method: 'bgJobQuery'; params: { jobId: string } }
-  | { id: number; method: 'bgJobList'; params?: { sessionId?: string; status?: string } }
-  | { id: number; method: 'bgJobCancel'; params: { jobId: string } }
-  | { id: number; method: 'bgJobRemove'; params: { jobId: string } }
-  | { id: number; method: 'bgJobProgress'; params: { jobId: string; progress?: number; note?: string } }
   // core bg_ shell jobs (worker-local JobManager).
   | { id: number; method: 'coreBgList'; params?: { sessionId?: string } }
   | { id: number; method: 'coreBgKill'; params: { jobId: string; sessionId?: string } }
   | { id: number; method: 'coreBgTail'; params: { jobId: string; lines?: number; sessionId?: string } }
   | { id: number; method: 'coreBgRemove'; params: { jobId: string; sessionId?: string } }
-  // acp_router: route a prompt to a named agent role.
-  | { id: number; method: 'routeViaAcp'; params: { roleId: string; prompt: string; sessionId: string; background?: boolean } }
   | { id: number; method: 'shutdown' };
 
 /** JSON-RPC transport. stdio (dev/system node) or parentPort (Electron utilityProcess). */
@@ -123,35 +111,6 @@ function resolveMcpResult(msg: {
   else p.reject(new Error(msg.error || 'MCP proxy request failed'));
 }
 
-// Worker → main bg_job request channel. The worker cannot access BgJobManager
-// directly (it lives in main), so it posts a 'bgJobRequest' that the main
-// process's WorkerHost forwards to BgJobManager and replies with 'bgJobResult'.
-type BgJobOp = 'create' | 'query' | 'list' | 'cancel' | 'remove' | 'progress';
-let bgJobNextId = 2e9;
-const bgJobPending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-
-function sendBgJobRequest(op: BgJobOp, params?: Record<string, unknown>): Promise<unknown> {
-  const id = bgJobNextId++;
-  send({ type: 'bgJobRequest', id, op, data: params ?? {} });
-  return new Promise((resolve, reject) => {
-    bgJobPending.set(id, { resolve, reject });
-  });
-}
-
-function resolveBgJobResult(msg: {
-  id?: number;
-  ok?: boolean;
-  data?: unknown;
-  error?: string;
-}): void {
-  if (msg.id == null) return;
-  const p = bgJobPending.get(msg.id);
-  if (!p) return;
-  bgJobPending.delete(msg.id);
-  if (msg.ok) p.resolve(msg.data);
-  else p.reject(new Error(msg.error || 'bg_job request failed'));
-}
-
 const service = new AgentService();
 service.onEvent = (event: AgentEvent) => send({ type: 'event', event });
 service.onPermission = (req) => { tracePerm(`askPermission id=${req.id}`); send({ type: 'permission', ...req }); };
@@ -172,9 +131,6 @@ service.onMcpRequest = (op, params) =>
 // Startup is split into two phases:
 //   earlyInit �?constructs the Agent (config/session/provider), fast.
 //   init      �?MCP connect + skills load, slow.
-// Sub-agent state tracking
-const subAgentStates = new Map<string, { status: string; startTime: number }>();
-
 // Read-only session/config methods only need phase 1 and must NOT wait for
 // phase 2; mutations (chat, MCP toggles, ...) wait on the full init promise.
 // Full serialization is NOT an option: abort() must stay able to run
@@ -343,79 +299,6 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   getMcpStatus: () => service.getMcpStatus(),
   getMcpServers: () => service.getMcpServers(),
   setMcpServer: (req: WorkerRequest & { method: 'setMcpServer' }) => service.setMcpServer(req.params.name, req.params.enabled),
-  // DEAD (2026-09-26): only `SubAgentExecutor` requests `runSubAgent`, and that
-  // class is unreachable (src/main/index.ts `handleParallelRequest` has no call
-  // site); `nexus:runSubAgent` has neither an ipcMain handler nor a preload
-  // export. Real sub-agent runs go through core `SubAgentWorker` (nexus-coder).
-  // See docs/module-map-panels-and-runs.md §3.
-  runSubAgent: async (req: WorkerRequest & { method: 'runSubAgent' }) => {
-    const { taskId, prompt, tools, maxTurns, timeoutMs, constitution } = req.params;
-    subAgentStates.set(taskId, { status: 'running', startTime: Date.now() });
-    
-    try {
-      const tempService = new AgentService();
-      await tempService.earlyInit();
-      
-      // Constitution inheritance (§3.7): the Orchestrator passes the text
-      // explicitly; the worker performs NO filesystem discovery for it.
-      if (typeof constitution === 'string') {
-        tempService.setConstitutionOverride(constitution.length > 0 ? constitution : null);
-      }
-      
-      if (tools && tools.length > 0) {
-        tempService.setToolAllowlist(new Set(tools));
-      }
-      
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Task ${taskId} timed out`)), timeoutMs ?? 60000)
-      );
-      
-      const usage = await Promise.race([
-        tempService.chatForUsage(prompt),
-        timeoutPromise,
-      ]);
-      
-      subAgentStates.set(taskId, { status: 'succeeded', startTime: Date.now() });
-      return {
-        output: `Task ${taskId} completed successfully`,
-        tokenUsage: { prompt: usage.prompt, completion: usage.completion },
-      };
-    } catch (error) {
-      subAgentStates.set(taskId, { status: 'failed', startTime: Date.now() });
-      throw error;
-    }
-  },
-  getSubAgentStatus: (req: WorkerRequest & { method: 'getSubAgentStatus' }) => {
-    const state = subAgentStates.get(req.params.taskId);
-    return state ?? { status: 'unknown' };
-  },
-  cancelSubAgent: (req: WorkerRequest & { method: 'cancelSubAgent' }) => {
-    subAgentStates.set(req.params.taskId, { status: 'cancelled', startTime: Date.now() });
-    return { success: true };
-  },
-  // bg_job lifecycle: forward to main-process BgJobManager via sendBgJobRequest.
-  // The worker cannot create its own BgJobManager (it lives in main); instead
-  // it posts a 'bgJobRequest' that the main process's WorkerHost forwards to
-  // BgJobManager and replies with 'bgJobResult'.
-  bgJobCreate: async (req: WorkerRequest & { method: 'bgJobCreate' }) => {
-    const { title, prompt, sessionId, maxDurationMs, maxTurns } = req.params;
-    return sendBgJobRequest('create', { title, prompt, sessionId, maxDurationMs, maxTurns });
-  },
-  bgJobQuery: async (req: WorkerRequest & { method: 'bgJobQuery' }) => {
-    return sendBgJobRequest('query', { jobId: req.params.jobId });
-  },
-  bgJobList: async (req: WorkerRequest & { method: 'bgJobList' }) => {
-    return sendBgJobRequest('list', req.params);
-  },
-  bgJobCancel: async (req: WorkerRequest & { method: 'bgJobCancel' }) => {
-    return sendBgJobRequest('cancel', { jobId: req.params.jobId });
-  },
-  bgJobRemove: async (req: WorkerRequest & { method: 'bgJobRemove' }) => {
-    return sendBgJobRequest('remove', { jobId: req.params.jobId });
-  },
-  bgJobProgress: async (req: WorkerRequest & { method: 'bgJobProgress' }) => {
-    return sendBgJobRequest('progress', req.params);
-  },
   // core bg_ shell jobs: hit this worker's JobManager (reconcile first so a
   // prior restart re-adopts RUNNING rows before we list/kill/tail them).
   coreBgList: async (req: WorkerRequest & { method: 'coreBgList' }) => {
@@ -429,53 +312,6 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   },
   coreBgRemove: async (req: WorkerRequest & { method: 'coreBgRemove' }) => {
     return service.removeCoreBgJob(req.params.jobId);
-  },
-  // acp_router: resolve role config inline (read-only), then hand off via bgJobRequest
-  // when background:true is requested.
-  routeViaAcp: async (req: WorkerRequest & { method: 'routeViaAcp' }) => {
-    const { roleId, prompt, sessionId, background } = req.params;
-    // Read role config from .nexus/agents/<roleId>/SKILL.md
-    const { discoverRoles } = await import('./tools/acp-router.js');
-    const roles = await discoverRoles(process.cwd());
-    const role = roles.find((r: { name: string }) => r.name === roleId);
-    if (!role) {
-      return { ok: false, error: `Role "${roleId}" not found` };
-    }
-    if (background) {
-      // Enqueue as a persistent bg_job — survives worker crashes.
-      // ⚠️ DEAD BRANCH: `BgJobManager.create()` only records `queued` and no
-      // runner ever executes `prompt` (see src/main/bg-job-manager.ts header),
-      // so this job would decay to `stale` after STUCK_THRESHOLD. On top of
-      // that the whole `routeViaAcp` method has no caller (no ipcMain handler,
-      // no preload export) — `acp_router(action=route)` only returns config.
-      // See docs/module-map-panels-and-runs.md §3.
-      return sendBgJobRequest('create', {
-        title: `[${roleId}] ${prompt.slice(0, 80)}`,
-        prompt: `[Role: ${roleId}]\n${role.systemPrompt}\n\n---\n\n${prompt}`,
-        sessionId,
-        toolAllowlist: role.frontmatter.tools,
-        maxDurationMs: role.frontmatter.maxDurationMs,
-        maxTurns: role.frontmatter.maxTurns,
-        constitution: role.frontmatter.constitution,
-      });
-    }
-    // Inline execution: spawn a temp service with the role's system prompt.
-    const tempService = new AgentService();
-    await tempService.earlyInit();
-    if (role.frontmatter.tools?.length) {
-      tempService.setToolAllowlist(new Set(role.frontmatter.tools));
-    }
-    if (role.frontmatter.constitution) {
-      tempService.setConstitutionOverride(role.frontmatter.constitution);
-    }
-    // Inject the role system prompt into the temp agent.
-    const { Agent } = await import('nexus-coder/dist/src/agent.js');
-    try {
-      const usage = await tempService.chatForUsage(prompt);
-      return { ok: true, roleId, output: `Role ${roleId} completed`, tokenUsage: usage };
-    } catch (e) {
-      return { ok: false, roleId, error: e instanceof Error ? e.message : String(e) };
-    }
   },
   shutdown: () => service.shutdown(),
 };
@@ -553,10 +389,6 @@ if (useParentPort) {
         resolveMcpResult(msg);
         return;
       }
-      if (msg.type === 'bgJobResult') {
-        resolveBgJobResult(msg);
-        return;
-      }
     }
     void handleRequest(d as string | Record<string, unknown>);
   });
@@ -568,10 +400,6 @@ if (useParentPort) {
       const msg = JSON.parse(line) as { type?: string };
       if (msg.type === 'mcpResult') {
         resolveMcpResult(msg as { id?: number; ok?: boolean; data?: unknown; error?: string });
-        return;
-      }
-      if (msg.type === 'bgJobResult') {
-        resolveBgJobResult(msg as { id?: number; ok?: boolean; data?: unknown; error?: string });
         return;
       }
     } catch { /* not JSON — fall through */ }

@@ -9,11 +9,10 @@
  * Workflow:
  *   1. LLM calls `acp_router` with `action` + role + prompt.
  *   2. The tool resolves the role config (`.nexus/agents/<role>/SKILL.md`).
- *   3. It either:
- *        a) hands off to a fresh sub-agent worker (fast, synchronous-ish), OR
- *        b) enqueues a background job via BgJobManager (for long-running work).
- *   4. Result is returned inline (a) or as a job-id reference (b); the caller
- *      may use `bg_job_query` to poll later.
+ *   3. `action=route` returns the resolved role config (system prompt, tool
+ *      allowlist, limits) plus the prompt. It does NOT execute the role —
+ *      role dispatch lives in core, which owns scheduling and execution.
+ *   4. `action=list_roles` / `action=create_role` manage role definitions.
  *
  * Role definitions live in `<project-root>/.nexus/agents/<name>/SKILL.md`
  * with front-matter:
@@ -214,9 +213,9 @@ export async function callAcpRouterTool(
       };
     }
 
-    // The actual routing is done by the caller (agent-worker) which has access
-    // to BgJobManager.  Here we return the resolved role config + input so the
-    // caller can decide inline-vs-background.
+    // This tool only resolves config. Role dispatch belongs to core, which owns
+    // task decomposition, scheduling and execution — so we hand back the role
+    // config + input and let core decide inline-vs-background.
     const payload = {
       roleId: roleName,
       roleConfig: {

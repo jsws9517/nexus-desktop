@@ -97,36 +97,12 @@ export const WORKER_METHODS = {
   setMcpServer: { fields: { name: S.str(200), enabled: S.bool() } },
   getSlashLog: { fields: { sessionId: S.str() } },
   getSlashLogPath: { fields: { sessionId: S.str() } },
-  runSubAgent: {
-    fields: { taskId: S.str(200), prompt: S.str(65536), tools: S.obj(), maxTurns: S.num(), timeoutMs: S.num(), constitution: S.str(32768) },
-    optional: ['tools', 'maxTurns', 'timeoutMs', 'constitution'],
-  },
-  getSubAgentStatus: { fields: { taskId: S.str(200) } },
-  cancelSubAgent: { fields: { taskId: S.str(200) } },
-  // bg_job lifecycle (route through main-process BgJobManager).
-  bgJobCreate: {
-    fields: { title: S.str(500), prompt: S.str(65536), sessionId: S.str(200), maxDurationMs: S.num(), maxTurns: S.num() },
-    optional: ['maxDurationMs', 'maxTurns'],
-  },
-  bgJobQuery: { fields: { jobId: S.str(200) } },
-  bgJobList: {
-    fields: { sessionId: S.str(200), status: S.en(['created', 'queued', 'running', 'succeeded', 'failed', 'timeout', 'cancelled', 'stale']) },
-    optional: ['sessionId', 'status'],
-  },
-  bgJobCancel: { fields: { jobId: S.str(200) } },
-  bgJobProgress: { fields: { jobId: S.str(200), progress: S.num(), note: S.str(500) }, optional: ['progress', 'note'] },
-  bgJobRemove: { fields: { jobId: S.str(200) } },
   // core bg_ shell jobs (worker-local JobManager; reconcile+list/kill/tail/remove).
   // sessionId routes callForSession to the owning session worker (same as list).
   coreBgList: { fields: { sessionId: S.str(200) }, optional: ['sessionId'] },
   coreBgKill: { fields: { jobId: S.str(200), sessionId: S.str(200) }, optional: ['sessionId'] },
   coreBgTail: { fields: { jobId: S.str(200), lines: S.num(), sessionId: S.str(200) }, optional: ['lines', 'sessionId'] },
   coreBgRemove: { fields: { jobId: S.str(200), sessionId: S.str(200) }, optional: ['sessionId'] },
-  // acp_router: route a prompt to a named agent role (worker-side dispatch).
-  routeViaAcp: {
-    fields: { roleId: S.str(200), prompt: S.str(65536), sessionId: S.str(200), background: S.bool() },
-    optional: ['background'],
-  },
   shutdown: { fields: {} },
 } satisfies Record<string, MethodSpec>;
 

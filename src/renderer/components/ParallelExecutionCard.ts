@@ -1,4 +1,4 @@
-import type { SubTaskStatus } from '../../agent/sub-agent/types.js';
+import type { SubTaskStatus } from '../../agent/types.js';
 
 interface ParallelExecutionCardProps {
   taskId: string;

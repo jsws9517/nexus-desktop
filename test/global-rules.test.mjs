@@ -143,11 +143,24 @@ test('AgentService injects [Global Rules] into every model step', () => {
   assert.ok(injectionIdx > hookIdx, '[Global Rules] injected inside preLlmCall');
 });
 
-test('sub-agent path merges global rules with the project constitution', () => {
-  const mainSrc = readFileSync(join(dist, 'main', 'index.js'), 'utf8');
-  assert.ok(mainSrc.includes('loadGlobalRules'), 'global rules loaded for parallel runs');
-  assert.ok(mainSrc.includes('GLOBAL_RULES_MARKER'), 'marker embedded in inherited constitution');
-  assert.ok(mainSrc.includes('loadConstitution'), 'project constitution still merged');
+test('every model step merges global rules with the project constitution', () => {
+  // Live path: AgentService decorates each model step (service.ts, the
+  // preLlmCall hook). The old guard asserted this on dist/main/index.js, which
+  // only ever held the DEAD `handleParallelRequest` orchestrator — removed.
+  const serviceSrc = readFileSync(join(dist, 'agent', 'service.js'), 'utf8');
+  assert.ok(serviceSrc.includes('loadGlobalRules'), 'global rules loaded for every model step');
+  assert.ok(serviceSrc.includes('GLOBAL_RULES_MARKER'), 'global marker embedded in the system prompt');
+  assert.ok(serviceSrc.includes('loadConstitution'), 'project constitution still resolved');
+  assert.ok(serviceSrc.includes('CONSTITUTION_MARKER'), 'constitution embedded under its own marker');
+  // Precedence contract: user-level global rules are injected FIRST so the
+  // project constitution is read later and can override them. Anchor on the
+  // awaited call sites — the bare identifiers also appear in the import list,
+  // where loadConstitution happens to be listed first.
+  const globalIdx = serviceSrc.indexOf('await loadGlobalRules(');
+  const constitutionIdx = serviceSrc.indexOf('await loadConstitution(');
+  assert.ok(globalIdx >= 0, 'global rules awaited in the model-step decorator');
+  assert.ok(constitutionIdx >= 0, 'constitution awaited in the model-step decorator');
+  assert.ok(globalIdx < constitutionIdx, 'global rules injected before the project constitution');
 });
 
 test('ensureGlobalRules is bootstrapped during AgentService init', () => {

@@ -6,7 +6,7 @@ import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
 import { ParallelExecutionCard, initParallelCardTooltips } from './components/ParallelExecutionCard.js';
-import type { SubTaskResult, SubTaskStatus } from '../agent/sub-agent/types.js';
+import type { SubTaskResult, SubTaskStatus } from '../agent/types.js';
 import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
@@ -173,29 +173,7 @@ type AgentEvent =
   | { type: 'task_progress'; taskId: string; status: string; description?: string; error?: string }
   | { type: 'session_changed'; sessionId: string }
   | { type: 'language_changed' }
-  // Background job lifecycle — desktop bj_ (BgJobManager) and core bg_ (JobManager).
-  | {
-      type: 'bg_job_complete';
-      jobId: string;
-      title: string;
-      status: string;
-      output?: string;
-      error?: string;
-      progress?: number;
-      progressNote?: string;
-      lang?: 'zh-CN' | 'en';
-    }
-  | {
-      type: 'bg_job_progress';
-      jobId: string;
-      title: string;
-      status: string;
-      output?: string;
-      error?: string;
-      progress?: number;
-      progressNote?: string;
-      lang?: 'zh-CN' | 'en';
-    }
+  // Core bg_ shell-job lifecycle (worker-local JobManager).
   | { type: 'bg_job_event'; kind: 'completed' | 'status' | 'stalled'; job: CoreBgJobView; idleMs?: number };
 
 /** Serializable subset of a core JobManager BgJob (shell `bg_` jobs). */
@@ -302,10 +280,6 @@ declare global {
       readRecentLogs(maxLines?: number): Promise<string[]>;
       getGlobalRulesPath(): Promise<{ ok: boolean; path: string }>;
       resetGlobalRules(): Promise<{ ok: boolean; path: string; backup?: string }>;
-      bgJobList(params?: { sessionId?: string; status?: string }): Promise<{ ok: boolean; jobs?: unknown[]; error?: string }>;
-      bgJobQuery(jobId: string): Promise<{ ok: boolean; job?: unknown; error?: string }>;
-      bgJobCancel(jobId: string): Promise<{ ok: boolean; error?: string }>;
-      bgJobRemove(jobId: string): Promise<{ ok: boolean; error?: string }>;
       coreBgList(params?: { sessionId?: string }): Promise<{ ok: boolean; jobs?: unknown[]; error?: string }>;
       coreBgKill(jobId: string, sessionId?: string): Promise<{ ok: boolean; text?: string; error?: string }>;
       coreBgTail(jobId: string, lines?: number, sessionId?: string): Promise<{ ok: boolean; text?: string; error?: string }>;
@@ -725,34 +699,20 @@ const parallelBatches = new Set<string>();
 let parallelCardEl: HTMLElement | null = null;
 
 // ---------- background job status line ----------
-/** Non-terminal job ids (core bg_ + desktop bj_) — drives the idle status line. */
+/** Non-terminal core bg_ job ids — drives the idle status line. */
 const activeBgJobIds = new Set<string>();
 /** True while #input-status currently shows our jobs text (only we clear it). */
 let jobsStatusLineActive = false;
 
 const CORE_TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'timeout', 'killed', 'lost']);
-const DESKTOP_TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'timeout', 'cancelled', 'stale']);
 
 /** Idempotently fold a bg job event into the active-id set + status line. */
 function trackBgJobForStatusLine(event: AgentEvent): void {
-  let id: string | undefined;
-  let status: string | undefined;
-  let terminal = false;
-  if (event.type === 'bg_job_complete' || event.type === 'bg_job_progress') {
-    id = event.jobId ? String(event.jobId) : undefined;
-    status = event.status ? String(event.status) : undefined;
-    terminal = event.type === 'bg_job_complete' || DESKTOP_TERMINAL_JOB_STATUSES.has(String(status));
-  } else if (event.type === 'bg_job_event') {
-    const job = event.job;
-    id = job?.id;
-    status = job?.status;
-    const kindTerminal =
-      event.kind === 'completed' && CORE_TERMINAL_JOB_STATUSES.has(String(status));
-    terminal = kindTerminal;
-  } else {
-    return;
-  }
+  if (event.type !== 'bg_job_event') return;
+  const job = event.job;
+  const id = job?.id;
   if (!id) return;
+  const terminal = event.kind === 'completed' && CORE_TERMINAL_JOB_STATUSES.has(String(job?.status));
   if (terminal) activeBgJobIds.delete(id);
   else activeBgJobIds.add(id);
   updateJobsStatusLine();
@@ -1516,14 +1476,6 @@ function handleEvent(event: AgentEvent): void {
         cwdLabel.title = event.cwd;
         void refreshSidebarSession();
       }
-      break;
-    case 'bg_job_complete':
-      // Desktop bj_ terminal (or core path routed here): toast + status line.
-      trackBgJobForStatusLine(event);
-      toastBgJobTerminal(event.title || event.jobId, event.status, event.error);
-      break;
-    case 'bg_job_progress':
-      trackBgJobForStatusLine(event);
       break;
     case 'bg_job_event':
       // Core bg_ structured event. Active tab already gets the human text
@@ -2868,22 +2820,15 @@ function applyTabEvent(sessionId: string, event: AgentEvent): void {
   // tabs' job lifecycle still updates the panel — handleEvent stays active-tab
   // only below.
   notifySidebarSubscribers(event);
-  if (
-    event.type === 'bg_job_complete' ||
-    event.type === 'bg_job_progress' ||
-    event.type === 'bg_job_event'
-  ) {
+  if (event.type === 'bg_job_event') {
     // Status-line tracking for all tabs (idempotent vs the active-tab path).
     trackBgJobForStatusLine(event);
     if (sessionId !== activeTabId) {
       // Inactive tab: the chat stream won't show the core text summary — toast
       // terminal completions / stalls so they aren't silent.
-      if (event.type === 'bg_job_complete') {
-        toastBgJobTerminal(event.title || event.jobId, event.status, event.error);
-      } else if (event.type === 'bg_job_event' && event.kind === 'stalled') {
+      if (event.kind === 'stalled') {
         toastBgJobTerminal(event.job?.label || event.job?.id || 'bg', event.job?.status || 'running', undefined, 'stalled');
       } else if (
-        event.type === 'bg_job_event' &&
         event.kind === 'completed' &&
         CORE_TERMINAL_JOB_STATUSES.has(String(event.job?.status))
       ) {

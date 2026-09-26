@@ -40,7 +40,6 @@ interface DesktopStateData {
   monitorEnabled?: boolean;
   lazyWorker?: boolean;
   // Namespaced sections absorbed from former top-level files.
-  jobs?: unknown[];
   modelBlacklist?: Record<string, Record<string, string>>;
 }
 
@@ -73,9 +72,6 @@ export interface DesktopStateAccess {
   setMonitorEnabled(enabled: boolean): void;
   getLazyWorker(): boolean;
   setLazyWorker(enabled: boolean): void;
-  /** Background jobs (absorbed from jobs.json). */
-  getJobs(): unknown[];
-  setJobs(jobs: unknown[]): void;
   /** Model capability blacklist (absorbed from model-blacklist.json). */
   getModelBlacklist(): Record<string, Record<string, string>>;
   setModelBlacklist(data: Record<string, Record<string, string>>): void;
@@ -160,10 +156,6 @@ export function createDesktopState(): DesktopStateStore {
       cache = {};
     }
     const dir = configDir();
-    migrateLegacy<unknown[]>('jobs', join(dir, 'jobs.json'), (raw) => {
-      const v = JSON.parse(raw);
-      return Array.isArray(v) ? v : [];
-    });
     migrateLegacy<Record<string, Record<string, string>>>(
       'modelBlacklist', join(dir, 'model-blacklist.json'),
       (raw) => {
@@ -263,13 +255,6 @@ export function createDesktopState(): DesktopStateStore {
     getLazyWorker,
     setLazyWorker(enabled: boolean): void {
       write({ lazyWorker: enabled });
-    },
-    getJobs(): unknown[] {
-      const jobs = read().jobs;
-      return Array.isArray(jobs) ? jobs : [];
-    },
-    setJobs(jobs: unknown[]): void {
-      write({ jobs });
     },
     getModelBlacklist(): Record<string, Record<string, string>> {
       const bl = read().modelBlacklist;

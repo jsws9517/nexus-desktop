@@ -37,7 +37,7 @@ import { GIT_WRITE_TOOLS } from '../main/git-internal.js';
 import { logger } from '../shared/logger.js';
 import type { AgentEvent, PermissionRequest, ProviderInfo, RateLimitStatus } from './types.js';
 import { RateLimiter, inferProviderFamily } from './rate-limiter.js';
-import type { SubTask } from './sub-agent/types.js';
+import type { SubTask } from './types.js';
 import { extractTopic } from './topic.js';
 import {
   EMPTY_USAGE,
@@ -162,9 +162,6 @@ export class AgentService {
    */
   private activeMonitor: TurnMonitor | null = null;
 
-  /** Estimated usage of the most recent completed turn (`chat`/`chatParallel`). */
-  private lastUsage: TurnUsage | null = null;
-
   /**
    * True (default) to abort a turn when the model repeats the same thinking
    * block (loop signal) — a degenerate hallucination spin cannot recover, so
@@ -209,17 +206,6 @@ export class AgentService {
    * and NEVER discovers the constitution via the filesystem.
    * undefined = not overridden (default: load from filesystem).
    */
-  private constitutionOverride: string | undefined;
-
-  /**
-   * Set the constitution text explicitly (for sub-agents, §3.7).
-   * Pass null to force 'no constitution' (skip filesystem).
-   * Pass undefined to restore default filesystem loading.
-   */
-  setConstitutionOverride(text: string | null): void {
-    this.constitutionOverride = text === null ? '' : text;
-  }
-
   private compressionLog = new Map<string, number[]>();
   private compressionWarned = new Set<string>();
 
@@ -279,15 +265,6 @@ export class AgentService {
     } finally {
       const status = this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
       if (status && this.onRateLimitReport) this.onRateLimitReport(status);
-    }
-  }
-
-  /**
-   * Set tool allowlist for this agent (for sub-agent isolation).
-   */
-  setToolAllowlist(tools: Set<string>): void {
-    if (this.agent) {
-      this.agent.toolAllowlist = tools;
     }
   }
 
@@ -588,13 +565,9 @@ export class AgentService {
           // Inject the .nexus project constitution into EVERY model step,
           // under a clearly delimited marker so it is strippable/auditable.
           // Refused for unauthorized roots; size-capped internally (32 KB).
-          // Only local sessions: sub-agents (parallel phase) get the text
-          // explicitly passed by the Orchestrator (see adoption plan §3.7).
           try {
-            let text = this.constitutionOverride !== undefined ? (this.constitutionOverride || null) : null;
-            if (!text) {
-              // Sub-agent sessions (Orchestrator §3.7): override is set, so we
-              // NEVER discover the constitution via the filesystem in the worker.
+            let text: string | null = null;
+            {
               const constitution = await loadConstitution(projectDir ?? process.cwd());
               if (constitution.reason === 'ok' && constitution.text) text = constitution.text;
               else if (constitution.reason === 'too-large') {
@@ -1062,19 +1035,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     }
 
     const usage = monitor.finish();
-    this.lastUsage = usage;
     return usage;
-  }
-
-  /**
-   * Run a full chat turn (slash handling + parallel detection included) and
-   * return the estimated token usage for the whole call. Used by the isolated
-   * sub-agent path (agent-worker runSubAgent) so task cards report real numbers
-   * instead of the hardcoded zeros.
-   */
-  async chatForUsage(input: string): Promise<TurnUsage> {
-    await this.chat(input);
-    return this.lastUsage ?? EMPTY_USAGE;
   }
 
   async chat(input: string): Promise<void> {
@@ -1399,7 +1360,6 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       }),
       { ...EMPTY_USAGE },
     );
-    this.lastUsage = totalUsage;
 
     // Emit parallel_end event
     this.onEvent?.({
