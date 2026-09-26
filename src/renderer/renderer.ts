@@ -3389,6 +3389,16 @@ function declareCoreRun(sessionId: string, graphId?: string, taskOrder?: string[
   // Prune FIRST: the max-size eviction prefers the newest entry, so pruning
   // after inserting would be able to drop the run we just created.
   pruneSubAgentRuns();
+  // When a fresh standalone run arrives, immediately evict any already-finished
+  // standalone run for the same session — retries spawn a new node.id each time
+  // so the old completed run would otherwise linger as a ghost card.
+  if (!resolved) {
+    for (const [k, run] of subAgentRuns) {
+      if (run.kind === 'standalone' && run.sessionId === sessionId && run.tasks.size > 0 && [...run.tasks.values()].every(isTerminalTask)) {
+        subAgentRuns.delete(k);
+      }
+    }
+  }
   subAgentRuns.set(key, {
     key,
     kind: resolved ? 'dag' : 'standalone',
