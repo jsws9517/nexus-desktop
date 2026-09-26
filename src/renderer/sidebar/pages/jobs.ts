@@ -107,7 +107,7 @@ export function coreJobToRow(raw: unknown): JobRow | null {
   const finishedAt = num(j.finishedAt);
   return {
     id,
-    title: strOr(j.label) || strOr(j.command) || id,
+    title: (strOr(j.label) || strOr(j.command) || id).replace(/^["']|["']$/g, ''),
     status: normalizeJobStatus(j.status),
     sessionId: strOr(j.sessionId),
     command: strOr(j.command),

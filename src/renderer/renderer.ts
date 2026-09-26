@@ -791,6 +791,9 @@ function toastBgJobTerminal(
 // they've sat complete for RUN_SESSION_TTL_MS, or hard-capped so the map
 // can never grow unbounded. In-flight fan-out batches are never evicted.
 const RUN_SESSION_TTL_MS = 10 * 60 * 1000;
+/** Standalone runs (a single spawn_subagent call) are short-lived by nature —
+ *  clean them up faster once they finish so retries don't leave ghost cards. */
+const STANDALONE_COMPLETE_TTL_MS = 2 * 60 * 1000;
 const RUN_SESSION_MAX = 20;
 /** A run with NO activity at all for this long is treated as hung and
  *  force-cancelled so stuck running cards + busy indicators close the loop. */
@@ -816,7 +819,10 @@ function pruneSubAgentRuns(ttlMs: number = RUN_SESSION_TTL_MS): number {
   let removed = 0;
   for (const [key, run] of subAgentRuns) {
     const done = run.tasks.size > 0 && [...run.tasks.values()].every(isTerminalTask);
-    if (done && !isLiveFanout(run) && now - run.startTime >= ttlMs) {
+    // Standalone runs finish fast and get retried with fresh taskIds — prune
+    // them sooner so a successful retry doesn't leave the old failed card behind.
+    const effectiveTtl = run.kind === 'standalone' && done ? STANDALONE_COMPLETE_TTL_MS : ttlMs;
+    if (done && !isLiveFanout(run) && now - run.startTime >= effectiveTtl) {
       subAgentRuns.delete(key);
       removed++;
     }
@@ -3327,6 +3333,15 @@ function mirrorCoreRun(update: {
 
   const prev = run.tasks.get(taskId);
   if (prev && isTerminalTask(prev) && !TERMINAL_TASK_STATUS.has(status)) return;
+
+  // Standalone retry: when a fresh non-terminal task lands and the run currently
+  // holds only terminal tasks, wipe the old completed/failed slate so the panel
+  // shows the retry start rather than a stale failed card stuck next to a new
+  // running one. DAG runs keep their history because a graph may span multiple
+  // /go rounds.
+  if (run.kind === 'standalone' && !isTerminalTask({ status }) && [...run.tasks.values()].every(isTerminalTask)) {
+    run.tasks.clear();
+  }
 
   run.lastActivityAt = now;
   run.tasks.set(taskId, {

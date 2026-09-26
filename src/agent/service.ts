@@ -872,10 +872,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     // enter the fan-out path at all — they belong in a single runTurn.
     if (this.isDeclarativePrompt(prompt)) return false;
 
-    // Universal: 2+ conjunctions → likely a multi-task list
+    // Universal: 1+ conjunction → likely a multi-task list
     const conjunctionRegex = /(?:和|与|以及|，|,|、|＆|&|and|et|y|и|أو)/gi;
     const conjunctionCount = (prompt.match(conjunctionRegex) || []).length;
-    if (conjunctionCount >= 2) return true;
+    if (conjunctionCount >= 1) return true;
 
     // Per-language patterns (synced across all 6 UN languages)
     const patterns = [
