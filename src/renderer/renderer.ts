@@ -140,6 +140,26 @@ type AgentEvent =
   | { type: 'task_started'; taskId: string; description: string; role: string }
   | { type: 'task_completed'; taskId: string }
   | { type: 'task_failed'; taskId: string; error: string }
+  | { type: 'task_interrupted'; taskId: string; error?: string; interrupter?: string }
+  | {
+      type: 'subagent_status';
+      run: {
+        id: string;
+        graphId?: string;
+        role: string;
+        taskDesc: string;
+        status: string;
+        currentTool?: string;
+        currentTurn: number;
+        maxTurns: number;
+        startedAt: number;
+        lastHeartbeat: number;
+        finishedAt?: number;
+        result?: string;
+        error?: string;
+        interrupter?: string;
+      };
+    }
   | { type: 'sessionRenamed'; sessionId: string; name: string }
   | { type: 'cwdChanged'; sessionId: string; cwd: string }
   | { type: 'context_cleared'; sessionId: string }
@@ -809,7 +829,10 @@ function pruneParallelSessions(ttlMs: number = PARALLEL_SESSION_TTL_MS): number 
     const newestFirst = [...parallelSessions].sort((a, b) => (b[1].startTime ?? 0) - (a[1].startTime ?? 0));
     for (const [sid, session] of newestFirst) {
       if (parallelSessions.size <= PARALLEL_SESSION_MAX) break;
-      if (parallelBatches.has(sid)) continue;
+      // Never evict a live batch: an in-flight core sub-agent (mirrored here
+      // without a parallelBatches marker) would lose its task state mid-run —
+      // the stuck sweep closes those first, then they become evictable.
+      if (parallelBatches.has(sid) || [...session.tasks.values()].some((t) => !isTerminalTask(t))) continue;
       parallelSessions.delete(sid);
       removed++;
     }
@@ -1425,6 +1448,13 @@ function handleEvent(event: AgentEvent): void {
           status: t.status === 'in_progress' ? 'running' : t.status === 'assigned' ? 'pending' : t.status,
           error: t.error,
         });
+        mirrorCoreRunToParallel({
+          sessionId: currentSessionId,
+          taskId: t.id,
+          description: t.description,
+          status: t.status,
+          error: t.error,
+        });
       }
       renderTasks();
       break;
@@ -1432,7 +1462,36 @@ function handleEvent(event: AgentEvent): void {
     case 'task_completed':
     case 'task_failed':
       handleTaskEvent(event);
+      mirrorCoreRunToParallel({
+        sessionId: currentSessionId,
+        taskId: event.taskId,
+        description: event.type === 'task_started' ? event.description : undefined,
+        status: event.type === 'task_started' ? 'in_progress' : event.type === 'task_completed' ? 'completed' : 'failed',
+        error: event.type === 'task_failed' ? event.error : undefined,
+      });
       break;
+    case 'task_interrupted':
+      handleTaskEvent(event);
+      mirrorCoreRunToParallel({
+        sessionId: currentSessionId,
+        taskId: event.taskId,
+        status: 'interrupted',
+        error: event.error,
+      });
+      break;
+    case 'subagent_status': {
+      const run = event.run;
+      mirrorCoreRunToParallel({
+        sessionId: currentSessionId,
+        taskId: run.id,
+        description: run.taskDesc,
+        status: run.status,
+        error: run.error,
+        output: run.result,
+        durationMs: run.finishedAt && run.startedAt ? run.finishedAt - run.startedAt : undefined,
+      });
+      break;
+    }
     case 'sessionRenamed':
       // Session was renamed (manually via /rename or auto-named on first message)
       if (event.sessionId && event.name) tabNames.set(event.sessionId, event.name);
@@ -3212,11 +3271,88 @@ function handleTaskEvent(event: Extract<AgentEvent, { type: `task_${string}` }>)
       t.status = 'failed';
       t.error = event.error;
     }
+  } else if (event.type === 'task_interrupted') {
+    const t = tasks.get(event.taskId);
+    if (t) {
+      t.status = 'cancelled';
+      t.error = event.error;
+    }
   }
   renderTasks();
 }
 
 // ---------- parallel execution rendering ----------
+/**
+ * Mirror a core sub-agent run into the shared parallel-session map.
+ *
+ * The Sub-Agents sidebar page only renders `parallelSessions`, which until now
+ * was written solely by the desktop decomposer's parallel_* batches — so core
+ * `spawn_subagent` / DAG runs (task_graph, task_started, task_completed,
+ * task_failed, task_interrupted, subagent_status) were invisible there.
+ * Terminal states are never downgraded by a late heartbeat.
+ */
+const CORE_TO_PARALLEL_STATUS: Record<string, string> = {
+  pending: 'pending',
+  assigned: 'pending',
+  in_progress: 'running',
+  running: 'running',
+  completed: 'succeeded',
+  failed: 'failed',
+  interrupted: 'cancelled',
+  cancelled: 'cancelled',
+  timeout: 'timeout',
+};
+
+function mirrorCoreRunToParallel(update: {
+  sessionId: string;
+  taskId: string;
+  description?: string;
+  status: string;
+  error?: string;
+  durationMs?: number;
+  output?: string;
+}): void {
+  const { sessionId, taskId } = update;
+  if (!sessionId || !taskId) return;
+  const status = CORE_TO_PARALLEL_STATUS[update.status] ?? update.status;
+  const now = Date.now();
+
+  let session = parallelSessions.get(sessionId);
+  if (!session) {
+    // Prune FIRST: the max-size eviction prefers the newest entry, so pruning
+    // after inserting would be able to drop the batch we just created.
+    pruneParallelSessions();
+    session = {
+      sessionId,
+      prompt: update.description || update.sessionId,
+      startTime: now,
+      lastActivityAt: now,
+      tasks: new Map(),
+    };
+    parallelSessions.set(sessionId, session);
+  }
+
+  const prev = session.tasks.get(taskId);
+  if (prev && isTerminalTask(prev) && !TERMINAL_TASK_STATUS.has(status)) return;
+
+  session.lastActivityAt = now;
+  session.tasks.set(taskId, {
+    description: update.description ?? prev?.description,
+    status,
+    output: update.output ?? prev?.output,
+    error: update.error ?? prev?.error,
+    durationMs: update.durationMs ?? prev?.durationMs,
+    updatedAt: now,
+  });
+  notifySidebarSubscribers({
+    type: 'task_progress',
+    taskId,
+    status,
+    description: update.description,
+    error: update.error,
+  });
+}
+
 function renderParallelCard(session: ParallelSession): void {
   if (!parallelCardEl) {
     parallelCardEl = document.createElement('div');

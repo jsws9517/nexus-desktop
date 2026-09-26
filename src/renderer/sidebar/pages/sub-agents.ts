@@ -159,7 +159,15 @@ export function mountSubAgentsPage(
 
   /** Incremental updates: a plain re-render is deterministic and O(running tasks). */
   const onEvent = (event: AgentEvent): void => {
-    if (event.type === 'parallel_start' || event.type === 'task_progress' || event.type === 'parallel_end' || event.type === 'parallel_error' || event.type === 'session_changed' || event.type === 'language_changed') {
+    if (
+      event.type === 'parallel_start' || event.type === 'task_progress' || event.type === 'parallel_end' || event.type === 'parallel_error'
+      // Core sub-agent runs (spawn_subagent / DAG) are mirrored into the same
+      // map by the renderer — refresh on those too, not just on the desktop
+      // decomposer's parallel_* batch events.
+      || event.type === 'task_graph' || event.type === 'task_started' || event.type === 'task_completed'
+      || event.type === 'task_failed' || event.type === 'task_interrupted' || event.type === 'subagent_status'
+      || event.type === 'session_changed' || event.type === 'language_changed'
+    ) {
       render();
     }
   };
