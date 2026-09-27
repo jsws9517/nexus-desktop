@@ -1439,9 +1439,15 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const { detectLanguage } = await import('../shared/lang-detect.js');
     const lang = detectLanguage(prompt);
     const isZh = lang === 'zh-CN';
-    // Detect if prompt has multiple independent action clauses
+    // Detect if prompt has multiple independent action clauses.
+    // Note: \b does NOT work around CJK characters in JavaScript, so we use
+    // a plain substring match instead — the verb list is specific enough that
+    // false positives are negligible.
     const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释';
-    const hasMultiClause = new RegExp(`\\b(${actionVerbs})\\b.*(?:和|与|以及|&|and).*.?\\b(${actionVerbs})\\b`, 'i').test(prompt);
+    const hasMultiClause = new RegExp(
+      `(${actionVerbs}).*?(?:和|与|以及|&|and).*?(${actionVerbs})`,
+      'i',
+    ).test(prompt);
 
     if (!hasMultiClause) {
       // Single coherent task — do NOT split on noun conjunctions
