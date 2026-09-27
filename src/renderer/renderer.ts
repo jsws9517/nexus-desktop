@@ -3389,14 +3389,13 @@ function declareCoreRun(sessionId: string, graphId?: string, taskOrder?: string[
   // Prune FIRST: the max-size eviction prefers the newest entry, so pruning
   // after inserting would be able to drop the run we just created.
   pruneSubAgentRuns();
-  // When a fresh standalone run arrives, immediately evict any already-finished
-  // standalone run for the same session — retries spawn a new node.id each time
-  // so the old completed run would otherwise linger as a ghost card.
-  if (!resolved) {
-    for (const [k, run] of subAgentRuns) {
-      if (run.kind === 'standalone' && run.sessionId === sessionId && run.tasks.size > 0 && [...run.tasks.values()].every(isTerminalTask)) {
-        subAgentRuns.delete(k);
-      }
+  // When a fresh run is declared for this session, evict any already-finished
+  // runs from the same session so retries (which get a fresh graphId / node.id
+  // each time) don't leave ghost cards behind. DAG history for the SAME graph
+  // is preserved by the early-return above (existing check).
+  for (const [k, run] of subAgentRuns) {
+    if (run.sessionId === sessionId && k !== key && run.tasks.size > 0 && [...run.tasks.values()].every(isTerminalTask)) {
+      subAgentRuns.delete(k);
     }
   }
   subAgentRuns.set(key, {

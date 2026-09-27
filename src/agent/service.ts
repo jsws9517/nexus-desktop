@@ -1452,9 +1452,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       }];
     }
 
-    // Split on clause boundaries: sentence terminators or inter-clause conjunctions
+    // Split on clause boundaries: sentence terminators or inter-clause
+    // conjunctions. Unlike the detection regex, this must also match
+    // conjunctions surrounded by whitespace (e.g. "README.md 和 README_CN.md").
     const parts = prompt
-      .split(/(?:[。；；\.]|(?<=\S)\s*(?:和|与|以及|&|and)\s*(?=\S))/gi)
+      .split(/(?:[。；；\.]|(?:和|与|以及|&|and))/gi)
       .map(p => p.trim())
       .filter(p => p.length > 8);
 
