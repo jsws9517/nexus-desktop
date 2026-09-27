@@ -3347,8 +3347,11 @@ function mirrorCoreRun(update: {
   run.tasks.set(taskId, {
     description: update.description ?? prev?.description,
     status,
-    output: update.output ?? prev?.output,
-    error: update.error ?? prev?.error,
+    // When a task transitions TO a terminal state, clear any prior error
+    // (retry-after-failure). When transitioning AWAY from terminal, carry
+    // forward the previous description but drop the old error/output.
+    output: !TERMINAL_TASK_STATUS.has(status) ? undefined : (update.output ?? prev?.output),
+    error: !TERMINAL_TASK_STATUS.has(status) ? undefined : (update.error ?? prev?.error),
     durationMs: update.durationMs ?? prev?.durationMs,
     updatedAt: now,
   });
