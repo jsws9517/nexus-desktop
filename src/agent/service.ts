@@ -1419,9 +1419,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    */
   private isDeclarativePrompt(prompt: string): boolean {
     const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释|解决|修复|实现|开发|写|画|设计';
-    // Has conjunctions but NO action verb anywhere → declarative
+    // Has conjunctions but NO action verb anywhere → declarative.
+    // Note: \b does NOT match around CJK characters in JavaScript, so we use
+    // a plain substring check (the verb list is specific enough to avoid false positives).
     const hasConjunction = /(?:和|与|以及|、|&|and)/i.test(prompt);
-    const hasVerb = new RegExp(`\\b(${actionVerbs})\\b`, 'i').test(prompt);
+    const hasVerb = new RegExp(actionVerbs, 'i').test(prompt);
     return hasConjunction && !hasVerb;
   }
 
