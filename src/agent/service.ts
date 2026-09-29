@@ -46,7 +46,6 @@ import {
   type TurnUsage,
 } from './turn-monitor.js';
 import { redactConfig } from './config-read.js';
-import { isIterativeIntent } from 'nexus-coder/dist/src/acp/bridge/intent.js';
 let sessionDbPromise: Promise<typeof import('../session-db.js')> | null = null;
 function loadSessionDb(): Promise<typeof import('../session-db.js')> {
   return (sessionDbPromise ??= import('../session-db.js'));
@@ -149,7 +148,6 @@ export class AgentService {
   // Reset at the start of every user-initiated chat() so a stale request never
   // cancels a later turn.
   private stopRequested = false;
-  private lastTurnStartedAt?: number;
   private mcpEnabled = true;
   private pendingPermissions = new Map<string, (answer: string) => void>();
   private nextPermissionId = 1;
@@ -1042,23 +1040,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
   async chat(input: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
-
-    const now = Date.now();
-    if (this.agent.isBusy() && this.lastTurnStartedAt !== undefined) {
-      const withinWindow = now - this.lastTurnStartedAt < 30_000;
-      const iterative = isIterativeIntent(input, '', { enabled: true });
-      if (iterative && withinWindow) {
-        this.agent.abort?.();
-        await new Promise(r => setTimeout(r, 100));
-      }
-    }
-
     if (this.agent.isBusy()) throw new Error('Agent is busy');
 
     // A fresh user send starts with a clean stop state: the flag only gates a
     // fan-out batch that is CURRENTLY executing, never the next turn.
     this.stopRequested = false;
-    this.lastTurnStartedAt = now;
 
     // Proactive progressive summary: compress incrementally before the LLM call
     // when token delta since last summary exceeds the threshold. Prevents large
