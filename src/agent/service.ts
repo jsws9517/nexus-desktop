@@ -12,7 +12,7 @@
 
 import { isWorkerPrompt, KEY_MASK, stripProtocolXml } from '../shared/constants.js';
 import type { StoredRow } from '../session-db.js';
-import { deleteAllSessionMessages, getLastUserMessageId, updateTaskGraphProjectName } from '../session-db.js';
+import { deleteAllSessionMessages, getLastUserMessageId, setSessionBinding, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
 import type { SlashLogEntry } from '../slash-log.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
@@ -46,6 +46,7 @@ import {
   type TurnUsage,
 } from './turn-monitor.js';
 import { redactConfig } from './config-read.js';
+import { isIterativeIntent } from 'nexus-coder/dist/src/acp/bridge/intent.js';
 let sessionDbPromise: Promise<typeof import('../session-db.js')> | null = null;
 function loadSessionDb(): Promise<typeof import('../session-db.js')> {
   return (sessionDbPromise ??= import('../session-db.js'));
@@ -148,6 +149,7 @@ export class AgentService {
   // Reset at the start of every user-initiated chat() so a stale request never
   // cancels a later turn.
   private stopRequested = false;
+  private lastTurnStartedAt?: number;
   private mcpEnabled = true;
   private pendingPermissions = new Map<string, (answer: string) => void>();
   private nextPermissionId = 1;
@@ -1040,11 +1042,27 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
   async chat(input: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
+
+    // Iterative intent detection (core-coder intent.ts via ACP bridge):
+    // If a fresh send arrives while a turn is still in flight AND the input
+    // matches refine/iteration markers within the 30s gate, abort the current
+    // turn so the new input replaces the in-flight request rather than queuing.
+    const now = Date.now();
+    if (this.agent.isBusy() && this.lastTurnStartedAt !== undefined) {
+      const withinWindow = now - this.lastTurnStartedAt < 30_000;
+      const iterative = isIterativeIntent(input, '', { enabled: true });
+      if (iterative && withinWindow) {
+        this.agent.abort?.();
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+
     if (this.agent.isBusy()) throw new Error('Agent is busy');
 
     // A fresh user send starts with a clean stop state: the flag only gates a
     // fan-out batch that is CURRENTLY executing, never the next turn.
     this.stopRequested = false;
+    this.lastTurnStartedAt = now;
 
     // Proactive progressive summary: compress incrementally before the LLM call
     // when token delta since last summary exceeds the threshold. Prevents large
@@ -2353,6 +2371,26 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
+   * Record the pair a session is actually running on into its `sessions` row.
+   *
+   * The override itself is deliberately in-memory (writing the shared
+   * config.json from a session tab would hijack every other tab), but that makes
+   * it invisible after the tab closes: the row still holds the pair from
+   * `session.create()`, the reopened tab boots on whatever config.json says now,
+   * and the sidebar shows a model the session is not on. Best-effort — a failure
+   * here only costs the restore, never the switch.
+   */
+  private persistSessionBinding(provider: string, model: string): void {
+    const sessionId = this.agent?.getCurrentSessionId?.();
+    if (!sessionId || !provider || !model) return;
+    try {
+      setSessionBinding(sessionId, provider, model);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /**
    * Per-session provider switch. Like the core `switchProvider`, but applies
    * the provider IN-MEMORY ONLY (reassigns `this.provider` + context) and
    * never writes to the shared global config.json. Safe for a session worker
@@ -2363,7 +2401,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const cfg: Config = this.agent.config.get();
     const providerCfg = cfg.providers?.[name];
     if (!providerCfg) throw new Error(`Provider "${name}" not configured`);
+    if (model !== undefined && typeof model === 'string' && model.length === 0) {
+      throw new Error('Model id must not be empty');
+    }
     const resolvedModel = model || providerCfg.model;
+    if (!resolvedModel) throw new Error(`Provider "${name}" has no model configured`);
     const providerConfig = this.agent.config.getProvider(name);
     const p = createProvider(
       providerConfig.type,
@@ -2380,6 +2422,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.agent.context?.setMaxContextTokens(newLimit);
     this.overrideName = name;
     this.overrideModel = resolvedModel;
+    this.persistSessionBinding(name, resolvedModel);
     return { provider: name, model: resolvedModel };
   }
 
@@ -2389,6 +2432,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    */
   async setModelOverride(modelId: string): Promise<{ provider: string; model: string }> {
     if (!this.agent) throw new Error('Agent not initialized');
+    if (typeof modelId !== 'string' || modelId.length === 0) {
+      throw new Error('Model id must not be empty');
+    }
     const cfg: Config = this.agent.config.get();
     const providerName = this.overrideName || cfg.activeProvider;
     const providerCfg = cfg.providers?.[providerName];
@@ -2409,6 +2455,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.agent.context?.setMaxContextTokens(newLimit);
     this.overrideName = providerName;
     this.overrideModel = modelId;
+    this.persistSessionBinding(providerName, modelId);
     return { provider: providerName, model: modelId };
   }
 
