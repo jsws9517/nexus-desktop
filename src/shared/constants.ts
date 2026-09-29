@@ -10,6 +10,12 @@
 /** Mask shown for any non-empty API key. */
 export const KEY_MASK = '••••••••••••';
 
+/** Categories `/provider switch <cat> <name>` understands. Only `chat` is a
+ *  per-session (provider, model) pair on the desktop; the rest are global
+ *  config selections the core registry keeps owning. Shared by the agent
+ *  worker's slash interception and the renderer's ledger re-arm check. */
+export const PROVIDER_CATEGORIES = ['chat', 'vision', 'ocr', 'stt', 'tts'];
+
 /** Worker blocks (sub-agent dispatch) start with these markers. They are skipped
  *  from display AND from regenerate()'s user index, so the desktop's numbering
  *  matches the core's. Mirrors core resumeMessages()/sub-agent worker prompts. */

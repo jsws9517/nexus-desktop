@@ -2,7 +2,7 @@
 
 import { initFx } from './fx.js';
 import { isModelUnavailableError, RemediationLedger } from './model-remediation.js';
-import { isWorkerBlockText, stripProtocolXml } from '../shared/constants.js';
+import { isWorkerBlockText, PROVIDER_CATEGORIES, stripProtocolXml } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
@@ -163,6 +163,10 @@ type AgentEvent =
     }
   | { type: 'sessionRenamed'; sessionId: string; name: string }
   | { type: 'cwdChanged'; sessionId: string; cwd: string }
+  // The session's (provider, model) pair changed — toolbar dropdown, /model,
+  // /provider, or auto-remediation. Carries the pair explicitly so the panel
+  // and both dropdowns repaint from the event instead of re-pulling getStatus.
+  | { type: 'model_changed'; sessionId: string; provider: string; model: string }
   | { type: 'context_cleared'; sessionId: string }
   | { type: 'slash_start'; command: string; anchorId?: number }
   | { type: 'slash'; text: string }
@@ -1558,6 +1562,17 @@ function handleEvent(event: AgentEvent): void {
         void refreshSessionStats();
       }
       break;
+    case 'model_changed':
+      // The session's (provider, model) pair just moved. Without this the
+      // sidebar rows and both toolbar dropdowns are pull-only and stay on the
+      // old pair: a slash command never reaches session_start (the core returns
+      // from runRemoteSlashCommand before that emit), so /model and /provider
+      // left the panel showing a model the session was no longer on until the
+      // next tab switch or real turn.
+      if (!event.sessionId || event.sessionId === currentSessionId) {
+        applyModelChanged(event.provider, event.model);
+      }
+      break;
     case 'cwdChanged':
       // Session's working directory changed (e.g. /setdir or /chcwd): refresh
       // the status label + sidebar so the UI reflects where the agent operates.
@@ -1645,6 +1660,22 @@ function handleEvent(event: AgentEvent): void {
         }
         curSlash = null;
         curSlashAnchorId = undefined;
+      }
+      // Safety net for /model and /provider. Those are intercepted in the
+      // service and emit model_changed, which handles the happy path — but the
+      // read-only forms (`/provider switch vision x`, a `/models` list) and any
+      // future core-side change still land here with no model_changed, and the
+      // panel is otherwise pull-only. Re-pull the live pair for exactly these
+      // commands; cheap, and it makes the panel self-correcting rather than
+      // dependent on a signal every code path has to remember to send.
+      if (/^\/(model|models|provider|providers)\b/i.test((event.command || '').trim())) {
+        // Chain the dropdown repaint off the pull so both read the SAME fresh
+        // status — refreshSidebarSession reassigns `status`, and repainting the
+        // selects first would paint them from the pre-pull value.
+        void refreshSidebarSession().then(() => {
+          refreshProviderSelect();
+          refreshModelSelect();
+        }).catch(() => {});
       }
       break;
     }
@@ -3113,6 +3144,36 @@ function permLabel(mode: string): string {
   return mode || '—';
 }
 
+/**
+ * Repaint every surface that shows the session's (provider, model) pair from a
+ * `model_changed` event: the two sidebar rows, the toolbar dropdowns, and the
+ * per-tab mirror the tab bar and `switchTab` read from.
+ *
+ * Driven by the event payload rather than a fresh getStatus() so the UI updates
+ * on the same tick the switch happened. The provider dropdown is rebuilt because
+ * a provider switch can also change the model list; the model list itself is
+ * force-refetched only on an actual provider change (a model-only switch keeps
+ * the cached list for the same provider).
+ */
+function applyModelChanged(provider: string, model: string): void {
+  const providerChanged = provider !== status.provider;
+  status = { ...status, provider, model };
+  rsideProvider.textContent = provider || '—';
+  rsideModel.textContent = model || '—';
+  const tab = tabs.get(currentSessionId);
+  if (tab) {
+    tab.provider = provider;
+    tab.model = model;
+  }
+  refreshProviderSelect();
+  // NOTE: deliberately does NOT re-arm the auto-remediation ledger. This event
+  // also fires for remediation's own switch, and re-arming here would delete the
+  // claim remediation just made, so the next refreshModelSelect would re-claim
+  // the same dead pair and re-trigger it forever. The re-arm belongs at the
+  // user's intent instead — see the /model + /provider check in sendMessage().
+  refreshModelSelect(providerChanged);
+}
+
 async function refreshSidebarSession(): Promise<void> {
   const [st, perms, mcp] = await Promise.all([
     window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined }),
@@ -4086,9 +4147,35 @@ async function sendMessage(): Promise<void> {
   const attrs = attachments;
   attachments = [];
   renderAttachments();
+  // A typed `/model <id>` or `/provider switch <name>` is as much a deliberate
+  // choice as a dropdown pick, so it must re-arm the once-only auto-remediation
+  // ledger the same way — otherwise a pair the user explicitly re-selects stays
+  // permanently shielded from evaluation. Done here, at the user's intent, and
+  // NOT in the model_changed handler: that event also fires for remediation's
+  // own switch, and re-arming there would delete the claim remediation just made
+  // and let it re-trigger on every refresh.
+  if (isProviderOrModelSwitch(text) && currentSessionId) {
+    clearFallbackGuard(currentSessionId);
+  }
   const composed = attrs.map((p) => `@${p}`).concat(text ? [text] : []).join('\n');
   clearDraft(currentSessionId);
   enqueue(composed);
+}
+
+/** True when a typed slash line actually SWITCHES the session's provider/model —
+ *  not the read-only forms (`/model`, `/provider`, `/provider list`) and not a
+ *  non-chat category switch (`/provider switch vision x`), which leaves the
+ *  per-session pair alone. */
+function isProviderOrModelSwitch(text: string): boolean {
+  const t = text.trim();
+  let m = /^\/models?(?:\s+(switch|set)\s+|\s+)(\S+)/i.exec(t);
+  if (m) return true;
+  m = /^\/providers?\s+switch\s+(\S+)(?:\s+(\S+))?/i.exec(t);
+  if (!m) return false;
+  const first = m[1].toLowerCase();
+  // `/provider switch <cat> <name>` — only `chat` moves the session pair.
+  if (PROVIDER_CATEGORIES.includes(first)) return first === 'chat' && !!m[2];
+  return true;
 }
 
 /** Desktop handling for "/new": create a brand-new session in its own worker via

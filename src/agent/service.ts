@@ -10,7 +10,7 @@
  * (agent-worker, main, worker-host, tests) stay unchanged.
  */
 
-import { isWorkerPrompt, KEY_MASK, stripProtocolXml } from '../shared/constants.js';
+import { isWorkerPrompt, KEY_MASK, PROVIDER_CATEGORIES, stripProtocolXml } from '../shared/constants.js';
 import type { StoredRow } from '../session-db.js';
 import { deleteAllSessionMessages, getLastUserMessageId, setSessionBinding, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
@@ -1757,7 +1757,70 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       }
       return true;
     }
+    if (cmd === 'model' || cmd === 'models') {
+      return this.handleModelSlash(args);
+    }
+    if (cmd === 'provider' || cmd === 'providers') {
+      return this.handleProviderSlash(args);
+    }
     return false;
+  }
+
+  /**
+   * Desktop `/model [switch|set] <model-id>`.
+   *
+   * The core registry's own `/model` calls `agent.switchModel`, which writes
+   * the shared config.json. On a multi-tab desktop that hijacks every other tab
+   * AND leaves `overrideModel` untouched, so `getActiveModel()` keeps reporting
+   * the tab's previous override and the sidebar shows a model the session is no
+   * longer on. Route the switch through the same in-memory override the toolbar
+   * dropdown uses instead. Read-only forms (`/model` with no target) fall
+   * through to the core, which renders them from the live provider object.
+   */
+  private async handleModelSlash(args: string[]): Promise<boolean> {
+    if (!this.agent) return false;
+    const target = args[0] === 'switch' || args[0] === 'set' ? args[1] : args[0];
+    if (!target) return false;
+    const from = this.getActiveModel();
+    try {
+      const { model } = await this.setModelOverride(target);
+      this.emitText(`Model switched: ${from} → ${model}\n`);
+    } catch (err) {
+      this.emitText(`Switch failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    return true;
+  }
+
+  /**
+   * Desktop `/provider switch [<category>] <name>`.
+   *
+   * Only the `chat` category is intercepted: it is the per-session
+   * (provider, model) pair, so it must go through `setProviderOverride` for the
+   * same reason `/model` does. Everything else — `/provider`, `/provider
+   * current`, `/provider list`, and `switch <vision|ocr|stt|tts> <name>` — is
+   * either read-only or a genuinely global config selection, and falls through
+   * to the core registry. Output wording matches the core's so the slash card
+   * reads identically either way.
+   */
+  private async handleProviderSlash(args: string[]): Promise<boolean> {
+    if (!this.agent) return false;
+    const cats = PROVIDER_CATEGORIES;
+    if (args[0] !== 'switch' || !args[1]) return false;
+    const isCategory = cats.includes(args[1]);
+    const cat = isCategory ? args[1] : 'chat';
+    const name = isCategory ? args[2] : args[1];
+    if (!name || cat !== 'chat') return false;
+    // Unknown name: let the core print its "Provider not found" + available list.
+    if (!this.agent.config.listProviders().includes(name)) return false;
+    try {
+      const { provider, model } = await this.setProviderOverride(name);
+      const p = this.agent.config.getProvider(provider);
+      this.emitText(`Chat provider switched to: ${provider} (${p.type})\n`);
+      this.emitText(`Model: ${model}\n`);
+    } catch (err) {
+      this.emitText(`Switch failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    return true;
   }
 
   private async runRevise(instruction: string): Promise<void> {
@@ -2363,11 +2426,18 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   async switchProvider(name: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     await this.agent.switchProvider(name);
+    // Report the LIVE pair, not getActiveModel(): this path writes the global
+    // config and deliberately leaves overrideModel alone, so the override-aware
+    // accessor could hand back a pre-switch value and repaint the sidebar with
+    // a model this switch just replaced.
+    this.emitModelChanged(this.agent.config.getActiveProvider(), this.agent.provider?.model || '');
   }
 
   async switchModel(modelId: string): Promise<string> {
     if (!this.agent) throw new Error('Agent not initialized');
-    return this.agent.switchModel(modelId);
+    const change = await this.agent.switchModel(modelId);
+    this.emitModelChanged(this.agent.config.getActiveProvider(), this.agent.provider?.model || '');
+    return change;
   }
 
   /**
@@ -2388,6 +2458,22 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     } catch {
       /* best-effort */
     }
+  }
+
+  /**
+   * Announce that this session's (provider, model) pair just changed.
+   *
+   * Neither the core registry's `/model` / `/provider` nor the core's own
+   * switchModel/switchProvider emit anything, and a slash command never reaches
+   * `session_start` (the core returns from runRemoteSlashCommand before that
+   * emit). The renderer's provider/model rows are therefore pull-only and had
+   * no signal to re-pull on, so the sidebar and both toolbar dropdowns kept
+   * showing the previous pair until some unrelated trigger (tab switch, the next
+   * real turn, a settings save) happened to refresh them. This is that signal.
+   */
+  private emitModelChanged(provider: string, model: string): void {
+    const sessionId = this.agent?.getCurrentSessionId?.();
+    this.onEvent?.({ type: 'model_changed', sessionId: sessionId || '', provider, model });
   }
 
   /**
@@ -2420,9 +2506,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.agent.context?.setProvider(p);
     const newLimit = this.agent.config.getModelContextLimit(resolvedModel);
     this.agent.context?.setMaxContextTokens(newLimit);
+    // The core's switchProvider does NOT re-apply the context window, but the
+    // new provider carries a different default max-context and compression
+    // ratios; without this the compression trigger keeps using the old model's.
+    this.agent.applyContextWindow?.();
     this.overrideName = name;
     this.overrideModel = resolvedModel;
     this.persistSessionBinding(name, resolvedModel);
+    this.emitModelChanged(name, resolvedModel);
     return { provider: name, model: resolvedModel };
   }
 
@@ -2453,9 +2544,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.agent.context?.setProvider(p);
     const newLimit = this.agent.config.getModelContextLimit(modelId);
     this.agent.context?.setMaxContextTokens(newLimit);
+    // Parity with the core's switchModel (agent.js): re-sync the contextWindow
+    // compression params (toolTokenRatio and friends scale with the window), so
+    // a per-session switch can't leave the trigger on the previous model's.
+    this.agent.applyContextWindow?.();
     this.overrideName = providerName;
     this.overrideModel = modelId;
     this.persistSessionBinding(providerName, modelId);
+    this.emitModelChanged(providerName, modelId);
     return { provider: providerName, model: modelId };
   }
 

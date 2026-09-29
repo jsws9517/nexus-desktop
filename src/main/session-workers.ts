@@ -117,6 +117,16 @@ export class SessionWorkers {
       }
       if (event.type === 'turn_start') bound.busy = true;
       if (event.type === 'session_end') bound.busy = bound.fanout;
+      // The worker is the authority on its own (provider, model) pair, and the
+      // slash path (via the service's per-session override) never round-trips
+      // through switchProvider/switchModel IPC, so refreshState never runs for
+      // it. Take the new pair straight off the event instead of leaving this
+      // mirror stale for the tab bar and the next applySessionBinding compare.
+      if (event.type === 'model_changed') {
+        if (typeof event.provider === 'string' && event.provider) bound.provider = event.provider;
+        if (typeof event.model === 'string' && event.model) bound.model = event.model;
+        this.onChange?.(this.tabs());
+      }
       this.onEvent?.(bound.sessionId, { ...event, sessionId: bound.sessionId });
     };
     w.onPermission = (req: { id: string; question: string }) => {
