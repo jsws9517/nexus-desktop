@@ -12,7 +12,7 @@ const nexusDir = join(tmp, '.nexus');
 mkdirSync(nexusDir, { recursive: true });
 process.env.LLMA_DATA_DIR = tmp;
 
-const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph, estimateSessionTokensCached, recordTokenBaseline, listSessions } =
+const { getMessageWindow, getMessageLast, getMessageCount, getMessageRows, deleteMessagesFrom, getNonEmptySessionIds, estimateSessionTokens, getSessionIdsByTaskGraph, estimateSessionTokensCached, recordTokenBaseline, listSessions, getSessionBinding, setSessionBinding } =
   await import('../dist/session-db.js');
 
 let db;
@@ -321,4 +321,63 @@ test('listSessions pagination keeps total stable across offsets', () => {
   assert.notEqual(first.items[0].id, second.items[0].id);
   // Core semantics: offset is ignored unless a limit is given.
   assert.equal(listSessions({ offset: 1 }).items.length, all.items.length);
+});
+
+// ------------------------------------------------------- provider binding ----
+// A per-tab provider/model override is deliberately in-memory (writing the
+// shared config.json from a session tab would hijack every other tab), which
+// used to make it invisible once the tab closed: the sessions row still held the
+// pair from create(), so a reopened tab booted on whatever the global default
+// happened to be and the sidebar showed a model the session was never on.
+//
+// Self-contained: `seedListSessions()` is not re-runnable (fixed ids), so these
+// own their row instead of borrowing — and clobbering — the listSessions seed.
+
+function seedBindingSession(id, provider, model, updatedAt) {
+  db.prepare(
+    'INSERT INTO sessions (id, name, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(id, id, provider, model, updatedAt, updatedAt);
+  db.prepare('INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)')
+    .run(id, 'user', 'hi', updatedAt);
+}
+
+test('getSessionBinding reads the provider/model the session is recorded on', () => {
+  seedBindingSession('bind-read', 'anthropic', 'claude-3', 1_000);
+  assert.deepEqual(getSessionBinding('bind-read'), { provider: 'anthropic', model: 'claude-3' });
+});
+
+test('getSessionBinding returns null for unknown / empty ids', () => {
+  assert.equal(getSessionBinding('does-not-exist'), null);
+  assert.equal(getSessionBinding(''), null);
+});
+
+test('setSessionBinding persists a per-tab override and the sidebar sees it', () => {
+  seedBindingSession('bind-write', 'anthropic', 'claude-3', 2_000);
+  // A tab switched itself onto a pair its provider's /models never advertises.
+  const written = setSessionBinding('bind-write', 'zen', 'big-pickle');
+  assert.deepEqual(written, { provider: 'zen', model: 'big-pickle' });
+
+  assert.deepEqual(getSessionBinding('bind-write'), { provider: 'zen', model: 'big-pickle' });
+
+  // ...and the sidebar row (which is what the user reads) follows.
+  const row = listSessions({ limit: 1000 }).items.find((s) => s.id === 'bind-write');
+  assert.equal(row.provider, 'zen');
+  assert.equal(row.model, 'big-pickle');
+});
+
+test('setSessionBinding does not reorder the session list', () => {
+  seedBindingSession('bind-order', 'anthropic', 'claude-3', 3_000);
+  const before = listSessions({ limit: 1000 }).items.map((s) => s.id);
+  setSessionBinding('bind-order', 'zen', 'big-pickle');
+  const after = listSessions({ limit: 1000 }).items.map((s) => s.id);
+  assert.deepEqual(after, before, 'a model switch is not user activity');
+});
+
+test('setSessionBinding is a no-op for an unknown session or an incomplete pair', () => {
+  seedBindingSession('bind-partial', 'anthropic', 'claude-3', 4_000);
+  assert.equal(setSessionBinding('does-not-exist', 'zen', 'big-pickle'), null);
+  assert.equal(setSessionBinding('bind-partial', 'zen', ''), null);
+  assert.equal(setSessionBinding('bind-partial', '', 'big-pickle'), null);
+  assert.deepEqual(getSessionBinding('bind-partial'), { provider: 'anthropic', model: 'claude-3' },
+    'an incomplete pair never half-writes');
 });

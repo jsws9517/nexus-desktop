@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { initFx } from './fx.js';
+import { isModelUnavailableError, RemediationLedger } from './model-remediation.js';
 import { isWorkerBlockText, stripProtocolXml } from '../shared/constants.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
@@ -624,8 +625,17 @@ async function persistBlacklist(): Promise<void> {
 // --- Periodic blacklist probe ---
 // Each day, probe one stale blacklisted model with a minimal chat call.
 // If it succeeds → remove from blacklist; otherwise update lastProbe timestamp.
-let probeTimer: ReturnType<typeof setInterval> | undefined;
+//
+// The probe temporarily switches the model, so EVERY call in it must be scoped
+// to the same session id. An unscoped switchModel lands on the global worker and
+// persists straight into ~/.nexus/config.json — which both clobbers the user's
+// saved default and leaves a dead model in the shared config for every future
+// session worker to boot from. The probe chat must also carry that same id, or it
+// exercises a different process's provider object than the one just configured.
+let probeTimer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval> | undefined;
+let probeInFlight = false;
 function probeBlacklistedModels(): void {
+  if (probeInFlight) return;
   const now = Date.now();
   const activeProvider = status.provider;
   const bl = modelBlacklist.get(activeProvider);
@@ -638,11 +648,15 @@ function probeBlacklistedModels(): void {
   }
   if (!oldest) return;
   const { modelId } = oldest;
+  // Pin the scope up front: a tab switch mid-probe must not redirect the restore
+  // to a different worker than the one that was switched away from.
+  const sid = currentSessionId || undefined;
   const savedModel = status.model;
+  probeInFlight = true;
   void (async () => {
     try {
-      await window.nexusDesktop.switchModel(modelId);
-      await window.nexusDesktop.chat('hi', { sessionId: currentSessionId || undefined });
+      await window.nexusDesktop.switchModel(modelId, { sessionId: sid });
+      await window.nexusDesktop.chat('hi', { sessionId: sid });
       if (bl.has(modelId)) {
         bl.delete(modelId);
         if (bl.size === 0) modelBlacklist.delete(activeProvider);
@@ -654,20 +668,41 @@ function probeBlacklistedModels(): void {
         void persistBlacklist();
       }
     } finally {
-      if (status.model !== savedModel) {
-        try { await window.nexusDesktop.switchModel(savedModel); } catch {}
+      // Restore unconditionally. Gating on the renderer's `status.model` was a
+      // no-op: switchModel() never writes back to `status`, so the comparison
+      // always matched and the dead model stayed live (and persisted) forever.
+      if (savedModel && savedModel !== modelId) {
+        try {
+          await window.nexusDesktop.switchModel(savedModel, { sessionId: sid });
+          status = await window.nexusDesktop.getStatus({ sessionId: sid });
+          refreshModelSelect();
+        } catch {}
       }
+      probeInFlight = false;
     }
   })();
 }
 function scheduleBlacklistProbe(): void {
-  probeBlacklistedModels();
-  probeTimer = setInterval(probeBlacklistedModels, BLACKLIST_PROBE_INTERVAL_MS);
+  // Deferred, not immediate: restoreBlacklist() (async, from disk) and boot's
+  // refreshModelSelect() must land before the first probe reads the cache,
+  // otherwise a just-persisted blacklist is invisible and the probe is skipped.
+  probeTimer = setTimeout(() => {
+    probeBlacklistedModels();
+    probeTimer = setInterval(probeBlacklistedModels, BLACKLIST_PROBE_INTERVAL_MS);
+  }, BLACKLIST_PROBE_INTERVAL_MS);
 }
 
-// Sessions already auto-fallbacked off a delisted model (remediating on first
-// sight avoids yanking the active model every time the tab regains focus).
-const modelFallbacked = new Set<string>();
+// Auto-remediation bookkeeping: (session, provider, model) triples already
+// handled. Keyed by ALL THREE — not just the session — so that a mismatch which
+// is permanent by nature (a model the provider's /models list does not expose,
+// e.g. a gateway-only or hand-entered id) is remediated exactly once instead of
+// on every tab switch, every /models refetch and every app restart. The entry is
+// dropped again as soon as the user explicitly picks a provider/model, so a
+// deliberate choice always gets a fresh evaluation.
+const modelFallbacked = new RemediationLedger();
+function clearFallbackGuard(sessionId: string): void {
+  modelFallbacked.rearmSession(sessionId);
+}
 
 // Session sidebar pagination: 20 most recent non-ACP sessions per page.
 const SESSION_PAGE_SIZE = 20;
@@ -2700,6 +2735,9 @@ async function openNewTab(): Promise<void> {
   if (busy && activeTabId) {
     // A new tab is still fine while another tab streams — don't block on busy.
   }
+  // Continue on what the current tab is running, not on the global default the
+  // new tab's worker will boot with (see openTab's `inherit`).
+  const inherit = currentSessionId ? { provider: status.provider, model: status.model } : undefined;
   let sid = '';
   try {
     sid = await window.nexusDesktop.startSession();
@@ -2708,7 +2746,7 @@ async function openNewTab(): Promise<void> {
     return;
   }
   tabNames.set(sid, sid);
-  await openTab(sid);
+  await openTab(sid, undefined, inherit);
 }
 
 /** Resolve the project directory a tab's worker process should run in: ONLY the
@@ -2734,7 +2772,11 @@ async function resolveProjectDir(sessionId?: string): Promise<string | undefined
 }
 
 /** Open `sessionId` in its own worker process (or focus it if already open). */
-async function openTab(sessionId: string, name?: string): Promise<void> {
+async function openTab(
+  sessionId: string,
+  name?: string,
+  inherit?: { provider: string; model: string },
+): Promise<void> {
   if (name) tabNames.set(sessionId, name);
   if (tabs.has(sessionId)) {
     await switchTab(sessionId);
@@ -2761,7 +2803,27 @@ async function openTab(sessionId: string, name?: string): Promise<void> {
     return;
   }
   const tinfo = res.tab!;
-  tabs.set(sessionId, { sessionId, provider: tinfo.provider, model: tinfo.model, busy: tinfo.busy });
+  let provider = tinfo.provider;
+  let model = tinfo.model;
+  // A tab branched off another continues on the pair that tab is running, not
+  // on the global default its fresh worker just booted with. The override path
+  // is in-memory only — it never writes the shared config.json.
+  if (inherit && inherit.provider && inherit.model
+    && (inherit.provider !== provider || inherit.model !== model)) {
+    try {
+      await window.nexusDesktop.switchProvider(inherit.provider, { sessionId });
+      await window.nexusDesktop.switchModel(inherit.model, { sessionId });
+      // Re-read rather than assume: switching provider resolves the model from
+      // that provider's own config, so the pair is only known once the worker
+      // reports it back.
+      const st = await window.nexusDesktop.getStatus({ sessionId });
+      provider = st.provider || inherit.provider;
+      model = st.model || inherit.model;
+    } catch {
+      // keep whatever the worker booted with
+    }
+  }
+  tabs.set(sessionId, { sessionId, provider, model, busy: tinfo.busy });
   renderTabBar();
   await switchTab(sessionId);
 }
@@ -3981,7 +4043,11 @@ function drain(): void {
       await syncMsgCache(currentSessionId);
     } catch (err) {
       addSystem(`${t('error')}${errText(err)}`);
-      void remediateUnavailableModel(attemptProvider, attemptModel, errText(err));
+      // Remediation matches the RAW provider message: errText() localizes and
+      // truncates it, which would hide both the real "model unavailable" wording
+      // and the difference between it and a plain auth failure.
+      const rawError = err instanceof Error ? err.message : String(err);
+      void remediateUnavailableModel(attemptProvider, attemptModel, rawError);
     } finally {
       running = false;
       inFlightPrompt = '';
@@ -5075,9 +5141,17 @@ $('#settings-save').addEventListener('click', async () => {
     }
   }
   providers = await window.nexusDesktop.getProviders();
-  status = await window.nexusDesktop.getStatus();
+  // Stay scoped to the active tab: an unscoped getStatus() reads the GLOBAL
+  // worker, which would overwrite this tab's provider/model with the global
+  // defaults and then feed that pair straight into refreshModelSelect() →
+  // remediateDelistedModel() below.
+  status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
   refreshProviderSelect();
   modelsCache.clear();
+  // A Settings edit changes what each provider's configured default IS, so the
+  // per-session fallback guard has to be re-armed or a just-corrected mismatch
+  // would stay latched.
+  if (currentSessionId) clearFallbackGuard(currentSessionId);
   refreshModelSelect();
   await refreshSidebarModels();
   await refreshSidebarSession();
@@ -5150,19 +5224,25 @@ function refreshModelSelect(force = false): void {
  * If the live /models list no longer contains the session's active model
  * (delisted/renamed on the provider side), fall back to the provider's
  * configured default model so subsequent turns stop retrying the dead id.
- * Runs at most once per session (marker kept so a failed fallback — or the
- * user's later explicit re-selection — is never yanked/re-tried repeatedly).
+ *
+ * Runs at most once per (session, provider, model): a pair the provider simply
+ * does not advertise — a gateway-only or hand-entered id — is permanent, and
+ * re-asserting the default on every tab switch, /models refetch and app restart
+ * is what made the desktop look like it was constantly re-applying the global
+ * setting. An explicit provider/model pick re-arms the check.
  */
 async function remediateDelistedModel(active: string, models: string[], current: string): Promise<void> {
   if (models.length === 0 || !current || models.includes(current)) return;
-  const key = currentSessionId || 'global';
-  if (modelFallbacked.has(key)) return;
+  // The remediation target is always this provider's OWN configured model — the
+  // desktop must never push a different provider's (or a stale global worker's)
+  // model onto the active pair.
   const providerDefault = providers.find((p) => p.name === active)?.model;
   if (!providerDefault || providerDefault === current) return;
-  modelFallbacked.add(key);
+  if (!modelFallbacked.claim(currentSessionId, active, current)) return;
+  const sid = currentSessionId || undefined;
   try {
-    await window.nexusDesktop.switchModel(providerDefault, { sessionId: key === 'global' ? undefined : key });
-    status = await window.nexusDesktop.getStatus({ sessionId: key === 'global' ? undefined : key });
+    await window.nexusDesktop.switchModel(providerDefault, { sessionId: sid });
+    status = await window.nexusDesktop.getStatus({ sessionId: sid });
     addSystem(`${t('modelDeprecated')} (${current} → ${providerDefault})`);
     await refreshSessions();
     await refreshSidebarSession();
@@ -5172,31 +5252,30 @@ async function remediateDelistedModel(active: string, models: string[], current:
   }
 }
 
-// Provider-side availability errors that mean a model id listed in /models is
-// actually NOT servable at call time (list up, model down — e.g. Azure/OAI
-// gateways, or the model's region/account is not supported: 403 / 访问被拒绝).
-// Matched against the localized chat error text produced by errText().
-const MODEL_UNAVAILABLE_RE =
-  /Model is unavailable|Model is not available|model .*unavailable|model .*does not exist|model .*not found|model .*no longer available|403|forbidden|访问被拒绝|已下架|已下线|模型.*不可用|模型.*不存在/i;
-
-
 /**
  * A chat invocation for `modelId` on `providerName` failed because the model is
  * unavailable at call time even though /models still lists it. Purge the id
  * from the provider's cached list (so the dropdown drops it until the next
  * periodic re-fetch) and, when it was the active session model, auto-switch to
  * the provider's configured default model.
+ *
+ * `rawError` is the untranslated provider message — see isModelUnavailableError.
  */
-async function remediateUnavailableModel(providerName: string, modelId: string, errorText: string): Promise<void> {
-  if (!MODEL_UNAVAILABLE_RE.test(errorText)) return;
+async function remediateUnavailableModel(providerName: string, modelId: string, rawError: string): Promise<void> {
+  if (!isModelUnavailableError(rawError)) return;
+  // Only the pair that actually failed may be retired. A snapshot taken before a
+  // switch (or a failed turn on a model the user has since navigated away from)
+  // must not purge a perfectly good id out of the provider's list.
+  if (status.provider !== providerName || status.model !== modelId) return;
+  if (!modelFallbacked.claim(currentSessionId, providerName, modelId)) return;
   retireUnavailableModel(providerName, modelId);
   addSystem(`${t('modelUnavailableRemoved', { name: providerName, model: modelId })}`);
-  if (status.provider !== providerName || status.model !== modelId) return;
   const providerDefault = providers.find((p) => p.name === providerName)?.model;
   if (!providerDefault || providerDefault === modelId) return;
+  const sid = currentSessionId || undefined;
   try {
-    await window.nexusDesktop.switchModel(providerDefault, { sessionId: currentSessionId || undefined });
-    status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
+    await window.nexusDesktop.switchModel(providerDefault, { sessionId: sid });
+    status = await window.nexusDesktop.getStatus({ sessionId: sid });
     addSystem(`${t('modelDeprecated')} (${modelId} → ${providerDefault})`);
     await refreshSessions();
     await refreshSidebarSession();
@@ -5256,9 +5335,9 @@ providerSelect.addEventListener('change', async () => {
   await window.nexusDesktop.switchProvider(name, { sessionId: currentSessionId || undefined });
   status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
   addSystem(t('switchedProvider', { name, model: status.model }));
-  // Re-arm the per-session fallback marker + force a fresh list re-pull so the
+  // Re-arm auto-remediation for this session + force a fresh list re-pull so the
   // new provider's model id is re-validated immediately (not from TTL cache).
-  if (currentSessionId) modelFallbacked.delete(currentSessionId);
+  if (currentSessionId) clearFallbackGuard(currentSessionId);
   refreshModelSelect(true);
   await refreshSessions();
   await refreshSidebarSession();
@@ -5273,6 +5352,9 @@ modelSelect.addEventListener('change', async () => {
     await window.nexusDesktop.switchModel(modelId, { sessionId: currentSessionId || undefined });
     status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
     addSystem(t('switchedModel', { name: providerName, from, to: status.model }));
+    // An explicit pick is a fresh decision: re-arm auto-remediation so this new
+    // (provider, model) pair gets one clean evaluation of its own.
+    if (currentSessionId) clearFallbackGuard(currentSessionId);
     await refreshSessions();
     await refreshSidebarSession();
   } catch (err) {

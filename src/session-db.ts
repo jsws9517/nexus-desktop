@@ -666,3 +666,59 @@ export function updateTaskGraphProjectName(graphId: string, newName: string): vo
     // table may not exist yet on fresh install
   }
 }
+
+/**
+ * Read the provider/model a session is bound to, or null when it has none
+ * recorded / the DB is unreadable.
+ *
+ * The core writes these two columns ONCE, inside `session.create()`. Every later
+ * per-tab provider/model change is an in-memory override inside that tab's
+ * worker, so without this the desktop has no way to tell which pair a session
+ * was actually left on — and a reopened tab silently boots on whatever the
+ * global config.json currently says instead.
+ */
+export function getSessionBinding(sessionId: string): { provider: string; model: string } | null {
+  if (!sessionId) return null;
+  const db = openDb();
+  if (!db || !checkSessionsSchema(db)) return null;
+  try {
+    const row = db
+      .prepare('SELECT provider, model FROM sessions WHERE id = ?')
+      .get(sessionId) as { provider?: string; model?: string } | undefined;
+    if (!row) return null;
+    return { provider: String(row.provider ?? ''), model: String(row.model ?? '') };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist the provider/model a session is currently running on, so the binding
+ * survives a tab close and the sidebar stops showing the model the session was
+ * born with. `updated_at` is deliberately left alone: a model switch is not user
+ * activity and must not reorder the session list.
+ *
+ * Same short-lived writer connection + busy_timeout handling as
+ * deleteMessagesFrom — another worker may hold the WAL writer lock.
+ */
+export function setSessionBinding(
+  sessionId: string,
+  provider: string,
+  model: string,
+): { provider: string; model: string } | null {
+  if (!sessionId || !provider || !model) return null;
+  const db = openDb(false);
+  if (!db) return null;
+  try {
+    const info = db
+      .prepare('UPDATE sessions SET provider = ?, model = ? WHERE id = ?')
+      .run(provider, model, sessionId);
+    if (info.changes === 0) return null;
+    return { provider, model };
+  } catch {
+    // sessions table missing or schema drift — the in-memory override still works
+    return null;
+  } finally {
+    db.close();
+  }
+}

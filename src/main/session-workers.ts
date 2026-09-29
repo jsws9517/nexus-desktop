@@ -7,6 +7,16 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
+/**
+ * session-db is loaded lazily: it pulls in native better-sqlite3, and the main
+ * process must keep booting even when that binding is unusable (the sidebar's
+ * `nexus:listSessions` already degrades to the worker path for the same reason).
+ */
+let sessionDbPromise: Promise<typeof import('../session-db.js')> | null = null;
+function loadSessionDb(): Promise<typeof import('../session-db.js')> {
+  return (sessionDbPromise ??= import('../session-db.js'));
+}
+
 /** Absolute path to the agent worker script (shared with the global worker). */
 export function workerScriptPath(): string {
   return join(__dirname, '..', 'agent-worker.js');
@@ -188,6 +198,51 @@ export class SessionWorkers {
     return worker;
   }
 
+  /**
+   * Re-apply a session's provider/model to its freshly spawned worker.
+   *
+   * A worker's Agent is built from ~/.nexus/config.json at construction time, so
+   * a tab that resumes a session — or branches off one — silently adopts whatever
+   * the global default currently is instead of the pair the session was left on.
+   * That is how a per-tab override gets clobbered by the global setting one tab
+   * switch later, and why the sidebar row drifts away from the live worker.
+   *
+   * `want` skips the row lookup (used to branch a new tab off its parent's LIVE
+   * pair, which is newer than anything the parent row records). Best-effort: a
+   * worker that cannot be re-pointed just keeps the global default.
+   */
+  private async applySessionBinding(
+    bound: BoundWorker,
+    want?: { provider: string; model: string },
+  ): Promise<void> {
+    let target = want;
+    if (!target) {
+      try {
+        const { getSessionBinding } = await loadSessionDb();
+        target = getSessionBinding(bound.sessionId) ?? undefined;
+      } catch {
+        return;
+      }
+    }
+    if (!target || !target.provider || !target.model) return;
+    if (target.provider === bound.provider && target.model === bound.model) return;
+    try {
+      if (target.provider !== bound.provider) {
+        await bound.worker.request('setProviderOverride', { name: target.provider, model: target.model });
+      } else {
+        await bound.worker.request('setModelOverride', { modelId: target.model });
+      }
+    } catch (err) {
+      this.onLog?.(
+        'warn',
+        `restore session binding failed (sessionId=${bound.sessionId}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    bound.provider = target.provider;
+    bound.model = target.model;
+  }
+
   /** Spawn + bind a worker to `sessionId`. Resolves once the session is loaded. */
   async open(sessionId: string, opts?: { cwd?: string }): Promise<OpenTabInfo> {
     const existing = this.map.get(sessionId);
@@ -231,6 +286,7 @@ export class SessionWorkers {
       bound.provider = typeof status.provider === 'string' ? status.provider : '';
       bound.model = typeof status.model === 'string' ? status.model : '';
       bound.busy = !!status.busy;
+      await this.applySessionBinding(bound);
       this.map.set(bound.sessionId, bound);
       this.onChange?.(this.tabs());
       // Keep one spare warm for the next open (gated on resource health).
@@ -311,6 +367,15 @@ export class SessionWorkers {
       };
       bound.provider = typeof status.provider === 'string' ? status.provider : '';
       bound.model = typeof status.model === 'string' ? status.model : '';
+      // A branched tab continues on its parent's LIVE pair, not on the global
+      // default the fresh worker was just constructed with — the parent row is
+      // not consulted because the parent is by definition the tab being copied,
+      // and its worker is the authoritative record of what it is running.
+      const parentLive = parentId ? this.map.get(parentId) : undefined;
+      await this.applySessionBinding(
+        bound,
+        parentLive ? { provider: parentLive.provider, model: parentLive.model } : undefined,
+      );
       this.map.set(sid, bound);
       this.onChange?.(this.tabs());
       // Keep one spare warm for the next open (gated on resource health).
