@@ -45,6 +45,7 @@ import {
   type ThinkingStall,
   type TurnUsage,
 } from './turn-monitor.js';
+import { RepetitionMonitor } from './repetition-monitor.js';
 import { redactConfig } from './config-read.js';
 import { isIterativeIntent } from 'nexus-coder/dist/src/acp/bridge/intent.js';
 let sessionDbPromise: Promise<typeof import('../session-db.js')> | null = null;
@@ -163,6 +164,14 @@ export class AgentService {
    * noise thinking deltas and guards against empty/stalled reasoning.
    */
   private activeMonitor: TurnMonitor | null = null;
+  /**
+   * Per-turn repetition guard — watches streamed text and tool-call sequences
+   * for degenerate loops (same text / same tool-seq repeated without progress).
+   * Non-null only while `runTurn()` is executing.
+   */
+  private activeRepMonitor: RepetitionMonitor | null = null;
+  /** Accumulates tool calls within the current LLM turn for cross-turn repetition detection. */
+  private toolCallsAcc: Array<{ name: string; args: Record<string, unknown> }> = [];
 
   /**
    * True (default) to abort a turn when the model repeats the same thinking
@@ -950,6 +959,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       if (clean !== event.text) event = { ...event, text: clean };
     }
     const mon = this.activeMonitor;
+    const rep = this.activeRepMonitor;
     if (mon) {
       if (event.type === 'thinking' && typeof event.thinking === 'string') {
         if (mon.isNoise(event.thinking)) return; // drop noise — never counted/rendered
@@ -961,8 +971,25 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         }
       } else if (event.type === 'text' && typeof event.text === 'string') {
         mon.noteText(event.text);
+        if (rep) {
+          const rv = rep.noteText(event.text);
+          if (rv?.stalled) this.handleRepetitionGuard(rv);
+        }
       } else if (event.type === 'tool_call_start') {
         mon.noteProgress();
+        this.toolCallsAcc.push({
+          name: event.name as string,
+          args: (event.args ?? {}) as Record<string, unknown>,
+        });
+      } else if (event.type === 'turn_start') {
+        rep?.reset();
+        this.toolCallsAcc = [];
+      } else if (event.type === 'turn_end') {
+        if (rep && this.toolCallsAcc.length > 0) {
+          const rv = rep.noteToolSeq(this.toolCallsAcc);
+          if (rv?.stalled) this.handleRepetitionGuard(rv);
+        }
+        this.toolCallsAcc = [];
       }
     }
     this.onEvent?.(event);
@@ -1007,6 +1034,27 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
+   * Reaction to a repetition verdict from the repetition guard.
+   * Both text-loop and tool-seq-loop are treated as hard abort signals —
+   * the model is stuck in a degenerate cycle and will not make progress.
+   */
+  private handleRepetitionGuard(rv: { kind: string; repeatCount: number; repr: string }): void {
+    const model = this.getActiveModel() || 'active model';
+    this.onLog?.(
+      'warn',
+      `[repetition-guard] model "${model}" repeated the same ${rv.kind} ` +
+        `${rv.repeatCount} times (repr: ${rv.repr.slice(0, 80)}) — aborting this turn.`,
+    );
+    this.onEvent?.({
+      type: 'repetition_stall',
+      kind: rv.kind,
+      repeatCount: rv.repeatCount,
+      repr: rv.repr,
+    });
+    this.agent?.abort?.();
+  }
+
+  /**
    * Run one raw agent turn under the turn monitor and report estimated usage.
    * This is the single choke point every agent.chat() in this service flows
    * through (single turn, fan-out sub-tasks), so `completion` reflects the
@@ -1018,6 +1066,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const monitor = new TurnMonitor();
     monitor.setPromptBaseline(agent.context?.getTokenCount?.() ?? 0);
     this.activeMonitor = monitor;
+    this.activeRepMonitor = new RepetitionMonitor();
 
     // Rate-limit the main chat path (distinct from callLlm which handles
     // sub-agent decomposition). Acquire before every turn; report after so
@@ -1032,6 +1081,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       await agent.chat(input);
     } finally {
       this.activeMonitor = null;
+      this.activeRepMonitor = null;
+      this.toolCallsAcc = [];
       const status = this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
       if (status && this.onRateLimitReport) this.onRateLimitReport(status);
     }
