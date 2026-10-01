@@ -10,7 +10,7 @@
 /** Mask shown for any non-empty API key. */
 export const KEY_MASK = '••••••••••••';
 
-/** Categories `/provider switch <cat> <name>` understands. Only `chat` is a
+/** Categories `/provider [switch|set] <cat> <name>` understands. Only `chat` is a
  *  per-session (provider, model) pair on the desktop; the rest are global
  *  config selections the core registry keeps owning. Shared by the agent
  *  worker's slash interception and the renderer's ledger re-arm check. */

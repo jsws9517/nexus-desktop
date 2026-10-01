@@ -1843,20 +1843,21 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
-   * Desktop `/provider switch [<category>] <name>`.
+   * Desktop `/provider [switch|set] [<category>] <name>`.
    *
    * Only the `chat` category is intercepted: it is the per-session
    * (provider, model) pair, so it must go through `setProviderOverride` for the
    * same reason `/model` does. Everything else — `/provider`, `/provider
-   * current`, `/provider list`, and `switch <vision|ocr|stt|tts> <name>` — is
-   * either read-only or a genuinely global config selection, and falls through
-   * to the core registry. Output wording matches the core's so the slash card
-   * reads identically either way.
+   * current`, `/provider list`, and `switch|set <vision|ocr|stt|tts> <name>` —
+   * is either read-only or a genuinely global config selection, and falls
+   * through to the core registry. `set` is an alias of `switch` (parity with
+   * the CLI and the core registry). Output wording matches the core's so the
+   * slash card reads identically either way.
    */
   private async handleProviderSlash(args: string[]): Promise<boolean> {
     if (!this.agent) return false;
     const cats = PROVIDER_CATEGORIES;
-    if (args[0] !== 'switch' || !args[1]) return false;
+    if ((args[0] !== 'switch' && args[0] !== 'set') || !args[1]) return false;
     const isCategory = cats.includes(args[1]);
     const cat = isCategory ? args[1] : 'chat';
     const name = isCategory ? args[2] : args[1];
@@ -2772,8 +2773,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       const mgr = this.agent.getBgJobManager();
       const job = mgr.status(jobId);
       if (!job) return { ok: false, error: `unknown job: ${jobId}` };
-      if (job.status === 'running' || job.status === 'queued') {
-        return { ok: false, error: `job ${jobId} is ${job.status} — kill it first` };
+      // `queued` is not part of BgJobStatus — launch() constructs jobs as
+      // 'running', so a settled-only status here means it is safe to remove.
+      if (job.status === 'running') {
+        return { ok: false, error: `job ${jobId} is running — kill it first` };
       }
       const ok = mgr.remove(jobId);
       return ok

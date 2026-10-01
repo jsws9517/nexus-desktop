@@ -4147,7 +4147,7 @@ async function sendMessage(): Promise<void> {
   const attrs = attachments;
   attachments = [];
   renderAttachments();
-  // A typed `/model <id>` or `/provider switch <name>` is as much a deliberate
+  // A typed `/model <id>` or `/provider switch|set <name>` is as much a deliberate
   // choice as a dropdown pick, so it must re-arm the once-only auto-remediation
   // ledger the same way — otherwise a pair the user explicitly re-selects stays
   // permanently shielded from evaluation. Done here, at the user's intent, and
@@ -4164,16 +4164,16 @@ async function sendMessage(): Promise<void> {
 
 /** True when a typed slash line actually SWITCHES the session's provider/model —
  *  not the read-only forms (`/model`, `/provider`, `/provider list`) and not a
- *  non-chat category switch (`/provider switch vision x`), which leaves the
+ *  non-chat category switch (`/provider switch|set vision x`), which leaves the
  *  per-session pair alone. */
 function isProviderOrModelSwitch(text: string): boolean {
   const t = text.trim();
   let m = /^\/models?(?:\s+(switch|set)\s+|\s+)(\S+)/i.exec(t);
   if (m) return true;
-  m = /^\/providers?\s+switch\s+(\S+)(?:\s+(\S+))?/i.exec(t);
+  m = /^\/providers?\s+(?:switch|set)\s+(\S+)(?:\s+(\S+))?/i.exec(t);
   if (!m) return false;
   const first = m[1].toLowerCase();
-  // `/provider switch <cat> <name>` — only `chat` moves the session pair.
+  // `/provider switch|set <cat> <name>` — only `chat` moves the session pair.
   if (PROVIDER_CATEGORIES.includes(first)) return first === 'chat' && !!m[2];
   return true;
 }
