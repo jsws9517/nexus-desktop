@@ -165,6 +165,18 @@ export function registerIpc(ctx: IpcContext): void {
     };
 
   ipcMain.handle(CHANNELS.chat, callForSession('chat'));
+  // Steer is the mid-turn counterpart of chat: it must reach the worker even
+  // while that worker's chat() is still running (that is the whole point), and
+  // must never throw when the turn happens to have ended first — the renderer
+  // keeps the message queued in that case.
+  ipcMain.handle(CHANNELS.steer, async (_e, params?: Record<string, unknown>) => {
+    try {
+      return await callForSession('steer')(_e, params);
+    } catch {
+      return false;
+    }
+  });
+  ipcMain.handle(CHANNELS.restore, callForSession('restore'));
   ipcMain.handle(CHANNELS.sideChat, call('sideChat'));
   ipcMain.handle(CHANNELS.regenerate, callForSession('regenerate'));
   ipcMain.handle(CHANNELS.withdraw, callForSession('withdraw'));
@@ -234,18 +246,24 @@ export function registerIpc(ctx: IpcContext): void {
     }
   });
   ipcMain.handle(CHANNELS.reloadConfig, call('reloadConfig'));
-  // Read the core intent-recognition toggle straight from config.json instead of
-  // routing through the worker: the renderer needs it early (to decide whether
-  // to supersede in-flight turns) and the worker is gated behind fullReady.
-  ipcMain.handle(CHANNELS.getIntentRecognition, async (): Promise<boolean> => {
+  // Read the core intent-recognition toggles straight from config.json instead of
+  // routing through the worker: the renderer needs them early (to decide whether
+  // to steer/roll back an in-flight turn and whether to show the rollback
+  // button) and the worker is gated behind fullReady.
+  ipcMain.handle(CHANNELS.getIntentRecognition, async (): Promise<{ intentRecognition: boolean; intentRollback: boolean }> => {
     try {
       const cfgPath = join(homedir(), '.nexus', 'config.json');
       await access(cfgPath);
       const raw = await readFile(cfgPath, 'utf-8');
-      const cfg = JSON.parse(raw) as { contextWindow?: { intentRecognition?: boolean } };
-      return cfg.contextWindow?.intentRecognition ?? true;
+      const cfg = JSON.parse(raw) as {
+        contextWindow?: { intentRecognition?: boolean; intentRollback?: boolean };
+      };
+      return {
+        intentRecognition: cfg.contextWindow?.intentRecognition ?? true,
+        intentRollback: cfg.contextWindow?.intentRollback ?? false,
+      };
     } catch {
-      return true;
+      return { intentRecognition: true, intentRollback: false };
     }
   });
   ipcMain.handle(CHANNELS.getSpeechVisionConfig, call('getSpeechVisionConfig'));

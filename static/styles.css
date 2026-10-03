@@ -1033,6 +1033,35 @@ body {
 }
 #input-area .btn.danger:hover { background: var(--danger); color: #fff; box-shadow: 0 0 20px -4px var(--danger); }
 
+/* Rollback: destructive, so it reads as a warning rather than an action. Amber
+   (--warn) instead of --danger to keep it distinct from 停止, right next to it. */
+#input-area .btn#btn-rollback {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  color: var(--warn);
+  border-radius: 10px;
+  padding: 5px 12px;
+  font-size: 12px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+#input-area .btn#btn-rollback:hover {
+  background: color-mix(in srgb, var(--warn) 24%, transparent);
+}
+/* Armed: the destructive action is staged and fires on the next send. */
+#input-area .btn#btn-rollback.armed {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #1a1206;
+  font-weight: 600;
+  box-shadow: 0 0 16px -6px var(--warn);
+}
+#input-area .btn.tiny {
+  padding: 1px 8px;
+  font-size: 11px;
+  margin-left: 6px;
+  border-radius: 8px;
+}
+
 /* Unified input card: composer + action bar merged into one visual unit */
 .input-card {
   background: color-mix(in srgb, var(--bg-input) 35%, transparent);

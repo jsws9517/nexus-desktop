@@ -106,6 +106,31 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   freeze: { 'zh-CN': '❄ 冻结视图', en: '❄ Freeze' },
   unfreeze: { 'zh-CN': '▶ 恢复视图', en: '▶ Resume' },
   queued: { 'zh-CN': '⏳ 排队：{n} 条待发…', en: '⏳ Queued: {n} pending…' },
+  steered: { 'zh-CN': '↪ 已并入当前轮…', en: '↪ Merged into the running turn…' },
+  rollbackBtn: { 'zh-CN': '↺ 作废上一条并重发', en: '↺ Void last turn & resend' },
+  rollbackBtnTitle: {
+    'zh-CN': '发送时丢弃上一条指令已产出的内容，用这条消息重新开始（破坏性，先备份）',
+    en: 'On send, discard what the previous instruction produced and restart from this message (destructive; backed up first)',
+  },
+  rollbackAsk: {
+    'zh-CN': '作废上一条指令已产出的全部内容？该内容会先备份到 ~/.nexus/trash/rollback/，之后可从对话记录一键恢复。',
+    en: 'Discard everything the previous instruction produced? It is backed up to ~/.nexus/trash/rollback/ first and can be restored from the transcript.',
+  },
+  rollbackArmed: {
+    'zh-CN': '↺ 已标记：发送后将作废上一条指令的产出',
+    en: '↺ Armed: sending will discard the previous instruction\'s output',
+  },
+  rolledBack: {
+    'zh-CN': '↺ 已回滚：丢弃 {n} 条上下文消息',
+    en: '↺ Rolled back: discarded {n} context messages',
+  },
+  rollbackNoBackup: {
+    'zh-CN': '（备份写入失败，无法恢复）',
+    en: ' (backup could not be written — not recoverable)',
+  },
+  rollbackRestore: { 'zh-CN': '点击恢复', en: 'Restore' },
+  rollbackRestored: { 'zh-CN': '↩ 已恢复 {n} 条消息', en: '↩ Restored {n} messages' },
+  rollbackRestoreFailed: { 'zh-CN': '恢复失败：备份不可用', en: 'Restore failed: backup unavailable' },
   rename: { 'zh-CN': '重命名', en: 'Rename' },
   delete: { 'zh-CN': '删除', en: 'Delete' },
   renameSession: { 'zh-CN': '重命名会话', en: 'Rename Session' },

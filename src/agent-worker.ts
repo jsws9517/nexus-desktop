@@ -10,6 +10,8 @@ type WorkerRequest =
   | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
   | { id: number; method: 'init'; params?: { cwd?: string; deferMcp?: boolean } }
   | { id: number; method: 'chat'; params: { input: string } }
+  | { id: number; method: 'steer'; params: { input: string; rollback?: boolean } }
+  | { id: number; method: 'restore'; params: { backupPath: string } }
   | { id: number; method: 'sideChat'; params: { messages: Array<{ role: string; content: string }> } }
   | { id: number; method: 'regenerate'; params: { sessionId: string; userIndex: number } }
   | { id: number; method: 'withdraw'; params: { sessionId: string; userIndex: number } }
@@ -175,6 +177,11 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   },
   chat: async (req: WorkerRequest & { method: 'chat' }) => {
     await service.chat(req.params.input);
+  },
+  steer: (req: WorkerRequest & { method: 'steer' }) => service.steer(req.params.input, req.params.rollback === true),
+  restore: async (req: WorkerRequest & { method: 'restore' }) => {
+    const res = await service.restore(req.params.backupPath);
+    return res ? { restored: res.restored } : null;
   },
   sideChat: async (req: WorkerRequest & { method: 'sideChat' }) => {
     // Isolated scratch conversation: a fresh AgentService per request, seeded

@@ -37,6 +37,12 @@ export const WORKER_METHODS = {
   earlyInit: { fields: { cwd: S.str() }, optional: ['cwd'] },
   init: { fields: { cwd: S.str(), deferMcp: S.bool() }, optional: ['cwd', 'deferMcp'] },
   chat: { fields: { input: S.str(MAX_CHAT_INPUT) } },
+  // Mid-turn follow-up: merged into the running turn's context instead of
+  // waiting for the in-flight chat() to finish. `rollback` additionally asks the
+  // core to discard the interrupted attempt (destructive; core config gated).
+  steer: { fields: { input: S.str(MAX_CHAT_INPUT), rollback: S.bool() }, optional: ['rollback'] },
+  // Undo a rollback from a backup written under ~/.nexus/trash/rollback/.
+  restore: { fields: { backupPath: S.str(4096) } },
   sideChat: { fields: { messages: S.msg() } },
   regenerate: { fields: { sessionId: S.str(), userIndex: S.num() } },
   withdraw: { fields: { sessionId: S.str(), userIndex: S.num() } },

@@ -17,6 +17,8 @@ export type WorkerMethod = keyof typeof WORKER_METHODS;
 export const CHANNELS = {
   // renderer → main: worker-routed invoke() channels.
   chat: 'nexus:chat',
+  steer: 'nexus:steer',
+  restore: 'nexus:restore',
   regenerate: 'nexus:regenerate',
   withdraw: 'nexus:withdraw',
   abort: 'nexus:abort',

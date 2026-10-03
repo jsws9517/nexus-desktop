@@ -125,6 +125,19 @@ type AgentEvent =
   | { type: 'file_ready'; path: string; mimeType: string; name: string }
   | { type: 'state_delta'; contextTokens: number; turn: number }
   | { type: 'turn_end'; stopReason: string; usage?: { inputTokens: number; outputTokens: number } }
+  // A mid-turn follow-up reached the running turn's context. `texts` is exactly
+  // what was consumed, so the queue can drop those and keep anything else.
+  | { type: 'steer_applied'; texts: string[] }
+  // The interrupted attempt was discarded from context + DB + transcript.
+  // `backupPath` is where it was saved, or null when the backup could not be
+  // written (the rollback itself still happened).
+  | {
+      type: 'rollback_applied';
+      removedMessages: number;
+      removedToolCalls: number;
+      backupPath: string | null;
+    }
+  | { type: 'rollback_restored'; restored: number; backupPath: string }
   | { type: 'session_end' }
   | { type: 'thinking_stall'; reason: string; thinkingTokens: number; repeatCount: number; aborting?: boolean }
   | {
@@ -205,6 +218,11 @@ declare global {
   interface Window {
     nexusDesktop: {
       chat(input: string, opts?: { sessionId?: string }): Promise<unknown>;
+      /** Mid-turn follow-up merged into the running turn's context. Resolves
+       *  false when no turn was in flight (caller keeps the message queued). */
+      steer(input: string, opts?: { sessionId?: string; rollback?: boolean }): Promise<boolean>;
+      /** Undo a rollback from a core-written backup file. Null when rejected. */
+      restore(backupPath: string, opts?: { sessionId?: string }): Promise<{ restored: number } | null>;
       sideChat(messages: Array<{ role: string; content: string }>): Promise<{ reply: string }>;
       abort(opts?: { sessionId?: string }): Promise<unknown>;
       startSession(name?: string, sessionId?: string): Promise<string>;
@@ -218,7 +236,7 @@ declare global {
       deleteSession(id: string): Promise<unknown>;
       renameSession(id: string, name: string): Promise<unknown>;
       getConfig(): Promise<Record<string, unknown>>;
-      getIntentRecognition(): Promise<boolean>;
+      getIntentRecognition(): Promise<{ intentRecognition: boolean; intentRollback: boolean }>;
       getProviders(): Promise<ProviderInfo[]>;
       getStatus(opts?: { sessionId?: string }): Promise<StatusInfo>;
       getPermissions(): Promise<PermissionsInfo>;
@@ -355,6 +373,7 @@ const chatEmptyEl = $('#chat-empty');
 const inputEl = $('#input') as HTMLTextAreaElement;
 const sendBtn = $('#btn-send');
 const stopBtn = $('#btn-stop');
+const rollbackBtn = $('#btn-rollback') as HTMLButtonElement;
 const freezeBtn = $('#btn-freeze') as HTMLButtonElement;
 const sessionListEl = $('#session-list');
 const searchEl = $('#session-search') as HTMLInputElement;
@@ -547,15 +566,17 @@ let currentSessionId = '';
 let busy = false;
 let running = false;
 let stopRequested = false;
-// Mirror of the core "Context Window → Intent Recognition" toggle
-// (`contextWindow.intentRecognition`, default ON). Fetched from the config via
-// IPC at boot and refreshed when the full config Web UI closes.
+// Mirror of the core "Context Window → Intent Recognition" / "Intent Rollback"
+// toggles (`contextWindow.intentRecognition` default ON,
+// `contextWindow.intentRollback` default OFF). Fetched from the config via IPC at
+// boot and refreshed when the full config Web UI closes.
 let intentRecognitionEnabled = true;
-// The prompt currently being executed by drain() and when its chat() IPC began.
-// Used to judge whether a newly queued message is an iterative supersede of the
-// in-flight turn (same semantics as the core's BridgeHost.ITERATION_WINDOW_MS).
-let inFlightPrompt = '';
-let turnStartedAt = 0;
+// Destructive: a mid-turn follow-up also discards what the interrupted turn
+// produced. Off by default; while off the rollback entry point is not rendered.
+let intentRollbackEnabled = false;
+// True between a steer being accepted by the live turn and the core reporting
+// `steer_applied`. Drives the "merged into the running turn" status line.
+let steerInFlight = false;
 // When frozen, auto-scroll is suppressed so the user can review earlier context
 // while a turn is still streaming. New content keeps rendering normally below;
 // only the viewport stays put (safe — no DOM/state is deferred). The lock is
@@ -1302,6 +1323,66 @@ function addSystem(text: string): void {
   scrollToBottom();
 }
 
+/**
+ * Rollback notice. When the core managed to write a backup the line becomes a
+ * one-click restore affordance — the whole point of backing up before a
+ * destructive delete.
+ */
+function addRollbackNotice(text: string, backupPath: string | null): void {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg system';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+  if (backupPath) {
+    const restore = document.createElement('button');
+    restore.className = 'btn tiny';
+    restore.textContent = t('rollbackRestore');
+    restore.addEventListener('click', () => void restoreRollback(backupPath, restore));
+    bubble.appendChild(document.createTextNode(' '));
+    bubble.appendChild(restore);
+  }
+  wrap.appendChild(bubble);
+  messagesEl.appendChild(wrap);
+  scrollToBottom();
+}
+
+async function restoreRollback(backupPath: string, btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  try {
+    const res = await window.nexusDesktop.restore(backupPath, {
+      sessionId: currentSessionId || undefined,
+    });
+    if (!res) addSystem(`${t('error')}${t('rollbackRestoreFailed')}`);
+    // Success is announced by the core's rollback_restored event, which also
+    // drives the transcript resync — do not resync here or we would render the
+    // pre-restore rows.
+  } catch (err) {
+    btn.disabled = false;
+    addSystem(`${t('error')}${errText(err)}`);
+  }
+}
+
+/**
+ * Re-pull the whole history window after the transcript changed underneath us
+ * (rollback / restore). Deliberately NOT an incremental DOM patch: both
+ * operations shift `userMessageSeq`, so every regenerate/undo index rendered
+ * afterwards must come from a fresh read.
+ *
+ * Also clears the live-stream pointers — `renderMessageWindow()` detaches their
+ * nodes, and a stream still flushing deltas would write into a detached tree.
+ */
+async function resyncAfterTranscriptChange(): Promise<void> {
+  toolCards.clear();
+  curAssistant = null;
+  curThinking = null;
+  clearStreamRender();
+  await syncMsgCache(currentSessionId);
+  renderMessageWindow();
+  await refreshSessions(currentSessionId);
+  await refreshSessionStats();
+}
+
 function addUser(text: string, mid?: number): void {
   if (isWorkerBlockText(text)) return;
   const userIndex = userMessageSeq++;
@@ -1836,6 +1917,31 @@ function handleEvent(event: AgentEvent): void {
       void refreshSessionStats();
       break;
     }
+    case 'steer_applied':
+      // The running turn absorbed these follow-ups; they must not run again as
+      // a separate turn. Anything not listed stays queued.
+      for (const consumed of event.texts) {
+        const idx = pendingQueue.indexOf(consumed);
+        if (idx !== -1) pendingQueue.splice(idx, 1);
+      }
+      steerInFlight = false;
+      refreshQueuedStatus();
+      break;
+    case 'rollback_applied':
+      // The interrupted attempt is gone from context + DB. Force a full resync:
+      // a rollback shifts userMessageSeq, so any incremental DOM edit would
+      // leave every later 撤回/重新生成 pointing at the wrong message.
+      addRollbackNotice(
+        t('rolledBack', { n: event.removedMessages }) +
+          (event.backupPath ? '' : t('rollbackNoBackup')),
+        event.backupPath,
+      );
+      void resyncAfterTranscriptChange();
+      break;
+    case 'rollback_restored':
+      addSystem(t('rollbackRestored', { n: event.restored }));
+      void resyncAfterTranscriptChange();
+      break;
     case 'session_end':
     // A session span ended. During a fan-out batch every sub-task's
     // agent.chat() emits its own session_start…session_end, so clearing busy
@@ -1878,6 +1984,7 @@ function setBusy(value: boolean): void {
   busy = value;
   busyIndicator.classList.toggle('hidden', !value);
   updateSendButtonVisibility();
+  updateRollbackButtonVisibility();
   stopBtn.classList.toggle('hidden', !value);
   document.querySelectorAll('.regen-btn').forEach((b) => {
     (b as HTMLButtonElement).disabled = value;
@@ -1901,6 +2008,9 @@ function setBusy(value: boolean): void {
   }
   if (!value) {
     stopRequested = false;
+    // The turn is over: there is nothing left to roll back, so an armed
+    // destructive action must not silently apply to the next send.
+    rollbackArmed = false;
     (stopBtn as HTMLButtonElement).disabled = false;
     // Re-apply the background-jobs idle line if any job is still non-terminal.
     updateJobsStatusLine();
@@ -3990,98 +4100,133 @@ document.addEventListener('keydown', (e) => {
 
 // ---------- send ----------
 // Serial scheduler: while a chat is in flight (`running`), further messages are
-// queued and auto-submitted after the current context completes. This replaces
-// the old single "pending flag" that fired on the turn_end event — which raced
-// the worker (chat() had not resolved yet) and could crash it with a concurrent
-// dispatch.
+// handed to the live turn via `steer()` and only fall back to the local queue
+// when the turn cannot absorb them. This replaces the old single "pending flag"
+// that fired on the turn_end event — which raced the worker (chat() had not
+// resolved yet) and could crash it with a concurrent dispatch.
 //
-// When the core's "Intent Recognition" toggle is ON (default), a queued message
-// that arrives close to the start of the in-flight turn and reads as an
-// iterative supersede (stop / change-of-plan / refinement) aborts that turn
-// early and lets the new instruction be injected into the current context —
-// matching the opencode-style send-while-running affordance. Mirrors the core's
-// acp/bridge/intent.js detection + BridgeHost.ITERATION_WINDOW_MS gating.
-const ITERATION_WINDOW_MS = 90_000;
+// When the core's "Intent Recognition" toggle is ON (default), a message sent
+// mid-turn is a live instruction, not a note for later: it is merged into the
+// running turn's context (core Agent.enqueueSteer) so the agent can course-
+// correct itself.
+//
+// There is deliberately NO keyword classifier deciding whether to also hard-abort
+// the turn. A hand-written CJK marker list cannot be correct on both sides: the
+// un-anchored version matched 别 inside 识别 (and 别名/别人/告别), 即 inside
+// 即将, 不要 inside 不要紧 — while missing the actual abort phrasings
+// (中止/停止/终止/停). Since a wrong hard-abort DESTROYS the running turn and a
+// missed one only costs latency, the model (which now sees the instruction)
+// owns that decision. See docs/intent-recognition-rollback.md.
 
-// Markers that signal the user is changing their mind / refining the in-flight
-// request (Chinese + English), case-insensitive — kept in sync with the core's
-// isIterativeIntent() so the desktop and IM-bridge paths behave identically.
-const REFINE_MARKERS: RegExp[] = [
-  /^(不对|不是|错了|改|换个|重新|再|还是|其实|等等|停|别|不要|算了|撤销|取消|更正|修正|补充|另外|还有|即|诶|哎)/i,
-  /\b(redo|retry|instead|change|wrong|fix|stop|cancel|actually|wait|no,|re-?do|revise|update|correct|rephrase)\b/i,
-];
+// Set when the user armed "作废上一条并重发" for the message currently being
+// composed, so the next send mid-turn also asks the core to roll back.
+let rollbackArmed = false;
 
-function isIterativeIntent(newText: string, inFlightPrompt: string): boolean {
-  const t = newText.trim();
-  if (!t) return false;
-  for (const re of REFINE_MARKERS) if (re.test(t)) return true;
-  if (inFlightPrompt && tokenOverlap(newText, inFlightPrompt) >= 0.5) return true;
-  return false;
+/**
+ * Show the destructive rollback entry point only when it is actually available:
+ * a turn is running, the core toggle is on, and there is something typed to send.
+ * When the toggle is off the button is never rendered, so it cannot be hit by
+ * accident. Once armed it stays visible (highlighted) and acts as a toggle, so
+ * the user can see — and cancel — the pending destructive action.
+ */
+function updateRollbackButtonVisibility(): void {
+  if (!rollbackBtn) return;
+  const visible = intentRollbackEnabled && running && inputEl.value.trim().length > 0;
+  rollbackBtn.classList.toggle('hidden', !visible);
+  rollbackBtn.classList.toggle('armed', rollbackArmed);
 }
 
-// Character-bigram Jaccard similarity — language-agnostic, works for CJK and
-// Latin without a tokenizer. Returns 0..1.
-function tokenOverlap(a: string, b: string): number {
-  const sa = bigrams(a);
-  const sb = bigrams(b);
-  if (sa.size === 0 || sb.size === 0) return 0;
-  let inter = 0;
-  for (const g of sa) if (sb.has(g)) inter++;
-  return inter / (sa.size + sb.size - inter);
-}
-
-function bigrams(s: string): Set<string> {
-  const norm = s.toLowerCase().replace(/\s+/g, '');
-  const set = new Set<string>();
-  if (norm.length <= 1) {
-    if (norm) set.add(norm);
-    return set;
+/** Pull both core intent toggles and re-evaluate the rollback entry point. */
+async function refreshIntentToggles(): Promise<void> {
+  try {
+    const v = await window.nexusDesktop.getIntentRecognition();
+    intentRecognitionEnabled = v.intentRecognition;
+    intentRollbackEnabled = v.intentRollback;
+  } catch {
+    intentRecognitionEnabled = true;
+    intentRollbackEnabled = false;
   }
-  for (let i = 0; i < norm.length - 1; i++) set.add(norm.slice(i, i + 2));
-  return set;
+  if (!intentRollbackEnabled) rollbackArmed = false;
+  updateRollbackButtonVisibility();
 }
 
-function enqueue(text: string): void {
+function enqueue(text: string, opts?: { rollback?: boolean }): void {
   if (!text) return;
   addUser(text);
   inputEl.value = '';
   pendingQueue.push(text);
-  maybeHandleIterativeIntent(text);
+  maybeHandleIterativeIntent(text, opts?.rollback === true);
   updateSendButtonVisibility();
+  updateRollbackButtonVisibility();
   drain();
 }
 
-/** Intent recognition for optionally-queued messages (core toggle gated). */
-function maybeHandleIterativeIntent(text: string): void {
+/**
+ * Intent recognition for messages sent mid-turn (core toggle gated).
+ *
+ * The message always tries to reach the live turn via steer(), which merges it
+ * into the running context at the next turn boundary — that is the proactive
+ * probe. With `contextWindow.intentRollback` on, the send additionally asks the
+ * core to discard what the interrupted turn produced (the user armed that
+ * explicitly via the rollback button; the service re-checks the flag).
+ *
+ * The message stays in `pendingQueue` until the core confirms consumption
+ * (`steer_applied`); if the turn ends first it simply runs as the next turn.
+ */
+function maybeHandleIterativeIntent(text: string, rollback: boolean): void {
+  if (rollbackArmed) {
+    rollbackArmed = false;
+    rollback = true;
+  }
   if (!running || !intentRecognitionEnabled) return;
-  if (turnStartedAt === 0 || Date.now() - turnStartedAt > ITERATION_WINDOW_MS) return;
-  if (!isIterativeIntent(text, inFlightPrompt)) return;
-  // Supersede the in-flight turn: abort it now, keep the message queued so it is
-  // injected into the current context when the turn ends (queue is preserved).
-  requestStop();
+  const sid = currentSessionId || undefined;
+  void window.nexusDesktop
+    .steer(text, { sessionId: sid, rollback })
+    .then((accepted) => {
+      if (accepted) {
+        // Sitting in the live turn's queue; it leaves pendingQueue only once the
+        // core reports `steer_applied`, so an abort in between still runs it.
+        steerInFlight = true;
+        refreshQueuedStatus();
+        return;
+      }
+      // Not accepted (the turn just ended) — leave it queued and let drain() run.
+      drain();
+    })
+    .catch(() => drain());
+}
+
+/** Repaint the input status line for a turn that is still running: a requested
+ *  stop wins, then un-consumed queued messages, then a steer waiting to be
+ *  absorbed. Leaves the plain "running" readout alone when there is nothing to
+ *  report. */
+function refreshQueuedStatus(): void {
+  if (!running) return;
+  if (stopRequested) {
+    inputStatus.textContent = t('stopping');
+    inputStatus.classList.add('stopping');
+    return;
+  }
+  if (pendingQueue.length > 0) {
+    inputStatus.textContent = t('queued', { n: pendingQueue.length });
+    return;
+  }
+  if (steerInFlight) inputStatus.textContent = t('steered');
 }
 
 function drain(): void {
   if (running) {
     setBusy(true);
-    // A stop just requested inside enqueue() must not be overwritten by the
-    // generic running readout; keep the "Stopping…" feedback visible.
-    if (stopRequested) {
-      inputStatus.textContent = t('stopping');
-      inputStatus.classList.add('stopping');
-    } else if (pendingQueue.length > 0) {
-      inputStatus.textContent = t('queued', { n: pendingQueue.length });
-    }
+    refreshQueuedStatus();
     return;
   }
+  steerInFlight = false;
   const text = pendingQueue.shift();
   if (text === undefined) {
     setBusy(false);
     return;
   }
   running = true;
-  inFlightPrompt = text;
-  turnStartedAt = Date.now();
   setBusy(true);
   curAssistant = null;
   curThinking = null;
@@ -4111,8 +4256,6 @@ function drain(): void {
       void remediateUnavailableModel(attemptProvider, attemptModel, rawError);
     } finally {
       running = false;
-      inFlightPrompt = '';
-      turnStartedAt = 0;
       // Defer drain() to the next microtask so that session_end events
       // (which arrive via IPC in the same tick) have a chance to call
       // setBusy(false) first. Without this, drain() fires synchronously
@@ -5622,8 +5765,28 @@ function clearDraft(id: string): void {
 let draftTimer: ReturnType<typeof setTimeout> | null = null;
 inputEl.addEventListener('input', () => {
   updateSendButtonVisibility();
+  updateRollbackButtonVisibility();
   if (draftTimer) clearTimeout(draftTimer);
   draftTimer = setTimeout(saveDraft, 400);
+});
+
+// Arm (or disarm) the destructive path for the NEXT send: the button does not
+// roll back by itself, it marks the message being composed so sending it mid-turn
+// also discards the interrupted attempt. Confirming the first time because it
+// deletes work; cancelling needs no confirmation.
+rollbackBtn.addEventListener('click', async () => {
+  if (!intentRollbackEnabled || !running) return;
+  if (rollbackArmed) {
+    rollbackArmed = false;
+    updateRollbackButtonVisibility();
+    return;
+  }
+  const ok = await confirmDialog(t('rollbackAsk'));
+  if (!ok) return;
+  rollbackArmed = true;
+  updateSendButtonVisibility();
+  updateRollbackButtonVisibility();
+  addSystem(t('rollbackArmed'));
 });
 
 // ---------- drag & drop / paste attachments (E3) ----------
@@ -5720,7 +5883,7 @@ window.nexusDesktop.onRateLimitUpdate((data) => {
 // in-memory copy matches disk, then re-apply i18n / sidebar state.
 window.nexusDesktop.onConfigWindowClosed(async () => {
   await window.nexusDesktop.reloadConfig();
-  intentRecognitionEnabled = await window.nexusDesktop.getIntentRecognition().catch(() => true);
+  await refreshIntentToggles();
   await loadLanguage();
   // Re-paint any open sidebar panels (Sub-Agents / Side Chat) when the config
   // window changed the UI language.
@@ -5776,7 +5939,7 @@ window.nexusDesktop.onTabsChanged((open) => {
     // per-tab restore that follows).
     void refreshSessions().catch(() => {});
     void window.nexusDesktop.getInputRows().then((r) => applyInputRows(r)).catch(() => {});
-    void window.nexusDesktop.getIntentRecognition().then((v) => (intentRecognitionEnabled = v)).catch(() => {});
+    void refreshIntentToggles();
     status = await window.nexusDesktop.getStatus();
     providers = await window.nexusDesktop.getProviders();
     if (providers.length === 0) {

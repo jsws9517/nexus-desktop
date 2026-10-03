@@ -3,6 +3,14 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 const api = {
   chat: (input: string, opts?: { sessionId?: string }) =>
     ipcRenderer.invoke('nexus:chat', { input, ...(opts ?? {}) }),
+  // Mid-turn follow-up: merged into the running turn's context. Resolves false
+  // when the turn had already ended, so the caller keeps the message queued.
+  // `rollback` additionally discards the interrupted attempt (destructive).
+  steer: (input: string, opts?: { sessionId?: string; rollback?: boolean }) =>
+    ipcRenderer.invoke('nexus:steer', { input, ...(opts ?? {}) }),
+  // Undo a rollback from a backup the core wrote under ~/.nexus/trash/rollback/.
+  restore: (backupPath: string, opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:restore', { backupPath, ...(opts ?? {}) }),
   // Isolated scratch chat: worker completes the renderer-held transcript on a
   // throwaway AgentService — never the session's worker, never its context/db.
   sideChat: (messages: Array<{ role: string; content: string }>) =>
