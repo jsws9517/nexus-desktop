@@ -119,7 +119,7 @@ service.onPermission = (req) => { tracePerm(`askPermission id=${req.id}`); send(
 service.onLog = (level, message) => send({ type: 'log', level, message });
 service.onRateLimitReport = (data) => send({ type: 'rateLimitReport', data });
 // Forward MCP tool discovery + calls to the shared main-process hub (single
-// owner, one OS process per server �?no per-tab shadow MCP processes).
+// owner, one OS process per server — no per-tab shadow MCP processes).
 service.onMcpRequest = (op, params) =>
   sendMcp(op as McpOp, params).catch((e) => {
     logger.debug(`mcp proxy "${op}" failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -131,8 +131,8 @@ service.onMcpRequest = (op, params) =>
 // can reach the worker while service.init() is still running.
 //
 // Startup is split into two phases:
-//   earlyInit �?constructs the Agent (config/session/provider), fast.
-//   init      �?MCP connect + skills load, slow.
+//   earlyInit — constructs the Agent (config/session/provider), fast.
+//   init      — MCP connect + skills load, slow.
 // Read-only session/config methods only need phase 1 and must NOT wait for
 // phase 2; mutations (chat, MCP toggles, ...) wait on the full init promise.
 // Full serialization is NOT an option: abort() must stay able to run
@@ -186,7 +186,7 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   sideChat: async (req: WorkerRequest & { method: 'sideChat' }) => {
     // Isolated scratch conversation: a fresh AgentService per request, seeded
     // with the renderer-held transcript. It never touches the session store,
-    // the main worker's context, or its busy state �?side chat stays usable
+    // the main worker's context, or its busy state — side chat stays usable
     // while the real session is mid-turn and can never pollute it.
     //
     // Unlike the previous callLlm() path (which was a bare provider.complete()

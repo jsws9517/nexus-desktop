@@ -560,10 +560,10 @@ export class AgentService {
                 );
               }
             } else if (globalRules.reason === 'too-large') {
-              this.onLog?.('warn', `Global rules at ${globalRules.file} > 32 KB �?refused (no silent context bloat)`);
+              this.onLog?.('warn', `Global rules at ${globalRules.file} > 32 KB — refused (no silent context bloat)`);
             }
             if (globalRules.reason !== 'ok' && firstContent.includes(GLOBAL_RULES_MARKER)) {
-              // Rules removed / no longer resolvable �?clear the block.
+              // Rules removed / no longer resolvable — clear the block.
               ctx.replaceSystemByMarker(GLOBAL_RULES_MARKER, null);
             }
           } catch {

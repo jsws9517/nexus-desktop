@@ -1,6 +1,6 @@
 # Mid-Turn Intent Recognition: Steer and Rollback
 
-> Scope: how a follow-up prompt sent while a turn is still running reaches the agent. Covers the core (`nexus-coder`: `Agent.enqueueSteer` / `Agent.rollbackToLastUserBoundary` / `Agent.restoreFromBackup`) and the desktop surface that drives it (`nexus-desktop`: `nexus:steer`, the rollback button, transcript resync). Written after the first implementation attempt failed acceptance — see "Why the classifier was deleted".
+> Scope: how a follow-up prompt sent while a turn is still running reaches the agent. Covers the core (`nexus-coder`: `Agent.enqueueSteer` / the private `Agent.applyRollback` / `Agent.restoreFromBackup`) and the desktop surface that drives it (`nexus-desktop`: `nexus:steer`, the rollback button, transcript resync). Written after the first implementation attempt failed acceptance — see "Why the classifier was deleted".
 
 ## The problem
 
@@ -93,7 +93,14 @@ It must not happen mid-batch. At that moment `pendingToolCalls` and `assistantMe
 
 The boundary is the last `role === 'user'` message whose content does **not** begin with `<user_steer>`. Skipping steer messages is essential: the boundary is resolved before injection, but a second rollback in the same turn must not delete the steer that was already merged in.
 
-`chat()` and `startSession()` reset the once-per-turn `rollbackDone` flag.
+Two off-by-one traps live here, both of which delete the prompt the user just typed:
+
+- `ContextManager.truncateAfter(index)` keeps `slice(0, index)` — it drops the message **at** `index`. The cut is therefore `boundary + 1`.
+- `SessionManager.deleteMessagesFrom(sessionId, fromId)` is **inclusive** of `fromId`, so the DB tail must be sliced from one row *past* the boundary user row (`cut = i + 1`), not at it.
+
+The two layers are resolved independently: the context boundary comes from the context message list, the DB cut from the stored **role sequence**. They are not index-parity twins — injected (non-persisted) blocks shift the two — so deriving one from the other's index is wrong.
+
+`chat()` and `startSession()` reset the once-per-turn `rollbackDone` flag. `applyRollback` is private and reached only through `drainSteerQueue`, which is what guarantees it runs at a safe point.
 
 ### Why not `ContextManager.setMessages`
 
@@ -122,6 +129,10 @@ Format: a header line with metadata, then one line per removed message.
 {"kind":"msg","role":"assistant","content":"...","toolCalls":[...],"toolCallId":null}
 ```
 
+`steerRowId` is written as `0` and patched afterwards: the backup is taken during truncation, which happens *before* the follow-up is injected, so the steer row does not exist yet. `drainSteerQueue` rewrites the meta line once `addMessage` has assigned the real id. A backup that could not be patched is still a valid forensic record — it just cannot unwind the steer row.
+
+The file is written `mode 0o600`: it can contain tool output, i.e. the same confidentiality as `sessions.db` itself.
+
 Retention: the 20 most recent files per session; older ones are removed. `sessions.db` is already ~200 MB and backups must not grow without bound.
 
 ### Restore
@@ -133,6 +144,8 @@ Retention: the 20 most recent files per session; older ones are removed. `sessio
 3. `startSession(undefined, sessionId)` — reload context from the DB.
 
 The result is byte-identical to the pre-rollback state. Append-only, so no `id` renumbering is needed.
+
+Mid-turn the live context cannot be spliced, so the request is parked in `pendingRestorePath` and applied by `drainPendingRestore` at the next turn boundary — before `drainSteerQueue`, so a restore always outranks the rollback it is undoing. The deferral must bypass the busy check inside `restoreFromBackup`, otherwise it re-queues itself forever.
 
 Restore is deliberately **not** "keep the steer and add the work back". That would require inserting before an existing autoincrement id and renumbering the rest of the session's `id` space — high blast radius for a marginal semantic gain. The rollback means "the previous instruction is void"; restoring it means returning to exactly the moment before the button was pressed.
 
@@ -189,13 +202,27 @@ renderer enqueue(text)
 
 ## Tests
 
-`test/intent-steer.test.mjs`:
+`test/intent-steer.test.mjs` — 19 cases against a `Object.create(Agent.prototype)` instance with fake context/session, plus the real `ContextManager`:
 
-- `intentRollback` resolves correctly for absent / `false` / `true` config.
-- `truncateAfter` keeps `systemPromptInjected` when a system message survives, clears it otherwise.
-- `deleteMessagesFrom` returns the right count and leaves rows before the boundary intact.
-- `rollbackToLastUserBoundary` **skips `<user_steer>` messages**.
-- Leaving the tool batch keeps `tool_use`/`tool_result` strictly paired.
-- A second rollback in the same turn is a no-op.
-- Backup → restore reproduces the pre-rollback row set exactly.
-- `intentRollback` off ⇒ `enqueueSteer(input, { rollback: true })` ignores `rollback`.
+- `enqueueSteer` rejects blank text and an idle agent.
+- `enqueueSteer` carries `rollback` through and consumes the flag at the boundary.
+- `drainSteerQueue` merges N steers into one message and emits `steer_applied`; no-op when empty.
+- Rollback truncates at the last real user message and deletes the matching DB tail.
+- The boundary **skips `<user_steer>` messages** — an earlier steer is discarded, the newly injected one survives.
+- Rollback is a no-op with no real user message in context.
+- A second rollback in the same turn deletes nothing and emits no second `rollback_applied`.
+- `truncateAfter` keeps `systemPromptInjected` when a system message survives, clears it otherwise, and is a no-op at/past the end.
+- Leaving the tool batch keeps `tool_use`/`tool_result` strictly paired and in order.
+- `AgentService.steer` gate: forwards when idle-free and busy, reports `false` when idle, no-ops without an agent, and honours `intentRollback` in **both** directions.
+- `AgentService.restore` delegates and tolerates a missing agent.
+- The deleted classifier is really gone (no `REFINE_MARKERS` / `isIterativeIntent` / `bigrams` in the built renderer, no `withinWindow` in the built service).
+- `nexus:steer` / `nexus:restore` param specs.
+
+### Not covered
+
+These need a live provider or a real DB, so they are unverified by the suite and rest on manual acceptance:
+
+- Config resolution of `intentRollback` for absent / `false` / `true` (only the service-side gate is tested).
+- `SessionStore.deleteMessagesFrom` / `SessionManager` against a real `sessions.db` — the tests use a fake session, so the actual SQL is unexercised.
+- Backup file writing and `restoreFromBackup` round-tripping the pre-rollback row set.
+- `restoreFromBackup`'s mid-turn deferral (`pendingRestorePath`) and the `steerRowId` patch ordering.
