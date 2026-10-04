@@ -1,0 +1,89 @@
+{
+  "claude": {
+    "command": "claude-agent-acp",
+    "args": [],
+    "mode": "native",
+    "directMode": true,
+    "capabilities": [
+      "chat",
+      "code",
+      "text"
+    ],
+    "enabled": true
+  },
+  "kimi": {
+    "command": "kimi",
+    "args": [
+      "acp"
+    ],
+    "mode": "native",
+    "capabilities": [
+      "chat",
+      "code",
+      "text"
+    ],
+    "enabled": true,
+    "profile": {
+      "latencyMs": 4000,
+      "cost": "free",
+      "strengths": [
+        "quick-answer",
+        "translation"
+      ],
+      "maxComplexity": "simple",
+      "preferredFor": [
+        "quick-answer"
+      ]
+    },
+    "directMode": false
+  },
+  "qwen": {
+    "command": "qwen",
+    "args": [
+      "--acp"
+    ],
+    "mode": "native",
+    "capabilities": [
+      "chat",
+      "code",
+      "text"
+    ],
+    "enabled": true,
+    "profile": {
+      "latencyMs": 6000,
+      "cost": "low",
+      "strengths": [
+        "quick-answer",
+        "reasoning"
+      ],
+      "maxComplexity": "medium"
+    },
+    "directMode": false
+  },
+  "opencode": {
+    "command": "opencode",
+    "args": [
+      "acp"
+    ],
+    "mode": "native",
+    "capabilities": [
+      "chat",
+      "code",
+      "text"
+    ],
+    "enabled": true,
+    "profile": {
+      "latencyMs": 12000,
+      "cost": "low",
+      "strengths": [
+        "code-gen",
+        "refactor"
+      ],
+      "maxComplexity": "complex",
+      "preferredFor": [
+        "code-gen"
+      ]
+    },
+    "directMode": false
+  }
+}

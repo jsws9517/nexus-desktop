@@ -12,6 +12,8 @@
   },
   "scripts": {
     "sync:core": "node scripts/sync-core.mjs",
+    "sync:engines": "node scripts/sync-engines.mjs",
+    "check:engines": "node scripts/sync-engines.mjs --check",
     "prebuild": "npm run sync:core",
     "pretypecheck": "npm run sync:core",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.preload.json && node scripts/copy-assets.mjs",
