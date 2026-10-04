@@ -36,6 +36,10 @@ const MAX_SIDE_CHAT_MESSAGES = 50;
 export const WORKER_METHODS = {
   earlyInit: { fields: { cwd: S.str() }, optional: ['cwd'] },
   init: { fields: { cwd: S.str(), deferMcp: S.bool() }, optional: ['cwd', 'deferMcp'] },
+  // ACP target registration only, no skills / MCP. Session workers stay on
+  // earlyInit, but acp.start() lives inside the core's Agent.init(), so without
+  // this they have an empty registry and every acp_route call fails.
+  initAcp: { fields: {} },
   chat: { fields: { input: S.str(MAX_CHAT_INPUT) } },
   // Mid-turn follow-up: merged into the running turn's context instead of
   // waiting for the in-flight chat() to finish. `rollback` additionally asks the

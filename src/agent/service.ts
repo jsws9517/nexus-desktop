@@ -97,6 +97,41 @@ const TOOL_RESULT_TRUNCATED =
   '\n… [output truncated: original %d chars; showing head %d + tail %d. Use targeted tools (grep/head/tail/SQL aggregation) for specific parts] …\n';
 
 /**
+ * Tools that leave the machine — spawn a process, open a socket, hand work to
+ * another agent. Their outcome earns a log line even on success: a delegation
+ * that silently failed looks identical to one that was never attempted, and
+ * neither the tool-select nor the acp-init line can tell those apart.
+ */
+const DELEGATION_TOOLS: ReadonlySet<string> = new Set([
+  'acp_route',
+  'acp_router',
+  'spawn_subagent',
+  'spawn_tester',
+  'spawn_committer',
+  'spawn_skill_fixer',
+  'spawn_office',
+]);
+
+/** Outcome log lines are truncated; the full text stays in the session transcript. */
+const OUTCOME_LOG_CHARS = 240;
+
+/** One-line body for an outcome log: never throws, never spans lines. */
+function outcomeLine(res: unknown): string {
+  const r = (res ?? {}) as { content?: unknown };
+  let text: string;
+  if (typeof r.content === 'string') {
+    text = r.content;
+  } else {
+    try {
+      text = JSON.stringify(r.content ?? null) ?? String(r.content);
+    } catch {
+      text = String(r.content);
+    }
+  }
+  return text.slice(0, OUTCOME_LOG_CHARS).replace(/\s+/g, ' ').trim();
+}
+
+/**
  * A tool call "worked" if it returned content and did not flag an error. Used
  * to decide whether a tool earned a relevance prior — a tool that failed three
  * times in a row should not be kept alive by the usage-memory term.
@@ -336,6 +371,25 @@ export class AgentService {
   }
 
   /**
+   * Record a tool invocation's outcome in the on-disk log.
+   *
+   * Results were previously visible only in the renderer: a failed delegation
+   * surfaced as model prose, and nothing on disk recorded that the call happened
+   * at all — which is why an `acp_route` reporting "Agent <id> not found" left no
+   * trace to grep. Every error is now logged, plus every delegation-family call
+   * regardless of outcome, since those cross a process boundary where "returned
+   * quickly with an error" and "was never called" look the same from outside.
+   */
+  private noteToolOutcome(name: string, args: unknown, result: unknown): void {
+    const failed = (result as { isError?: unknown } | null)?.isError === true;
+    if (!failed && !DELEGATION_TOOLS.has(name)) return;
+    const target = failed || name !== 'acp_route' ? '' : ` agent=${String((args as { agent?: unknown })?.agent ?? '(auto)')}`;
+    const line = `[tool-${failed ? 'error' : 'ok'}] ${name}${target} -> ${outcomeLine(result)}`;
+    if (failed) logger.warn(line);
+    else logger.info(line);
+  }
+
+  /**
    * Bounded rolling window of {t, used} context-usage samples backing
    * getContextUsage() live gauge (fill % + tokens/sec).
    */
@@ -428,6 +482,7 @@ export class AgentService {
       // A non-error result means the tool actually ran, so it earns a relevance
       // prior for the rest of the session.
       if (isSuccessfulResult(result)) this.noteToolUse(name);
+      this.noteToolOutcome(name, args, result);
       // Cap oversized output (bash / file reads / remote tools) so one result
       // cannot blow the entire context window (see capToolResult above).
       return capToolResult(result);
@@ -857,6 +912,37 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         ` agents=${acpAgents.join(',') || '(none)'}`,
     );
     this.onLog?.('info', `Nexus core initialized (cwd=${process.cwd()}, deferMcp=${defer})`);
+  }
+
+  /**
+   * Register ACP delegation targets without paying for a full init.
+   *
+   * Session workers deliberately stop at `earlyInit`: MCP is owned by the global
+   * worker through the hub proxy, and the skills load in `init()` is the 10-20s
+   * cost we do not want per tab. But the core calls `acp.start()` from inside
+   * `Agent.init()`, so an earlyInit-only worker holds an empty agent registry and
+   * every `acp_route` call fails with "Agent <id> not found" while the global
+   * worker, which does run `init()`, works fine — the same request succeeds or
+   * fails depending on which tab runs it.
+   *
+   * `AcpProtocol` construction is cheap (a Map plus an unref'd eviction timer),
+   * so this isolates just that step. Idempotent: the core's `start()` returns
+   * early once enabled, which makes it safe to call from both the spare-warming
+   * path and `open()`.
+   *
+   * Returns the registered agent ids so the caller can log them.
+   */
+  async initAcp(): Promise<string[]> {
+    await this.earlyInit();
+    const agent = this.agent;
+    if (!agent) throw new Error('Agent not initialized');
+    const acpConfig = agent.config.getAcpConfig();
+    if (acpConfig) await agent.acp.start(acpConfig);
+    const ids = agent.acp.listAgents().map((a) => a.id);
+    logger.info(
+      `[acp-init] worker registered=${ids.length} agents=${ids.join(',') || '(none)'}`,
+    );
+    return ids;
   }
 
   async shutdown(): Promise<void> {

@@ -9,6 +9,7 @@ import type { WorkerMethod } from './ipc/channels.js';
 type WorkerRequest =
   | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
   | { id: number; method: 'init'; params?: { cwd?: string; deferMcp?: boolean } }
+  | { id: number; method: 'initAcp' }
   | { id: number; method: 'chat'; params: { input: string } }
   | { id: number; method: 'steer'; params: { input: string; rollback?: boolean } }
   | { id: number; method: 'restore'; params: { backupPath: string } }
@@ -174,6 +175,10 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
       writeDiag({ ok: false, ms: -1, error: e instanceof Error ? `${e.message}\n${e.stack}` : String(e) });
       throw e;
     }
+  },
+  initAcp: async () => {
+    const agents = await service.initAcp();
+    return { agents };
   },
   chat: async (req: WorkerRequest & { method: 'chat' }) => {
     await service.chat(req.params.input);

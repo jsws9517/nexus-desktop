@@ -172,6 +172,10 @@ export class SessionWorkers {
       // matching how open() warms a fresh tab (fast path). cwd is applied at
       // bind time via setCwd (earlyInit without a cwd leaves the process cwd).
       await worker.request('earlyInit');
+      // acp.start() lives inside the core's Agent.init(), which session workers
+      // never run — without this their registry is empty and every acp_route call
+      // fails with "Agent <id> not found" while the global worker works.
+      await worker.request('initAcp');
       if (worker.alive) {
         this.spare = worker;
         this.onLog?.('info', 'Spare worker warmed');
@@ -286,6 +290,10 @@ export class SessionWorkers {
       } else {
         await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
       }
+      // A spare was warmed with ACP already registered, but this branch may have
+      // spawned fresh; start() is idempotent, so call it unconditionally rather
+      // than tracking which path we took.
+      await worker.request('initAcp');
       const sid = (await worker.request('startSession', { sessionId })) as string;
       bound.sessionId = sid || sessionId;
       const status = (await worker.request('getStatus')) as {
@@ -364,6 +372,9 @@ export class SessionWorkers {
       } else {
         await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
       }
+      // Same as open(): a fresh-session worker needs its own ACP registry, since
+      // registration is per Agent and lives behind Agent.init().
+      await worker.request('initAcp');
       const sid = (await worker.request('startSession', {
         prevSessionId: opts?.prevSessionId,
       })) as string;
