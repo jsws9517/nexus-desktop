@@ -846,6 +846,16 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     // 不覆盖用户已编辑的内容；仅写入缺失的默认模板。
     ensureGlobalRules();
     this.initialized = true;
+    // ACP registration happens inside agent.init() (nexus-coder/src/agent.ts) and
+    // is the only source of acp_route's delegation targets. Log the resolved ids at
+    // info so "which agents can this session reach" is answerable from the log
+    // alone. Previously an empty registry was indistinguishable from a broken
+    // delegation until acp_route failed at call time with "Agent <id> not found".
+    const acpAgents = agent.acp.listAgents().map((a) => a.id);
+    logger.info(
+      `[acp-init] enabled=${agent.acp.isEnabled()} registered=${acpAgents.length}` +
+        ` agents=${acpAgents.join(',') || '(none)'}`,
+    );
     this.onLog?.('info', `Nexus core initialized (cwd=${process.cwd()}, deferMcp=${defer})`);
   }
 

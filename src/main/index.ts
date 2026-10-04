@@ -409,10 +409,20 @@ function startWorker(): void {
   // Core init connects MCP/skills and can take 10-20s (or stall on CN-network
   // marketplace/skill fetches). Gate renderer requests on it but NEVER let the
   // gate block the UI forever: resolve on success, on failure, or after a timeout.
+  //
+  // The rejection reason must survive: init is the step that starts ACP
+  // registration (nexus-coder/src/agent.ts calls acp.start inside init), so a
+  // swallowed failure here shows up much later as "Agent <id> not found" from
+  // acp_route, with nothing in between pointing at the real cause.
+  let initError: Error | null = null;
   const init = worker
     .request('init', { deferMcp: desktopState.getDeferMcp(), ...(earlyParams ?? {}) })
     .then(() => true)
-    .catch(() => false);
+    .catch((err: unknown) => {
+      initError = err instanceof Error ? err : new Error(String(err));
+      logger.error(`Core init rejected: ${initError.message}`);
+      return false;
+    });
   // Bounded initOkPromise for the auto-restart path (avoids awaiting forever
   // when the core hangs past the gate timeout).
   initOkPromise = Promise.race([
@@ -424,7 +434,12 @@ function startWorker(): void {
   readyPromise = Promise.race([
     init.then((ok) => {
       if (ok) send(CHANNELS.log, { level: 'info', message: 'Core ready' });
-      else send(CHANNELS.log, { level: 'error', message: 'Core init failed' });
+      else {
+        send(CHANNELS.log, {
+          level: 'error',
+          message: `Core init failed: ${initError?.message ?? 'unknown error'}`,
+        });
+      }
     }),
     new Promise<void>((resolve) => {
       setTimeout(() => {
