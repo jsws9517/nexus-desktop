@@ -702,32 +702,6 @@ export class AgentService {
           } catch {
             // Prompt decoration must never break a turn.
           }
-
-          // --- Work-mode skill enforcement ---
-          // When the user message references data files or analysis tasks,
-          // inject a system prompt that FORCES the model to use deterministic
-          // skills (sheet.read / sheet.analyze / bi.chart) instead of narrating.
-          const WORK_MARKER = '[Work Mode: Skill Enforcement]';
-          const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-          const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
-          const hasDataFile = /\.(csv|xlsx?|tsv)\b/i.test(lastUserText);
-          const hasAnalysisKeyword = /分析|统计|图表|chart|analyze|data|visualiz/i.test(lastUserText);
-          if ((hasDataFile || hasAnalysisKeyword) && !lastUserText.startsWith('/')) {
-            if (!firstContent.includes(WORK_MARKER)) {
-              ctx.prependToSystem(
-                `\n\n${WORK_MARKER}\n` +
-                  'CRITICAL WORK-MODE RULES — you MUST follow these exactly:\n' +
-                  '1. When the user provides or references a data file (CSV, Excel, TSV), you MUST call `sheet.read` to load it. NEVER narrate or summarize file contents from memory.\n' +
-                  '2. When the user asks for statistics (sum, mean, min, max, count, etc.), you MUST call `sheet.analyze`. NEVER compute statistics manually.\n' +
-                  '3. When the user asks for a chart or visualization, you MUST call `bi.chart`. NEVER describe a chart in text.\n' +
-                  '4. NEVER skip tool calls. Every data operation MUST go through the corresponding skill tool.\n' +
-                  '5. After all tool calls complete, provide a brief summary of the results.\n',
-              );
-            }
-          } else if (!hasDataFile && !hasAnalysisKeyword) {
-            // Non-work-mode: remove the enforcement prompt if present
-            ctx.replaceSystemByMarker(WORK_MARKER, null);
-          }
         } catch {
           // Prompt decoration must never break a turn.
         }

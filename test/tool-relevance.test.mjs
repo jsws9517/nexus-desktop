@@ -405,6 +405,58 @@ test('routing keywords are non-empty and lower-case-safe', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The data-artifact tools must surface on their own, without the removed
+// [Work Mode: Skill Enforcement] regex prompt injection.
+// ---------------------------------------------------------------------------
+
+test('no prompt injection hardcodes the sheet/chart tools any more', async () => {
+  const { readFileSync: rf } = await import('node:fs');
+  const src = rf(join(dist, 'agent', 'service.js'), 'utf8');
+  assert.ok(
+    !src.includes('Work Mode: Skill Enforcement'),
+    'the regex-triggered work-mode prompt injection should be gone',
+  );
+  assert.ok(
+    !/hasDataFile|hasAnalysisKeyword/.test(src),
+    'the CSV/分析 regex trigger should be gone',
+  );
+});
+
+test('the "do not narrate file contents" constraint moved into the tool descriptions', async () => {
+  const { SHEET_TOOL_DEFS } = await import(pathToFileURL(join(dist, 'skills', 'sheet.js')));
+  const { CHART_TOOL_DEFS } = await import(pathToFileURL(join(dist, 'skills', 'chart.js')));
+  const all = [...SHEET_TOOL_DEFS, ...CHART_TOOL_DEFS];
+  // Deleting the system-prompt block would otherwise silently drop these rules.
+  assert.ok(
+    all.some((d) => /never summarize, quote or infer/i.test(d.description)),
+    'sheet.read must carry the load-before-speaking constraint',
+  );
+  assert.ok(
+    all.some((d) => /instead of computing it yourself/i.test(d.description)),
+    'sheet.analyze must carry the do-not-compute constraint',
+  );
+  assert.ok(
+    all.some((d) => /rather than\s+describing one in text/i.test(d.description)),
+    'bi.chart must carry the render-dont-describe constraint',
+  );
+});
+
+test('the data tools are surfaced by routing keywords alone', () => {
+  const pool = [...ALL_TOOL_DEFS, ...deadFiller(60)];
+  const cases = [
+    ['分析一下 data.csv 的销售额', ['sheet.read', 'sheet.analyze']],
+    ['把这个 excel 做个图表', ['sheet.read', 'bi.chart']],
+    ['算一下 csv 的平均值', ['sheet.analyze']],
+  ];
+  for (const [prompt, expected] of cases) {
+    const sel = names(selectTools(pool, { input: prompt, used: new Set() }));
+    for (const tool of expected) {
+      assert.ok(sel.includes(tool), `"${tool}" must surface for "${prompt}" without any prompt injection`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Parity with the core's own essentialTools allowlist
 // ---------------------------------------------------------------------------
 

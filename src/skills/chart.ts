@@ -183,7 +183,9 @@ export const CHART_TOOL_DEFS: ToolDef[] = [
     description:
       'Render a chart from tabular data. Pass inline `data` ({ columns, rows }) plus either a ' +
       'full Vega-Lite `encoding` or convenience `x`/`y` field names with an optional `aggregate`. ' +
-      'Defaults to a bar chart. The result is a previewable chart artifact.',
+      'Defaults to a bar chart. The result is a previewable chart artifact. ' +
+      'Use this whenever the user asks for a chart or visualization — render it rather than ' +
+      'describing one in text.',
     inputSchema: CHART_SCHEMA,
     server: 'chart-internal',
   },

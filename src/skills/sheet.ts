@@ -346,7 +346,9 @@ export const SHEET_TOOL_DEFS: ToolDef[] = [
     name: 'sheet.read',
     description:
       'Parse a CSV or XLSX file into a structured table (columns + bounded rows + overview). ' +
-      'Use this before asking for charts or analysis so the data is loaded once.',
+      'Use this before asking for charts or analysis so the data is loaded once. ' +
+      'Always load a referenced data file with this tool first — never summarize, quote or infer its ' +
+      'contents from the conversation.',
     inputSchema: SHEET_READ_SCHEMA,
     server: 'sheet-internal',
   },
@@ -354,7 +356,8 @@ export const SHEET_TOOL_DEFS: ToolDef[] = [
     name: 'sheet.analyze',
     description:
       'Profile a table (from inline `data` or the same `path` as sheet.read): per-column type, ' +
-      'non-empty count, unique count, numeric min/max/sum/avg and top values. Deterministic.',
+      'non-empty count, unique count, numeric min/max/sum/avg and top values. Deterministic. ' +
+      'Use this for any sum/mean/min/max/count over tabular data instead of computing it yourself.',
     inputSchema: SHEET_ANALYZE_SCHEMA,
     server: 'sheet-internal',
   },
