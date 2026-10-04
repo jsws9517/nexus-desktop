@@ -124,6 +124,7 @@ export async function discoverRoles(root: string): Promise<RoleDef[]> {
 
 const ACP_ROUTER_TOOL: ToolDef = {
   name: 'acp_router',
+  server: 'acp-router-internal',
   description:
     'Route a sub-task to a named agent role.  Roles are defined under .nexus/agents/<name>/SKILL.md. ' +
     'Use this to delegate specialized work (research, code review, data analysis, etc.) to a role that ' +

@@ -22,7 +22,17 @@ import type { Session } from 'nexus-coder/dist/src/session/types.js';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import { INTERNAL_TOOLS, ALL_TOOL_DEFS, callBuiltinTool } from '../tools/index.js';
+import {
+  INTERNAL_TOOLS,
+  ALL_TOOL_DEFS,
+  callBuiltinTool,
+  selectTools,
+  skillHostFromAgent,
+  skillToolNames,
+  ToolRefreshQueue,
+} from '../tools/index.js';
+import { applyRouting } from '../tools/routing.js';
+import type { ToolDef } from '../tools/types.js';
 import { loadConstitution, CONSTITUTION_MARKER, loadGlobalRules, ensureGlobalRules, GLOBAL_RULES_MARKER } from '../tools/agents.js';
 import {
   readModelCapabilities,
@@ -85,6 +95,18 @@ const TOOL_RESULT_HEAD_CHARS = 24_000;
 const TOOL_RESULT_TAIL_CHARS = 6_000;
 const TOOL_RESULT_TRUNCATED =
   '\n… [output truncated: original %d chars; showing head %d + tail %d. Use targeted tools (grep/head/tail/SQL aggregation) for specific parts] …\n';
+
+/**
+ * A tool call "worked" if it returned content and did not flag an error. Used
+ * to decide whether a tool earned a relevance prior — a tool that failed three
+ * times in a row should not be kept alive by the usage-memory term.
+ */
+function isSuccessfulResult(res: unknown): boolean {
+  if (!res || typeof res !== 'object') return false;
+  const r = res as { content?: unknown; isError?: unknown };
+  if (r.isError === true) return false;
+  return typeof r.content === 'string' || typeof r.content === 'object';
+}
 
 function capToolResult<T>(res: T): T {
   if (!res || typeof res !== 'object') return res;
@@ -286,6 +308,34 @@ export class AgentService {
   private mcpToolCache: McpToolDef[] = [];
 
   /**
+   * Tool names already invoked this session. Scored as a prior by the relevance
+   * selector: a tool that demonstrably worked stays reachable even after the
+   * user's focus moves to a sub-step it was not obviously for. Bounded so a long
+   * session cannot grow it without limit.
+   */
+  private readonly toolUseMemory = new Set<string>();
+
+  /** Bounded cap for toolUseMemory; oldest insertion is dropped past this. */
+  private static readonly TOOL_MEMORY_MAX = 128;
+
+  /**
+   * Pending `refresh_tools` widening requests, consumed by the selector on the
+   * next round. The core re-enters runLlmTurn after every batch of tool results,
+   * so a request recorded mid-round lands on the very next tool list.
+   */
+  private readonly toolRefreshQueue = new ToolRefreshQueue();
+
+  /** Records a successful tool invocation as a relevance prior. */
+  private noteToolUse(name: string): void {
+    if (this.toolUseMemory.has(name)) return;
+    if (this.toolUseMemory.size >= AgentService.TOOL_MEMORY_MAX) {
+      const oldest = this.toolUseMemory.values().next();
+      if (!oldest.done) this.toolUseMemory.delete(oldest.value);
+    }
+    this.toolUseMemory.add(name);
+  }
+
+  /**
    * Bounded rolling window of {t, used} context-usage samples backing
    * getContextUsage() live gauge (fill % + tokens/sec).
    */
@@ -331,6 +381,8 @@ export class AgentService {
       if (INTERNAL_TOOLS.has(name)) {
         result = await callBuiltinTool(name, args, {
           getConfig: () => this.agent?.['config']?.get?.(),
+          skills: skillHostFromAgent(this.agent) ?? undefined,
+          toolRefresh: this.toolRefreshQueue,
           requestWriteApproval: async (label: string): Promise<boolean> => {
             // Mirrors the core's onPermissionRequest semantics: auto mode is
             // global allow, unattended skips the UI entirely, interactive mode
@@ -373,18 +425,31 @@ export class AgentService {
           result = await this.mcpRequest('callTool', { name, args });
         }
       }
+      // A non-error result means the tool actually ran, so it earns a relevance
+      // prior for the rest of the session.
+      if (isSuccessfulResult(result)) this.noteToolUse(name);
       // Cap oversized output (bash / file reads / remote tools) so one result
       // cannot blow the entire context window (see capToolResult above).
       return capToolResult(result);
     };
-    // The core's `getToolsForContext` applies a per-turn keyword filter to keep
-    // the LLM tool list small (tokens/bigrams from the user message must match a
-    // tool's name+description). That silently strips user-configured MCP tools
-    // whenever the message does not literally name them (e.g. Chinese asks about
-    // "LSP/语法检查" never match the English pyright_* descriptions). Re-append
-    // any connected MCP tool the filter dropped so explicitly-configured servers
-    // stay callable. Plan mode and role-scoped allowlists are respected: those
-    // intentionally restrict the toolset and must not be widened here.
+    // Tool selection. The core's `getToolsForContext` applies a per-turn keyword
+    // filter to keep the LLM tool list small: a tool survives only when a token
+    // derived from the user message appears verbatim in its `name + description`.
+    //
+    // That filter has two failure modes we correct here:
+    //
+    //   1. False negatives. Descriptions are English, so keywords taken from a
+    //      Chinese prompt (CJK bigrams) can never substring-match them. The tool
+    //      silently vanishes and the model is never offered it — this is what made
+    //      `spawn_subagent` unusable from the desktop.
+    //   2. No ranking. Survivors are unordered and uncapped, so the 48 always-tagged
+    //      main-process tools and every installed skill rode along on every round.
+    //
+    // So we score instead of match (src/tools/tool-relevance.ts), per round, and
+    // fail open: ESSENTIAL_TOOLS plus everything already used this session plus any
+    // pending `refresh_tools` request always survive, and the list is never allowed
+    // to fall below a floor. Plan mode and role-scoped allowlists are respected —
+    // those are deliberate restrictions and must not be widened here.
     const patchedGetAllTools = local.getAllTools.bind(local);
     const originalGetTools = (agent as unknown as {
       getToolsForContext: (input?: string) => Promise<Array<{ name: string }>>;
@@ -392,20 +457,41 @@ export class AgentService {
     (agent as unknown as {
       getToolsForContext: (input?: string) => Promise<Array<{ name: string }>>;
     }).getToolsForContext = async (input?: string) => {
-      const tools = await originalGetTools(input);
-      if (agent.planMode || (agent.toolAllowlist?.size ?? 0) > 0) return tools;
-      const mcpTools = (patchedGetAllTools() as McpToolDef[]).filter((t) => t.server);
-      if (mcpTools.length === 0) return tools;
-      const have = new Set(tools.map((t) => t.name));
-      const missing = mcpTools.filter((t) => !have.has(t.name));
-      if (missing.length > 0) {
-        logger.info(
-          `[mcp-bridge] getToolsForContext re-appended ${missing.length}/${mcpTools.length} MCP tools ` +
-            `(base=${tools.length}, input=${(input ?? '').length}): ${missing.map((t) => t.name).join(', ')}`,
-        );
-        return [...tools, ...missing];
-      }
-      return tools;
+      const coreTools = await originalGetTools(input);
+      const respectNarrowing = agent.planMode || (agent.toolAllowlist?.size ?? 0) > 0;
+
+      // Skill progressive disclosure: the core publishes one flat tool per skill
+      // (23 installed ≈ 2.2 KB of English descriptions per round). Swap those for
+      // skills_index / skills_search / skills_load. Hiding them is safe — the core
+      // runs skills.callTool ahead of every other dispatcher and matches on skill
+      // name, so a direct call still executes.
+      const hidden = respectNarrowing ? new Set<string>() : skillToolNames(this.agent);
+
+      // Candidates are the full union the core would assemble — core builtins, the
+      // hub's MCP cache (already de-duplicated against our names inside
+      // getAllTools), and our own ALL_TOOL_DEFS. Only the flat skill tools are
+      // removed, and only outside plan mode / role scoping.
+      const candidates = applyRouting(
+        (patchedGetAllTools() as McpToolDef[]).filter((t) => !hidden.has(t.name)) as ToolDef[],
+      );
+
+      const selected = selectTools(candidates, {
+        input: input ?? '',
+        used: this.toolUseMemory,
+        force: new Set(this.toolRefreshQueue.peek()),
+        respectNarrowing,
+      });
+
+      // Consume the widening requests: they have now been applied once.
+      this.toolRefreshQueue.clear();
+
+      const coreCount = coreTools.length;
+      logger.info(
+        `[tool-select] ${selected.length} tools for "${(input ?? '').slice(0, 40)}" ` +
+          `(core=${coreCount}, candidates=${candidates.length}, hidden-skills=${hidden.size}, ` +
+          `used=${this.toolUseMemory.size})`,
+      );
+      return selected;
     };
     // Kick off the first prefetch so MCP tools are available (not just builtin)
     // on the first turn without blocking synchronous tool-list assembly.

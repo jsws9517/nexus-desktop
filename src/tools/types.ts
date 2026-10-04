@@ -7,12 +7,53 @@
  * tool composition) a single registry to consume.
  */
 
+import type { ToolRefreshQueue } from './refresh-tools.js';
+
+/**
+ * Coarse routing bucket. The relevance selector (src/tools/tool-relevance.ts)
+ * scores per-tool, but reads `group` to keep a whole family alive when any
+ * member looks relevant, and to honour plan mode / role allowlists.
+ */
+export type ToolGroup =
+  | 'fs'
+  | 'exec'
+  | 'git'
+  | 'db'
+  | 'web'
+  | 'media'
+  | 'data'
+  | 'memory'
+  | 'task'
+  | 'agents'
+  | 'acp'
+  | 'meta';
+
+/** MCP-style behavioural hints. Only `sequentialthinking` declared these so far. */
+export interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 /** A tool definition surfaced to the LLM (also carries the owning server tag). */
 export interface ToolDef {
   name: string;
   description: string;
   inputSchema: unknown;
   server?: string;
+  /** Routing bucket for the relevance selector. Absent = treated as 'meta'. */
+  group?: ToolGroup;
+  /**
+   * Author-supplied trigger terms, any language, matched case-insensitively as
+   * substrings of the user input. This is the only language-neutral signal the
+   * selector has: the core's own filter compares raw input against the English
+   * description, which structurally cannot match a CJK prompt.
+   */
+  keywords?: string[];
+  /** Pure read; never mutates project or session state. */
+  readOnly?: boolean;
+  annotations?: ToolAnnotations;
 }
 
 /** Result of a tool invocation; `content` is verbatim JSON or Markdown. */
@@ -27,6 +68,29 @@ export interface ToolContext {
   getConfig?: () => Record<string, unknown> | undefined;
   /** Ask approval for a write operation. Returns true when allowed. */
   requestWriteApproval?: (label: string) => Promise<boolean>;
+  /**
+   * Bridge to the core's skill registry, for the progressive-disclosure tools.
+   * Supplied by AgentService, which owns the live Agent — the registry is
+   * per-agent so it cannot live in a module-level singleton.
+   */
+  skills?: SkillHost;
+  /** Queue backing `refresh_tools`, so the selector can widen the next round. */
+  toolRefresh?: ToolRefreshQueue;
+}
+
+/**
+ * The slice of the core's SkillRegistry that the disclosure tools need. Kept
+ * structural so this module does not depend on the core's skill types.
+ */
+export interface SkillHost {
+  listSkills(): Array<{
+    name: string;
+    description?: string;
+    rootDir?: string;
+    source?: 'skills' | 'plugins' | 'claude';
+    steps?: Array<{ name: string; done: string }>;
+  }>;
+  invokeSkill(name: string, task: string): Promise<ToolResult>;
 }
 
 /** A self-contained tool family: its defs, its callable entry, and name set. */

@@ -14,10 +14,13 @@ import { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThink
 import { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool, closeSqliteDbs } from './sqlite.js';
 import { AGENTS_TOOLS, AGENTS_TOOL_DEFS, callAgentsTool } from './agents.js';
 import { ACP_ROUTER_TOOLS, ACP_ROUTER_TOOL_DEFS, callAcpRouterTool } from './acp-router.js';
+import { createSkillsDisclosureRegistry, SKILLS_DISCLOSURE_TOOLS } from './skills-disclosure.js';
+import { createRefreshToolsRegistry, REFRESH_TOOLS } from './refresh-tools.js';
+import { applyRouting } from './routing.js';
 import { SKILL_REGISTRIES } from '../skills/index.js';
 
-export type { ToolDef, ToolResult, ToolContext, ToolRegistry };
-export { registryNames, registryDefs };
+export type { ToolDef, ToolResult, ToolContext, ToolRegistry, SkillHost } from './types.js';
+export { registryNames, registryDefs } from './types.js';
 export { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './filesystem.js';
 export { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } from './sequential-think.js';
 export { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool, closeSqliteDbs } from './sqlite.js';
@@ -26,10 +29,15 @@ export { ACP_ROUTER_TOOLS, ACP_ROUTER_TOOL_DEFS, callAcpRouterTool } from './acp
 export { SKILL_REGISTRIES } from '../skills/index.js';
 export { SHEET_TOOLS, SHEET_TOOL_DEFS, callSheetTool } from '../skills/sheet.js';
 export { CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } from '../skills/chart.js';
+export { skillHostFromAgent, skillToolNames } from './skills-disclosure.js';
+export { ToolRefreshQueue, refreshToolsResult } from './refresh-tools.js';
+export { selectTools, ESSENTIAL_TOOLS } from './tool-relevance.js';
+export { TOOL_ROUTING, applyRouting } from './routing.js';
 
 /**
- * Every in-process tool family served by the worker — utility tools first,
- * then the artifact-producing office skills (which share the same loop).
+ * Every in-process tool family served by the worker — utility tools first, then
+ * the artifact-producing office skills, then the two self-management families
+ * that let the model widen its own toolset.
  */
 export const TOOL_REGISTRIES: ToolRegistry[] = [
   { id: 'filesystem', defs: FILESYSTEM_TOOL_DEFS, call: callFsTool },
@@ -38,13 +46,25 @@ export const TOOL_REGISTRIES: ToolRegistry[] = [
   { id: 'agents', defs: AGENTS_TOOL_DEFS, call: callAgentsTool },
   { id: 'acp-router', defs: ACP_ROUTER_TOOL_DEFS, call: callAcpRouterTool },
   ...SKILL_REGISTRIES,
+  createSkillsDisclosureRegistry(),
+  createRefreshToolsRegistry(),
 ];
 
 /** Flat name set across all registries — used to shadow same-named MCP tools. */
 export const INTERNAL_TOOLS: Set<string> = registryNames(TOOL_REGISTRIES);
 
-/** Flat def list across all registries — appended to the worker tool list. */
-export const ALL_TOOL_DEFS: ToolDef[] = registryDefs(TOOL_REGISTRIES);
+/**
+ * Flat def list across all registries — appended to the worker tool list.
+ * Routing metadata is filled in here so every consumer (and the relevance
+ * selector) sees one uniform shape.
+ */
+export const ALL_TOOL_DEFS: ToolDef[] = applyRouting(registryDefs(TOOL_REGISTRIES));
+
+/** Names of the progressive-disclosure + self-management families. */
+export const DISCLOSURE_TOOLS: ReadonlySet<string> = new Set([
+  ...SKILLS_DISCLOSURE_TOOLS,
+  ...REFRESH_TOOLS,
+]);
 
 /** Route a name to the owning registry, or a not-found error when unknown. */
 export async function callBuiltinTool(name: string, args: unknown, ctx?: ToolContext): Promise<ToolResult> {

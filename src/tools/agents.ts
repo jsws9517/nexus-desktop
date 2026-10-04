@@ -446,6 +446,7 @@ const rootHint =
 
 const AGENTS_INDEX_TOOL: ToolDef = {
   name: 'agents_index',
+  server: 'agents-internal',
   description:
     'List every skill and rule declared in the project .nexus directory (skills + rules + resolved constitution). ' +
     'Use this before agents_read to discover what the project knows.',
@@ -457,6 +458,7 @@ const AGENTS_INDEX_TOOL: ToolDef = {
 
 const AGENTS_READ_TOOL: ToolDef = {
   name: 'agents_read',
+  server: 'agents-internal',
   description:
     'Read a file from the project .nexus directory (e.g. skills/foo/SKILL.md, rules/NEXUS.md) or the resolved constitution.',
   inputSchema: {
@@ -471,6 +473,7 @@ const AGENTS_READ_TOOL: ToolDef = {
 
 const AGENTS_SEARCH_TOOL: ToolDef = {
   name: 'agents_search',
+  server: 'agents-internal',
   description:
     'Keyword search over project skills/rules to find which rule or skill covers a topic. Returns matched files with snippets.',
   inputSchema: {
