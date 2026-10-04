@@ -132,6 +132,55 @@ function outcomeLine(res: unknown): string {
 }
 
 /**
+ * Marker for the synthetic continuation appended after a tool batch. Also the
+ * identity test used to recognise (and replace) a continuation from an earlier
+ * round — a user-authored message can never carry it.
+ */
+const TOOL_CONTINUATION_MARKER = '[tool-result-continuation]';
+
+const TOOL_CONTINUATION_TEXT =
+  `${TOOL_CONTINUATION_MARKER}\n` +
+  'Tool results for the previous step are already present above. Continue from them and answer — ' +
+  'do not repeat a tool call that has already returned.';
+
+interface TailMessage {
+  role?: string;
+  content?: unknown;
+}
+
+function isToolContinuation(m: TailMessage): boolean {
+  return m.role === 'user' && typeof m.content === 'string' && m.content.startsWith(TOOL_CONTINUATION_MARKER);
+}
+
+/**
+ * Guarantee the message list ends with a user message, in place.
+ *
+ * Some OpenAI-compatible providers reject a request whose tail is
+ * assistant(toolCalls) + tool with no trailing user message (400 "No user query
+ * found in messages"). The core's own ensureUserInContext() runs only inside
+ * compression paths, which short-circuit below the token threshold, so a
+ * multi-tool turn's 2nd+ LLM call reaches the provider with exactly that shape.
+ *
+ * Appending a synthetic continuation satisfies those providers without touching
+ * history. Relocating the real user turn does not: hoisting the original request
+ * to the tail makes it read as the newest message, so the model answers it again
+ * — same tool call, fresh tool_call_id, identical arguments, once per tool round,
+ * regardless of what the tool returned. That version also removed the *first*
+ * user message via findIndex, deleting an unrelated earlier turn.
+ *
+ * Any continuation from a previous round is dropped first so exactly one is ever
+ * present; the list never grows across a long turn.
+ */
+export function ensureTrailingUserMessage(messages: TailMessage[]): void {
+  if (!Array.isArray(messages) || messages.length === 0) return;
+  if (messages[messages.length - 1].role === 'user') return;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isToolContinuation(messages[i])) messages.splice(i, 1);
+  }
+  messages.push({ role: 'user', content: TOOL_CONTINUATION_TEXT });
+}
+
+/**
  * A tool call "worked" if it returned content and did not flag an error. Used
  * to decide whether a tool earned a relevance prior — a tool that failed three
  * times in a row should not be kept alive by the usage-memory term.
@@ -605,23 +654,11 @@ export class AgentService {
           // tail of assistant(toolCalls)/tool and NO trailing user message. Some
           // OpenAI-compatible providers reject exactly that with
           // 400 "No user query found in messages." Mirror the core guard against
-          // the LIVE message list so every call ends with the rightmost user
-          // message (a plain append would duplicate it each tool iteration).
-          const liveMsgs = (ctx as unknown as { messages: Array<{ role?: string }> }).messages;
-          if (liveMsgs && liveMsgs.length > 0 && liveMsgs[liveMsgs.length - 1].role !== 'user') {
-            let rightmostUser: { role?: string } | undefined;
-            for (let i = liveMsgs.length - 1; i >= 0; i--) {
-              if (liveMsgs[i].role === 'user') {
-                rightmostUser = liveMsgs[i];
-                break;
-              }
-            }
-            if (rightmostUser) {
-              const userIdx = liveMsgs.findIndex((m) => m.role === 'user');
-              if (userIdx >= 0) liveMsgs.splice(userIdx, 1);
-              liveMsgs.push(rightmostUser);
-            }
-          }
+          // the LIVE message list; see ensureTrailingUserMessage for why this
+          // appends a synthetic continuation instead of relocating the real one.
+          ensureTrailingUserMessage(
+            (ctx as unknown as { messages: TailMessage[] }).messages,
+          );
 
           // --- Project directory injection (existing) ---
           const meta = this.getSessionMetadata(sid);
