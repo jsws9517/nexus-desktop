@@ -427,3 +427,102 @@ test('desktop ESSENTIAL_TOOLS covers every name in the core essentialTools list'
     `core essentialTools not mirrored in ESSENTIAL_TOOLS (they would become hideable): ${missing.join(', ')}`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Coverage of the core's own builtins
+// ---------------------------------------------------------------------------
+
+const CORE_SRC = join(__dirname, '..', 'node_modules', 'nexus-coder', 'dist', 'src');
+const { BUILTIN_TOOLS } = await import(pathToFileURL(join(CORE_SRC, 'mcp', 'builtin-tools.js')));
+
+/**
+ * Core builtins we deliberately leave unrouted.
+ *
+ * `add_inline_eval_whitelist` is an unattended-mode security escape hatch: it
+ * widens what may run without a permission prompt. Keeping it out of every
+ * route table is the safer default, so it must be named here rather than left to
+ * chance.
+ */
+const UNROUTED_BY_DESIGN = new Map([
+  ['add_inline_eval_whitelist', 'security escape hatch — must not be reachable by prompt wording'],
+]);
+
+test('every core builtin is pinned, routed, or explicitly unrouted by design', () => {
+  // The failure this guards: a core-owned tool ships with an English-only
+  // description, is absent from ESSENTIAL_TOOLS, and has no routing entry — so a
+  // Chinese prompt scores it 0 and the model is never offered it. `acp_route` hit
+  // exactly that and named-agent delegation became silently unusable.
+  //
+  // Requiring an explicit decision per tool means a new core builtin cannot slip
+  // through unrouted: this test goes red and the author must pin it, route it, or
+  // justify leaving it dark.
+  const unrouted = BUILTIN_TOOLS.filter((t) => {
+    if (ESSENTIAL_TOOLS.has(t.name)) return false;
+    if (TOOL_ROUTING[t.name]?.keywords?.length) return false;
+    return !UNROUTED_BY_DESIGN.has(t.name);
+  }).map((t) => t.name);
+
+  assert.deepEqual(
+    unrouted,
+    [],
+    `core builtins with no keywords and not pinned — invisible on a CJK prompt: ${unrouted.join(', ')}. ` +
+      `Add keywords to DESKTOP_ROUTING in src/tools/routing.ts, pin it in ESSENTIAL_TOOLS, ` +
+      `or add it to UNROUTED_BY_DESIGN with a reason.`,
+  );
+});
+
+test('UNROUTED_BY_DESIGN only names tools that exist', () => {
+  // A stale entry would make the coverage test above pass for a tool that no
+  // longer ships, so the exclusion list has to be pruned alongside the core.
+  const known = new Set(BUILTIN_TOOLS.map((t) => t.name));
+  const stale = [...UNROUTED_BY_DESIGN.keys()].filter((n) => !known.has(n));
+  assert.deepEqual(stale, [], `UNROUTED_BY_DESIGN names tools the core no longer ships: ${stale.join(', ')}`);
+});
+
+test('acp_route is routed so named-agent delegation survives a Chinese prompt', () => {
+  const route = TOOL_ROUTING.acp_route;
+  assert.ok(route, 'acp_route needs a routing entry');
+  assert.equal(route.group, 'acp');
+  assert.ok(route.keywords.some((k) => /[一-鿿]/.test(k)), 'needs CJK trigger words');
+  assert.ok(route.keywords.includes('claude'), 'needs the agent names users actually type');
+});
+
+test('a Chinese delegation request surfaces acp_route from a realistic pool', () => {
+  // Regression test for the reported bug, end to end through the real selector.
+  // The pool is shaped like the live one (core builtins + desktop defs + MCP
+  // stand-ins) so this exercises ranking, not just the declaration.
+  //
+  // Deliberately no "unrouted variant must be dropped" precondition: weak bigram
+  // similarity against the English description can keep a zero-keyword tool alive
+  // by luck of the pool shape, so that assertion measured the fixture rather than
+  // the behaviour. What must hold deterministically is that a delegation request
+  // carrying an agent name routes on the keyword and survives selection.
+  const mcpStand = Array.from({ length: 20 }, (_, i) => def(`pyright_${i}`, {
+    server: 'mcp:pyright',
+    group: 'meta',
+    keywords: ['python', '类型', '诊断'],
+  }));
+  const pool = [...BUILTIN_TOOLS, ...ALL_TOOL_DEFS, ...mcpStand];
+  assert.ok(pool.length > 40, `pool must be realistically large, got ${pool.length}`);
+
+  for (const input of ['委派给claude', '派发任务到指定的agent', '把这个架构分析交给 claude 去做']) {
+    const out = selectTools(pool, { input, used: new Set(), respectNarrowing: false });
+    assert.ok(
+      out.some((t) => t.name === 'acp_route'),
+      `acp_route must survive a Chinese delegation request: "${input}"`,
+    );
+  }
+});
+
+test('a non-delegation prompt does not drag acp_route in', () => {
+  // Keywords must not turn the tool into a permanent resident — that would spend
+  // tokens on every round and invite misroutes.
+  const mcpStand = Array.from({ length: 20 }, (_, i) => def(`pyright_${i}`, {
+    server: 'mcp:pyright',
+    group: 'meta',
+    keywords: ['python', '类型', '诊断'],
+  }));
+  const pool = [...BUILTIN_TOOLS, ...ALL_TOOL_DEFS, ...mcpStand];
+  const out = selectTools(pool, { input: 'git 提交一下', used: new Set(), respectNarrowing: false });
+  assert.equal(out.some((t) => t.name === 'acp_route'), false);
+});

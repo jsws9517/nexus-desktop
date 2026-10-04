@@ -2,10 +2,11 @@
  * Routing metadata for every tool the desktop exposes.
  *
  * Kept as one table rather than inline on each `ToolDef` because the tools come
- * from three places the desktop does not own: this repo's `src/tools/*`, the
+ * from four places the desktop does not own: this repo's `src/tools/*`, the
  * main-process injected families (src/main/git-internal.ts, memory-kg.ts, …),
- * and whatever external MCP servers advertise. Annotating by name covers all
- * three, and keeps the selector's behaviour reviewable in a single file.
+ * whatever external MCP servers advertise, and the core's own `BUILTIN_TOOLS`
+ * (nexus-coder/src/mcp/builtin-tools.ts). Annotating by name covers all four,
+ * and keeps the selector's behaviour reviewable in a single file.
  *
  * `keywords` are the important field. The core's own filter matches raw input
  * against `name + description`, which is English-only — so for a Chinese prompt
@@ -13,6 +14,13 @@
  * script. Every entry below therefore carries Chinese trigger words alongside the
  * English ones. A tool with no `keywords` still scores via bigram similarity
  * (src/tools/tool-relevance.ts), just more weakly.
+ *
+ * The core-owned builtins need entries here for exactly that reason: they ship
+ * with English-only descriptions and no keywords, and they are not in
+ * ESSENTIAL_TOOLS either, so the scorer drops them on any CJK prompt. `acp_route`
+ * disappearing that way is what made named-agent delegation unusable.
+ * test/tool-relevance.test.mjs enforces that every core builtin is either pinned,
+ * routed, or explicitly listed as unrouted-by-design.
  */
 
 import type { ToolDef, ToolGroup } from './types.js';
@@ -105,6 +113,33 @@ const DESKTOP_ROUTING: Record<string, ToolRouting> = {
 
   // acp
   acp_router: { group: 'acp', keywords: ['acp', 'role', '角色', '代理角色', 'delegate', '委派', '派给'] },
+  // The core's named-agent delegation tool. Peer of acp_router above: acp_route
+  // hands the prompt to a spawned ACP agent (claude/kimi/qwen/opencode), while
+  // acp_router only resolves a local role config. Both must be reachable or the
+  // model silently falls back to spawn_subagent.
+  acp_route: {
+    group: 'acp',
+    keywords: [
+      'acp', 'delegate', 'handoff', 'route',
+      '委派', '派发', '派给', '路由', '交给', '转交', '外包',
+      '子agent', '子代理', '外部agent',
+      'claude', 'kimi', 'qwen', 'opencode',
+    ],
+  },
+
+  // core builtins: file operations the desktop's own filesystem family does not
+  // cover (that family only adds read_media_file / list_directory_with_sizes /
+  // list_allowed_directories). Unrouted, they vanish on a Chinese prompt.
+  create_directory: { group: 'fs', keywords: ['mkdir', '创建目录', '新建目录', '建目录', '建文件夹', '文件夹'] },
+  move_file: { group: 'fs', keywords: ['move', 'rename', '移动', '重命名', '改名', '挪走'] },
+  copy_file: { group: 'fs', keywords: ['copy', '复制', '拷贝', '副本'] },
+  delete_file: { group: 'fs', keywords: ['delete', 'remove', '删除', '删掉', '移除文件'] },
+  fetch_url: { group: 'web', keywords: ['fetch', 'url', '网页', '抓取', '网址', '抓取网页', 'http'] },
+
+  // core builtins: skill authoring
+  create_skill: { group: 'meta', keywords: ['skill', '技能', '创建技能', '新建技能', '写技能'] },
+  validate_skill: { group: 'meta', keywords: ['skill', 'validate', '校验技能', '验证技能', '检查技能'] },
+  fix_skill_smart: { group: 'meta', keywords: ['skill', 'fix', '修复技能', '修技能', '自动修复'] },
 
   // data artifacts
   'sheet.read': { group: 'data', readOnly: true, keywords: ['excel', 'xlsx', 'csv', '表格', '电子表格', 'sheet', 'spreadsheet', '数据表'] },
