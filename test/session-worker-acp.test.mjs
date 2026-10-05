@@ -15,13 +15,29 @@ const { WORKER_METHODS } = await import(pathToFileURL(join(repoRoot, 'dist', 'sh
 function fakeAgent(agentIds, calls) {
   return {
     config: { getAcpConfig: () => ({ agents: agentIds.map((id) => ({ id })) }) },
-    acp: {
-      async start(cfg) {
-        calls.push(cfg.agents.length);
-      },
-      listAgents: () => agentIds.map((id) => ({ id })),
-      isEnabled: () => true,
+    /**
+     * The single ACP entry point. Note it carries NO `acp` field of its own:
+     * initAcp must go through the core's entry point, which is what registers
+     * *and* attaches the engines watcher. Reaching for `agent.acp.start()`
+     * directly is exactly the bug this guards — a session worker would get a
+     * one-shot snapshot and never see a later engines.json edit.
+     */
+    ensureAcpRegistered: async function () {
+      calls.push({ via: 'ensureAcpRegistered', agents: agentIds.length });
+      this.acp = {
+        start: async () => { calls.push({ via: 'acp.start' }); },
+        listAgents: () => agentIds.map((id) => ({ id })),
+        isEnabled: () => true,
+      };
+      return agentIds;
     },
+    get acp() {
+      return this._acp;
+    },
+    set acp(v) {
+      this._acp = v;
+    },
+    _acp: undefined,
   };
 }
 
@@ -46,7 +62,11 @@ test('initAcp registers the ACP agents and returns their ids', async () => {
   const { svc, calls } = makeService(['qwen', 'opencode', 'claude', 'kimi']);
   const ids = await svc.initAcp();
   assert.deepEqual(ids, ['qwen', 'opencode', 'claude', 'kimi']);
-  assert.deepEqual(calls, [4], 'acp.start() must receive the resolved engine agents');
+  assert.deepEqual(
+    calls,
+    [{ via: 'ensureAcpRegistered', agents: 4 }],
+    'initAcp must go through the core entry point, which registers and watches',
+  );
 });
 
 test('initAcp does not require a full init', async () => {
@@ -54,24 +74,41 @@ test('initAcp does not require a full init', async () => {
   // cost session workers deliberately avoid, so initAcp may only touch the ACP
   // protocol. Assert it never reaches for the full core init.
   const src = readFileSync(join(dist, 'agent', 'service.js'), 'utf8');
-  const body = src.match(/async initAcp\(\)\s*\{[\s\S]*?\n    \}/);
+  const body = src.match(/async initAcp\(\)\s*\{[\s\S]*?\n {4}\}/);
   assert.ok(body, 'could not locate initAcp in the built output');
-  assert.ok(!/\bagent\.init\(/.test(body[0]), 'initAcp must not call the core Agent.init()');
-  assert.ok(!/\bskills\b/.test(body[0]), 'initAcp must not touch the skills registry');
+  // Strip line comments first: the method explains the old failure in prose, and
+  // that prose mentions acp.start(), which the assertion below forbids.
+  const code = body[0]
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, ''))
+    .join('\n');
+  assert.ok(!/\bagent\.init\(/.test(code), 'initAcp must not call the core Agent.init()');
+  assert.ok(!/\bskills\b/.test(code), 'initAcp must not touch the skills registry');
+  assert.ok(
+    /ensureAcpRegistered\(/.test(code),
+    'initAcp must use the core entry point that also attaches the engines watcher',
+  );
+  assert.ok(
+    !/acp\.start\(/.test(code),
+    'calling acp.start() directly registers a one-shot snapshot with no watcher',
+  );
 });
 
 test('initAcp tolerates an absent ACP config instead of throwing', async () => {
   // A worker with acp.enabled=false has no resolved agents. Delegation is simply
   // unavailable there; that must not take the tab down.
   const svc = Object.create(AgentService.prototype);
-  let listed = 0;
+  let entries = 0;
   svc.agent = {
     config: { getAcpConfig: () => null },
-    acp: { start: async () => {}, listAgents: () => { listed += 1; return []; }, isEnabled: () => false },
+    ensureAcpRegistered: async () => {
+      entries += 1;
+      return [];
+    },
   };
   svc.earlyInit = async () => {};
   assert.deepEqual(await svc.initAcp(), []);
-  assert.equal(listed, 1);
+  assert.equal(entries, 1);
 });
 
 // ---------------------------------------------------------------------------

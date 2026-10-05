@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 /**
- * Install / verify the tracked ACP engine registry.
+ * Track the ACP engine registry, and check the live file against it.
  *
- * `config/engines.json` in this repo is the canonical copy. The core reads the
- * live file from `$NEXUS_CONFIG_DIR` or `~/.nexus/engines.json`
- * (nexus-coder/src/config/engines.ts `enginesFilePath`), so the tracked copy is
- * useless on its own — this script is the bridge. Keeping the canonical copy in
- * git is what stops the live file from being an unrecoverable local artifact:
- * engines decide which ACP agents `acp_route` can delegate to, and a stray edit
- * there is invisible to `git status` in any project.
+ * What `config/engines.json` is: a version-controlled record of the engine
+ * definitions, and the reference `test/engines-config.test.mjs` diffs the live
+ * file against. That drift test is what gives it teeth — it runs inside
+ * `npm run test:unit`, so an unrecorded edit to `~/.nexus/engines.json` fails the
+ * suite.
  *
- * The project constitution (§3) keeps user-level state in the global `~/.nexus/`,
- * so the live file stays where the core expects it and only the source of truth
- * is tracked.
+ * What it is NOT: the runtime source of truth. Nothing in `src/` reads it, and
+ * no build step installs it — the core loads `$NEXUS_CONFIG_DIR/engines.json`
+ * (default `~/.nexus/engines.json`) directly. Editing the tracked copy therefore
+ * changes nothing until you install it here. That is deliberate: auto-installing
+ * on every build would overwrite a live registry, which is where hand-tuned
+ * routing profiles (latency / cost / strengths) live.
  *
  *   node scripts/sync-engines.mjs           install repo -> live (backs up first)
  *   node scripts/sync-engines.mjs --check   report drift, exit 1 if out of sync

@@ -973,9 +973,12 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     await this.earlyInit();
     const agent = this.agent;
     if (!agent) throw new Error('Agent not initialized');
-    const acpConfig = agent.config.getAcpConfig();
-    if (acpConfig) await agent.acp.start(acpConfig);
-    const ids = agent.acp.listAgents().map((a) => a.id);
+    // ensureAcpRegistered, not a bare acp.start(): the core also attaches the
+    // engines.json watcher there. Calling start() directly registered a one-shot
+    // snapshot, so a session worker never saw an engine enabled after it came up
+    // — `engines.json` said `claude` was enabled, the binary was on PATH, and
+    // every acp_route in every tab still failed with "Agent claude not found".
+    const ids = await agent.ensureAcpRegistered();
     logger.info(
       `[acp-init] worker registered=${ids.length} agents=${ids.join(',') || '(none)'}`,
     );
