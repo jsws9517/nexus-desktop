@@ -9,7 +9,8 @@
       "code",
       "text"
     ],
-    "enabled": true
+    "enabled": true,
+    "sessionMode": "acceptEdits"
   },
   "kimi": {
     "command": "kimi",
@@ -35,7 +36,8 @@
         "quick-answer"
       ]
     },
-    "directMode": false
+    "directMode": false,
+    "sessionMode": "yolo"
   },
   "qwen": {
     "command": "qwen",
@@ -58,7 +60,8 @@
       ],
       "maxComplexity": "medium"
     },
-    "directMode": false
+    "directMode": false,
+    "sessionMode": "yolo"
   },
   "opencode": {
     "command": "opencode",
@@ -84,6 +87,7 @@
         "code-gen"
       ]
     },
-    "directMode": false
+    "directMode": false,
+    "sessionMode": "build"
   }
 }
