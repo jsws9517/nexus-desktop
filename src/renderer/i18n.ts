@@ -378,6 +378,14 @@ export function fmtNum(n: number): string {
   return n.toLocaleString(uiLang === 'zh-CN' ? 'zh-CN' : 'en-US');
 }
 
+const applyListeners = new Set<() => void>();
+
+/** Re-run after every applyI18n() so state-dependent labels (e.g. sidebar fold
+ *  hints that change with the collapsed class) survive language switches. */
+export function onI18nApplied(fn: () => void): void {
+  applyListeners.add(fn);
+}
+
 export function applyI18n(): void {
   document.documentElement.lang = uiLang;
   document.title = 'Nexus Desktop';
@@ -390,6 +398,9 @@ export function applyI18n(): void {
   document.querySelectorAll<HTMLInputElement>('[data-i18n-placeholder]').forEach((el) => {
     el.placeholder = t(el.dataset.i18nPlaceholder!);
   });
+  for (const fn of applyListeners) {
+    try { fn(); } catch { /* listener errors must not break i18n apply */ }
+  }
 }
 
 export async function loadLanguage(): Promise<void> {

@@ -3,7 +3,7 @@
 import { initFx } from './fx.js';
 import { isModelUnavailableError, RemediationLedger } from './model-remediation.js';
 import { isWorkerBlockText, PROVIDER_CATEGORIES, stripProtocolXml } from '../shared/constants.js';
-import { t, fmtNum, getUiLang, loadLanguage, localizeError } from './i18n.js';
+import { t, fmtNum, getUiLang, loadLanguage, localizeError, onI18nApplied } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
 import { TaskStatusCard, initTaskStatusCardTooltips } from './components/TaskStatusCard.js';
@@ -5641,6 +5641,7 @@ collapseBtn.addEventListener('click', () => {
   const isCollapsed = sidebarEl.classList.toggle('collapsed');
   saveSidebarState(isCollapsed);
   collapseBtn.textContent = isCollapsed ? '▶' : '◀';
+  syncCollapseHints();
 });
 loadSidebarState();
 collapseBtn.textContent = sidebarEl.classList.contains('collapsed') ? '▶' : '◀';
@@ -5664,9 +5665,18 @@ rightCollapseBtn.addEventListener('click', () => {
   const isCollapsed = rightSidebarEl.classList.toggle('collapsed');
   saveRightSidebarState(isCollapsed);
   rightCollapseBtn.textContent = isCollapsed ? '◀' : '▶';
+  syncCollapseHints();
 });
 loadRightSidebarState();
 rightCollapseBtn.textContent = rightSidebarEl.classList.contains('collapsed') ? '◀' : '▶';
+
+// Hint = what a click does next: "unfold" while folded, "fold" while open.
+function syncCollapseHints(): void {
+  collapseBtn.title = t(sidebarEl.classList.contains('collapsed') ? 'expandSidebar' : 'collapseSidebar');
+  rightCollapseBtn.title = t(rightSidebarEl.classList.contains('collapsed') ? 'expandSidebar' : 'collapseSidebar');
+}
+syncCollapseHints();
+onI18nApplied(syncCollapseHints);
 pagerPrevEl.addEventListener('click', () => {
   if (sessionPage <= 0) return;
   sessionPage--;
