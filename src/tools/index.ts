@@ -16,6 +16,7 @@ import { AGENTS_TOOLS, AGENTS_TOOL_DEFS, callAgentsTool } from './agents.js';
 import { ACP_ROUTER_TOOLS, ACP_ROUTER_TOOL_DEFS, callAcpRouterTool } from './acp-router.js';
 import { createSkillsDisclosureRegistry, SKILLS_DISCLOSURE_TOOLS } from './skills-disclosure.js';
 import { createRefreshToolsRegistry, REFRESH_TOOLS } from './refresh-tools.js';
+import { ATTACHMENT_RAG_TOOL_DEFS, ATTACHMENT_RAG_TOOLS, callAttachmentRagTool } from './attachment-rag.js';
 import { applyRouting } from './routing.js';
 import { SKILL_REGISTRIES } from '../skills/index.js';
 
@@ -29,6 +30,7 @@ export { ACP_ROUTER_TOOLS, ACP_ROUTER_TOOL_DEFS, callAcpRouterTool } from './acp
 export { SKILL_REGISTRIES } from '../skills/index.js';
 export { SHEET_TOOLS, SHEET_TOOL_DEFS, callSheetTool } from '../skills/sheet.js';
 export { CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } from '../skills/chart.js';
+export { ATTACHMENT_RAG_TOOLS, ATTACHMENT_RAG_TOOL_DEFS, callAttachmentRagTool } from './attachment-rag.js';
 export { skillHostFromAgent, skillToolNames } from './skills-disclosure.js';
 export { ToolRefreshQueue, refreshToolsResult } from './refresh-tools.js';
 export { selectTools, ESSENTIAL_TOOLS } from './tool-relevance.js';
@@ -45,6 +47,7 @@ export const TOOL_REGISTRIES: ToolRegistry[] = [
   { id: 'sqlite', defs: SQLITE_TOOL_DEFS, call: callSqliteTool },
   { id: 'agents', defs: AGENTS_TOOL_DEFS, call: callAgentsTool },
   { id: 'acp-router', defs: ACP_ROUTER_TOOL_DEFS, call: callAcpRouterTool },
+  { id: 'attachment-rag', defs: ATTACHMENT_RAG_TOOL_DEFS, call: callAttachmentRagTool },
   ...SKILL_REGISTRIES,
   createSkillsDisclosureRegistry(),
   createRefreshToolsRegistry(),

@@ -1005,6 +1005,26 @@ body {
 }
 .chip-remove:hover { background: color-mix(in srgb, var(--danger) 25%, transparent); color: var(--danger); }
 
+/* One-time attachment RAG: budget hint + clear-all, rendered inline on the
+   same chip row as the file chips. */
+.rag-budget-hint {
+  background: color-mix(in srgb, var(--warn, var(--accent)) 12%, var(--bg-input));
+  border-style: dashed;
+  color: var(--text-dim);
+  cursor: default;
+}
+.rag-clear-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.rag-clear-btn:hover { border-color: var(--danger); color: var(--danger); }
+
 /* ---- Input ---- */
 #input-area .btn.primary {
   background: var(--accent-dim);

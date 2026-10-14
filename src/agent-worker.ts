@@ -24,6 +24,11 @@ type WorkerRequest =
   | { id: number; method: 'getSlashLog'; params: { sessionId: string } }
   | { id: number; method: 'getSlashLogPath'; params: { sessionId: string } }
   | { id: number; method: 'deleteSession'; params: { id: string } }
+  | { id: number; method: 'ragIngest'; params: { sessionId: string; paths: string[] } }
+  | { id: number; method: 'ragRemove'; params: { sessionId: string; path: string } }
+  | { id: number; method: 'ragClear'; params: { sessionId: string } }
+  | { id: number; method: 'ragStatus'; params: { sessionId: string } }
+  | { id: number; method: 'ragCapabilities' }
   | { id: number; method: 'renameSession'; params: { id: string; name: string } }
   | { id: number; method: 'renameProject'; params: { newName: string } }
   | { id: number; method: 'getConfig' }
@@ -183,6 +188,26 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   chat: async (req: WorkerRequest & { method: 'chat' }) => {
     await service.chat(req.params.input);
   },
+  // One-time attachment RAG: extract + index the picked files into the session's
+  // transient store. `paths` is already validated as a string[] by the shared
+  // spec; the per-file allowlist decision lives in the module.
+  ragIngest: (req: WorkerRequest & { method: 'ragIngest' }) => {
+    const paths = Array.isArray(req.params.paths)
+      ? (req.params.paths as unknown[]).filter((p): p is string => typeof p === 'string' && p.length > 0)
+      : [];
+    const results = service.ingestAttachments(req.params.sessionId, paths);
+    return { results };
+  },
+  ragRemove: (req: WorkerRequest & { method: 'ragRemove' }) => {
+    service.removeAttachment(req.params.sessionId, req.params.path);
+    return { ok: true };
+  },
+  ragClear: (req: WorkerRequest & { method: 'ragClear' }) => {
+    service.clearAttachmentStore(req.params.sessionId);
+    return { ok: true };
+  },
+  ragStatus: (req: WorkerRequest & { method: 'ragStatus' }) => service.attachmentStoreStatus(req.params.sessionId),
+  ragCapabilities: () => service.ragCapabilities(),
   steer: (req: WorkerRequest & { method: 'steer' }) => service.steer(req.params.input, req.params.rollback === true),
   restore: async (req: WorkerRequest & { method: 'restore' }) => {
     const res = await service.restore(req.params.backupPath);

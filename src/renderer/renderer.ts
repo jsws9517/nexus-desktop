@@ -270,6 +270,20 @@ declare global {
       setSessionMetadata(sessionId: string, metadata: Record<string, unknown>): Promise<void>;
       openFolder(): Promise<{ canceled: boolean; path?: string }>;
       openFile(): Promise<{ canceled: boolean; paths: string[] }>;
+      // One-time attachment RAG (separate from the `+` attach flow above).
+      ragIngest(sessionId: string, paths: string[]): Promise<{
+        results: Array<{ path: string; name: string; ok: boolean; reason?: string; format?: string; chunkCount?: number; message?: string }>;
+      }>;
+      ragRemove(sessionId: string, path: string): Promise<{ ok: boolean }>;
+      ragClear(sessionId: string): Promise<{ ok: boolean }>;
+      ragStatus(sessionId: string): Promise<{
+        count: number;
+        chunks: number;
+        autoInject: boolean;
+        attachments: Array<{ ref: string; path: string; name: string; size: number; ext: string; chunkCount: number; ingestedAt: string }>;
+      }>;
+      ragCapabilities(): Promise<{ allowlist: string[]; supported: string[]; unsupported: string[] }>;
+      ragPickFile(): Promise<{ canceled: boolean; paths: string[] }>;
       revealFile(path: string): Promise<{ ok: boolean }>;
       getFileInfos(paths: string[]): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>>;
       listDirectory(root: string, path: string): Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }>;
@@ -537,6 +551,21 @@ const busyIndicator = $('#busy-indicator');
 const inputStatus = $('#input-status');
 const attachmentsEl = $('#attachments');
 const attachBtn = $('#btn-attach');
+// One-time attachment RAG: its own state + row, fully separate from `+`.
+const ragAttachmentsEl = $('#rag-attachments');
+const ragAttachBtn = $('#btn-rag');
+interface RagAttachment { path: string; name: string; size: number; chunkCount: number }
+let ragAttachments: RagAttachment[] = [];
+let ragAutoInject = true;
+
+/** Human-readable ingest failure; PDF/Office say so instead of "unsupported". */
+function ragReasonLabel(reason?: string): string {
+  if (reason === 'unsupported') return t('ragReasonUnsupported');
+  if (reason === 'binary') return t('ragReasonBinary');
+  if (reason === 'empty') return t('ragReasonEmpty');
+  if (reason === 'not-allowed') return t('ragReasonNotAllowed');
+  return t('ragReasonError');
+}
 const mcpToggle = $('#mcp-toggle input') as HTMLInputElement;
 const mcpStatusEl = $('#mcp-status');
 const mcpBoxEl = $('#mcp-box');
@@ -2180,6 +2209,137 @@ async function attachFiles(paths: string[]): Promise<void> {
   renderAttachments();
 }
 
+// ---------- one-time attachment RAG ----------
+// Independent from the common `+` attach flow above: these files are never
+// turned into `@path` text in the prompt. The worker extracts and indexes them
+// into a per-session transient store, and retrieval happens on send.
+
+function ragSessionId(): string {
+  return currentSessionId || '';
+}
+
+function renderRagAttachments(): void {
+  if (!ragAttachmentsEl) return;
+  ragAttachmentsEl.innerHTML = '';
+  ragAttachmentsEl.classList.toggle('hidden', ragAttachments.length === 0);
+  for (const a of ragAttachments) {
+    const chip = document.createElement('span');
+    chip.className = 'attach-chip';
+    const name = document.createElement('span');
+    name.className = 'attach-name';
+    name.textContent = `◈ ${a.name}`;
+    name.title = a.path;
+    chip.appendChild(name);
+    const size = document.createElement('span');
+    size.className = 'attach-size';
+    size.textContent = a.chunkCount
+      ? `${fmtFileSize(a.size)} · ${a.chunkCount}块`
+      : fmtFileSize(a.size);
+    chip.appendChild(size);
+    const rm = document.createElement('button');
+    rm.className = 'chip-remove';
+    rm.textContent = '✕';
+    rm.title = t('ragRemove');
+    rm.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void removeRagAttachment(a.path);
+    });
+    chip.appendChild(rm);
+    chip.addEventListener('click', () => {
+      void window.nexusDesktop.revealFile(a.path);
+    });
+    chip.title = a.path;
+    ragAttachmentsEl.appendChild(chip);
+  }
+
+  // Over the auto-inject budget the model can no longer be handed passages with
+  // the message — it has to call attachments_search. Say so, or the user reads
+  // an unexplained retrieval miss as a broken feature.
+  if (!ragAutoInject) {
+    const hint = document.createElement('span');
+    hint.className = 'attach-chip rag-budget-hint';
+    hint.textContent = t('ragAutoInjectOff');
+    hint.title = t('ragAutoInjectOffTitle');
+    ragAttachmentsEl.appendChild(hint);
+  }
+
+  if (ragAttachments.length > 1) {
+    const clear = document.createElement('button');
+    clear.className = 'rag-clear-btn';
+    clear.type = 'button';
+    clear.textContent = t('ragClear');
+    clear.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void clearRagAttachments();
+    });
+    ragAttachmentsEl.appendChild(clear);
+  }
+}
+
+async function refreshRagAttachments(): Promise<void> {
+  const sid = ragSessionId();
+  if (!sid) {
+    ragAttachments = [];
+    ragAutoInject = true;
+    renderRagAttachments();
+    return;
+  }
+  try {
+    const st = await window.nexusDesktop.ragStatus(sid);
+    ragAttachments = (st.attachments ?? []).map((m: {
+      path: string; name: string; size: number; chunkCount: number;
+    }) => ({ path: m.path, name: m.name, size: m.size, chunkCount: m.chunkCount ?? 0 }));
+    ragAutoInject = st.autoInject !== false;
+  } catch {
+    ragAttachments = [];
+    ragAutoInject = true;
+  }
+  renderRagAttachments();
+}
+
+async function clearRagAttachments(): Promise<void> {
+  const sid = ragSessionId();
+  if (!sid || ragAttachments.length === 0) return;
+  if (!(await confirmDialog(t('ragClearConfirm')))) return;
+  try {
+    await window.nexusDesktop.ragClear(sid);
+  } catch {}
+  await refreshRagAttachments();
+}
+
+async function removeRagAttachment(path: string): Promise<void> {
+  const sid = ragSessionId();
+  if (!sid) return;
+  try {
+    await window.nexusDesktop.ragRemove(sid, path);
+  } catch {}
+  await refreshRagAttachments();
+}
+
+async function addRagFiles(): Promise<void> {
+  const sid = ragSessionId();
+  if (!sid) return;
+  const res = await window.nexusDesktop.ragPickFile();
+  if (res.canceled || !res.paths.length) return;
+  try {
+    const out = await window.nexusDesktop.ragIngest(sid, res.paths);
+    await refreshRagAttachments();
+    const failed = (out.results ?? []).filter((r: { ok: boolean; name: string }) => !r.ok);
+    if (failed.length) {
+      const detail = failed
+        .map((r: { name: string; reason?: string }) => `${r.name}(${ragReasonLabel(r.reason)})`)
+        .join(', ');
+      showToast(`${t('ragIngestFailed')}: ${detail}`);
+    }
+  } catch (err) {
+    showToast(`${t('ragIngestFailed')}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+ragAttachBtn?.addEventListener('click', () => {
+  void addRagFiles();
+});
+
 // ---------- sessions ----------
 // Electron renderers don't implement window.prompt/confirm; provide modal ones.
 function confirmDialog(msg: string): Promise<boolean> {
@@ -2992,6 +3152,8 @@ async function switchTab(sessionId: string): Promise<void> {
   // Scoped sidebar pages (e.g. Sub-Agents) re-bind to the new session now —
   // no need to wait for the next agent event.
   notifyActiveSessionChanged(sessionId);
+  // The one-time RAG store is per-session: rebind the attachment chips.
+  void refreshRagAttachments();
   hideChatEmpty();
   resetViewState();
   try {

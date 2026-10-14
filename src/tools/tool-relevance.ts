@@ -106,6 +106,13 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
   // meta: the model must always be able to widen its own toolset
   'refresh_tools',
   'skills_index', 'skills_search', 'skills_load',
+  // One-time attachment RAG: the ONLY way to reach the current session's
+  // indexed attachments. Relevance scoring drops it even for prompts that say
+  // "附件" outright (the corpus of Chinese triggers is far smaller than the
+  // pool), and with the Hybrid auto-inject capped it is the retrieval path for
+  // every larger set. It is inert (returns "nothing indexed") when the session
+  // has no attachments, so pinning costs nothing.
+  'attachments_search',
 ]);
 
 export interface ScoreOptions {
@@ -223,6 +230,17 @@ export function selectTools<T extends ToolDef>(candidates: T[], opts: ScoreOptio
     }
   }
 
-  if (out.length > MAX_KEPT) out = out.slice(0, MAX_KEPT);
+  if (out.length > MAX_KEPT) {
+    // The fail-open contract says pinned tools always survive — so the cap is
+    // applied to the *unpinned tail* only. Slicing the kept list blindly let a
+    // low-scoring essential (e.g. attachments_search on a prompt that never
+    // repeats its keywords) get truncated away, which is exactly the case the
+    // pin exists to protect.
+    const pinned = (d: T) =>
+      ESSENTIAL_TOOLS.has(d.name) || opts.used.has(d.name) || opts.force?.has(d.name) === true;
+    const kept = out.filter((d) => pinned(d));
+    const tail = out.filter((d) => !pinned(d));
+    out = [...kept, ...tail.slice(0, Math.max(0, MAX_KEPT - kept.length))];
+  }
   return out;
 }

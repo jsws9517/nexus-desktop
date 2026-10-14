@@ -13,7 +13,8 @@ export type FieldSpec =
   | { kind: 'number' }
   | { kind: 'object' }
   | { kind: 'enum'; values: readonly string[] }
-  | { kind: 'messages' };
+  | { kind: 'messages' }
+  | { kind: 'paths' };
 
 interface MethodSpec {
   fields: Record<string, FieldSpec>;
@@ -27,6 +28,7 @@ const S = {
   obj: (): FieldSpec => ({ kind: 'object' }),
   en: (values: readonly string[]): FieldSpec => ({ kind: 'enum', values }),
   msg: (): FieldSpec => ({ kind: 'messages' }),
+  paths: (): FieldSpec => ({ kind: 'paths' }),
 };
 
 export const PERMISSION_ANSWERS = ['y', 'a', 'n'] as const;
@@ -71,6 +73,13 @@ export const WORKER_METHODS = {
     optional: ['last', 'limit', 'offset'],
   },
   deleteSession: { fields: { id: S.str() } },
+  // One-time attachment RAG. `paths` arrives as a string[] (validated as an
+  // object — arrays pass) and is re-checked per entry in the worker.
+  ragIngest: { fields: { sessionId: S.str(), paths: S.paths() } },
+  ragRemove: { fields: { sessionId: S.str(), path: S.str(4096) } },
+  ragClear: { fields: { sessionId: S.str() } },
+  ragStatus: { fields: { sessionId: S.str() } },
+  ragCapabilities: { fields: {} },
   renameSession: { fields: { id: S.str(), name: S.str(500) } },
   renameProject: { fields: { newName: S.str(200) } },
   getConfig: { fields: {} },
@@ -136,6 +145,8 @@ function checkField(value: unknown, spec: FieldSpec, path: string): string | nul
       return typeof value === 'string' && spec.values.includes(value)
         ? null
         : `${path} must be one of [${spec.values.join(', ')}]`;
+    case 'paths':
+      return isValidPathList(value) ? null : `${path} must be an array of at most 50 path strings`;
     case 'messages': {
       if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SIDE_CHAT_MESSAGES) {
         return `${path} must be a non-empty array of at most ${MAX_SIDE_CHAT_MESSAGES} messages`;

@@ -76,7 +76,19 @@ export interface ToolContext {
   skills?: SkillHost;
   /** Queue backing `refresh_tools`, so the selector can widen the next round. */
   toolRefresh?: ToolRefreshQueue;
+  /**
+   * Read the CURRENT session's one-time RAG attachment store. Supplied by
+   * AgentService (which owns the live session). `search` returns ranked
+   * passages, `outline` the file's chunk map, `chunk` whole chunks verbatim.
+   */
+  attachmentsSearch?: (req: AttachmentSearchRequest) => ToolResult;
 }
+
+/** Request shape accepted by the `attachments_search` tool callable. */
+export type AttachmentSearchRequest =
+  | { kind: 'search'; query: string; topK: number }
+  | { kind: 'outline'; file?: string }
+  | { kind: 'chunk'; chunk: number; count: number; file?: string };
 
 /**
  * The slice of the core's SkillRegistry that the disclosure tools need. Kept

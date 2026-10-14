@@ -146,6 +146,9 @@ const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   'sheet.analyze': { group: 'data', readOnly: true, keywords: ['excel', 'xlsx', 'csv', '表格', '分析', '统计', 'analyze', '统计表格'] },
   'bi.chart': { group: 'data', readOnly: true, keywords: ['chart', '图表', '画图', '可视化', 'visualization', 'plot', '柱状图', '饼图'] },
 
+  // one-time attachment RAG (per-session store, desktop)
+  attachments_search: { group: 'fs', readOnly: true, keywords: ['attachment', 'attachments', 'rag', '附件', '附件检索', '文档检索', '检索附件', '搜索附件', '知识库附件'] },
+
   // fetch / time
   fetch: { group: 'web', readOnly: true, keywords: ['fetch', 'url', '网页', '抓取', '抓取网页', 'http'] },
   get_current_time: { group: 'meta', readOnly: true, keywords: ['time', '时间', '现在几点', '日期', 'current time'] },

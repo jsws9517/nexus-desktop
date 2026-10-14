@@ -67,6 +67,13 @@ const api = {
     ipcRenderer.invoke('nexus:setSessionMetadata', { sessionId, metadata }),
   openFolder: () => ipcRenderer.invoke('nexus:openFolder'),
   openFile: () => ipcRenderer.invoke('nexus:openFile'),
+  // One-time attachment RAG (separate from the `+` attach flow).
+  ragIngest: (sessionId: string, paths: string[]) => ipcRenderer.invoke('nexus:ragIngest', { sessionId, paths }),
+  ragRemove: (sessionId: string, path: string) => ipcRenderer.invoke('nexus:ragRemove', { sessionId, path }),
+  ragClear: (sessionId: string) => ipcRenderer.invoke('nexus:ragClear', { sessionId }),
+  ragStatus: (sessionId: string) => ipcRenderer.invoke('nexus:ragStatus', { sessionId }),
+  ragCapabilities: () => ipcRenderer.invoke('nexus:ragCapabilities'),
+  ragPickFile: () => ipcRenderer.invoke('nexus:ragPickFile'),
   revealFile: (path: string) => ipcRenderer.invoke('nexus:revealFile', path),
   getFileInfos: (paths: string[]) => ipcRenderer.invoke('nexus:getFileInfos', paths),
   listDirectory: (root: string, path: string) =>

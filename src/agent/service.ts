@@ -32,7 +32,7 @@ import {
   ToolRefreshQueue,
 } from '../tools/index.js';
 import { applyRouting } from '../tools/routing.js';
-import type { ToolDef } from '../tools/types.js';
+import type { ToolDef, ToolResult, AttachmentSearchRequest } from '../tools/types.js';
 import { loadConstitution, CONSTITUTION_MARKER, loadGlobalRules, ensureGlobalRules, GLOBAL_RULES_MARKER } from '../tools/agents.js';
 import {
   readModelCapabilities,
@@ -57,6 +57,24 @@ import {
 } from './turn-monitor.js';
 import { RepetitionMonitor } from './repetition-monitor.js';
 import { redactConfig } from './config-read.js';
+import {
+  ingestAttachments as ragIngest,
+  removeAttachment as ragRemove,
+  clearAttachmentStore as ragClear,
+  disposeAttachmentStore as ragDispose,
+  hasAttachments as ragHasAttachments,
+  withinAutoInjectBudget as ragWithinBudget,
+  search as ragSearch,
+  attachmentIndex as ragIndex,
+  attachmentOutline as ragOutline,
+  formatOutline as ragFormatOutline,
+  chunksByNumber as ragChunks,
+  ragCapabilities as ragCaps,
+  listAttachments as ragList,
+  buildContextBlock as ragContextBlock,
+  ATTACH_AUTO_INJECT_TOP_K,
+} from './attachment-rag.js';
+import type { AttachmentHit, AttachmentIngestResult, AttachmentMeta } from './attachment-rag.js';
 let sessionDbPromise: Promise<typeof import('../session-db.js')> | null = null;
 function loadSessionDb(): Promise<typeof import('../session-db.js')> {
   return (sessionDbPromise ??= import('../session-db.js'));
@@ -486,6 +504,7 @@ export class AgentService {
           getConfig: () => this.agent?.['config']?.get?.(),
           skills: skillHostFromAgent(this.agent) ?? undefined,
           toolRefresh: this.toolRefreshQueue,
+          attachmentsSearch: (req: AttachmentSearchRequest) => this.attachmentSearchResult(req),
           requestWriteApproval: async (label: string): Promise<boolean> => {
             // Mirrors the core's onPermissionRequest semantics: auto mode is
             // global allow, unattended skips the UI entirely, interactive mode
@@ -1392,7 +1411,25 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       }
     }
 
-    await this.runTurn(input);
+    // One-time attachment RAG: for a normal turn (not a slash command) search
+    // this session's transient attachment store and append the top passages.
+    // Hybrid: auto-inject only while the set is small; larger sets are left to
+    // the model via `attachments_search`. The appended block is stripped by the
+    // core before persistence (stripExpansionSuffix handles "Attachment context").
+    this.bindRagSession(sid ?? '');
+    let effectiveInput = input;
+    if (sid && !input.trim().startsWith('/') && ragHasAttachments(sid) && ragWithinBudget(sid)) {
+      const hits = ragSearch(sid, input, ATTACH_AUTO_INJECT_TOP_K);
+      if (hits.length) {
+        // The outline tells the model which chunks it did NOT receive, so a
+        // single 24-chunk file is navigable instead of just the top-6 slice.
+        const block = ragContextBlock(hits, ragOutline(sid));
+        this.onLog?.('debug', `attachment-rag: injected ${hits.length} chunk(s) from ${ragList(sid).length} attachment(s)`);
+        effectiveInput = input + block;
+      }
+    }
+
+    await this.runTurn(effectiveInput);
     // /clear wipes the in-memory context but DB rows persist; snapshot a token
     // baseline so the side-panel counter restarts from ~0 instead of continuing
     // to show the cumulative total, then tell the UI to refresh immediately.
@@ -1408,6 +1445,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         // calls setMessages with every DB row — without this deletion the clear
         // would be undone the moment the user switches tabs).
         deleteAllSessionMessages(clearedSid);
+        // The attachment RAG store is transient by design: /clear empties it too.
+        ragClear(clearedSid);
       }
     }
     // Plain /go is run by the core's own slash handling (its executePlan stamps
@@ -2524,6 +2563,110 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   async deleteSession(id: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     this.agent.deleteSession(id);
+    ragDispose(id);
+  }
+
+  /**
+   * One-time attachment RAG — index user-picked files into the session's
+   * transient store. Paths outside the configured extension allowlist are
+   * reported as `not-allowed` rather than silently accepted.
+   */
+  ingestAttachments(sessionId: string, paths: string[]): AttachmentIngestResult[] {
+    const allowlist = this.agent?.['config']?.getAttachmentExtensions?.() ?? [];
+    return ragIngest(sessionId, paths, allowlist);
+  }
+
+  removeAttachment(sessionId: string, path: string): void {
+    ragRemove(sessionId, path);
+  }
+
+  clearAttachmentStore(sessionId: string): void {
+    ragClear(sessionId);
+  }
+
+  /** Current attachment store contents (for the panel + budget display). */
+  attachmentStoreStatus(sessionId: string): {
+    count: number;
+    chunks: number;
+    autoInject: boolean;
+    attachments: AttachmentMeta[];
+  } {
+    const attachments = ragList(sessionId);
+    return {
+      count: attachments.length,
+      chunks: attachments.reduce((n, m) => n + (m.chunkCount || 0), 0),
+      autoInject: ragWithinBudget(sessionId),
+      attachments,
+    };
+  }
+
+  /**
+ * Session whose RAG store this worker's attachment tool reads.
+ *
+ * Deliberately NOT `agent.getCurrentSessionId()`: when a tab has no dedicated
+ * session worker the whole request lands on the global worker, whose current
+ * session may belong to a different tab — the tool would then search the wrong
+ * store. `chat()` binds the id it is actually serving before every turn.
+ */
+private ragSessionId = '';
+
+private bindRagSession(sessionId: string): void {
+  if (sessionId) this.ragSessionId = sessionId;
+}
+
+/**
+   * Eligible extensions for the RAG picker, split by extractor availability —
+   * the main process needs this to build the dialog's extension filters.
+   */
+  ragCapabilities(): { allowlist: string[]; supported: string[]; unsupported: string[] } {
+    const allowlist = this.agent?.['config']?.getAttachmentExtensions?.() ?? [];
+    return ragCaps(allowlist);
+  }
+
+  /** Tool-facing retrieval over this worker's bound attachment store. */
+  private attachmentSearchResult(req: AttachmentSearchRequest): ToolResult {
+    const sid = this.ragSessionId || this.agent?.getCurrentSessionId?.() || '';
+    if (!sid) return { content: 'No active session; attachments are unavailable.', isError: false };
+
+    if (req.kind === 'outline') {
+      const all = ragOutline(sid);
+      if (!all.length) return { content: 'This session has no RAG attachments indexed.', isError: false };
+      const picked = req.file ? all.filter((o) => o.file === req.file) : all;
+      const body = (picked.length ? picked : all)
+        .map((o) => `${o.file}:\n${ragFormatOutline([o], 2000)}`)
+        .join('\n\n');
+      return { content: `${body}\n\nRead a passage with chunk=<n>.` };
+    }
+
+    if (req.kind === 'chunk') {
+      const reads = ragChunks(sid, req.file, req.chunk, req.count);
+      if (!reads.length) {
+        return { content: 'No such chunk. Call with mode="outline" to see the valid chunk numbers.', isError: false };
+      }
+      const body = reads
+        .map((r) => `[${r.file} · chunk ${r.n}/${r.chunks}]\n${r.text}`)
+        .join('\n\n');
+      return { content: body };
+    }
+
+    const hits = ragSearch(sid, req.query, req.topK);
+    if (!hits.length) {
+      // Never hand back nothing: show what IS indexed so the model can re-query
+      // with real terms instead of falling back to shell grep.
+      const index = ragIndex(sid);
+      if (!index.length) {
+        return { content: 'This session has no RAG attachments indexed.', isError: false };
+      }
+      const lines = index.map((f) => `- ${f.name} (${f.chunks} chunks)${f.preview ? `: ${f.preview}` : ''}`);
+      return {
+        content: `No passage matched "${req.query}". Indexed attachments:\n${lines.join('\n')}\nRe-query with terms from these files, or call mode="outline" to see each file's chunk map.`,
+        isError: false,
+      };
+    }
+    const body = hits
+      .map((h: AttachmentHit, i: number) => `[${i + 1}] ${h.file} · chunk ${h.chunk}/${h.chunks || '?'}\n${h.snippet}`)
+      .join('\n\n');
+    return { content: `${body}\n\nIf the answer is not above, call mode="outline" then chunk=<n>.` };
   }
 
   async renameSession(id: string, name: string): Promise<void> {

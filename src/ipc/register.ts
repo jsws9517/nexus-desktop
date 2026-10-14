@@ -507,6 +507,50 @@ export function registerIpc(ctx: IpcContext): void {
     return { ok: true };
   });
 
+  // ── one-time attachment RAG ───────────────────────────────────────────────
+  // Deliberately independent of the common `+` attach flow: these files are
+  // extracted into the session's transient RAG store and are never spliced
+  // into the prompt as `@path` text.
+  ipcMain.handle(CHANNELS.ragIngest, callForSession('ragIngest'));
+  ipcMain.handle(CHANNELS.ragRemove, callForSession('ragRemove'));
+  ipcMain.handle(CHANNELS.ragClear, callForSession('ragClear'));
+  ipcMain.handle(CHANNELS.ragStatus, callForSession('ragStatus'));
+  ipcMain.handle(CHANNELS.ragCapabilities, call('ragCapabilities'));
+
+  // Standalone picker for the RAG store — its own dialog and its own extension
+  // filters, so it shares nothing with the `+` attach flow. Filters come from
+  // the worker: `supported` is what the extractors can actually read, the
+  // `unsupported` group (pdf/office) stays selectable because the optional
+  // extractor package can register them at runtime, and picking one now says so
+  // instead of failing after the fact.
+  ipcMain.handle(CHANNELS.ragPickFile, async (): Promise<{ canceled: boolean; paths: string[] }> => {
+    let groups: { supported: string[]; unsupported: string[] } = { supported: [], unsupported: [] };
+    try {
+      const caps = (await call('ragCapabilities')({} as unknown)) as {
+        supported?: string[];
+        unsupported?: string[];
+      };
+      groups = { supported: caps?.supported ?? [], unsupported: caps?.unsupported ?? [] };
+    } catch {
+      // Fall back to an unfiltered dialog rather than blocking the user.
+    }
+    const filters: Electron.FileFilter[] = [];
+    if (groups.supported.length) {
+      filters.push({ name: '已支持 (supported)', extensions: groups.supported });
+    }
+    if (groups.unsupported.length) {
+      filters.push({ name: '需扩展包 (needs extractor)', extensions: groups.unsupported });
+    }
+    filters.push({ name: '全部文件 (all files)', extensions: ['*.*'] });
+    const result = await dialog.showOpenDialog(ctx.getBrowserWindow()!, {
+      properties: ['openFile', 'multiSelections'],
+      title: '添加 RAG 附件',
+      filters,
+    });
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true, paths: [] };
+    return { canceled: false, paths: result.filePaths };
+  });
+
   // Right-panel file browser: list one directory level with entry types/sizes.
   // Path containment is enforced against the caller-supplied project root so a
   // renderer can never enumerate directories outside the active project.

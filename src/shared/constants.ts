@@ -58,4 +58,5 @@ export const EARLY_METHODS = new Set<string>([
   'getSlashLog', 'getSlashLogPath',
   'setCwd', 'getDefaultProjectDir', 'getSessionMetadata',
   'sideChat',
+  'ragIngest', 'ragRemove', 'ragClear', 'ragStatus',
 ]);

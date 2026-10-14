@@ -61,6 +61,13 @@ export const CHANNELS = {
   getMcpServers: 'nexus:getMcpServers',
   setMcpServer: 'nexus:setMcpServer',
   sideChat: 'nexus:sideChat',
+  // one-time attachment RAG (per-session transient store, separate from `+`).
+  ragIngest: 'nexus:ragIngest',
+  ragRemove: 'nexus:ragRemove',
+  ragClear: 'nexus:ragClear',
+  ragStatus: 'nexus:ragStatus',
+  ragCapabilities: 'nexus:ragCapabilities',
+  ragPickFile: 'nexus:ragPickFile',
   // core bg_ shell jobs (worker-local JobManager).
   coreBgList: 'nexus:coreBgList',
   coreBgKill: 'nexus:coreBgKill',
