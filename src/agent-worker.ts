@@ -2,6 +2,7 @@ import readline from 'node:readline';
 import { AgentService } from './agent-service.js';
 import type { AgentEvent } from './agent-service.js';
 import { logger } from './shared/logger.js';
+import { loadExtractorPackages } from './agent/extractor-loader.js';
 import { EARLY_METHODS } from './shared/constants.js';
 import { validateWorkerParams } from './shared/ipc-validation.js';
 import type { WorkerMethod } from './ipc/channels.js';
@@ -191,11 +192,11 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   // One-time attachment RAG: extract + index the picked files into the session's
   // transient store. `paths` is already validated as a string[] by the shared
   // spec; the per-file allowlist decision lives in the module.
-  ragIngest: (req: WorkerRequest & { method: 'ragIngest' }) => {
+  ragIngest: async (req: WorkerRequest & { method: 'ragIngest' }) => {
     const paths = Array.isArray(req.params.paths)
       ? (req.params.paths as unknown[]).filter((p): p is string => typeof p === 'string' && p.length > 0)
       : [];
-    const results = service.ingestAttachments(req.params.sessionId, paths);
+    const results = await service.ingestAttachments(req.params.sessionId, paths);
     return { results };
   },
   ragRemove: (req: WorkerRequest & { method: 'ragRemove' }) => {
@@ -370,10 +371,29 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
   if (req.method === 'earlyInit') {
     try {
       const t0 = Date.now();
+      // Extractor packages must be live before any ragIngest can run, and earlyInit
+      // is the earliest point in the worker's life. Wrapped because this sits on
+      // the startup path: a loader bug must degrade "PDF is not searchable", not
+      // "the agent never starts".
+      let loaded: string[] = [];
+      let failed: string[] = [];
+      try {
+        const res = await loadExtractorPackages();
+        loaded = res.loaded;
+        failed = Object.keys(res.failed);
+      } catch (e) {
+        logger.warn(`extractor-loader: ${e instanceof Error ? e.message : String(e)}`);
+      }
       earlyPromise = service.earlyInit(req.params?.cwd);
       await earlyPromise;
       earlyDone = true;
-      writeDiag({ early: true, ok: true, ms: Date.now() - t0, cwd: service.getCwd() });
+      writeDiag({
+        early: true,
+        ok: true,
+        ms: Date.now() - t0,
+        cwd: service.getCwd(),
+        extractors: { loaded, failed },
+      });
       respond(req.id, { ok: true, cwd: service.getCwd() });
     } catch (e) {
       earlyDone = false;

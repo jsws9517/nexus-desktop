@@ -66,7 +66,7 @@ RAG 路径**完全不接触** `#btn-attach`、`attachFiles()`、`attachments[]` 
 ## 四、桌面端改动（`nexus-desktop`）
 
 ### P5. 会话 RAG 模块 —— 新增 `src/agent/attachment-rag.ts`
-- `storeFor(sessionId)`：用 core `VaultStore` 打开 `~/.nexus/attach-rag/<sessionId>.db`（沿用 `agent/service.ts` 现有深 import 模式）。
+- `storeFor(sessionId)`：用 core `VaultStore` 打开 `~/.nexus/session-rag/<sessionId>.db`（沿用 `agent/service.ts` 现有深 import 模式）。
 - `ingestAttachments(sessionId, paths, allowlist)`：
   - 读取文件 stat → 按扩展名从注册表取提取器 → 提取 → 分块 → `upsertNote`（ref 格式 `attach:<sha1(path)>:<i>`）+ `upsertMeta`（文件级行）；
   - 返回每个文件的 `{ path, ok, reason, chunkCount }`。
@@ -78,7 +78,7 @@ RAG 路径**完全不接触** `#btn-attach`、`attachFiles()`、`attachments[]` 
 - `src/agent/service.ts`：
   - `ingestAttachments(sessionId, paths)`、`removeAttachment(sessionId, path)`、`clearAttachmentStore(sessionId)` —— 与 `chat()` 的消息状态完全解耦。
   - `chat()` 钩子（约 1319 行）：若当前会话库非空 → 混合检索（仅在总块数 / Token 预算内才自动注入，否则走 `attachments_search` 工具）。
-  - `/clear`（约 1410 行）→ `clearAttachmentStore`；`deleteSession`（约 2524 行）→ 释放库；会话关闭时尽力清理 + 启动时清扫孤儿 `attach-rag/*.db`。
+  - `/clear`（约 1410 行）→ `clearAttachmentStore`；`deleteSession`（约 2524 行）→ 释放库；会话关闭时尽力清理 + 启动时清扫孤儿 `session-rag/*.db`。
 
 ### P7. `attachments_search` 桌面工具
 - 在 `src/tools/index.ts` 注册（按会话作用域），遵循白名单 + 安全路径门控；
@@ -93,8 +93,24 @@ RAG 路径**完全不接触** `#btn-attach`、`attachFiles()`、`attachments[]` 
 - 发送时 `sendMessage()` / `drain()` **不**把 RAG 文件拼进输入；检索由 worker 内部完成。RAG 标签区在整个会话期间持续可见（与发送后即清空的公共附件不同）。
 - 在 `src/renderer/i18n.ts` 补充 i18n 文案，运行 `npm run check:i18n` 校验。
 
-### P9. Office/PDF 集成（依赖后续扩展包）
-- 无需桌面新代码：一旦重型提取器扩展包注册进 core 注册表，`ingestAttachments` 自动拾取。在此之前，pdf/docx/xlsx/pptx 标签显示「请安装 Office/PDF 扩展」，并维持现有 `@path` 内联行为。扫描版 PDF 的 OCR 暂缓。
+### P9. Office/PDF 集成（已完成）
+
+原计划推迟的「重型提取器扩展包」已落地，不再是桌面端代码的假设：
+
+- **core**：新增 `src/vault/extract/formats.ts` 声明式格式清单（`{ext, kind: builtin|package, package?}`），
+  取代原先散落在 `DEFAULT_ATTACHMENT_EXTENSIONS` 与配置页里的两份硬编码列表；
+  `registry.ts` 的 `Extractor` 契约扩展为支持 async（`extractForRag` 返回 Promise），
+  因为 PDF/Office 只有异步解析器可用。
+- **core**：新增 CATALOG 条目 `doc-extract`（`type: 'extractor'`），安装到
+  `~/.nexus/native/extractors/doc-extract/`，入口 `index.mjs` 由
+  `src/config/assets/doc-extract.mjs` 生成。只依赖 `jszip` + `pdf-parse`：
+  docx/xlsx/pptx 直接读 OOXML zip 容器，一个读取器覆盖三种格式。
+- **desktop**：`src/agent/extractor-loader.ts` 在 worker `earlyInit` 阶段加载这些包。
+  必须由 worker 加载而非主进程 —— 配置页装在主进程，而唯一会读附件做 RAG 的是 worker 进程。
+  坏包只记日志并跳过，绝不阻断启动。
+- **portable**：包与它自己的 `node_modules` 都在 `~/.nexus` 下，整个目录搬到另一台机器即可用；
+  `config.json` 只存扩展名白名单，能力由 `formats.ts` 的 `package` 字段指向可安装包。
+- 扫描版 PDF 的 OCR 仍暂缓（`doc-extract` 只读 PDF 文本层）。
 
 ---
 

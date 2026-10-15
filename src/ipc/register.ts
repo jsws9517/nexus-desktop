@@ -520,17 +520,26 @@ export function registerIpc(ctx: IpcContext): void {
   // Standalone picker for the RAG store — its own dialog and its own extension
   // filters, so it shares nothing with the `+` attach flow. Filters come from
   // the worker: `supported` is what the extractors can actually read, the
-  // `unsupported` group (pdf/office) stays selectable because the optional
-  // extractor package can register them at runtime, and picking one now says so
+  // `unsupported` group (pdf/office) stays selectable because an installed
+  // extractor package registers them at runtime, and picking one now says so
   // instead of failing after the fact.
   ipcMain.handle(CHANNELS.ragPickFile, async (): Promise<{ canceled: boolean; paths: string[] }> => {
-    let groups: { supported: string[]; unsupported: string[] } = { supported: [], unsupported: [] };
+    let groups: { supported: string[]; unsupported: string[]; packageFor: Record<string, string> } = {
+      supported: [],
+      unsupported: [],
+      packageFor: {},
+    };
     try {
       const caps = (await call('ragCapabilities')({} as unknown)) as {
         supported?: string[];
         unsupported?: string[];
+        packageFor?: Record<string, string>;
       };
-      groups = { supported: caps?.supported ?? [], unsupported: caps?.unsupported ?? [] };
+      groups = {
+        supported: caps?.supported ?? [],
+        unsupported: caps?.unsupported ?? [],
+        packageFor: caps?.packageFor ?? {},
+      };
     } catch {
       // Fall back to an unfiltered dialog rather than blocking the user.
     }
@@ -539,7 +548,11 @@ export function registerIpc(ctx: IpcContext): void {
       filters.push({ name: '已支持 (supported)', extensions: groups.supported });
     }
     if (groups.unsupported.length) {
-      filters.push({ name: '需扩展包 (needs extractor)', extensions: groups.unsupported });
+      // Naming the provider turns a dead-end group into "here is what to
+      // install" — only when they all come from the same package.
+      const providers = [...new Set(groups.unsupported.map((e) => groups.packageFor[e]).filter(Boolean))];
+      const suffix = providers.length === 1 ? ` · ${providers[0]}` : '';
+      filters.push({ name: `需扩展包 (needs extractor)${suffix}`, extensions: groups.unsupported });
     }
     filters.push({ name: '全部文件 (all files)', extensions: ['*.*'] });
     const result = await dialog.showOpenDialog(ctx.getBrowserWindow()!, {

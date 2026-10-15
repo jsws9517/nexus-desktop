@@ -189,3 +189,5 @@ topological read, still without dependency edges.
 - `docs/dsh-plugin-adoption-plan.md §4.4` — where the Sub-Agents page came from.
 - `docs/one-time-attachment-rag-plan.md` — plan for the standalone per-session
   one-time RAG on attachments (independent of the common `+` attach flow).
+  Stores live in `~/.nexus/session-rag/<sessionId>.db` (was `attach-rag/`;
+  migrated on first access).

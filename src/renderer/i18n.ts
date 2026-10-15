@@ -31,6 +31,8 @@ ragAutoInjectOffTitle: {
     en: 'Past the auto-inject cap; the model retrieves these via the attachments_search tool',
   },
 ragReasonUnsupported: { 'zh-CN': '需安装扩展包', en: 'needs extractor package' },
+  ragReasonUnsupportedPkg: { 'zh-CN': '需安装 {pkg} 扩展包', en: 'needs the {pkg} package' },
+  ragInstallExtractor: { 'zh-CN': '在设置中安装 {pkg} 以启用 PDF / Word / Excel / PPT', en: 'Install {pkg} in Settings to enable PDF / Word / Excel / PPT' },
 ragReasonBinary: { 'zh-CN': '二进制文件', en: 'binary file' },
 ragReasonEmpty: { 'zh-CN': '无文本内容', en: 'no text content' },
 ragReasonNotAllowed: { 'zh-CN': '不在白名单内', en: 'extension not allowed' },

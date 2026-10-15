@@ -558,9 +558,14 @@ interface RagAttachment { path: string; name: string; size: number; chunkCount: 
 let ragAttachments: RagAttachment[] = [];
 let ragAutoInject = true;
 
-/** Human-readable ingest failure; PDF/Office say so instead of "unsupported". */
-function ragReasonLabel(reason?: string): string {
-  if (reason === 'unsupported') return t('ragReasonUnsupported');
+/**
+ * Human-readable ingest failure; PDF/Office name the package that would fix
+ * them instead of a bare "unsupported".
+ */
+function ragReasonLabel(reason?: string, pkg?: string): string {
+  if (reason === 'unsupported') {
+    return pkg ? t('ragReasonUnsupportedPkg', { pkg }) : t('ragReasonUnsupported');
+  }
   if (reason === 'binary') return t('ragReasonBinary');
   if (reason === 'empty') return t('ragReasonEmpty');
   if (reason === 'not-allowed') return t('ragReasonNotAllowed');
@@ -2316,20 +2321,32 @@ async function removeRagAttachment(path: string): Promise<void> {
   await refreshRagAttachments();
 }
 
+interface RagIngestOutcome {
+  path: string;
+  name: string;
+  ok: boolean;
+  reason?: string;
+  package?: string;
+}
+
 async function addRagFiles(): Promise<void> {
   const sid = ragSessionId();
   if (!sid) return;
   const res = await window.nexusDesktop.ragPickFile();
   if (res.canceled || !res.paths.length) return;
   try {
-    const out = await window.nexusDesktop.ragIngest(sid, res.paths);
+    const out = (await window.nexusDesktop.ragIngest(sid, res.paths)) as { results?: RagIngestOutcome[] };
     await refreshRagAttachments();
-    const failed = (out.results ?? []).filter((r: { ok: boolean; name: string }) => !r.ok);
+    const failed = (out.results ?? []).filter((r) => !r.ok);
     if (failed.length) {
       const detail = failed
-        .map((r: { name: string; reason?: string }) => `${r.name}(${ragReasonLabel(r.reason)})`)
+        .map((r) => `${r.name}(${ragReasonLabel(r.reason, r.package)})`)
         .join(', ');
-      showToast(`${t('ragIngestFailed')}: ${detail}`);
+      // One actionable follow-up beats a bare list of failures: when the only
+      // thing that went wrong was a missing extractor package, say which one
+      // and where to install it.
+      const pkg = failed.find((r) => r.package)?.package;
+      showToast(pkg ? `${detail} — ${t('ragInstallExtractor', { pkg })}` : detail, 'warning', 8000);
     }
   } catch (err) {
     showToast(`${t('ragIngestFailed')}: ${err instanceof Error ? err.message : String(err)}`);
