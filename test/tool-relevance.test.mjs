@@ -549,12 +549,16 @@ test('a Chinese delegation request surfaces acp_route from a realistic pool', ()
   // by luck of the pool shape, so that assertion measured the fixture rather than
   // the behaviour. What must hold deterministically is that a delegation request
   // carrying an agent name routes on the keyword and survives selection.
+  // The live pool is routed: AgentService builds candidates with applyRouting
+  // before selecting (src/agent/service.ts). Without it, core builtins carry no
+  // keywords and survive only by luck of bigram similarity — this fixture would
+  // measure the un-routed pool rather than the behaviour users get.
   const mcpStand = Array.from({ length: 20 }, (_, i) => def(`pyright_${i}`, {
     server: 'mcp:pyright',
     group: 'meta',
     keywords: ['python', '类型', '诊断'],
   }));
-  const pool = [...BUILTIN_TOOLS, ...ALL_TOOL_DEFS, ...mcpStand];
+  const pool = applyRouting([...BUILTIN_TOOLS, ...ALL_TOOL_DEFS, ...mcpStand]);
   assert.ok(pool.length > 40, `pool must be realistically large, got ${pool.length}`);
 
   for (const input of ['委派给claude', '派发任务到指定的agent', '把这个架构分析交给 claude 去做']) {
@@ -574,7 +578,7 @@ test('a non-delegation prompt does not drag acp_route in', () => {
     group: 'meta',
     keywords: ['python', '类型', '诊断'],
   }));
-  const pool = [...BUILTIN_TOOLS, ...ALL_TOOL_DEFS, ...mcpStand];
+  const pool = applyRouting([...BUILTIN_TOOLS, ...ALL_TOOL_DEFS, ...mcpStand]);
   const out = selectTools(pool, { input: 'git 提交一下', used: new Set(), respectNarrowing: false });
   assert.equal(out.some((t) => t.name === 'acp_route'), false);
 });

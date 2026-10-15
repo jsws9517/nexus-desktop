@@ -113,6 +113,13 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
   // every larger set. It is inert (returns "nothing indexed") when the session
   // has no attachments, so pinning costs nothing.
   'attachments_search',
+  // Mirrors the core's own essentialTools (src/agent.ts). The desktop replaces
+  // the core's tool list with this selector's output, so anything the core
+  // pins must be pinned here too — otherwise it becomes hideable in
+  // practice: `vault_search` was silently dropped from every round, and a user
+  // who typed "use vault_search" was told the tool did not exist.
+  // test/tool-relevance.test.mjs guards this parity in both directions.
+  'vault_search', 'vault_open', 'vault_write',
 ]);
 
 export interface ScoreOptions {

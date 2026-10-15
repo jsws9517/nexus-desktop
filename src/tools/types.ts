@@ -80,8 +80,9 @@ export interface ToolContext {
    * Read the CURRENT session's one-time RAG attachment store. Supplied by
    * AgentService (which owns the live session). `search` returns ranked
    * passages, `outline` the file's chunk map, `chunk` whole chunks verbatim.
+   * Async because `search` may run the optional embedding re-rank.
    */
-  attachmentsSearch?: (req: AttachmentSearchRequest) => ToolResult;
+  attachmentsSearch?: (req: AttachmentSearchRequest) => ToolResult | Promise<ToolResult>;
 }
 
 /** Request shape accepted by the `attachments_search` tool callable. */

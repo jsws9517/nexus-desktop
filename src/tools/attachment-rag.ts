@@ -46,12 +46,59 @@ export const ATTACHMENT_RAG_TOOL_DEFS: ToolDef[] = [
 
 export const ATTACHMENT_RAG_TOOLS = new Set(ATTACHMENT_RAG_TOOL_DEFS.map((t) => t.name));
 
+/** Knowledge-vault tools the session store takes precedence over. */
+export const VAULT_TOOLS = ['vault_search', 'vault_open', 'vault_write'] as const;
+
+export interface HideVaultToolsInput {
+  /** Plan mode or a role-scoped allowlist is a deliberate core restriction. */
+  respectNarrowing: boolean;
+  /** The session has RAG attachments indexed. */
+  hasAttachments: boolean;
+  /** This round's input actually retrieves from those attachments. */
+  hasHits: boolean;
+  /** The user named a vault tool outright in this round's input. */
+  namesVaultTool: boolean;
+  /** Tool names the model explicitly asked for via refresh_tools. */
+  force: ReadonlySet<string>;
+}
+
+/**
+ * Whether the knowledge-vault tools should be withheld for this round.
+ *
+ * `vault_search` is pinned in the core's `essentialTools`, so it is offered on
+ * every round regardless of relevance, and its description reads like a generic
+ * document search. With a one-time attachment actually matching, that steals the
+ * round: the model reaches for the vault, gets an empty library back, and only
+ * then tries the attachments. Hiding is therefore conditional and deliberately
+ * narrow — the vault is withheld only when the session store both holds files
+ * and answers THIS input, and never when the user asked for it by name or the
+ * model requested it via refresh_tools, so both escape hatches stay real.
+ */
+export function shouldHideVaultTools(input: HideVaultToolsInput): boolean {
+  if (input.respectNarrowing) return false;
+  if (!input.hasAttachments || !input.hasHits) return false;
+  // An explicit request outranks an inferred intent: silently dropping a tool
+  // the user just named is how "I have no vault_search tool" gets said out loud.
+  if (input.namesVaultTool) return false;
+  return !VAULT_TOOLS.some((name) => input.force.has(name));
+}
+
+/** Did this round's input name a vault tool outright? */
+export function inputNamesVaultTool(input: string): boolean {
+  const lower = input.toLowerCase();
+  return VAULT_TOOLS.some((name) => lower.includes(name));
+}
+
 function intArg(v: unknown, fallback: number, min: number, max: number): number {
   if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(v)));
 }
 
-export function callAttachmentRagTool(name: string, args: unknown, ctx?: ToolContext): ToolResult {
+export function callAttachmentRagTool(
+  name: string,
+  args: unknown,
+  ctx?: ToolContext,
+): ToolResult | Promise<ToolResult> {
   if (name !== 'attachments_search') {
     return { content: `Tool "${name}" not found`, isError: true };
   }

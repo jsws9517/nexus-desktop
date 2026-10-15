@@ -17,6 +17,8 @@ import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
 import type { SlashLogEntry } from '../slash-log.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
 import { createProvider } from 'nexus-coder/dist/src/llm/provider.js';
+import { createEmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/index.js';
+import type { EmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/types.js';
 import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.js';
 import type { Session } from 'nexus-coder/dist/src/session/types.js';
 import { homedir } from 'node:os';
@@ -32,6 +34,7 @@ import {
   ToolRefreshQueue,
 } from '../tools/index.js';
 import { applyRouting } from '../tools/routing.js';
+import { shouldHideVaultTools, inputNamesVaultTool, VAULT_TOOLS } from '../tools/attachment-rag.js';
 import type { ToolDef, ToolResult, AttachmentSearchRequest } from '../tools/types.js';
 import { loadConstitution, CONSTITUTION_MARKER, loadGlobalRules, ensureGlobalRules, GLOBAL_RULES_MARKER } from '../tools/agents.js';
 import {
@@ -65,6 +68,7 @@ import {
   hasAttachments as ragHasAttachments,
   withinAutoInjectBudget as ragWithinBudget,
   search as ragSearch,
+  searchRanked as ragSearchRanked,
   attachmentIndex as ragIndex,
   attachmentOutline as ragOutline,
   formatOutline as ragFormatOutline,
@@ -598,23 +602,39 @@ export class AgentService {
         (patchedGetAllTools() as McpToolDef[]).filter((t) => !hidden.has(t.name)) as ToolDef[],
       );
 
+      const force = new Set(this.toolRefreshQueue.peek());
       const selected = selectTools(candidates, {
         input: input ?? '',
         used: this.toolUseMemory,
-        force: new Set(this.toolRefreshQueue.peek()),
+        force,
         respectNarrowing,
       });
+
+      // Withhold the knowledge-vault tools for rounds the session's own
+      // attachments answer, so one document search is not competing with
+      // another. Narrow by construction: no files, no hit, an explicit
+      // refresh_tools request, or plan mode all mean "keep them".
+      const hideVault = shouldHideVaultTools({
+        respectNarrowing,
+        hasAttachments: this.ragRoundHasAttachments(input ?? ''),
+        hasHits: this.ragRoundHasHits(input ?? ''),
+        namesVaultTool: inputNamesVaultTool(input ?? ''),
+        force,
+      });
+      const finalSelected = hideVault
+        ? selected.filter((t) => !VAULT_TOOLS.includes(t.name as (typeof VAULT_TOOLS)[number]))
+        : selected;
 
       // Consume the widening requests: they have now been applied once.
       this.toolRefreshQueue.clear();
 
       const coreCount = coreTools.length;
       logger.info(
-        `[tool-select] ${selected.length} tools for "${(input ?? '').slice(0, 40)}" ` +
+        `[tool-select] ${finalSelected.length} tools for "${(input ?? '').slice(0, 40)}" ` +
           `(core=${coreCount}, candidates=${candidates.length}, hidden-skills=${hidden.size}, ` +
-          `used=${this.toolUseMemory.size})`,
+          `used=${this.toolUseMemory.size}${hideVault ? ', vault-withheld' : ''})`,
       );
-      return selected;
+      return finalSelected;
     };
     // Kick off the first prefetch so MCP tools are available (not just builtin)
     // on the first turn without blocking synchronous tool-list assembly.
@@ -1419,7 +1439,16 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.bindRagSession(sid ?? '');
     let effectiveInput = input;
     if (sid && !input.trim().startsWith('/') && ragHasAttachments(sid) && ragWithinBudget(sid)) {
-      const hits = ragSearch(sid, input, ATTACH_AUTO_INJECT_TOP_K);
+      // startRound's selector decision is keyed on this input; drop the memo so
+      // a re-send of the same text re-evaluates against the current store.
+      this.resetAttachmentRagRoundCache();
+      const hits = await ragSearchRanked(
+        sid,
+        input,
+        ATTACH_AUTO_INJECT_TOP_K,
+        await this.attachmentEmbeddingProvider(),
+        (msg) => logger.warn(`[attachment-rag] ${msg}`),
+      );
       if (hits.length) {
         // The outline tells the model which chunks it did NOT receive, so a
         // single 24-chunk file is navigable instead of just the top-6 slice.
@@ -2570,8 +2599,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    * One-time attachment RAG — index user-picked files into the session's
    * transient store. Paths outside the configured extension allowlist are
    * reported as `not-allowed` rather than silently accepted.
+   *
+   * Async: extraction can be (the PDF/Office extractors come from an extension
+   * package and are promise-based).
    */
-  ingestAttachments(sessionId: string, paths: string[]): AttachmentIngestResult[] {
+  async ingestAttachments(sessionId: string, paths: string[]): Promise<AttachmentIngestResult[]> {
     const allowlist = this.agent?.['config']?.getAttachmentExtensions?.() ?? [];
     return ragIngest(sessionId, paths, allowlist);
   }
@@ -2611,20 +2643,110 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 private ragSessionId = '';
 
 private bindRagSession(sessionId: string): void {
-  if (sessionId) this.ragSessionId = sessionId;
+  if (sessionId && this.ragSessionId !== sessionId) {
+    this.ragSessionId = sessionId;
+    this.ragRoundCache.clear();
+  }
+}
+
+/** Session the round helpers and the attachment tool should consult. */
+private currentRagSessionId(): string {
+  return this.ragSessionId || this.agent?.getCurrentSessionId?.() || '';
+}
+
+/**
+ * Per-round memo for the vault-withholding decision. `getToolsForContext` runs
+ * several times per turn and the answer must not flip mid-turn; a different
+ * input (a tool follow-up round) re-evaluates on its own key.
+ */
+private ragRoundCache = new Map<string, { attachments: boolean; hits: boolean }>();
+
+private ragRoundState(input: string): { attachments: boolean; hits: boolean } {
+  const sid = this.currentRagSessionId();
+  if (!sid) return { attachments: false, hits: false };
+  const key = `${sid}\u0000${input}`;
+  const cached = this.ragRoundCache.get(key);
+  if (cached) return cached;
+  let attachments = false;
+  let hits = false;
+  try {
+    attachments = ragHasAttachments(sid);
+    // One cheap probe, not the full retrieval: the decision only needs to know
+    // whether this input retrieves anything from the session store.
+    if (attachments && input.trim()) hits = ragSearch(sid, input, 1).length > 0;
+  } catch {
+    attachments = false;
+    hits = false;
+  }
+  const state = { attachments, hits };
+  // Bounded: rounds are short-lived and the key already includes the input.
+  if (this.ragRoundCache.size > 32) this.ragRoundCache.clear();
+  this.ragRoundCache.set(key, state);
+  return state;
+}
+
+private ragRoundHasAttachments(input: string): boolean {
+  return this.ragRoundState(input).attachments;
+}
+
+private ragRoundHasHits(input: string): boolean {
+  return this.ragRoundState(input).hits;
+}
+
+/**
+ * Optional stage-4 embedding provider, built once per worker from the same
+ * `knowledge` config the vault tools read. `createEmbeddingProvider` returns
+ * null unless `knowledge.embeddingEnabled` is true and a backend is configured,
+ * which is exactly the "retrieval stays lexical" default — no second switch to
+ * explain, and no config surface added on the desktop side.
+ */
+private ragEmbeddingProvider: Promise<EmbeddingProvider | null> | null = null;
+private ragEmbeddingWarned = false;
+
+private async attachmentEmbeddingProvider(): Promise<EmbeddingProvider | null> {
+  if (!this.ragEmbeddingProvider) {
+    this.ragEmbeddingProvider = (async () => {
+      const cfg = this.agent?.['config']?.getKnowledge?.();
+      try {
+        return await createEmbeddingProvider(cfg);
+      } catch (err) {
+        // The local backend throws (rather than returning null) when its model
+        // cannot be loaded — a misconfiguration must not break retrieval.
+        if (!this.ragEmbeddingWarned) {
+          this.ragEmbeddingWarned = true;
+          logger.warn(
+            `[attachment-rag] embedding re-rank disabled: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        return null;
+      }
+    })();
+  }
+  return this.ragEmbeddingProvider;
+}
+
+/** Invalidate the cached provider (config reload). */
+private resetAttachmentEmbedding(): void {
+  this.ragEmbeddingProvider = null;
+  this.ragEmbeddingWarned = false;
+}
+
+/** Invalidate per-turn caches when a turn starts (bound session or input). */
+private resetAttachmentRagRoundCache(): void {
+  this.ragRoundCache.clear();
 }
 
 /**
    * Eligible extensions for the RAG picker, split by extractor availability —
    * the main process needs this to build the dialog's extension filters.
    */
-  ragCapabilities(): { allowlist: string[]; supported: string[]; unsupported: string[] } {
+  ragCapabilities(): { allowlist: string[]; supported: string[]; unsupported: string[]; packageFor: Record<string, string> } {
     const allowlist = this.agent?.['config']?.getAttachmentExtensions?.() ?? [];
     return ragCaps(allowlist);
   }
 
   /** Tool-facing retrieval over this worker's bound attachment store. */
-  private attachmentSearchResult(req: AttachmentSearchRequest): ToolResult {
+  private async attachmentSearchResult(req: AttachmentSearchRequest): Promise<ToolResult> {
     const sid = this.ragSessionId || this.agent?.getCurrentSessionId?.() || '';
     if (!sid) return { content: 'No active session; attachments are unavailable.', isError: false };
 
@@ -2649,7 +2771,9 @@ private bindRagSession(sessionId: string): void {
       return { content: body };
     }
 
-    const hits = ragSearch(sid, req.query, req.topK);
+    const hits = await ragSearchRanked(sid, req.query, req.topK, await this.attachmentEmbeddingProvider(), (msg) => {
+      logger.warn(`[attachment-rag] ${msg}`);
+    });
     if (!hits.length) {
       // Never hand back nothing: show what IS indexed so the model can re-query
       // with real terms instead of falling back to shell grep.
@@ -3398,11 +3522,13 @@ private bindRagSession(sessionId: string): void {
    * the config Web UI writes to disk so the long-lived copy (used by every
    * config getter/setter) does not go stale or clobber disk on the next save.
    */
-  reloadConfig(): { ok: boolean } {
+reloadConfig(): { ok: boolean } {
     if (!this.agent?.config) return { ok: false };
     this.agent.config.reload?.();
-    // 热应用 contextWindow 压缩参数变更（Web 面板保存后即时生效）
+    // ��Ӧ�� contextWindow ѹ�����������Web ��屣���ʱ��Ч��
     this.agent.applyContextWindow?.();
+    // Embedding re-rank reads `knowledge.*`, so a reload can flip it on/off.
+    this.resetAttachmentEmbedding();
     return { ok: true };
   }
 
