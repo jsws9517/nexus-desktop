@@ -111,6 +111,38 @@ replaces the terminal UI layer.
 - The app shares `~/.nexus` (sessions DB + session config) with the CLI; it does
   **not** depend on the CLI binary.
 
+## Data directory structure
+
+All session data, configuration and cache live under `~/.nexus/` (or `$NEXUS_CONFIG_DIR`).
+This directory is shared with the Nexus CLI — both processes read/write the same files.
+
+```
+~/.nexus/
+  sessions/           Per-session data (merged: session-memories/ + slash-logs/ + session-rag/)
+    <sid>.md          Session memory (carry-forward baseline for derived sessions)
+    <sid>.slash.md    Slash-command output archive (desktop only)
+    <sid>.db          Attachment RAG index (per-session, transient; cleared on /clear)
+  baseline/           System prompt + global rules (merged: prompt/ + rules/)
+    system-prompt.<lang>.md   Externalized system prompt baseline
+    GLOBAL.md               User-level working discipline (applies to every session)
+  caches/             Generated artifacts (merged: _cache/ + output/)
+    <sid>_<ts>_<desc>.md   Agent long-response snapshots (with session ownership)
+    *.wav                        TTS audio output
+    office-memory.json           Office memory index
+  logs/               Structured log files
+  tasks/              Task sandbox (projects + outputs)
+  MyVault/            Knowledge vault (SQLite, FTS5)
+  native/             Extractors, plugins, MCP servers
+  skills/             User-installed skills
+  knowledge/          Project knowledge (read by agent as context)
+  config.json         Main configuration
+  sessions.db         Session transcript database
+```
+
+> **Legacy directories** (`session-memories/`, `slash-logs/`, `session-rag/`,
+> `_cache/`, `prompt/`, `rules/`, `output/`) are preserved for backward
+> compatibility and will be removed in a future release after confirmed stability.
+
 ## Source layout
 
 ```

@@ -101,9 +101,9 @@ function safeId(sessionId: string): string {
  * Directory holding one transient store per session. Named for what it is
  * (session-scoped RAG indexes) rather than for the feature that creates it.
  */
-const SESSION_RAG_DIR = 'session-rag';
+const SESSION_RAG_DIR = 'sessions';
 /** Pre-rename name, kept only so an existing install's stores are carried over. */
-const LEGACY_RAG_DIR = 'attach-rag';
+const LEGACY_RAG_DIR = 'session-rag';
 
 function storePath(sessionId: string): string {
   return join(dataDir(), SESSION_RAG_DIR, `${safeId(sessionId)}.db`);

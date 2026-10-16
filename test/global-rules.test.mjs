@@ -35,7 +35,7 @@ const {
   MAX_CONSTITUTION_BYTES,
 } = await import(pathToFileURL(join(dist, 'tools', 'agents.js')));
 
-const rulesFile = join(tmp, '.nexus', 'rules', GLOBAL_RULES_FILENAME);
+const rulesFile = join(tmp, '.nexus', 'baseline', GLOBAL_RULES_FILENAME);
 
 after(() => {
   rmSync(tmp, { recursive: true, force: true });

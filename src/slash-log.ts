@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, appendFileSync, readdirSync, statS
  *
  * Slash results are deliberately kept OUT of the SQLite session DB (so they
  * never re-feed the LLM context on resume/regenerate). Instead each execution
- * is appended to `~/.nexus/slash-logs/<sessionId>.md` as a self-describing
+ * is appended to `~/.nexus/sessions/<sessionId>.slash.md` as a self-describing
  * block and the renderer rehydrates collapsible cards from this file on reload.
  *
  * Retention: per-session files older than SLASH_LOG_RETENTION_DAYS are pruned
@@ -31,7 +31,7 @@ function baseDir(): string {
   const dir = process.env.LLMA_DATA_DIR
     ? join(process.env.LLMA_DATA_DIR, '.nexus')
     : join(homedir(), '.nexus');
-  return join(dir, 'slash-logs');
+  return join(dir, 'sessions');
 }
 
 export const SLASH_LOG_RETENTION_DAYS = 90;
@@ -70,7 +70,7 @@ function maybePruneSlashLogs(): void {
 }
 
 export function slashLogPath(sessionId: string): string {
-  return join(baseDir(), `${sessionId}.md`);
+  return join(baseDir(), `${sessionId}.slash.md`);
 }
 
 /** Append one slash execution to the session's markdown log. */

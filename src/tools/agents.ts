@@ -174,7 +174,7 @@ export async function loadConstitution(root: string): Promise<ConstitutionLoad> 
 }
 
 // ---------------------------------------------------------------------------
-// User-level (global) rules — `~/.nexus/rules/GLOBAL.md`
+// User-level (global) rules — `~/.nexus/baseline/GLOBAL.md`
 //
 // Unlike the project constitution, this file is user-scoped and applies to
 // EVERY session the agent creates, regardless of the current project (or the
@@ -193,7 +193,7 @@ function globalDataDir(): string {
 
 /** Absolute path of the user-level rules file. */
 export function globalRulesPath(): string {
-  return join(globalDataDir(), 'rules', GLOBAL_RULES_FILENAME);
+  return join(globalDataDir(), 'baseline', GLOBAL_RULES_FILENAME);
 }
 
 /**
@@ -203,7 +203,7 @@ export function globalRulesPath(): string {
  */
 export const DEFAULT_GLOBAL_RULES = `# Nexus Global Rules (user-level)
 
-> Location: \`~/.nexus/rules/GLOBAL.md\`. Loaded by the Nexus agent into EVERY
+> Location: \`~/.nexus/baseline/GLOBAL.md\`. Loaded by the Nexus agent into EVERY
 > session's system prompt under the \`[Global Rules]\` marker, regardless of the
 > active project. Edit freely. A project constitution (\`.nexus/rules/NEXUS.md\`)
 > is layered on top and may override project-specific points.

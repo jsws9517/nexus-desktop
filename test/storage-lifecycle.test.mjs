@@ -31,7 +31,7 @@ const { boundedSet } = await import(pathToFileURL(join(dist, 'shared', 'bounded.
 const { pruneSlashLogs, SLASH_LOG_RETENTION_DAYS } = await import(pathToFileURL(join(dist, 'slash-log.js')));
 
 const nexusLogs = join(tmp, '.nexus', 'logs');
-const slashBase = join(tmp, '.nexus', 'slash-logs');
+const slashBase = join(tmp, '.nexus', 'sessions');
 
 after(() => {
   rmSync(tmp, { recursive: true, force: true });
@@ -107,8 +107,8 @@ test('pruneRetiredLogs removes files older than 30 days, keeps fresh ones', () =
 
 test('pruneSlashLogs removes slash files older than 90 days, keeps recent ones', () => {
   mkdirSync(slashBase, { recursive: true });
-  const old = join(slashBase, 'expired-session.md');
-  const recent = join(slashBase, 'live-session.md');
+  const old = join(slashBase, 'expired-session.slash.md');
+  const recent = join(slashBase, 'live-session.slash.md');
   writeFileSync(old, 'old');
   writeFileSync(recent, 'recent');
   backdate(old, (SLASH_LOG_RETENTION_DAYS + 10) * 24 * 60 * 60 * 1000);

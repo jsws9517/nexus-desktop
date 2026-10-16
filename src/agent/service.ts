@@ -15,6 +15,7 @@ import type { StoredRow } from '../session-db.js';
 import { deleteAllSessionMessages, getLastUserMessageId, setSessionBinding, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
 import type { SlashLogEntry } from '../slash-log.js';
+import { cleanupSessionCaches, registerCacheFile } from '../main/cache-cleanup.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
 import { createProvider } from 'nexus-coder/dist/src/llm/provider.js';
 import { createEmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/index.js';
@@ -766,7 +767,7 @@ export class AgentService {
           // --- Global Rules (user-level working discipline) ---
           // User-level rules that apply to EVERY session the agent creates,
           // regardless of the active project (or no project at all). Loaded
-          // from ~/.nexus/rules/GLOBAL.md; injected BEFORE the project
+          // from ~/.nexus/baseline/GLOBAL.md; injected BEFORE the project
           // constitution so the project layer is read later and can override.
           try {
             const globalRules = await loadGlobalRules();
@@ -1223,6 +1224,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           if (rv?.stalled) this.handleRepetitionGuard(rv);
         }
         this.toolCallsAcc = [];
+      } else if (event.type === 'cache_file_saved') {
+        const filePath = event.filePath as string | undefined;
+        const sessionId = event.sessionId as string | null;
+        if (filePath) registerCacheFile(filePath, sessionId);
       }
     }
     this.onEvent?.(event);
@@ -2593,6 +2598,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (!this.agent) throw new Error('Agent not initialized');
     this.agent.deleteSession(id);
     ragDispose(id);
+    cleanupSessionCaches(id);
   }
 
   /**

@@ -65,6 +65,37 @@
   Skill 结果以 JSON 信封（`{"__artifactVersion":1,"artifact":{…}}`）嵌入 `ToolResult.content`。渲染器通过 `parseArtifactContent()` 解析后，分发给类型特定的视图组件（`chart-view.ts`、`table-view.ts`）。导出通过 `nexus:saveArtifact` 对话框完成。
 - 应用与 CLI 共享 `~/.nexus`（会话 DB + 会话配置），**不依赖** CLI 二进制。
 
+## 数据目录结构
+
+所有会话数据、配置和缓存文件存放在 `~/.nexus/` 下（或通过 `$NEXUS_CONFIG_DIR` 重定向）。
+该目录与 Nexus CLI 共享——两个进程读写同一组文件。
+
+```
+~/.nexus/
+  sessions/           会话数据（合并自 session-memories/ + slash-logs/ + session-rag/）
+    <sid>.md          会话记忆（派生会话的前置上下文基线）
+    <sid>.slash.md    斜杠命令输出归档（桌面端专用）
+    <sid>.db          附件 RAG 索引（按会话隔离，/clear 时清空）
+  baseline/           系统 prompt + 全局规则（合并自 prompt/ + rules/）
+    system-prompt.<lang>.md   可编辑的系统 prompt 基线
+    GLOBAL.md               用户级工作纪律（对所有会话生效）
+  caches/             生成产物缓存（合并自 _cache/ + output/）
+    <sid>_<ts>_<desc>.md   Agent 长回复快照（带 session ID 前缀）
+    *.wav                        TTS 音频输出
+    office-memory.json           办公记忆索引
+  logs/               结构化日志文件
+  tasks/              任务沙箱（项目 + 输出）
+  MyVault/            知识 Vault（SQLite, FTS5）
+  native/             解析器、插件、MCP 服务器
+  skills/             用户安装的技能
+  knowledge/          项目知识（Agent 作为上下文读取）
+  config.json         主配置文件
+  sessions.db         会话转录数据库
+```
+
+> **遗留目录**（`session-memories/`、`slash-logs/`、`session-rag/`、`_cache/`、
+> `prompt/`、`rules/`、`output/`）为保持向后兼容而保留，将在后续版本确认可用后移除。
+
 ## 源码结构
 
 ```

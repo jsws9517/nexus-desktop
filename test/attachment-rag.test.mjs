@@ -436,8 +436,8 @@ test('capabilities split the allowlist by extractor availability', async () => {
   assert.equal(caps.allowlist.length, caps.supported.length + caps.unsupported.length);
 });
 
-test('pre-rename stores are carried over from attach-rag/ to session-rag/', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'session-rag-migrate-'));
+test('pre-rename stores are carried over from session-rag/ to sessions/', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'sessions-migrate-'));
   const prevDataDir = process.env.NEXUS_CONFIG_DIR;
   const sid = 'legacy-session';
   const modUrl = pathToFileURL(join(dist, 'agent', 'attachment-rag.js')).href;
@@ -450,21 +450,45 @@ test('pre-rename stores are carried over from attach-rag/ to session-rag/', asyn
     return r.stdout.trim();
   };
   try {
-    // Seed the store in a child that simply exits afterwards: releasing the
-    // SQLite handle on exit is what lets the directory be renamed on Windows,
-    // and `disposeAttachmentStore` can't be used because it deletes the file.
-    // Then move it under the OLD directory name — the state an install that
-    // predates the rename leaves behind.
-    process.env.NEXUS_CONFIG_DIR = home;
-    const doc = join(home, 'carried.md');
-    writeFileSync(doc, '# Carried\n\n' + 'the migrated store keeps its index. '.repeat(30), 'utf8');
-    probe(
-      `const rag = await import(${JSON.stringify(modUrl)});
-       await rag.ingestAttachments(${JSON.stringify(sid)}, [${JSON.stringify(doc)}], ['md']);`
-    );
-
-    const legacyDir = join(home, 'attach-rag');
-    renameSync(join(home, 'session-rag'), legacyDir);
+    // Seed a legacy store directly under the OLD directory name — simulates an
+    // install that predates the rename.  The schema mirrors VaultStore's
+    // vault_meta + vault_notes + vault_fts tables.
+    const legacyDir = join(home, 'session-rag');
+    mkdirSync(legacyDir, { recursive: true });
+    const legacyDb = join(legacyDir, `${sid}.db`);
+    {
+      const Database = (await import('better-sqlite3')).default;
+      const db = new Database(legacyDb);
+      db.pragma('journal_mode = WAL');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vault_notes (
+          ref TEXT PRIMARY KEY, rel TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL, type TEXT, tags TEXT NOT NULL DEFAULT '',
+          aliases TEXT NOT NULL DEFAULT '', updated TEXT,
+          body TEXT NOT NULL DEFAULT '', outlinks TEXT NOT NULL DEFAULT '[]',
+          hash TEXT NOT NULL DEFAULT '', mtime_ms REAL NOT NULL DEFAULT 0
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS vault_fts USING fts5(
+          ref UNINDEXED, title, tags, body, tokenize='porter unicode61'
+        );
+        CREATE TABLE IF NOT EXISTS vault_meta (
+          ref TEXT PRIMARY KEY, path TEXT NOT NULL DEFAULT '',
+          name TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT 0,
+          ext TEXT NOT NULL DEFAULT '', mtime_ms REAL NOT NULL DEFAULT 0,
+          ingested_at TEXT NOT NULL DEFAULT '', chunk_count INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'ok'
+        );
+      `);
+      const ref = 'attach:' + 'a'.repeat(16);
+      db.prepare(`INSERT INTO vault_meta (ref, path, name, size, ext, mtime_ms, ingested_at, chunk_count, status)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        ref, 'c:/fake/carried.md', 'carried.md', 100, 'md', Date.now(), new Date().toISOString(), 1, 'ok'
+      );
+      db.prepare(`INSERT INTO vault_notes (ref, title, type, body, hash) VALUES (?, ?, ?, ?, ?)`).run(
+        `${ref}:0`, 'carried.md #1', 'attachment', 'the migrated store keeps its index.', 'abc'
+      );
+      db.close();
+    }
     assert.ok(existsSync(join(legacyDir, `${sid}.db`)), 'precondition: legacy store on disk');
 
     // The migration is a once-per-process step, and this test process has long
@@ -476,7 +500,7 @@ test('pre-rename stores are carried over from attach-rag/ to session-rag/', asyn
 
     assert.equal(JSON.parse(out).count, 1, 'attachments must survive the rename');
     assert.ok(!existsSync(legacyDir), 'legacy directory must be gone after migrating');
-    assert.ok(existsSync(join(home, 'session-rag', `${sid}.db`)), 'store must live under the new name');
+    assert.ok(existsSync(join(home, 'sessions', `${sid}.db`)), 'store must live under the new name');
   } finally {
     process.env.NEXUS_CONFIG_DIR = prevDataDir;
     rmSync(home, { recursive: true, force: true });
