@@ -23,7 +23,63 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { registerExtractor, hasExtractor } from 'nexus-coder/dist/src/vault/extract/registry.js';
 import { logger } from '../shared/logger.js';
+
+/**
+ * Recover registrations that landed in a *different* registry module instance.
+ *
+ * An extractor package's `index.mjs` imports the core registry by an absolute
+ * file URL the installer baked in at install time. When the package was
+ * installed by another consumer (e.g. the standalone `nexus` CLI, whose core
+ * lives under the coder repo) that URL points at a second copy of the registry,
+ * so `registerExtractor()` writes into a module the worker never reads —
+ * `hasExtractor()` stays false and the format looks uninstalled even though the
+ * package is present.
+ *
+ * Node keys its ESM cache on the resolved URL, so the fix is to import that
+ * other registry module and copy any extractor the worker's own registry is
+ * missing. A no-op when both already share the module (the normal desktop
+ * install path).
+ */
+const REGISTRY_IMPORT_RE = /from\s+['"](file:\/\/[^'"]*vault[/\\]extract[/\\]registry\.js)['"]/;
+
+async function syncPackageRegistry(entryPath: string): Promise<void> {
+  let src: string;
+  try {
+    src = readFileSync(entryPath, 'utf-8');
+  } catch {
+    return;
+  }
+  const match = REGISTRY_IMPORT_RE.exec(src);
+  if (!match) return;
+  let pkgRegistry: typeof import('nexus-coder/dist/src/vault/extract/registry.js');
+  try {
+    pkgRegistry = await import(match[1]);
+  } catch (err) {
+    logger.warn(
+      `extractor-loader: cannot read registry ${match[1]}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+  let exts: string[];
+  try {
+    exts = pkgRegistry.listExtractorExts();
+  } catch {
+    return;
+  }
+  let copied = 0;
+  for (const ext of exts) {
+    if (hasExtractor(ext)) continue;
+    const fn = pkgRegistry.getExtractor(ext);
+    if (!fn) continue;
+    registerExtractor(ext, fn);
+    copied++;
+  }
+  if (copied > 0) {
+    logger.debug(`extractor-loader: copied ${copied} extractor(s) from ${match[1]}`);
+  }
+}
 
 export interface ExtractorLoadResult {
   /** Package names whose entry point ran successfully. */
@@ -101,6 +157,9 @@ export async function loadExtractorPackages(): Promise<ExtractorLoadResult> {
     }
     try {
       await import(pathToFileURL(entryPath).href);
+      // The package may have registered into a different registry module
+      // instance (see syncPackageRegistry); copy anything it owns into ours.
+      await syncPackageRegistry(entryPath);
       result.loaded.push(entry.name);
       logger.debug(`extractor-loader: loaded "${entry.name}"`);
     } catch (err) {
