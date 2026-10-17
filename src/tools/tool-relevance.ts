@@ -101,6 +101,12 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
   'analyze_image', 'ocr_extract', 'transcribe_audio', 'synthesize_speech',
   // memory + recall
   'remember', 'recall', 'remember_project',
+  // memory graph (knowledge-graph) tools — the core exposes these as
+  // essentialTools too, so pinning them here keeps parity and stops the
+  // selector from hiding them on a CJK prompt.
+  'create_entities', 'create_relations', 'add_observations',
+  'delete_entities', 'delete_observations', 'delete_relations',
+  'read_graph', 'search_nodes', 'open_nodes',
   // session
   'last_session', 'search_sessions', 'set_project_location',
   // meta: the model must always be able to widen its own toolset

@@ -20,7 +20,6 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from
 import { basename, extname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { VaultStore } from 'nexus-coder/dist/src/vault/store.js';
-import type { VaultMetaRow } from 'nexus-coder/dist/src/vault/store.js';
 import { extractForRag, chunkText, hasExtractor } from 'nexus-coder/dist/src/vault/extract/registry.js';
 import { ragFormatFor } from 'nexus-coder/dist/src/vault/extract/formats.js';
 import { searchVault } from 'nexus-coder/dist/src/vault/retrieval.js';
@@ -58,8 +57,28 @@ export interface AttachmentHit {
   snippet: string;
 }
 
-/** Metadata row for one ingested file (alias of the core VaultMetaRow). */
-export type AttachmentMeta = VaultMetaRow;
+/**
+ * Metadata for one ingested file.
+ *
+ * The core `VaultStore` dropped its `vault_meta` table, so this now lives in a
+ * single marker note (type {@link META_TYPE}, body = JSON) keyed by the file's
+ * root ref. Its chunk notes keep refs derived from that root, so a file is one
+ * marker note plus `<root>:<n>` chunks. {@link listAttachments} reads it back.
+ */
+export interface AttachmentMeta {
+  ref: string;
+  path: string;
+  name: string;
+  size: number;
+  ext: string;
+  mtimeMs: number;
+  ingestedAt: string;
+  chunkCount: number;
+  status: string;
+}
+
+/** Note type marking a per-file metadata marker (storage, not a passage). */
+const META_TYPE = 'attachment-meta';
 
 /** One entry of a file's chunk outline. */
 export interface OutlineEntry {
@@ -187,12 +206,27 @@ function readStore(sessionId: string): VaultStore | null {
 
 /** Does this session currently hold any ingested attachment? */
 export function hasAttachments(sessionId: string): boolean {
-  const store = readStore(sessionId);
-  return !!store && store.listMeta().length > 0;
+  return listAttachments(sessionId).length > 0;
 }
 
-export function listAttachments(sessionId: string): VaultMetaRow[] {
-  return readStore(sessionId)?.listMeta() ?? [];
+/** The session's ingested files, oldest first (matching the old meta order). */
+export function listAttachments(sessionId: string): AttachmentMeta[] {
+  const store = readStore(sessionId);
+  if (!store) return [];
+  const out: AttachmentMeta[] = [];
+  for (const note of store.listNotes()) {
+    if (note.type !== META_TYPE) continue;
+    const full = store.getNote(note.ref);
+    if (!full) continue;
+    try {
+      const meta = JSON.parse(full.body) as AttachmentMeta;
+      if (meta && typeof meta.ref === 'string') out.push(meta);
+    } catch {
+      /* a malformed marker note is not an attachment */
+    }
+  }
+  out.sort((a, b) => (a.ingestedAt || '').localeCompare(b.ingestedAt || ''));
+  return out;
 }
 
 /** Total chunk count across the session's attachments. */
@@ -395,7 +429,10 @@ function toAttachmentHits(
   const chunkTotals = new Map(listAttachments(sessionId).map((m) => [m.name, m.chunkCount || 0]));
   const byFile = new Map<string, AttachmentHit[]>();
   for (const r of rows) {
-    const body = store.getNote(r.ref)?.body ?? r.snippet;
+    const note = store.getNote(r.ref);
+    // The per-file metadata marker is storage, not a retrievable passage.
+    if (!note || note.type === META_TYPE) continue;
+    const body = note.body ?? r.snippet;
     const { file, chunk } = splitChunkTitle(r.title);
     const hit: AttachmentHit = {
       ref: r.ref,
@@ -439,9 +476,8 @@ function toAttachmentHits(
 export function attachmentIndex(sessionId: string): Array<{ name: string; chunks: number; preview: string }> {
   const store = readStore(sessionId);
   if (!store) return [];
-  const rows = store.listMeta();
   const out: Array<{ name: string; chunks: number; preview: string }> = [];
-  for (const m of rows) {
+  for (const m of listAttachments(sessionId)) {
     let preview = '';
     try {
       preview = excerpt(store.getNote(`${m.ref}:0`)?.body ?? '', '', 160);
@@ -676,17 +712,28 @@ export async function ingestAttachments(
         const hash = createHash('sha1').update(chunk.text).digest('hex');
         store.upsertNote(note, `${name}#${chunk.index + 1}`, hash, mtimeMs);
       }
-      store.upsertMeta({
+      const metaNote: ParsedNote = {
         ref: root,
-        path,
-        name,
-        size,
-        ext,
-        mtimeMs,
-        ingestedAt: new Date().toISOString(),
-        chunkCount: chunks.length,
-        status: 'ok',
-      });
+        title: name,
+        type: META_TYPE,
+        tags: [],
+        aliases: [],
+        wikilinks: [],
+        body: JSON.stringify({
+          ref: root,
+          path,
+          name,
+          size,
+          ext,
+          mtimeMs,
+          ingestedAt: new Date().toISOString(),
+          chunkCount: chunks.length,
+          status: 'ok',
+        } satisfies AttachmentMeta),
+        // No index text: the marker is storage and must never surface as a hit.
+        indexText: '',
+      };
+      store.upsertNote(metaNote, path, '', mtimeMs);
       results.push({ path, name, ok: true, format: extracted.format, chunkCount: chunks.length });
     } catch (err) {
       results.push({ path, name, ok: false, reason: 'error', message: (err as Error).message });
@@ -736,15 +783,17 @@ export function removeAttachment(sessionId: string, path: string): void {
   const store = readStore(sessionId);
   if (!store) return;
   const root = rootRef(path);
+  // The marker note's ref is the root itself, so this removes metadata too.
   for (const ref of store.allRefs()) {
     if (ref === root || ref.startsWith(root + ':')) store.deleteNote(ref);
   }
-  store.deleteMeta(root);
 }
 
 /** Empty the session store's contents (keeps the file for reuse). */
 export function clearAttachmentStore(sessionId: string): void {
-  readStore(sessionId)?.deleteAll();
+  const store = readStore(sessionId);
+  if (!store) return;
+  for (const ref of store.allRefs()) store.deleteNote(ref);
 }
 
 /** Close + delete the session store (db + WAL/SHM). */

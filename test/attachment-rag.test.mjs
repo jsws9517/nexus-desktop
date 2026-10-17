@@ -452,7 +452,8 @@ test('pre-rename stores are carried over from session-rag/ to sessions/', async 
   try {
     // Seed a legacy store directly under the OLD directory name — simulates an
     // install that predates the rename.  The schema mirrors VaultStore's
-    // vault_meta + vault_notes + vault_fts tables.
+    // vault_notes + vault_fts tables, with the file metadata carried by a
+    // marker note (the core dropped vault_meta).
     const legacyDir = join(home, 'session-rag');
     mkdirSync(legacyDir, { recursive: true });
     const legacyDb = join(legacyDir, `${sid}.db`);
@@ -471,18 +472,14 @@ test('pre-rename stores are carried over from session-rag/ to sessions/', async 
         CREATE VIRTUAL TABLE IF NOT EXISTS vault_fts USING fts5(
           ref UNINDEXED, title, tags, body, tokenize='porter unicode61'
         );
-        CREATE TABLE IF NOT EXISTS vault_meta (
-          ref TEXT PRIMARY KEY, path TEXT NOT NULL DEFAULT '',
-          name TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT 0,
-          ext TEXT NOT NULL DEFAULT '', mtime_ms REAL NOT NULL DEFAULT 0,
-          ingested_at TEXT NOT NULL DEFAULT '', chunk_count INTEGER NOT NULL DEFAULT 0,
-          status TEXT NOT NULL DEFAULT 'ok'
-        );
       `);
       const ref = 'attach:' + 'a'.repeat(16);
-      db.prepare(`INSERT INTO vault_meta (ref, path, name, size, ext, mtime_ms, ingested_at, chunk_count, status)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        ref, 'c:/fake/carried.md', 'carried.md', 100, 'md', Date.now(), new Date().toISOString(), 1, 'ok'
+      const meta = {
+        ref, path: 'c:/fake/carried.md', name: 'carried.md', size: 100, ext: 'md',
+        mtimeMs: Date.now(), ingestedAt: new Date().toISOString(), chunkCount: 1, status: 'ok',
+      };
+      db.prepare(`INSERT INTO vault_notes (ref, rel, title, type, body, hash) VALUES (?, ?, ?, ?, ?, ?)`).run(
+        ref, meta.path, meta.name, 'attachment-meta', JSON.stringify(meta), 'metahash'
       );
       db.prepare(`INSERT INTO vault_notes (ref, title, type, body, hash) VALUES (?, ?, ?, ?, ?)`).run(
         `${ref}:0`, 'carried.md #1', 'attachment', 'the migrated store keeps its index.', 'abc'
