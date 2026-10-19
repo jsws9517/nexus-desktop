@@ -63,7 +63,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.0.1",
     "electron": "^43.7.7",
-    "electron-builder": "^26.0.12",
+    "electron-builder": "^26.15.3",
     "happy-dom": "^20.14.3",
     "typescript": "^6.0.3"
   },
