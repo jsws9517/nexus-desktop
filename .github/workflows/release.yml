@@ -175,7 +175,7 @@ jobs:
         run: |
           set -euo pipefail
           # Mirror the release tag so the Gitee release resolves to a real ref
-          git push "https://oauth2:${GITEE_TOKEN}@gitee.com/cict_1_0/nexus-desktop.git" "${GITHUB_REF_NAME}" || \
+          git push --force "https://oauth2:${GITEE_TOKEN}@gitee.com/cict_1_0/nexus-desktop.git" "${GITHUB_REF_NAME}" || \
             echo "Gitee tag push skipped (non-fatal)"
           GITEE_REPO=cict_1_0/nexus-desktop \
           GITEE_TAG="${GITHUB_REF_NAME}" \

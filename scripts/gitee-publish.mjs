@@ -51,8 +51,22 @@ async function uploadWithRetry(url, form, size, retries = MAX_RETRIES) {
   }
 }
 
+async function findReleaseByTag() {
+  try {
+    return await request(`${API}/releases/tags/${encodeURIComponent(TAG)}?access_token=${TOKEN}`);
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const body = await readFile(BODY_FILE, 'utf8');
+
+  const existing = await findReleaseByTag();
+  if (existing?.id) {
+    console.log(`gitee release for ${TAG} already exists (id=${existing.id}), replacing it`);
+    await request(`${API}/releases/${existing.id}?access_token=${TOKEN}`, { method: 'DELETE' });
+  }
 
   const release = await request(`${API}/releases?access_token=${TOKEN}`, {
     method: 'POST',
