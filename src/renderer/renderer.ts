@@ -356,6 +356,13 @@ declare global {
       onRateLimitUpdate(cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }) => void): void;
       blacklistRead(): Promise<Record<string, Record<string, string>>>;
       blacklistWrite(data: Record<string, Record<string, string>>): Promise<void>;
+      // Core overlay updates (phase 2).
+      getCoreUpdateState(): Promise<Record<string, unknown>>;
+      checkCoreUpdate(): Promise<Record<string, unknown>>;
+      downloadCoreUpdate(): Promise<Record<string, unknown>>;
+      activateCoreUpdate(): Promise<Record<string, unknown>>;
+      cancelCoreDownload(): Promise<Record<string, unknown>>;
+      onCoreUpdateState(cb: (state: Record<string, unknown>) => void): void;
     };
   }
 }
@@ -4996,6 +5003,8 @@ function buildSettings(providersList: ProviderInfo[]): void {
   // Build update section
   const updateSection = sectionElements['update'];
   buildUpdateSection(updateSection);
+  // Core update section sits below the app update section in the same container.
+  buildCoreUpdateSection(updateSection);
 }
 
 function buildStartupSection(container?: HTMLElement): void {
@@ -5447,6 +5456,138 @@ function showUpdateMsg(msg: string): void {
   settingsBody.appendChild(line);
 }
 
+type CoreUpdateStateType =
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'available'; version?: string }
+  | { status: 'not-available'; version?: string }
+  | { status: 'downloading'; percent?: number }
+  | { status: 'downloaded'; version?: string }
+  | { status: 'error'; message?: string };
+
+let coreUpdateVersion = '';
+function buildCoreUpdateSection(container?: HTMLElement): void {
+  const target = container || settingsBody;
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('coreUpdateSection');
+  target.appendChild(title);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'update-row';
+  const info = document.createElement('span');
+  info.className = 'update-info';
+  coreUpdateVersion = '';
+  info.textContent = t('coreUpdateCurrent', { version: '…' });
+  void window.nexusDesktop.getCoreUpdateState().then((state) => {
+    const s = state as CoreUpdateStateType;
+    coreUpdateVersion = String((s as Record<string, unknown>).version ?? '?');
+    info.textContent = t('coreUpdateCurrent', { version: coreUpdateVersion });
+  }).catch(() => {
+    info.textContent = t('coreUpdateCurrent', { version: '?' });
+  });
+  const btn = document.createElement('button');
+  btn.className = 'btn ghost small';
+  btn.textContent = t('coreUpdateCheck');
+  btn.addEventListener('click', () => void runCoreUpdateCheck(btn));
+  wrap.appendChild(info);
+  wrap.appendChild(btn);
+  target.appendChild(wrap);
+  renderCoreUpdateStatus({ status: 'idle' });
+}
+
+function renderCoreUpdateStatus(state: CoreUpdateStateType): void {
+  const existing = settingsBody.querySelector<HTMLElement>('.core-update-status');
+  if (existing) existing.remove();
+  if (state.status === 'idle' || state.status === 'not-available') {
+    if (state.status === 'not-available') showCoreUpdateMsg(t('coreUpdateNotAvailable'));
+    return;
+  }
+  const line = document.createElement('div');
+  line.className = 'core-update-status';
+  if (state.status === 'checking') {
+    line.textContent = t('coreUpdateChecking');
+  } else if (state.status === 'available') {
+    line.textContent = t('coreUpdateAvailable', { version: state.version ?? '' });
+    const dl = document.createElement('button');
+    dl.className = 'btn primary small';
+    dl.textContent = t('coreUpdateDownload');
+    dl.addEventListener('click', () => void runCoreUpdateDownload(dl, line));
+    line.appendChild(dl);
+  } else if (state.status === 'downloading') {
+    line.textContent = t('coreUpdateDownloading', { percent: state.percent ?? 0 });
+    const cancel = document.createElement('button');
+    cancel.className = 'btn ghost small';
+    cancel.textContent = t('coreUpdateCancel');
+    cancel.addEventListener('click', () => {
+      void window.nexusDesktop.cancelCoreDownload().then(() => renderCoreUpdateStatus({ status: 'idle' }));
+    });
+    line.appendChild(cancel);
+  } else if (state.status === 'downloaded') {
+    line.textContent = t('coreUpdateReady');
+    const inst = document.createElement('button');
+    inst.className = 'btn primary small';
+    inst.textContent = t('coreUpdateInstall');
+    inst.addEventListener('click', () => void runCoreUpdateInstall(inst, line));
+    line.appendChild(inst);
+  } else if (state.status === 'error') {
+    line.textContent = t('coreUpdateError', { message: state.message ?? '' });
+  }
+  settingsBody.appendChild(line);
+}
+
+function showCoreUpdateMsg(msg: string): void {
+  const existing = settingsBody.querySelector<HTMLElement>('.core-update-status');
+  if (existing) existing.remove();
+  const line = document.createElement('div');
+  line.className = 'core-update-status';
+  line.textContent = msg;
+  settingsBody.appendChild(line);
+}
+
+async function runCoreUpdateCheck(btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  renderCoreUpdateStatus({ status: 'checking' });
+  try {
+    const state = await window.nexusDesktop.checkCoreUpdate();
+    renderCoreUpdateStatus(state as CoreUpdateStateType);
+  } catch (err) {
+    renderCoreUpdateStatus({ status: 'error', message: errText(err) });
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function runCoreUpdateDownload(dl: HTMLButtonElement, line: HTMLElement): Promise<void> {
+  dl.disabled = true;
+  try {
+    const state = await window.nexusDesktop.downloadCoreUpdate();
+    renderCoreUpdateStatus(state as CoreUpdateStateType);
+  } catch (err) {
+    renderCoreUpdateStatus({ status: 'error', message: errText(err) });
+  }
+}
+
+async function runCoreUpdateInstall(inst: HTMLButtonElement, line: HTMLElement): Promise<void> {
+  inst.disabled = true;
+  inst.textContent = t('coreUpdateInstalling');
+  try {
+    await window.nexusDesktop.activateCoreUpdate();
+    // Trigger app restart after a short delay so the IPC settles.
+    setTimeout(() => {
+      if (window.location && window.opener) {
+        window.close();
+      } else {
+        location.reload();
+      }
+    }, 1500);
+  } catch (err) {
+    renderCoreUpdateStatus({ status: 'error', message: errText(err) });
+    inst.disabled = false;
+    inst.textContent = t('coreUpdateInstall');
+  }
+}
+
 async function runUpdateCheck(btn: HTMLButtonElement): Promise<void> {
   btn.disabled = true;
   renderUpdateStatus({ status: 'checking' });
@@ -5513,6 +5654,10 @@ settingsOverlay.addEventListener('click', (e) => {
 window.nexusDesktop.onUpdateState((state) => {
   if (settingsOverlay.classList.contains('hidden')) return;
   renderUpdateStatus(state as UpdateStateType);
+});
+window.nexusDesktop.onCoreUpdateState((state) => {
+  if (settingsOverlay.classList.contains('hidden')) return;
+  renderCoreUpdateStatus(state as CoreUpdateStateType);
 });
 
 $('#settings-web').addEventListener('click', () => {
