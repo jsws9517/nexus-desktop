@@ -432,6 +432,11 @@ function startWorker(): void {
     scheduleRestart();
   };
   worker.start();
+  // Propagate the same overlay launch params to per-session workers so all
+  // core processes load the same nexus-coder version.
+  if (launch.env && Object.keys(launch.env).length > 0) {
+    sessionWorkers.launch = { env: launch.env };
+  }
   const savedCwd = desktopState.loadSavedCwd();
   const earlyParams = savedCwd ? { cwd: savedCwd } : undefined;
   // Phase 1 (fast): construct the Agent so session list + message reads respond
