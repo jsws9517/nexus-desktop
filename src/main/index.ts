@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
+import { prepareLaunch, markHealthy, disableActiveCore } from '../bootstrap/overlay.js';
 import { Updater } from './updater.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import { SessionWorkers } from './session-workers.js';
@@ -376,14 +377,56 @@ async function openConfigWindow(): Promise<void> {
   }
 }
 
+/** Overlay root for core hot-upgrades; base copy is used when this dir is empty or disabled. */
+function coreOverlayRoot(): string {
+  return join(app.getPath('userData'), 'overlay');
+}
+
 function startWorker(): void {
-  worker = new WorkerHost(workerPath());
+  const overlayDisabled = process.env.NEXUS_DISABLE_CORE_OVERLAY === '1';
+  let launch = { version: null as string | null, disabledNow: [] as string[], env: {} as Record<string, string> };
+  if (!overlayDisabled) {
+    try {
+      launch = prepareLaunch(coreOverlayRoot(), app.getAppPath());
+    } catch (err) {
+      logger.warn(`core overlay disabled: ${(err as Error).message}`);
+    }
+  }
+  const overlayActive = launch.version !== null;
+  let overlayHealthy = false;
+  if (overlayActive) {
+    logger.info(`core overlay active: ${launch.version}`);
+  }
+  for (const v of launch.disabledNow) {
+    logger.warn(`core overlay ${v} disabled by rollback`);
+  }
+
+  worker = new WorkerHost(workerPath(), launch);
   worker.onEvent = forwardEvent;
   worker.onPermission = (req) => send(CHANNELS.permission, req);
   worker.onLog = (level, message) => send(CHANNELS.log, { level, message });
   worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
+  worker.onHealthy = () => {
+    if (overlayActive && !overlayHealthy) {
+      overlayHealthy = true;
+      try {
+        markHealthy(coreOverlayRoot());
+      } catch (err) {
+        logger.warn(`core overlay markHealthy failed: ${(err as Error).message}`);
+      }
+    }
+  };
   worker.onExit = (code) => {
     send(CHANNELS.log, { level: 'warn', message: `Core worker exited (code=${code})` });
+    if (overlayActive && !overlayHealthy) {
+      // Died before answering: the overlay itself is suspect, fall back to base copy on restart.
+      try {
+        const v = disableActiveCore(coreOverlayRoot());
+        if (v) send(CHANNELS.log, { level: 'error', message: `Core overlay ${v} failed to start; reverted to base copy` });
+      } catch (err) {
+        logger.warn(`core overlay disable failed: ${(err as Error).message}`);
+      }
+    }
     scheduleRestart();
   };
   worker.start();
