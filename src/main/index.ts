@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
 import { prepareLaunch, markHealthy, disableActiveCore } from '../bootstrap/overlay.js';
 import { Updater } from './updater.js';
+import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import { SessionWorkers } from './session-workers.js';
 import { RateLimitRegistry } from './rate-limit-registry.js';
@@ -49,6 +50,7 @@ const desktopState = createDesktopState();
 sessionWorkers.rateLimitRegistry = rateLimitRegistry;
 rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
 const updater = new Updater();
+const coreUpdater = new CoreUpdateManager('https://github.com/jsws9517/nexus-desktop/releases/latest/download');
 // System resource watchdog for the multi-session protection (see resource-monitor.ts).
 const resourceMon = new ResourceMonitor({
   intervalMs: 5000,
@@ -500,6 +502,9 @@ if (gotLock) {
     Menu.setApplicationMenu(null);
     updater.init();
     updater.onState = (state) => send(CHANNELS.updateState, state);
+    coreUpdater.init();
+    // coreOverlayRoot is also used by startWorker for the overlay bootstrap;
+    // keep it consistent with the registerIpc call below.
     createTray();
     startWorker();
     wireSessionWorkers();
@@ -557,8 +562,12 @@ if (gotLock) {
       setLazyWorker: desktopState.setLazyWorker,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
-      rateLimitRegistry,
-    });
+       rateLimitRegistry,
+       coreUpdater,
+       coreOverlayRoot,
+       restartCoreWorker: () => { void restartWorker(); },
+       sendEvent: send,
+     });
     createWindow();
 
     app.on('activate', () => {
