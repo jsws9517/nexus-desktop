@@ -299,6 +299,16 @@ export class AgentService {
   private activeRepMonitor: RepetitionMonitor | null = null;
   /** Accumulates tool calls within the current LLM turn for cross-turn repetition detection. */
   private toolCallsAcc: Array<{ name: string; args: Record<string, unknown> }> = [];
+  /**
+   * One-shot flag preventing the debug-discipline override from being prepended
+   * multiple times. Must live on the instance rather than relying on message-
+   * list inspection because `prependToSystem` is not idempotent: on fresh
+   * sessions the core's `insertSystemPromptFirst` runs AFTER our preLlmCall
+   * hook (it is called inside `agent.chat()` → `compress()` → `ensureUserInContext`),
+   * so the "real" system prompt (containing the core's [Debugging Discipline]
+   * block) is NOT yet in `msgs` when our hook runs — the guard always fires.
+   */
+  private _debugOverrideInjected = false;
 
   /**
    * True (default) to abort a turn when the model repeats the same thinking
@@ -760,7 +770,13 @@ export class AgentService {
           // IDE and contradictory to the [Project Directory] / constitution blocks
           // injected above. Append a superseding section (lands after the core
           // block, so it is read later and overrides it).
-          if (!firstContent.includes(DEBUG_OVERRIDE_MARKER)) {
+          // Guard uses an instance flag, NOT message-list inspection:
+          // prependToSystem() unshifts a new system message each call, so the
+          // core's insertSystemPromptFirst() (called later inside compress())
+          // would push any previously prepended message to index 1 (out of
+          // reading order). A one-shot flag avoids that race entirely.
+          if (!this._debugOverrideInjected) {
+            this._debugOverrideInjected = true;
             ctx.prependToSystem(buildDebugDisciplineOverride());
           }
 
@@ -3531,7 +3547,7 @@ private resetAttachmentRagRoundCache(): void {
 reloadConfig(): { ok: boolean } {
     if (!this.agent?.config) return { ok: false };
     this.agent.config.reload?.();
-    // ��Ӧ�� contextWindow ѹ�����������Web ��屣���ʱ��Ч��
+    // .Ӧ. contextWindow ѹ.Web .屣.ʱ.Ч.
     this.agent.applyContextWindow?.();
     // Embedding re-rank reads `knowledge.*`, so a reload can flip it on/off.
     this.resetAttachmentEmbedding();
