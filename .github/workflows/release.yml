@@ -176,6 +176,8 @@ jobs:
             release/*.blockmap
             release/core-*.tar.gz
             release/latest-core.yml
+            release/latest-core.yml.sig
+            keys/core-signing-public.pem
 
       - name: Publish Gitee Release
         shell: bash

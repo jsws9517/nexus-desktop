@@ -1,8 +1,9 @@
 /**
  * Core update download client (phase 2).
  *
- * Downloads a core zip from a URL, verifies its SHA-512 digest, and stages it
- * under the overlay root so `activateCore` can promote it to active.
+ * Downloads a core zip from a URL, verifies its SHA-512 digest and ed25519
+ * manifest signature, and stages it under the overlay root so `activateCore`
+ * can promote it to active.
  *
  * The staged layout:
  *   <root>/staged/core-<version>.zip      compressed payload (unverified at rest)
@@ -11,9 +12,10 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey, verify as cryptoVerify, type KeyLike } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { createReadStream } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const STAGED_DIR = 'staged';
 
@@ -58,18 +60,42 @@ export interface ManifestEntry {
   offset: 0;
 }
 
-export interface CoreUpdateState {
-  /** Latest released version we have a manifest for. */
-  latest: CoreUpdateInfo | null;
-  /** Version currently staged (not yet active); null if no pending stage. */
-  staged: CoreUpdateInfo | null;
-  /** Version currently active (from overlay state); null means base copy. */
-  active: string | null;
+// ── Public key resolution ──────────────────────────────────────────────────────
+
+/** Lazy-resolved ed25519 SPKI public key for manifest signature verification. */
+let _pubKey: KeyLike | null | undefined = undefined;
+
+function getPubKey(): KeyLike | null {
+  if (_pubKey === undefined) {
+    const raw =
+      process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX ||
+      (() => {
+        try {
+          return fs
+            .readFileSync(
+              path.join(path.dirname(fileURLToPath(import.meta.url)), 'core-signing-public.txt'),
+              'utf8',
+            )
+            .trim();
+        } catch {
+          return null;
+        }
+      })();
+    if (!raw) {
+      _pubKey = null;
+      return null;
+    }
+    try {
+      const der = Buffer.from(raw, 'base64');
+      _pubKey = createPublicKey({ key: der, format: 'der', type: 'spki' });
+    } catch {
+      _pubKey = null;
+    }
+  }
+  return _pubKey;
 }
 
-function safeVersion(v: unknown): string | null {
-  return typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(v) ? v : null;
-}
+// ── Manifest parsing ───────────────────────────────────────────────────────────
 
 function parseYamlSimple(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -94,7 +120,6 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
   for (const line of lines) {
     const idx = line.indexOf(':');
     if (idx === -1) {
-      // blank line or section separator: finalize previous entry
       if (current.version && current.sha512 && current.size != null) {
         entries.push({ ...current, offset: 0 } as ManifestEntry);
       }
@@ -114,6 +139,55 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
   }
   return entries;
 }
+
+/**
+ * Verify the ed25519 signature on a manifest text against its .sig sidecar.
+ * Returns true when the signature is valid, false when missing/unverifiable,
+ * and throws when the signature is present but invalid.
+ *
+ * When no public key is available the function returns true (signature
+ * verification is opt-in; a missing key means "trust by hash only").
+ */
+export function verifyManifestSignature(manifestText: string, sigHex: string): boolean {
+  const pubKey = getPubKey();
+  if (!pubKey || !sigHex) return true;
+  try {
+    const sig = Buffer.from(sigHex.trim(), 'hex');
+    return cryptoVerify(null, Buffer.from(manifestText), pubKey, sig);
+  } catch {
+    return false;
+  }
+}
+
+// ── Fetch ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch latest-core.yml (and its .sig) from a feed URL.
+ * Verifies the ed25519 signature when a public key is available.
+ * Returns entries sorted descending by version (first = newest).
+ */
+export async function fetchCoreManifest(feedUrl: string): Promise<ManifestEntry[]> {
+  const base = feedUrl.replace(/\/$/, '');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const [ymlRes, sigRes] = await Promise.all([
+      fetch(`${base}/latest-core.yml`, { signal: controller.signal }),
+      fetch(`${base}/latest-core.yml.sig`, { signal: controller.signal }).catch(() => null),
+    ]);
+    if (!ymlRes.ok) throw new Error(`HTTP ${ymlRes.status}`);
+    const text = await ymlRes.text();
+    const sigHex = sigRes?.ok ? await sigRes.text() : '';
+    if (sigHex && !verifyManifestSignature(text, sigHex)) {
+      throw new Error('core manifest signature verification failed');
+    }
+    return parseCoreManifest(text);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── Staging ────────────────────────────────────────────────────────────────────
 
 function stagedZipPath(root: string, version: string): string {
   return path.join(root, STAGED_DIR, `core-${version}.zip`);
@@ -145,23 +219,7 @@ export function readStagedMeta(root: string, version: string): StagedCoreMeta | 
   }
 }
 
-/**
- * Fetch the latest-core.yml from a feed URL (same shape as electron-updater's yml).
- * Returns entries sorted descending by version (first = newest).
- */
-export async function fetchCoreManifest(feedUrl: string): Promise<ManifestEntry[]> {
-  const url = `${feedUrl.replace(/\/$/, '')}/latest-core.yml`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    return parseCoreManifest(text);
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// ── Download ───────────────────────────────────────────────────────────────────
 
 /**
  * Download a core zip, verify SHA-512, write the staged metadata sidecar.

@@ -88,7 +88,8 @@ async function main() {
     `nexus-Setup-${version}.exe`,
     `nexus-Setup-${version}.exe.blockmap`,
     ...fs.readdirSync(RELEASE_DIR).filter((f) => f.startsWith('core-') && f.endsWith('.tar.gz')),
-    'latest-core.yml',
+        'latest-core.yml',
+    ...fs.readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sig')),
   ];
 
   for (const name of candidates) {

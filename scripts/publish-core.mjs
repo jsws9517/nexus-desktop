@@ -10,7 +10,7 @@
  *
  * Defaults: --out release (same directory electron-builder emits into).
  */
-import { createHash } from 'node:crypto';
+import { createHash, sign as cryptoSign } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,7 @@ function flag(name) {
 }
 
 const outDir = flag('out') || path.join(repoRoot, 'release');
+const keysDir = flag('keys-dir') || path.join(repoRoot, 'keys');
 
 async function main() {
   const pkgFile = path.join(repoRoot, 'node_modules', 'nexus-coder', 'package.json');
@@ -103,6 +104,20 @@ async function main() {
         '',
       ];
       fs.writeFileSync(manifestPath, yamlLines.join('\n'));
+
+      // Sign the manifest with ed25519 (one-shot API: sign(null, data, key)).
+      const privKeyFile = path.join(keysDir, 'core-signing-private.pem');
+      const sigPath = `${manifestPath}.sig`;
+      if (fs.existsSync(privKeyFile)) {
+        const privKey = fs.readFileSync(privKeyFile);
+        const manifestData = fs.readFileSync(manifestPath);
+        const sig = cryptoSign(null, manifestData, privKey);
+        fs.writeFileSync(sigPath, sig.toString('hex'));
+        console.log(`[publish-core] signed ${manifestPath} -> ${sigPath}`);
+      } else {
+        console.warn(`[publish-core] private key not found at ${privKeyFile}; skipping signature.`);
+      }
+
       console.log(
         `[publish-core] core v${version} => ${outFileName} (${(sz / 1048576).toFixed(1)} MiB)` +
         `  sha512=${sha512.slice(0, 16)}…  manifest=${manifestPath}`,
