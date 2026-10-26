@@ -44,16 +44,16 @@ async function main() {
     }
 
     const expected = [
-      'dist/bootstrap/overlay.js',
-      'dist/bootstrap/register.js',
-      'dist/bootstrap/resolve-hook.js',
-      'dist/core-overlay/download.js',
-      'dist/core-overlay/manager.js',
-      'dist/agent-worker.js',
+      '\\dist\\bootstrap\\overlay.js',
+      '\\dist\\bootstrap\\register.js',
+      '\\dist\\bootstrap\\resolve-hook.js',
+      '\\dist\\core-overlay\\download.js',
+      '\\dist\\core-overlay\\manager.js',
+      '\\dist\\agent-worker.js',
     ];
     for (const f of expected) {
-      const found = list.some(p => p === f || p === '\\' + f);
-      assert(found, `asar contains ${f}`);
+      const found = list.includes(f);
+      assert(found, `asar contains ${f.replace(/\\/g, '/')}`);
     }
   }
 
