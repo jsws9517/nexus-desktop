@@ -19,6 +19,7 @@ import type { SessionWorkers, OpenTabInfo } from '../main/session-workers.js';
 import type { RateLimitRegistry } from '../main/rate-limit-registry.js';
 import type { ResourceMonitor, ResourceState } from '../main/resource-monitor.js';
 import { Updater } from '../main/updater.js';
+import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { getRepoGitStatus, type RepoStatusResult } from '../main/git-internal.js';
 import { globalRulesPath, ensureGlobalRules, resetGlobalRules } from '../tools/agents.js';
 import { recentLogLines } from '../shared/logger.js';
@@ -104,6 +105,14 @@ export interface IpcContext extends DesktopStateAccess {
   countOpenTabs: () => number;
   log: (msg: string) => void;
   rateLimitRegistry: RateLimitRegistry;
+  /** Optional core overlay update manager (null when disabled). */
+  coreUpdater: CoreUpdateManager | null;
+  /** Absolute path to the overlay root dir (e.g. <userData>/overlay). */
+  coreOverlayRoot: () => string;
+  /** Signal the main process to restart the core worker with updated overlay state. */
+  restartCoreWorker: () => void;
+  /** Send an event to the renderer process (for state change pushes). */
+  sendEvent: (channel: string, payload: unknown) => void;
 }
 
 /**
@@ -137,7 +146,7 @@ function normalizeListSessionsParams(params?: Record<string, unknown>): {
 }
 
 export function registerIpc(ctx: IpcContext): void {
-  const { worker, sessionWorkers, resourceMon, updater, log, rateLimitRegistry } = ctx;
+  const { worker, sessionWorkers, resourceMon, updater, coreUpdater, log, rateLimitRegistry } = ctx;
   const call = (method: string) => async (_e: unknown, params?: Record<string, unknown>) => {
     if (method === 'resolvePermission') log(`invoke resolvePermission params=${JSON.stringify(params)}`);
     await (ctx.earlyMethods.has(method) ? ctx.earlyReady() : ctx.fullReady());
@@ -748,6 +757,22 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle(CHANNELS.installUpdate, () => {
     updater.install();
   });
+
+  // ── Core overlay updates (phase 2) ──
+  if (coreUpdater) {
+    coreUpdater.onState = (state) => ctx.sendEvent(CHANNELS.coreUpdateState, state);
+    const overlayRoot = ctx.coreOverlayRoot;
+    ipcMain.handle(CHANNELS.getCoreUpdateState, () => coreUpdater.getState());
+    ipcMain.handle(CHANNELS.checkCoreUpdate, () => coreUpdater.check(overlayRoot()));
+    ipcMain.handle(CHANNELS.downloadCoreUpdate, () => coreUpdater.download(overlayRoot()));
+    ipcMain.handle(CHANNELS.activateCoreUpdate, async () => {
+      const result = await coreUpdater.activate(overlayRoot());
+      ctx.sendEvent(CHANNELS.log, { level: 'info', message: `Core overlay ${result.active ?? 'base'} activated; scheduling worker restart` });
+      ctx.restartCoreWorker();
+      return result;
+    });
+    ipcMain.handle(CHANNELS.cancelCoreDownload, () => coreUpdater.cancelDownload(overlayRoot()));
+  }
 
   // Cross-session rate-limit status (aggregated from all open session workers).
   ipcMain.handle(CHANNELS.getRateLimitStatus, (): { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> } => {

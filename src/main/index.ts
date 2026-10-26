@@ -5,7 +5,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
+import { prepareLaunch, markHealthy, disableActiveCore } from '../bootstrap/overlay.js';
 import { Updater } from './updater.js';
+import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import { SessionWorkers } from './session-workers.js';
 import { RateLimitRegistry } from './rate-limit-registry.js';
@@ -48,6 +50,7 @@ const desktopState = createDesktopState();
 sessionWorkers.rateLimitRegistry = rateLimitRegistry;
 rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
 const updater = new Updater();
+const coreUpdater = new CoreUpdateManager('https://github.com/jsws9517/nexus-desktop/releases/latest/download');
 // System resource watchdog for the multi-session protection (see resource-monitor.ts).
 const resourceMon = new ResourceMonitor({
   intervalMs: 5000,
@@ -376,17 +379,64 @@ async function openConfigWindow(): Promise<void> {
   }
 }
 
+/** Overlay root for core hot-upgrades; base copy is used when this dir is empty or disabled. */
+function coreOverlayRoot(): string {
+  return join(app.getPath('userData'), 'overlay');
+}
+
 function startWorker(): void {
-  worker = new WorkerHost(workerPath());
+  const overlayDisabled = process.env.NEXUS_DISABLE_CORE_OVERLAY === '1';
+  let launch = { version: null as string | null, disabledNow: [] as string[], env: {} as Record<string, string> };
+  if (!overlayDisabled) {
+    try {
+      launch = prepareLaunch(coreOverlayRoot(), app.getAppPath());
+    } catch (err) {
+      logger.warn(`core overlay disabled: ${(err as Error).message}`);
+    }
+  }
+  const overlayActive = launch.version !== null;
+  let overlayHealthy = false;
+  if (overlayActive) {
+    logger.info(`core overlay active: ${launch.version}`);
+  }
+  for (const v of launch.disabledNow) {
+    logger.warn(`core overlay ${v} disabled by rollback`);
+  }
+
+  worker = new WorkerHost(workerPath(), launch);
   worker.onEvent = forwardEvent;
   worker.onPermission = (req) => send(CHANNELS.permission, req);
   worker.onLog = (level, message) => send(CHANNELS.log, { level, message });
   worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
+  worker.onHealthy = () => {
+    if (overlayActive && !overlayHealthy) {
+      overlayHealthy = true;
+      try {
+        markHealthy(coreOverlayRoot());
+      } catch (err) {
+        logger.warn(`core overlay markHealthy failed: ${(err as Error).message}`);
+      }
+    }
+  };
   worker.onExit = (code) => {
     send(CHANNELS.log, { level: 'warn', message: `Core worker exited (code=${code})` });
+    if (overlayActive && !overlayHealthy) {
+      // Died before answering: the overlay itself is suspect, fall back to base copy on restart.
+      try {
+        const v = disableActiveCore(coreOverlayRoot());
+        if (v) send(CHANNELS.log, { level: 'error', message: `Core overlay ${v} failed to start; reverted to base copy` });
+      } catch (err) {
+        logger.warn(`core overlay disable failed: ${(err as Error).message}`);
+      }
+    }
     scheduleRestart();
   };
   worker.start();
+  // Propagate the same overlay launch params to per-session workers so all
+  // core processes load the same nexus-coder version.
+  if (launch.env && Object.keys(launch.env).length > 0) {
+    sessionWorkers.launch = { env: launch.env };
+  }
   const savedCwd = desktopState.loadSavedCwd();
   const earlyParams = savedCwd ? { cwd: savedCwd } : undefined;
   // Phase 1 (fast): construct the Agent so session list + message reads respond
@@ -457,6 +507,9 @@ if (gotLock) {
     Menu.setApplicationMenu(null);
     updater.init();
     updater.onState = (state) => send(CHANNELS.updateState, state);
+    coreUpdater.init();
+    // coreOverlayRoot is also used by startWorker for the overlay bootstrap;
+    // keep it consistent with the registerIpc call below.
     createTray();
     startWorker();
     wireSessionWorkers();
@@ -514,8 +567,12 @@ if (gotLock) {
       setLazyWorker: desktopState.setLazyWorker,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
-      rateLimitRegistry,
-    });
+       rateLimitRegistry,
+       coreUpdater,
+       coreOverlayRoot,
+       restartCoreWorker: () => { void restartWorker(); },
+       sendEvent: send,
+     });
     createWindow();
 
     app.on('activate', () => {

@@ -72,7 +72,17 @@ export class WorkerHost {
   /** Fired after every callLlm() so the main process can aggregate across sessions. */
   onRateLimitReport?: (data: unknown) => void;
 
-  constructor(private workerPath: string) {}
+  /** Fired once, on the first message from the worker (worker is loaded and running). */
+  onHealthy?: () => void;
+  private healthyNotified = false;
+
+  /**
+   * @param launch optional extra worker env (core overlay). Omit to run the base copy.
+   */
+  constructor(
+    private workerPath: string,
+    private launch: { env: Record<string, string> } = { env: {} },
+  ) {}
 
   start(): void {
     diag(`start() path=${this.workerPath}`);
@@ -153,6 +163,7 @@ export class WorkerHost {
     const child = spawn('node', [WORKER_V8_FLAG, this.workerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      env: { ...process.env, ...this.launch.env },
     });
     this.handle = child;
 
@@ -192,6 +203,7 @@ export class WorkerHost {
       serviceName: 'nexus-core',
       stdio: 'pipe',
       execArgv: [WORKER_V8_FLAG],
+      env: { ...process.env, ...this.launch.env },
     });
     this.handle = child;
     diag(`utilityProcess forked pid=${(child as unknown as { pid?: number }).pid}`);
@@ -224,6 +236,10 @@ export class WorkerHost {
   }
 
   private dispatch(msg: WorkerResponse): void {
+    if (!this.healthyNotified) {
+      this.healthyNotified = true;
+      this.onHealthy?.();
+    }
     switch (msg.type) {
       case 'result':
         this.resolveResult(msg.id!, msg.ok!, msg.data, msg.error);

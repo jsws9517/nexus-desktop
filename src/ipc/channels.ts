@@ -146,6 +146,14 @@ export const CHANNELS = {
   configWindowClosed: 'nexus:configWindowClosed',
   rateLimitUpdate: 'nexus:rateLimitUpdate',
   getRateLimitStatus: 'nexus:getRateLimitStatus',
+
+  // core overlay updates (phase 2).
+  checkCoreUpdate: 'nexus:checkCoreUpdate',
+  downloadCoreUpdate: 'nexus:downloadCoreUpdate',
+  activateCoreUpdate: 'nexus:activateCoreUpdate',
+  cancelCoreDownload: 'nexus:cancelCoreDownload',
+  getCoreUpdateState: 'nexus:getCoreUpdateState',
+  coreUpdateState: 'nexus:coreUpdateState',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];

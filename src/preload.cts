@@ -172,6 +172,16 @@ const api = {
   downloadUpdate: () => ipcRenderer.invoke('nexus:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('nexus:installUpdate'),
 
+  // Core overlay updates (phase 2).
+  getCoreUpdateState: () => ipcRenderer.invoke('nexus:getCoreUpdateState'),
+  checkCoreUpdate: () => ipcRenderer.invoke('nexus:checkCoreUpdate'),
+  downloadCoreUpdate: () => ipcRenderer.invoke('nexus:downloadCoreUpdate'),
+  activateCoreUpdate: () => ipcRenderer.invoke('nexus:activateCoreUpdate'),
+  cancelCoreDownload: () => ipcRenderer.invoke('nexus:cancelCoreDownload'),
+  onCoreUpdateState: (cb: (state: Record<string, unknown>) => void) => {
+    ipcRenderer.on('nexus:coreUpdateState', (_e, state) => cb(state));
+  },
+
   onEvent: (cb: (event: unknown) => void) => {
     ipcRenderer.on('nexus:event', (_e, event) => cb(event));
   },
