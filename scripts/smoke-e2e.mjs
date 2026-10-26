@@ -69,7 +69,12 @@ function runNodeProbe(appDir, coreDir, specifier) {
   });
   let out = '';
   if (r.stdout) out += r.stdout;
-  if (r.stderr && !r.stderr.includes('ExperimentalWarning')) out += r.stderr;
+  // Strip Node.js deprecation warnings and other non-JSON stderr noise.
+  const stderrClean = (r.stderr ?? '')
+    .replace(/\(node:\d+\) \[DEP\d+\] DeprecationWarning:.*(?:\n\s*\([^)]+\)\n?)?/g, '')
+    .replace(/ExperimentalWarning.*\n?/g, '')
+    .trim();
+  if (stderrClean) out += stderrClean;
   return { status: r.status, out: out.trim(), err: r.error?.message };
 }
 

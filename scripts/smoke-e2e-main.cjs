@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Minimal Electron main for scenario4 of smoke-overlay-v2.mjs.
  * Forks the smoke-worker with overlay env and reports result to POC_RESULT_FILE.
  */

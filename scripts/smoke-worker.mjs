@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Minimal worker for scenario4 of smoke-overlay-v2.mjs.
  * Loaded by electronProbe via utilityProcess.fork into the main process started
  * from scripts/smoke-e2e-main.cjs.

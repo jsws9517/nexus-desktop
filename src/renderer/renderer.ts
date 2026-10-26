@@ -338,6 +338,7 @@ declare global {
       getResourceState(): Promise<ResourceStateInfo>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
+      getCoreVersion(): string;
       checkForUpdate(): Promise<Record<string, unknown>>;
       downloadUpdate(): Promise<Record<string, unknown>>;
       installUpdate(): Promise<unknown>;
@@ -5479,9 +5480,12 @@ function buildCoreUpdateSection(container?: HTMLElement): void {
   info.className = 'update-info';
   coreUpdateVersion = '';
   info.textContent = t('coreUpdateCurrent', { version: '…' });
+  coreUpdateVersion = window.nexusDesktop.getCoreVersion();
   void window.nexusDesktop.getCoreUpdateState().then((state) => {
     const s = state as CoreUpdateStateType;
-    coreUpdateVersion = String((s as Record<string, unknown>).version ?? '?');
+    if (s.status === 'idle' || s.status === 'not-available') {
+      coreUpdateVersion = String((s as Record<string, unknown>).version ?? coreUpdateVersion);
+    }
     info.textContent = t('coreUpdateCurrent', { version: coreUpdateVersion });
   }).catch(() => {
     info.textContent = t('coreUpdateCurrent', { version: '?' });

@@ -33,7 +33,7 @@ async function withPubKey(pubKeyHex, fn) {
 }
 
 test('verifyManifestSignature accepts valid signature', async () => {
-  await withPubKey('MCowBQYDK2VwAyEATmsCJ0fzGGXInKWkkhhbI4ezWgyTvcXl3MeoSS9AKvE=', async (mod) => {
+  await withPubKey('MCowBQYDK2VwAyEARWOKLRKTHQYnGH8O6qDYIMWYSLgQC+t4i///Yey0/MU=', async (mod) => {
     const data = 'version: 1.0.0\nsha512: aaa\nsize: 100\nurl: https://example.com/core.tar.gz\ntimestamp: 2026-01-01T00:00:00Z\n';
     const sig = cryptoSign(null, Buffer.from(data), fs.readFileSync('keys/core-signing-private.pem')).toString('hex');
     assert.equal(mod.verifyManifestSignature(data, sig), true);
@@ -41,7 +41,7 @@ test('verifyManifestSignature accepts valid signature', async () => {
 });
 
 test('verifyManifestSignature rejects tampered manifest', async () => {
-  await withPubKey('MCowBQYDK2VwAyEATmsCJ0fzGGXInKWkkhhbI4ezWgyTvcXl3MeoSS9AKvE=', async (mod) => {
+  await withPubKey('MCowBQYDK2VwAyEARWOKLRKTHQYnGH8O6qDYIMWYSLgQC+t4i///Yey0/MU=', async (mod) => {
     const data = 'version: 1.0.0\nsha512: aaa\nsize: 100\nurl: https://example.com/core.tar.gz\ntimestamp: 2026-01-01T00:00:00Z\n';
     const sig = cryptoSign(null, Buffer.from(data), fs.readFileSync('keys/core-signing-private.pem')).toString('hex');
     assert.equal(mod.verifyManifestSignature(data + ' tampered', sig), false);
@@ -50,17 +50,19 @@ test('verifyManifestSignature rejects tampered manifest', async () => {
 
 test('verifyManifestSignature returns true when no public key is configured', async () => {
   const orig = process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX;
-  delete process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX;
+  // Set to empty string so getPubKey() falls through to null (no bundled key in test env)
+  process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX = '';
   try {
     const mod = await reimportDownload();
     assert.equal(mod.verifyManifestSignature('any text', 'deadbeef'), true);
   } finally {
     if (orig !== undefined) process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX = orig;
+    else delete process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX;
   }
 });
 
 test('verifyManifestSignature returns true when no signature provided', async () => {
-  await withPubKey('MCowBQYDK2VwAyEATmsCJ0fzGGXInKWkkhhbI4ezWgyTvcXl3MeoSS9AKvE=', async (mod) => {
+  await withPubKey('MCowBQYDK2VwAyEARWOKLRKTHQYnGH8O6qDYIMWYSLgQC+t4i///Yey0/MU=', async (mod) => {
     assert.equal(mod.verifyManifestSignature('any text', ''), true);
   });
 });

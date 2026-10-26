@@ -15,7 +15,6 @@ import path from 'node:path';
 import { createHash, createPublicKey, verify as cryptoVerify, type KeyLike } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { createReadStream } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
 const STAGED_DIR = 'staged';
 
@@ -62,37 +61,19 @@ export interface ManifestEntry {
 
 // ── Public key resolution ──────────────────────────────────────────────────────
 
-/** Lazy-resolved ed25519 SPKI public key for manifest signature verification. */
-let _pubKey: KeyLike | null | undefined = undefined;
+/** Base64-encoded ed25519 SPKI public key (DER) for manifest signature verification. */
+const BUNDLED_PUB_KEY_B64 =
+  'MCowBQYDK2VwAyEARWOKLRKTHQYnGH8O6qDYIMWYSLgQC+t4i///Yey0/MU=';
 
 function getPubKey(): KeyLike | null {
-  if (_pubKey === undefined) {
-    const raw =
-      process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX ||
-      (() => {
-        try {
-          return fs
-            .readFileSync(
-              path.join(path.dirname(fileURLToPath(import.meta.url)), 'core-signing-public.txt'),
-              'utf8',
-            )
-            .trim();
-        } catch {
-          return null;
-        }
-      })();
-    if (!raw) {
-      _pubKey = null;
-      return null;
-    }
-    try {
-      const der = Buffer.from(raw, 'base64');
-      _pubKey = createPublicKey({ key: der, format: 'der', type: 'spki' });
-    } catch {
-      _pubKey = null;
-    }
+  const raw = process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX ?? BUNDLED_PUB_KEY_B64;
+  if (!raw) return null;
+  try {
+    const der = Buffer.from(raw, 'base64');
+    return createPublicKey({ key: der, format: 'der', type: 'spki' });
+  } catch {
+    return null;
   }
-  return _pubKey;
 }
 
 // ── Manifest parsing ───────────────────────────────────────────────────────────

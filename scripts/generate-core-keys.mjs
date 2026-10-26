@@ -44,10 +44,13 @@ function main() {
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   });
 
-  const pubHex = publicKey.toString('hex').replace(/^-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----$/m, '').trim();
-  // Extract just the raw key bytes from the PEM.
-  const pubLines = publicKey.toString('pem').split('\n').filter((l) => l && !l.startsWith('-----'));
-  const rawHex = pubLines.join('').toLowerCase();
+  const pubPem = publicKey.toString('pem');
+  // Extract base64 content from PEM (strip BEGIN/END headers and whitespace).
+  const rawHex = pubPem
+    .split('\n')
+    .filter((l) => l && !l.startsWith('-----'))
+    .join('')
+    .trim();
 
   fs.writeFileSync(privKeyFile, privateKey.toString('pem'));
   fs.chmodSync(privKeyFile, 0o600);
