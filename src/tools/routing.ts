@@ -153,6 +153,7 @@ const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   fetch: { group: 'web', readOnly: true, keywords: ['fetch', 'url', '网页', '抓取', '抓取网页', 'http'] },
   get_current_time: { group: 'meta', readOnly: true, keywords: ['time', '时间', '现在几点', '日期', 'current time'] },
   convert_time: { group: 'meta', readOnly: true, keywords: ['time', '时间', '时区', '转换时间', 'convert time'] },
+  inline_search: { group: 'fs', keywords: ['inline', '搜索', '查找', 'search'] },
 };
 
 /** Every annotation, merged. Later maps do not override earlier ones. */
