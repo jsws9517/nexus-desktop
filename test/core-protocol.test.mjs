@@ -142,4 +142,12 @@ test('publish-core stamps the desktop protocol into latest-core.yml', async () =
     'manifest must carry the desktop protocol');
   // And the signature covers the stamped manifest.
   assert.ok(fs.existsSync(path.join(out, 'latest-core.yml.sig')), 'signature written');
+  // The artifact's own package.json must carry it too, so the activation and
+  // boot gates (which read the extracted files) are effective.
+  const tarball = fs.readdirSync(out).find((f) => f.endsWith('.tar.gz'));
+  const extract = mkdtempSync(path.join(tmpdir(), 'publish-artifact-'));
+  execFileSync('tar', ['xzf', path.join(out, tarball), '-C', extract]);
+  const artifactPkg = JSON.parse(fs.readFileSync(path.join(extract, 'package.json'), 'utf8'));
+  assert.equal(artifactPkg.nexusDesktopProtocol, desktopPkg.nexusDesktopProtocol,
+    'artifact package.json must carry the desktop protocol');
 });

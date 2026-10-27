@@ -167,7 +167,7 @@ async function main() {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'nexus-pkg-p2-data-'));
     const overlayRoot = path.join(userDataDir, 'overlay');
     const version = '9.9.5-packaged-good';
-    stageCore(overlayRoot, version);
+    stageCore(overlayRoot, version, { protocol: 1 });
     activateState(overlayRoot, version);
 
     const { info } = await launchApp({ userDataDir, dataDir, waitMs: 16000 });

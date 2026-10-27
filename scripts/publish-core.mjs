@@ -56,6 +56,18 @@ async function main() {
     return;
   }
 
+  // Resolve the protocol this core is compatible with. The core's own
+  // declaration wins (an independently released core); otherwise the companion
+  // desktop's protocol is used (this CI publishes them together). The value is
+  // written both into the artifact's package.json (so the client's activation
+  // and boot gates can read it) and into the manifest.
+  const corePkgRaw = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
+  const declaredProtocol = Number.isInteger(corePkgRaw.nexusDesktopProtocol)
+    && corePkgRaw.nexusDesktopProtocol >= 0 ? corePkgRaw.nexusDesktopProtocol : null;
+  const envProtocol = parseInt(process.env.NEXUS_CORE_PROTOCOL ?? '', 10);
+  const coreProtocol = declaredProtocol
+    ?? (Number.isInteger(envProtocol) ? envProtocol : readDesktopProtocol());
+
   const srcDist = path.join(repoRoot, 'node_modules', 'nexus-coder', 'dist');
   if (!fs.existsSync(srcDist)) {
     console.error(`[publish-core] source dist missing: ${srcDist}`);
@@ -84,6 +96,7 @@ async function main() {
     // Write patched package.json at staging root.
     const rawPkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
     rawPkg.version = version;
+    rawPkg.nexusDesktopProtocol = coreProtocol;
     fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify(rawPkg, null, 2));
 
     // Pack tar.gz.
@@ -107,25 +120,13 @@ async function main() {
       const sha512 = hash.digest('hex');
 
       const isoNow = new Date().toISOString();
-      // Stamp the desktop protocol this core is compatible with, so a client
-      // whose desktop speaks a different protocol refuses the overlay. The
-      // core's own `nexusDesktopProtocol` wins when present (a core released
-      // independently of this CI); otherwise the companion desktop's protocol
-      // is used (this CI publishes the core alongside the desktop release).
-      const desktopProtocol = readDesktopProtocol();
-      const declared = Number.isInteger(rawPkg.nexusDesktopProtocol) && rawPkg.nexusDesktopProtocol >= 0
-        ? rawPkg.nexusDesktopProtocol
-        : null;
-      const envProtocol = parseInt(process.env.NEXUS_CORE_PROTOCOL ?? '', 10);
-      const coreProtocol = declared
-        ?? (Number.isInteger(envProtocol) ? envProtocol : desktopProtocol);
       const yamlLines = [
         `version: ${version}`,
         `sha512: ${sha512}`,
         `size: ${sz}`,
         `url: https://github.com/jsws9517/nexus-desktop/releases/download/v${version}/${outFileName}`,
         `timestamp: ${isoNow}`,
-        ...(coreProtocol !== null ? [`protocol: ${coreProtocol}`] : []),
+        `protocol: ${coreProtocol}`,
         '',
       ];
       fs.writeFileSync(manifestPath, yamlLines.join('\n'));
