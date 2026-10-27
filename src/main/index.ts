@@ -5,7 +5,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
-import { prepareLaunch, markHealthy, disableActiveCore, readState } from '../bootstrap/overlay.js';
+import { prepareLaunch, markHealthy, disableActiveCore, readState, coreDirFor } from '../bootstrap/overlay.js';
+import { isProtocolCompatible, desktopProtocol, readCoreDirProtocol } from '../core-overlay/protocol.js';
 import { Updater } from './updater.js';
 import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { ResourceMonitor } from './resource-monitor.js';
@@ -413,6 +414,24 @@ function startWorker(): void {
       launch = prepareLaunch(coreOverlayRoot(), app.getAppPath());
     } catch (err) {
       logger.warn(`core overlay disabled: ${(err as Error).message}`);
+    }
+  }
+  // Protocol gate (boot-time): an overlay left active by a previous run must
+  // still speak this desktop's protocol. A desktop downgrade (or a core that
+  // declares a newer protocol) disables it here, before any worker starts.
+  if (launch.version) {
+    const coreProto = readCoreDirProtocol(coreDirFor(coreOverlayRoot(), launch.version));
+    if (!isProtocolCompatible(coreProto)) {
+      const msg = `core overlay ${launch.version} speaks protocol ${coreProto}, ` +
+        `this desktop speaks ${desktopProtocol()}; reverted to base copy`;
+      logger.error(msg);
+      send(CHANNELS.log, { level: 'error', message: msg });
+      try { disableActiveCore(coreOverlayRoot()); } catch {}
+      try {
+        launch = prepareLaunch(coreOverlayRoot(), app.getAppPath());
+      } catch {
+        launch = { version: null, disabledNow: [], env: {} };
+      }
     }
   }
   const overlayActive = launch.version !== null;

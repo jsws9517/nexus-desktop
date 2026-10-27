@@ -11,6 +11,7 @@ import type { OverlayState } from '../bootstrap/overlay.js';
 import { readState, writeState, activateCore, coreDirFor } from '../bootstrap/overlay.js';
 import type { CoreUpdateInfo, ManifestEntry, DownloadResult } from './download.js';
 import { fetchCoreManifest, downloadCoreUpdate, readStagedMeta, releaseStaged } from './download.js';
+import { isProtocolCompatible, desktopProtocol, readCoreDirProtocol } from './protocol.js';
 
 export interface CheckResult {
   available: boolean;
@@ -20,7 +21,7 @@ export interface CheckResult {
 }
 
 export interface UpdateState {
-  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+  status: 'idle' | 'checking' | 'available' | 'not-available' | 'incompatible' | 'downloading' | 'downloaded' | 'error';
   latest?: CoreUpdateInfo | null;
   staged?: CoreUpdateInfo | null;
   active?: string | null;
@@ -74,8 +75,20 @@ export class CoreUpdateManager {
             size: latestEntry.size,
             url: latestEntry.url,
             timestamp: latestEntry.timestamp,
+            protocol: latestEntry.protocol,
           }
         : null;
+      // Protocol gate: a core built against a different desktop protocol must
+      // not be installed as an overlay (it could silently break IPC).
+      if (latest && !isProtocolCompatible(latest.protocol)) {
+        this.setState({
+          status: 'incompatible',
+          latest,
+          active: this.activeVersion(root),
+          error: `core ${latest.version} speaks protocol ${latest.protocol}, this desktop speaks ${desktopProtocol()}`,
+        });
+        return this.checkResult(root, null, false);
+      }
       const result = this.checkResult(root, latest);
       if (!latest) {
         this.setState({ status: 'not-available', latest: null, active: result.active, staged: result.staged });
@@ -95,6 +108,13 @@ export class CoreUpdateManager {
   async download(root: string): Promise<UpdateState> {
     if (!this.enabled) return this.state;
     if (this.state.status !== 'available' || !this.state.latest) return this.state;
+    if (!isProtocolCompatible(this.state.latest.protocol)) {
+      return this.setState({
+        status: 'incompatible',
+        error: `core ${this.state.latest.version} speaks protocol ${this.state.latest.protocol}, ` +
+          `this desktop speaks ${desktopProtocol()}`,
+      });
+    }
     this.setState({ status: 'downloading' });
     try {
       const result = await downloadCoreUpdate(root, this.state.latest);
@@ -142,6 +162,16 @@ export class CoreUpdateManager {
     if (!fs.existsSync(pkgJson)) {
       return this.setState({ status: 'error', error: `core ${version} missing package.json after extraction` });
     }
+    // Defense in depth: verify the protocol from the extracted artifact itself,
+    // independent of what the (signed) manifest claimed.
+    const coreProtocol = readCoreDirProtocol(targetDir);
+    if (!isProtocolCompatible(coreProtocol)) {
+      try { fs.rmSync(targetDir, { recursive: true, force: true }); } catch {}
+      return this.setState({
+        status: 'incompatible',
+        error: `core ${version} speaks protocol ${coreProtocol}, this desktop speaks ${desktopProtocol()}`,
+      });
+    }
     try {
       activateCore(root, version);
     } catch (e) {
@@ -173,15 +203,20 @@ export class CoreUpdateManager {
     try { return readState(root).activeCore ?? null; } catch { return null; }
   }
 
-  private checkResult(root: string, latest: CoreUpdateInfo | null): CheckResult {
+  private checkResult(root: string, latest: CoreUpdateInfo | null, gateProtocol = true): CheckResult {
     let staged: CoreUpdateInfo | null = null;
     try {
       const meta = readStagedMeta(root, latest?.version ?? '');
-      if (meta) staged = { version: meta.version, sha512: meta.sha512, size: meta.size, url: meta.url, timestamp: meta.timestamp };
+      if (meta) staged = {
+        version: meta.version, sha512: meta.sha512, size: meta.size,
+        url: meta.url, timestamp: meta.timestamp, protocol: null,
+      };
     } catch {}
     let active: string | null = null;
     try { active = readState(root).activeCore ?? null; } catch {}
-    const available = latest !== null
+    const protocolOk = !gateProtocol || !latest || isProtocolCompatible(latest.protocol);
+    const available = protocolOk
+      && latest !== null
       && latest.version !== active
       && (staged === null || staged.version !== latest.version || staged.sha512 !== latest.sha512);
     return { available, latest, staged, active };

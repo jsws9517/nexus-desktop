@@ -5461,6 +5461,7 @@ type CoreUpdateStateType =
   | { status: 'idle' }
   | { status: 'checking' }
   | { status: 'available'; version?: string }
+  | { status: 'incompatible'; version?: string }
   | { status: 'not-available'; version?: string }
   | { status: 'downloading'; percent?: number }
   | { status: 'downloaded'; version?: string }
@@ -5538,6 +5539,13 @@ function renderCoreUpdateStatus(state: CoreUpdateStateType): void {
     line.appendChild(inst);
   } else if (state.status === 'error') {
     line.textContent = t('coreUpdateError', { message: state.message ?? '' });
+  } else if (state.status === 'incompatible') {
+    line.textContent = t('coreUpdateIncompatible', { version: state.version ?? '' });
+    const check = document.createElement('button');
+    check.className = 'btn primary small';
+    check.textContent = t('updateCheck');
+    check.addEventListener('click', () => void runUpdateCheck(check));
+    line.appendChild(check);
   }
   settingsBody.appendChild(line);
 }

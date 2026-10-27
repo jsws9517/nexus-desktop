@@ -53,11 +53,12 @@ function readLogSafe(file) {
   try { return readFileSync(file, 'utf8'); } catch { return ''; }
 }
 
-function stageCore(overlayRoot, version, { corruptAgent = false } = {}) {
+function stageCore(overlayRoot, version, { corruptAgent = false, protocol = null } = {}) {
   const dir = path.join(overlayRoot, 'core', version);
   mkdirSync(path.join(dir, 'dist', 'src'), { recursive: true });
-  writeFileSync(path.join(dir, 'package.json'),
-    JSON.stringify({ name: 'nexus-coder', version, type: 'module' }));
+  const pkg = { name: 'nexus-coder', version, type: 'module' };
+  if (protocol !== null) pkg.nexusDesktopProtocol = protocol;
+  writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg));
   // A harmless marker file (never imported by the worker on its own).
   writeFileSync(path.join(dir, 'dist', 'src', 'version.js'),
     `export const v = '${version}';\n`);
@@ -205,6 +206,31 @@ async function main() {
     const state = JSON.parse(readFileSync(path.join(overlayRoot, 'state.json'), 'utf8'));
     assert(state.disabledCores.includes(version) || state.activeCore === null,
       `P3: state recorded disable (activeCore=${state.activeCore}, disabled=${JSON.stringify(state.disabledCores)})`);
+    cleanup(userDataDir);
+    cleanup(dataDir);
+  }
+
+  // ─── P4: protocol gate ────────────────────────────────────────────────────
+  console.log('\n=== P4: protocol gate (foreign-protocol overlay) ===');
+  {
+    const userDataDir = mkdtempSync(path.join(tmpdir(), 'nexus-pkg-p4-ud-'));
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'nexus-pkg-p4-data-'));
+    const overlayRoot = path.join(userDataDir, 'overlay');
+    const version = '9.9.3-packaged-proto';
+    // Declares a protocol the desktop does not speak -> must not load.
+    stageCore(overlayRoot, version, { protocol: 999 });
+    activateState(overlayRoot, version);
+
+    const { info, warn, error } = await launchApp({ userDataDir, dataDir, waitMs: 14000 });
+    const all = info + '\n' + warn + '\n' + error;
+    assert(/protocol 999/.test(all), 'P4: log records the protocol mismatch');
+    assert(/reverted to base copy/i.test(all), 'P4: log records the revert to base');
+    assert(!new RegExp(`core overlay active:\\s*${version.replace(/\./g, '\\.')}`, 'i').test(info),
+      'P4: compatible-only — the foreign overlay is never activated');
+    if (process.env.NEXUS_PKG_VERBOSE) console.log('--- error ---\n' + error.slice(-800));
+    const state = JSON.parse(readFileSync(path.join(overlayRoot, 'state.json'), 'utf8'));
+    assert(state.activeCore === null || state.disabledCores.includes(version),
+      `P4: state cleared (activeCore=${state.activeCore}, disabled=${JSON.stringify(state.disabledCores)})`);
     cleanup(userDataDir);
     cleanup(dataDir);
   }

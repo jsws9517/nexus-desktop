@@ -28,6 +28,8 @@ export interface CoreUpdateInfo {
   url: string;
   /** ISO-8601 timestamp of the release. */
   timestamp: string;
+  /** nexusDesktopProtocol the core was built against (null when undeclared). */
+  protocol: number | null;
 }
 
 export interface StagedCoreMeta {
@@ -56,6 +58,8 @@ export interface ManifestEntry {
   size: number;
   url: string;
   timestamp: string;
+  /** nexusDesktopProtocol the core was built against (null when undeclared). */
+  protocol: number | null;
   offset: 0;
 }
 
@@ -102,7 +106,9 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
     const idx = line.indexOf(':');
     if (idx === -1) {
       if (current.version && current.sha512 && current.size != null) {
-        entries.push({ ...current, offset: 0 } as ManifestEntry);
+        entries.push({ version: current.version, sha512: current.sha512, size: current.size,
+          url: current.url ?? '', timestamp: current.timestamp ?? '',
+          protocol: current.protocol ?? null, offset: 0 });
       }
       current = {};
       continue;
@@ -114,9 +120,15 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
     else if (key === 'size') current.size = Number(val);
     else if (key === 'url') current.url = val;
     else if (key === 'timestamp') current.timestamp = val;
+    else if (key === 'protocol') {
+      const n = Number(val);
+      current.protocol = Number.isInteger(n) && n >= 0 ? n : null;
+    }
   }
   if (current.version && current.sha512 && current.size != null) {
-    entries.push({ ...current, offset: 0 } as ManifestEntry);
+    entries.push({ version: current.version, sha512: current.sha512, size: current.size,
+      url: current.url ?? '', timestamp: current.timestamp ?? '',
+      protocol: current.protocol ?? null, offset: 0 });
   }
   return entries;
 }

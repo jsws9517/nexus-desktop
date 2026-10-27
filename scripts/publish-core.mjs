@@ -95,12 +95,18 @@ async function main() {
       const sha512 = hash.digest('hex');
 
       const isoNow = new Date().toISOString();
+      // Stamp the core's declared desktop protocol (if any) so clients can
+      // refuse an overlay that would break the IPC contract. Absent = legacy.
+      const coreProtocol = Number.isInteger(rawPkg.nexusDesktopProtocol) && rawPkg.nexusDesktopProtocol >= 0
+        ? rawPkg.nexusDesktopProtocol
+        : (parseInt(process.env.NEXUS_CORE_PROTOCOL ?? '', 10) || null);
       const yamlLines = [
         `version: ${version}`,
         `sha512: ${sha512}`,
         `size: ${sz}`,
         `url: https://github.com/jsws9517/nexus-desktop/releases/download/v${version}/${outFileName}`,
         `timestamp: ${isoNow}`,
+        ...(coreProtocol !== null ? [`protocol: ${coreProtocol}`] : []),
         '',
       ];
       fs.writeFileSync(manifestPath, yamlLines.join('\n'));
