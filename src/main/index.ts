@@ -395,7 +395,9 @@ function startWorker(): void {
     }
   }
   const overlayActive = launch.version !== null;
-  let overlayHealthy = false;
+  // True while the overlay is loaded but not yet proven good. Cleared once the
+  // core initializes successfully, or when the overlay is rolled back.
+  let overlayPending = overlayActive;
   if (overlayActive) {
     logger.info(`core overlay active: ${launch.version}`);
   }
@@ -403,32 +405,46 @@ function startWorker(): void {
     logger.warn(`core overlay ${v} disabled by rollback`);
   }
 
-  worker = new WorkerHost(workerPath(), launch);
-  worker.onEvent = forwardEvent;
-  worker.onPermission = (req) => send(CHANNELS.permission, req);
-  worker.onLog = (level, message) => send(CHANNELS.log, { level, message });
-  worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
-  worker.onHealthy = () => {
-    if (overlayActive && !overlayHealthy) {
-      overlayHealthy = true;
+  /**
+   * Settle the overlay exactly once: mark it healthy on success, or disable it
+   * on failure so the next boot (and an immediate reload) uses the base copy.
+   * Driven by the core's own init result, not by a mere process message — a
+   * broken overlay can answer RPCs while failing to construct the Agent.
+   */
+  const settleOverlay = (healthy: boolean, reason: string): void => {
+    if (!overlayPending) return;
+    overlayPending = false;
+    if (healthy) {
       try {
         markHealthy(coreOverlayRoot());
       } catch (err) {
         logger.warn(`core overlay markHealthy failed: ${(err as Error).message}`);
       }
+      return;
+    }
+    try {
+      const v = disableActiveCore(coreOverlayRoot());
+      if (v) {
+        const msg = `Core overlay ${v} ${reason}; reverted to base copy`;
+        logger.error(msg);
+        send(CHANNELS.log, { level: 'error', message: msg });
+      } else {
+        logger.warn(`core overlay rollback: no active core to disable (${reason})`);
+      }
+    } catch (err) {
+      logger.warn(`core overlay disable failed: ${(err as Error).message}`);
     }
   };
+
+  worker = new WorkerHost(workerPath(), launch);
+  worker.onEvent = forwardEvent;
+  worker.onPermission = (req) => send(CHANNELS.permission, req);
+  worker.onLog = (level, message) => send(CHANNELS.log, { level, message });
+  worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
   worker.onExit = (code) => {
     send(CHANNELS.log, { level: 'warn', message: `Core worker exited (code=${code})` });
-    if (overlayActive && !overlayHealthy) {
-      // Died before answering: the overlay itself is suspect, fall back to base copy on restart.
-      try {
-        const v = disableActiveCore(coreOverlayRoot());
-        if (v) send(CHANNELS.log, { level: 'error', message: `Core overlay ${v} failed to start; reverted to base copy` });
-      } catch (err) {
-        logger.warn(`core overlay disable failed: ${(err as Error).message}`);
-      }
-    }
+    // Died before proving itself: the overlay itself is suspect.
+    settleOverlay(false, 'crashed before initializing');
     scheduleRestart();
   };
   worker.start();
@@ -442,12 +458,28 @@ function startWorker(): void {
   // Phase 1 (fast): construct the Agent so session list + message reads respond
   // immediately. Phase 2 (slow): MCP/skills. Read-only IPC gates on phase 1,
   // mutations on phase 2 — see EARLY_METHODS above.
+  const earlyWorker = worker;
   sessionReadyPromise = Promise.race([
     worker
       .request('earlyInit', earlyParams)
-      .then(() => {})
+      .then(() => {
+        // The Agent constructed from whatever nexus-coder the worker loaded;
+        // if that was the overlay, it has now proven itself.
+        settleOverlay(true, '');
+      })
       .catch((err) => {
         send(CHANNELS.log, { level: 'error', message: `Core early-init failed: ${err.message}` });
+        if (overlayPending) {
+          // The overlay broke the core's own init. Disable it and reload the
+          // worker with the base copy so this session recovers without a manual
+          // restart (the next startWorker() re-reads the now-cleared state).
+          settleOverlay(false, 'failed to initialize');
+          try { earlyWorker?.stop(); } catch {}
+          if (worker === earlyWorker) worker = null;
+          setTimeout(() => {
+            if (!intentionallyStopped) startWorker();
+          }, 500);
+        }
       }),
     new Promise<void>((resolve) => {
       setTimeout(() => {
