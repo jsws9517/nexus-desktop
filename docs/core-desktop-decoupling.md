@@ -73,10 +73,22 @@ The desktop owns the IPC / tool contract. `package.json.nexusDesktopProtocol`
 (integer) is the single source of truth — **bump it whenever the desktop↔core
 contract changes.**
 
-A core declares the protocol it was built against in its own
-`package.json.nexusDesktopProtocol`; `scripts/publish-core.mjs` stamps it into
-`latest-core.yml` as `protocol: N`. A core that does not declare the field is
-treated as legacy-compatible.
+`scripts/publish-core.mjs` stamps a `protocol: N` line into `latest-core.yml`.
+The value is:
+
+1. the core's own `package.json.nexusDesktopProtocol`, when present (a core
+   released independently of this CI — authoritative), else
+2. this repo's own `nexusDesktopProtocol` — the companion assumption, since this
+   CI publishes the core artifact alongside the desktop release, else
+3. `NEXUS_CORE_PROTOCOL` (tests only).
+
+Consequence: a user on an older desktop (protocol 1) that fetches the latest
+manifest published by a newer desktop (protocol 2) gets a protocol mismatch and
+is steered to the desktop updater instead of installing an incompatible core.
+No change in the `nexus-coder` repo is required for the gate to be effective.
+
+A client-side core with no `protocol` in the manifest is treated as
+legacy-compatible.
 
 Enforcement points:
 
@@ -105,7 +117,7 @@ npm run sync:core            # node_modules/nexus-coder/dist + nexusCoreVersion 
 node scripts/publish-core.mjs
   -> release/core-<ver>.tar.gz
   -> release/latest-core.yml
-  -> release/latest-core.yml.sig
+  -> release/latest-core.yml.sig   (manifest carries `protocol: <desktop protocol>`)
 ```
 
 CI (`.github/workflows/release.yml`) runs `publish-core.mjs` after the installer

@@ -131,3 +131,15 @@ test('activate() rejects a core whose extracted package.json declares a foreign 
   const st = await mgr.activate(root);
   assert.notEqual(st.status, 'idle', `activate must not succeed (status=${st.status})`);
 });
+
+test('publish-core stamps the desktop protocol into latest-core.yml', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const out = path.join(tmpdir(), `publish-core-test-${Date.now()}`);
+  execFileSync(process.execPath, ['scripts/publish-core.mjs', '--out', out], { stdio: 'pipe' });
+  const yml = fs.readFileSync(path.join(out, 'latest-core.yml'), 'utf8');
+  const desktopPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  assert.match(yml, new RegExp(`protocol: ${desktopPkg.nexusDesktopProtocol}\\b`),
+    'manifest must carry the desktop protocol');
+  // And the signature covers the stamped manifest.
+  assert.ok(fs.existsSync(path.join(out, 'latest-core.yml.sig')), 'signature written');
+});

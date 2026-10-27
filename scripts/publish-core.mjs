@@ -32,6 +32,18 @@ function flag(name) {
 const outDir = flag('out') || path.join(repoRoot, 'release');
 const keysDir = flag('keys-dir') || path.join(repoRoot, 'keys');
 
+/** The desktop protocol declared in this repo's own package.json. */
+function readDesktopProtocol() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+    return Number.isInteger(pkg.nexusDesktopProtocol) && pkg.nexusDesktopProtocol >= 0
+      ? pkg.nexusDesktopProtocol
+      : 1;
+  } catch {
+    return 1;
+  }
+}
+
 async function main() {
   const pkgFile = path.join(repoRoot, 'node_modules', 'nexus-coder', 'package.json');
   if (!fs.existsSync(pkgFile)) {
@@ -95,11 +107,18 @@ async function main() {
       const sha512 = hash.digest('hex');
 
       const isoNow = new Date().toISOString();
-      // Stamp the core's declared desktop protocol (if any) so clients can
-      // refuse an overlay that would break the IPC contract. Absent = legacy.
-      const coreProtocol = Number.isInteger(rawPkg.nexusDesktopProtocol) && rawPkg.nexusDesktopProtocol >= 0
+      // Stamp the desktop protocol this core is compatible with, so a client
+      // whose desktop speaks a different protocol refuses the overlay. The
+      // core's own `nexusDesktopProtocol` wins when present (a core released
+      // independently of this CI); otherwise the companion desktop's protocol
+      // is used (this CI publishes the core alongside the desktop release).
+      const desktopProtocol = readDesktopProtocol();
+      const declared = Number.isInteger(rawPkg.nexusDesktopProtocol) && rawPkg.nexusDesktopProtocol >= 0
         ? rawPkg.nexusDesktopProtocol
-        : (parseInt(process.env.NEXUS_CORE_PROTOCOL ?? '', 10) || null);
+        : null;
+      const envProtocol = parseInt(process.env.NEXUS_CORE_PROTOCOL ?? '', 10);
+      const coreProtocol = declared
+        ?? (Number.isInteger(envProtocol) ? envProtocol : desktopProtocol);
       const yamlLines = [
         `version: ${version}`,
         `sha512: ${sha512}`,
