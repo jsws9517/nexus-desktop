@@ -20,7 +20,7 @@ export interface CheckResult {
 }
 
 export interface UpdateState {
-  status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error';
+  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
   latest?: CoreUpdateInfo | null;
   staged?: CoreUpdateInfo | null;
   active?: string | null;
@@ -63,7 +63,7 @@ export class CoreUpdateManager {
       this.setState({ status: 'error', error: 'Core update checks are disabled' });
       return this.checkResult(root, null);
     }
-    this.setState({ status: 'checking' });
+    this.setState({ status: 'checking', error: undefined });
     try {
       const entries = await fetchCoreManifest(resolveFeedUrl(this.baseFeedUrl));
       const latestEntry = entries[0] ?? null;
@@ -76,7 +76,15 @@ export class CoreUpdateManager {
             timestamp: latestEntry.timestamp,
           }
         : null;
-      return this.checkResult(root, latest);
+      const result = this.checkResult(root, latest);
+      if (!latest) {
+        this.setState({ status: 'not-available', latest: null, active: result.active, staged: result.staged });
+      } else if (result.available) {
+        this.setState({ status: 'available', latest, active: result.active, staged: result.staged });
+      } else {
+        this.setState({ status: 'not-available', latest, active: result.active, staged: result.staged });
+      }
+      return result;
     } catch (e) {
       this.setState({ status: 'error', error: e instanceof Error ? e.message : String(e) });
       return this.checkResult(root, null);

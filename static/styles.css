@@ -461,6 +461,20 @@ body {
 .btn.danger:hover { background: var(--danger); color: #fff; }
 .btn.ghost { background: transparent; }
 .btn.small { padding: 3px 8px; font-size: 12px; }
+
+/* Dot badge on the settings entry when a core update is available. */
+#btn-settings { position: relative; }
+.settings-update-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning, #e0a030);
+  box-shadow: 0 0 0 2px var(--bg, #1e1e1e);
+  pointer-events: none;
+}
 .btn.icon.small {
   width: 26px;
   height: 26px;

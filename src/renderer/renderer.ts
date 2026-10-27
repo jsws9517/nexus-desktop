@@ -338,7 +338,7 @@ declare global {
       getResourceState(): Promise<ResourceStateInfo>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
-      getCoreVersion(): string;
+      getCoreVersion(): Promise<string>;
       checkForUpdate(): Promise<Record<string, unknown>>;
       downloadUpdate(): Promise<Record<string, unknown>>;
       installUpdate(): Promise<unknown>;
@@ -5480,16 +5480,18 @@ function buildCoreUpdateSection(container?: HTMLElement): void {
   info.className = 'update-info';
   coreUpdateVersion = '';
   info.textContent = t('coreUpdateCurrent', { version: '…' });
-  coreUpdateVersion = window.nexusDesktop.getCoreVersion();
+  void window.nexusDesktop.getCoreVersion().then((v) => {
+    coreUpdateVersion = String(v || '?');
+    info.textContent = t('coreUpdateCurrent', { version: coreUpdateVersion });
+  }).catch(() => {});
   void window.nexusDesktop.getCoreUpdateState().then((state) => {
     const s = state as CoreUpdateStateType;
-    if (s.status === 'idle' || s.status === 'not-available') {
-      coreUpdateVersion = String((s as Record<string, unknown>).version ?? coreUpdateVersion);
+    const active = (s as Record<string, unknown>).active;
+    if (typeof active === 'string' && active) {
+      coreUpdateVersion = active;
+      info.textContent = t('coreUpdateCurrent', { version: coreUpdateVersion });
     }
-    info.textContent = t('coreUpdateCurrent', { version: coreUpdateVersion });
-  }).catch(() => {
-    info.textContent = t('coreUpdateCurrent', { version: '?' });
-  });
+  }).catch(() => {});
   const btn = document.createElement('button');
   btn.className = 'btn ghost small';
   btn.textContent = t('coreUpdateCheck');
@@ -5648,6 +5650,21 @@ function makeFieldValues(row: HTMLElement): Record<string, string> {
 }
 
 $('#btn-settings').addEventListener('click', () => void openSettings());
+
+/** Dot badge on the settings entry when a core update is available. */
+function markSettingsUpdateBadge(on: boolean): void {
+  const btn = document.getElementById('btn-settings');
+  if (!btn) return;
+  const existing = btn.querySelector('.settings-update-badge');
+  if (on && !existing) {
+    const dot = document.createElement('span');
+    dot.className = 'settings-update-badge';
+    dot.setAttribute('aria-label', 'update available');
+    btn.appendChild(dot);
+  } else if (!on && existing) {
+    existing.remove();
+  }
+}
 $('#settings-close').addEventListener('click', () => closeSettingsOverlay());
 settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) closeSettingsOverlay();
@@ -5660,6 +5677,18 @@ window.nexusDesktop.onUpdateState((state) => {
   renderUpdateStatus(state as UpdateStateType);
 });
 window.nexusDesktop.onCoreUpdateState((state) => {
+  const s = state as CoreUpdateStateType & { latest?: { version?: string } | null };
+  // Proactive notice: surface availability even when the settings modal is closed.
+  if (s.status === 'available') {
+    const v = s.latest?.version ?? (s as Record<string, unknown>).version ?? '';
+    markSettingsUpdateBadge(true);
+    if (!settingsOverlay.classList.contains('hidden')) {
+      renderCoreUpdateStatus(s);
+    } else {
+      showToast(t('coreUpdateAvailable', { version: String(v) }), 'warning', 8000);
+    }
+    return;
+  }
   if (settingsOverlay.classList.contains('hidden')) return;
   renderCoreUpdateStatus(state as CoreUpdateStateType);
 });

@@ -109,6 +109,8 @@ export interface IpcContext extends DesktopStateAccess {
   coreUpdater: CoreUpdateManager | null;
   /** Absolute path to the overlay root dir (e.g. <userData>/overlay). */
   coreOverlayRoot: () => string;
+  /** Version of nexus-coder the worker is running (overlay or bundled). */
+  getCoreVersion: () => string;
   /** Signal the main process to restart the core worker with updated overlay state. */
   restartCoreWorker: () => void;
   /** Send an event to the renderer process (for state change pushes). */
@@ -763,6 +765,7 @@ export function registerIpc(ctx: IpcContext): void {
     coreUpdater.onState = (state) => ctx.sendEvent(CHANNELS.coreUpdateState, state);
     const overlayRoot = ctx.coreOverlayRoot;
     ipcMain.handle(CHANNELS.getCoreUpdateState, () => coreUpdater.getState());
+    ipcMain.handle(CHANNELS.getCoreVersion, () => ctx.getCoreVersion());
     ipcMain.handle(CHANNELS.checkCoreUpdate, () => coreUpdater.check(overlayRoot()));
     ipcMain.handle(CHANNELS.downloadCoreUpdate, () => coreUpdater.download(overlayRoot()));
     ipcMain.handle(CHANNELS.activateCoreUpdate, async () => {

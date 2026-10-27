@@ -148,6 +148,7 @@ export const CHANNELS = {
   getRateLimitStatus: 'nexus:getRateLimitStatus',
 
   // core overlay updates (phase 2).
+  getCoreVersion: 'nexus:getCoreVersion',
   checkCoreUpdate: 'nexus:checkCoreUpdate',
   downloadCoreUpdate: 'nexus:downloadCoreUpdate',
   activateCoreUpdate: 'nexus:activateCoreUpdate',

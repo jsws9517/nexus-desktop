@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
-import { prepareLaunch, markHealthy, disableActiveCore } from '../bootstrap/overlay.js';
+import { prepareLaunch, markHealthy, disableActiveCore, readState } from '../bootstrap/overlay.js';
 import { Updater } from './updater.js';
 import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { ResourceMonitor } from './resource-monitor.js';
@@ -384,6 +384,27 @@ function coreOverlayRoot(): string {
   return join(app.getPath('userData'), 'overlay');
 }
 
+/**
+ * The nexus-coder version the worker is actually running:
+ *   - the active overlay version when one is staged, or
+ *   - the version bundled inside app.asar (node_modules/nexus-coder).
+ */
+function currentCoreVersion(): string {
+  try {
+    const active = readState(coreOverlayRoot()).activeCore;
+    if (active) return active;
+  } catch {
+    /* fall through to the bundled copy */
+  }
+  try {
+    const pkgPath = join(app.getAppPath(), 'node_modules', 'nexus-coder', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 function startWorker(): void {
   const overlayDisabled = process.env.NEXUS_DISABLE_CORE_OVERLAY === '1';
   let launch = { version: null as string | null, disabledNow: [] as string[], env: {} as Record<string, string> };
@@ -542,6 +563,7 @@ if (gotLock) {
     coreUpdater.init();
     // coreOverlayRoot is also used by startWorker for the overlay bootstrap;
     // keep it consistent with the registerIpc call below.
+    logger.info(`core version: ${currentCoreVersion()}`);
     createTray();
     startWorker();
     wireSessionWorkers();
@@ -602,10 +624,28 @@ if (gotLock) {
        rateLimitRegistry,
        coreUpdater,
        coreOverlayRoot,
+       getCoreVersion: currentCoreVersion,
        restartCoreWorker: () => { void restartWorker(); },
-       sendEvent: send,
+sendEvent: send,
      });
-    createWindow();
+     createWindow();
+
+    // Silent startup check for a newer core overlay. Only surfaces availability
+    // (never auto-downloads); the renderer turns an 'available' state into a
+    // toast + a badge on the settings entry. Delayed so it never competes with
+    // first-paint / worker warm-up.
+    if (process.env.NEXUS_DISABLE_CORE_UPDATE !== '1') {
+      setTimeout(() => {
+        void coreUpdater
+          .check(coreOverlayRoot())
+          .then((r) => {
+            if (r.available && r.latest) {
+              logger.info(`core update available: ${r.latest.version} (current ${r.active ?? 'bundled'})`);
+            }
+          })
+          .catch((err) => logger.warn(`core update check failed: ${(err as Error).message}`));
+      }, 10000);
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

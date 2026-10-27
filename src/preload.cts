@@ -168,7 +168,7 @@ const api = {
 
   getUpdateState: () => ipcRenderer.invoke('nexus:getUpdateState'),
   getCurrentVersion: () => ipcRenderer.invoke('nexus:getCurrentVersion'),
-  getCoreVersion: () => '1.1.26-1',
+  getCoreVersion: () => ipcRenderer.invoke('nexus:getCoreVersion'),
   checkForUpdate: () => ipcRenderer.invoke('nexus:checkForUpdate'),
   downloadUpdate: () => ipcRenderer.invoke('nexus:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('nexus:installUpdate'),

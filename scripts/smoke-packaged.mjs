@@ -149,7 +149,11 @@ async function main() {
     const hasOverlayMsg = /core overlay active/i.test(info);
     assert(!hasOverlayMsg, 'P1: no overlay activation message in log');
     // App should have produced some startup log output.
-    assert(info.length > 0 || true, `P1: info log bytes=${info.length}`);
+    assert(/core version:/.test(info), 'P1: logs the effective core version');
+    // With no overlay, that version must be the bundled nexus-coder version.
+    const bundled = JSON.parse(readFileSync(path.join(REPO, 'node_modules', 'nexus-coder', 'package.json'), 'utf8')).version;
+    assert(info.includes(`core version: ${bundled}`),
+      `P1: bundled core version reported (${bundled})`);
     if (process.env.NEXUS_PKG_VERBOSE) console.log(info.slice(-800));
     cleanup(userDataDir);
     cleanup(dataDir);
