@@ -1,6 +1,6 @@
 {
   "name": "nexus-desktop",
-  "version": "0.2.21",
+  "version": "0.3.0",
   "nexusCoreVersion": "1.1.26-1",
   "nexusDesktopProtocol": 1,
   "description": "Nexus Agent Desktop - AI agent with multi-model support, MCP protocol integration, session persistence, streaming responses, and tool permissions.",
