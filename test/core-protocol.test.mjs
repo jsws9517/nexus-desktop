@@ -9,17 +9,23 @@ import { tmpdir } from 'node:os';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { sign as cryptoSign } from 'node:crypto';
+import { loadSigningKey } from './helpers/signing.mjs';
 
 const DIST = path.resolve('dist');
 const proto = await import(pathToFileURL(path.join(DIST, 'core-overlay', 'protocol.js')).href);
 const managerUrl = pathToFileURL(path.join(DIST, 'core-overlay', 'manager.js')).href;
-const PRIV = fs.readFileSync(path.join('keys', 'core-signing-private.pem'));
+// CI has no release key; trust whatever key these tests sign with.
+const SIGNING = loadSigningKey();
+const PRIV = SIGNING.privateKey;
+process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX = SIGNING.pubKeyB64;
 
 let originalFetch;
-beforeEach(() => { originalFetch = globalThis.fetch; });
+beforeEach(() => {
+  originalFetch = globalThis.fetch;
+  process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX = SIGNING.pubKeyB64;
+});
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  delete process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX;
   delete process.env.NEXUS_DESKTOP_PROTOCOL;
 });
 
@@ -135,7 +141,10 @@ test('activate() rejects a core whose extracted package.json declares a foreign 
 test('publish-core stamps the desktop protocol into latest-core.yml', async () => {
   const { execFileSync } = await import('node:child_process');
   const out = path.join(tmpdir(), `publish-core-test-${Date.now()}`);
-  execFileSync(process.execPath, ['scripts/publish-core.mjs', '--out', out], { stdio: 'pipe' });
+  execFileSync(process.execPath, ['scripts/publish-core.mjs', '--out', out], {
+    stdio: 'pipe',
+    env: { ...process.env, CORE_SIGNING_KEY: SIGNING.pem },
+  });
   const yml = fs.readFileSync(path.join(out, 'latest-core.yml'), 'utf8');
   const desktopPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
   assert.match(yml, new RegExp(`protocol: ${desktopPkg.nexusDesktopProtocol}\\b`),

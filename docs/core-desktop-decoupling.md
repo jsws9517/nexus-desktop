@@ -122,7 +122,15 @@ node scripts/publish-core.mjs
 
 CI (`.github/workflows/release.yml`) runs `publish-core.mjs` after the installer
 build and uploads the artifacts to GitHub Releases (and mirrors to Gitee via
-`scripts/gitee-publish.mjs`).
+`scripts/gitee-publish.mjs`). The manifest URL is pinned to the **desktop**
+release tag (`v<desktop version>`) because that is the release the asset is
+attached to, not the core version.
+
+Signing key: locally the gitignored `keys/core-signing-private.pem` is used; CI
+uses the `CORE_SIGNING_KEY` repository secret (the same PEM contents). A release
+fails before building when that secret is missing, and `publish-core.mjs` fails
+in CI instead of silently shipping an unsigned manifest.
+
 
 ## Environment switches
 

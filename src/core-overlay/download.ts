@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createPublicKey, verify as cryptoVerify, type KeyLike } from 'node:crypto';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createReadStream } from 'node:fs';
 
@@ -243,11 +244,16 @@ export async function downloadCoreUpdate(root: string, info: CoreUpdateInfo): Pr
     }
     hash = createHash('sha512');
     const dest = fs.createWriteStream(tmpPath, { flags: 'w' });
-    if (res.body) {
-      await pipeline(res.body, dest);
-    } else {
-      throw new Error('response body is null');
-    }
+    if (!res.body) throw new Error('response body is null');
+    // Hash the same bytes that are written to disk. Hashing the response body
+    // separately (or not at all) silently compares against an empty digest.
+    const hasher = new Transform({
+      transform(chunk, _enc, cb) {
+        hash.update(chunk);
+        cb(null, chunk);
+      },
+    });
+    await pipeline(res.body, hasher, dest);
     downloaded = dest.bytesWritten;
   } catch (e) {
     try { fs.unlinkSync(tmpPath); } catch {}

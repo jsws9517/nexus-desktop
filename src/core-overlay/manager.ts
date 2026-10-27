@@ -46,6 +46,14 @@ export class CoreUpdateManager {
 
   onState?: (state: UpdateState) => void;
 
+  /**
+   * Supplies the version the worker is actually running (active overlay, else
+   * the bundled nexus-coder). Without it, a base-copy install reports
+   * `active=null` and the latest core is always offered as an "update", even
+   * when it is byte-for-byte the core already bundled. Wired by main/index.ts.
+   */
+  currentVersionProvider?: () => string | undefined;
+
   constructor(baseFeedUrl: string) {
     this.baseFeedUrl = baseFeedUrl;
   }
@@ -90,10 +98,19 @@ export class CoreUpdateManager {
         return this.checkResult(root, null, false);
       }
       const result = this.checkResult(root, latest);
+      const stagedIsLatest = !!(latest && result.staged
+        && result.staged.version === latest.version
+        && result.staged.sha512 === latest.sha512
+        && result.active !== latest.version);
       if (!latest) {
         this.setState({ status: 'not-available', latest: null, active: result.active, staged: result.staged });
       } else if (result.available) {
         this.setState({ status: 'available', latest, active: result.active, staged: result.staged });
+      } else if (stagedIsLatest) {
+        // Downloaded but not installed yet. This can also be reached after an
+        // app restart (the staged file survives, the in-memory zip handle does
+        // not), so keep offering the install action instead of hiding it.
+        this.setState({ status: 'downloaded', latest, active: result.active, staged: result.staged });
       } else {
         this.setState({ status: 'not-available', latest, active: result.active, staged: result.staged });
       }
@@ -142,34 +159,66 @@ export class CoreUpdateManager {
    * Caller should restart the worker for the change to take effect.
    */
   async activate(root: string): Promise<UpdateState> {
-    if (!this.stagedZip) return this.state;
-    const { version, zipPath } = this.stagedZip;
+    // Prefer the in-memory handle set by download(), but fall back to the
+    // on-disk staged file so a downloaded core stays installable after an app
+    // restart (check() re-populates state.latest before the UI shows Install).
+    let version = this.stagedZip?.version ?? null;
+    let zipPath = this.stagedZip?.zipPath ?? null;
+    if (!version) {
+      const candidate = this.state.latest?.version ?? null;
+      if (candidate && readStagedMeta(root, candidate)) {
+        const onDisk = path.join(root, 'staged', `core-${candidate}.zip`);
+        if (fs.existsSync(onDisk)) {
+          version = candidate;
+          zipPath = onDisk;
+        }
+      }
+    }
+    if (!version || !zipPath) return this.state;
     if (!fs.existsSync(zipPath)) {
       return this.setState({ status: 'error', error: `staged zip missing: ${zipPath}` });
     }
     const targetDir = coreDirFor(root, version);
-    fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+    const coreRoot = path.dirname(targetDir);
+    fs.mkdirSync(coreRoot, { recursive: true });
+    // Extract into a scratch dir, then move it into place. The tarball root is
+    // the artifact root (no version prefix), and a failed unpack must never
+    // leave a half-written core/ or clobber the active one.
+    const extractDir = fs.mkdtempSync(path.join(coreRoot, `.extract-${version}-`));
+    const cleanup = () => { try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch {} };
     try {
       const { x: tarExtract } = await import('tar');
-      await tarExtract({ cwd: path.dirname(targetDir), file: zipPath, sync: false });
+      await tarExtract({ cwd: extractDir, file: zipPath, sync: false });
     } catch (e) {
+      cleanup();
       return this.setState({
         status: 'error',
         error: `failed to unpack core ${version}: ${e instanceof Error ? e.message : String(e)}`,
       });
     }
-    const pkgJson = path.join(targetDir, 'package.json');
+    const pkgJson = path.join(extractDir, 'package.json');
     if (!fs.existsSync(pkgJson)) {
+      cleanup();
       return this.setState({ status: 'error', error: `core ${version} missing package.json after extraction` });
     }
     // Defense in depth: verify the protocol from the extracted artifact itself,
     // independent of what the (signed) manifest claimed.
-    const coreProtocol = readCoreDirProtocol(targetDir);
+    const coreProtocol = readCoreDirProtocol(extractDir);
     if (!isProtocolCompatible(coreProtocol)) {
-      try { fs.rmSync(targetDir, { recursive: true, force: true }); } catch {}
+      cleanup();
       return this.setState({
         status: 'incompatible',
         error: `core ${version} speaks protocol ${coreProtocol}, this desktop speaks ${desktopProtocol()}`,
+      });
+    }
+    try {
+      if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });
+      fs.renameSync(extractDir, targetDir);
+    } catch (e) {
+      cleanup();
+      return this.setState({
+        status: 'error',
+        error: `failed to install core ${version}: ${e instanceof Error ? e.message : String(e)}`,
       });
     }
     try {
@@ -199,7 +248,14 @@ export class CoreUpdateManager {
     return this.setState({ status: 'idle', staged: null });
   }
 
+  /**
+   * The version the worker is really running: the overlay's active version if
+   * any, else the bundled core (when the provider is wired). Falls back to the
+   * overlay state alone when no provider is set.
+   */
   private activeVersion(root: string): string | null {
+    const effective = this.currentVersionProvider?.();
+    if (effective) return effective;
     try { return readState(root).activeCore ?? null; } catch { return null; }
   }
 
@@ -213,7 +269,7 @@ export class CoreUpdateManager {
       };
     } catch {}
     let active: string | null = null;
-    try { active = readState(root).activeCore ?? null; } catch {}
+    try { active = this.activeVersion(root); } catch {}
     const protocolOk = !gateProtocol || !latest || isProtocolCompatible(latest.protocol);
     const available = protocolOk
       && latest !== null

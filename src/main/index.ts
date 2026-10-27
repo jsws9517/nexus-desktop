@@ -580,6 +580,15 @@ if (gotLock) {
     updater.init();
     updater.onState = (state) => send(CHANNELS.updateState, state);
     coreUpdater.init();
+    // The manager must compare against the core the worker actually runs
+    // (active overlay, else the bundled copy), not just overlay state.json --
+    // otherwise a base-copy install is always offered an "update" to the core
+    // it already ships. `unknown` means the bundled package.json was unreadable;
+    // treat that as "no baseline" rather than as a real version.
+    coreUpdater.currentVersionProvider = () => {
+      const v = currentCoreVersion();
+      return v && v !== 'unknown' ? v : undefined;
+    };
     // coreOverlayRoot is also used by startWorker for the overlay bootstrap;
     // keep it consistent with the registerIpc call below.
     logger.info(`core version: ${currentCoreVersion()}`);

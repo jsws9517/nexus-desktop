@@ -9,9 +9,14 @@ import { tmpdir } from 'node:os';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { loadSigningKey } from './helpers/signing.mjs';
 
 const DIST_DIR = path.resolve('dist');
 const MOD_URL = pathToFileURL(path.join(DIST_DIR, 'core-overlay', 'download.js')).href;
+// CI has no release key; sign with whichever key is available and trust it.
+const SIGNING = loadSigningKey();
+const PRIV = SIGNING.privateKey;
+const PUB_B64 = SIGNING.pubKeyB64;
 
 // Re-import helper that forces a fresh load by using a cache-busting query param.
 async function reimportDownload() {
@@ -33,17 +38,17 @@ async function withPubKey(pubKeyHex, fn) {
 }
 
 test('verifyManifestSignature accepts valid signature', async () => {
-  await withPubKey('MCowBQYDK2VwAyEARWOKLRKTHQYnGH8O6qDYIMWYSLgQC+t4i///Yey0/MU=', async (mod) => {
+  await withPubKey(PUB_B64, async (mod) => {
     const data = 'version: 1.0.0\nsha512: aaa\nsize: 100\nurl: https://example.com/core.tar.gz\ntimestamp: 2026-01-01T00:00:00Z\n';
-    const sig = cryptoSign(null, Buffer.from(data), fs.readFileSync('keys/core-signing-private.pem')).toString('hex');
+    const sig = cryptoSign(null, Buffer.from(data), PRIV).toString('hex');
     assert.equal(mod.verifyManifestSignature(data, sig), true);
   });
 });
 
 test('verifyManifestSignature rejects tampered manifest', async () => {
-  await withPubKey('MCowBQYDK2VwAyEARWOKLRKTHQYnGH8O6qDYIMWYSLgQC+t4i///Yey0/MU=', async (mod) => {
+  await withPubKey(PUB_B64, async (mod) => {
     const data = 'version: 1.0.0\nsha512: aaa\nsize: 100\nurl: https://example.com/core.tar.gz\ntimestamp: 2026-01-01T00:00:00Z\n';
-    const sig = cryptoSign(null, Buffer.from(data), fs.readFileSync('keys/core-signing-private.pem')).toString('hex');
+    const sig = cryptoSign(null, Buffer.from(data), PRIV).toString('hex');
     assert.equal(mod.verifyManifestSignature(data + ' tampered', sig), false);
   });
 });
@@ -62,7 +67,7 @@ test('verifyManifestSignature returns true when no public key is configured', as
 });
 
 test('verifyManifestSignature returns true when no signature provided', async () => {
-  await withPubKey('MCowBQYDK2VwAyEARWOKLRKTHQYnGH8O6qDYIMWYSLgQC+t4i///Yey0/MU=', async (mod) => {
+  await withPubKey(PUB_B64, async (mod) => {
     assert.equal(mod.verifyManifestSignature('any text', ''), true);
   });
 });

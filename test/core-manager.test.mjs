@@ -13,11 +13,15 @@ import { tmpdir } from 'node:os';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { sign as cryptoSign } from 'node:crypto';
+import { loadSigningKey } from './helpers/signing.mjs';
 
 const DIST = path.resolve('dist');
 const MANAGER_URL = pathToFileURL(path.join(DIST, 'core-overlay', 'manager.js')).href;
 const OVERLAY_URL = pathToFileURL(path.join(DIST, 'bootstrap', 'overlay.js')).href;
-const PRIV = fs.readFileSync(path.join('keys', 'core-signing-private.pem'));
+// CI has no release key; trust whatever key these tests sign with.
+const SIGNING = loadSigningKey();
+const PRIV = SIGNING.privateKey;
+process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX = SIGNING.pubKeyB64;
 
 async function stageActive(root, version) {
   const dir = path.join(root, 'core', version);

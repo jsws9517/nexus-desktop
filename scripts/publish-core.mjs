@@ -33,26 +33,39 @@ const outDir = flag('out') || path.join(repoRoot, 'release');
 const keysDir = flag('keys-dir') || path.join(repoRoot, 'keys');
 
 /** The desktop protocol declared in this repo's own package.json. */
-function readDesktopProtocol() {
+function readDesktopPackage() {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-    return Number.isInteger(pkg.nexusDesktopProtocol) && pkg.nexusDesktopProtocol >= 0
-      ? pkg.nexusDesktopProtocol
-      : 1;
+    return JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   } catch {
-    return 1;
+    return {};
   }
+}
+
+function readDesktopProtocol() {
+  const pkg = readDesktopPackage();
+  return Number.isInteger(pkg.nexusDesktopProtocol) && pkg.nexusDesktopProtocol >= 0
+    ? pkg.nexusDesktopProtocol
+    : 1;
+}
+
+/**
+ * A release must never silently ship without a core artifact: in CI a skip is
+ * a failure, locally it is only a warning.
+ */
+function skip(reason) {
+  console.error(`[publish-core] ${reason}`);
+  if (process.env.GITHUB_ACTIONS === 'true') process.exitCode = 1;
 }
 
 async function main() {
   const pkgFile = path.join(repoRoot, 'node_modules', 'nexus-coder', 'package.json');
   if (!fs.existsSync(pkgFile)) {
-    console.error('[publish-core] nexus-coder/package.json not found; skipping.');
+    skip(`nexus-coder/package.json not found at ${pkgFile}; no core artifact published.`);
     return;
   }
   const { version } = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
   if (!version) {
-    console.error('[publish-core] no version field in nexus-coder/package.json');
+    skip('no version field in nexus-coder/package.json');
     return;
   }
 
@@ -70,7 +83,7 @@ async function main() {
 
   const srcDist = path.join(repoRoot, 'node_modules', 'nexus-coder', 'dist');
   if (!fs.existsSync(srcDist)) {
-    console.error(`[publish-core] source dist missing: ${srcDist}`);
+    skip(`source dist missing: ${srcDist}; no core artifact published.`);
     return;
   }
 
@@ -120,28 +133,46 @@ async function main() {
       const sha512 = hash.digest('hex');
 
       const isoNow = new Date().toISOString();
+      // The artifact is uploaded as an asset of THIS release, whose tag is the
+      // DESKTOP version (e.g. v0.2.21) -- not the core version. The manifest URL
+      // must resolve, so build it from the release tag.
+      const desktopVersion = readDesktopPackage().version;
+      const envTag = process.env.GITHUB_REF_NAME || process.env.NEXUS_RELEASE_TAG || '';
+      const releaseTag = envTag || (desktopVersion ? `v${desktopVersion}` : `v${version}`);
+      if (envTag && !/^v/.test(envTag)) {
+        console.warn(`[publish-core] release tag "${envTag}" does not look like a version tag; manifest URL may 404.`);
+      }
       const yamlLines = [
         `version: ${version}`,
         `sha512: ${sha512}`,
         `size: ${sz}`,
-        `url: https://github.com/jsws9517/nexus-desktop/releases/download/v${version}/${outFileName}`,
+        `url: https://github.com/jsws9517/nexus-desktop/releases/download/${releaseTag}/${outFileName}`,
         `timestamp: ${isoNow}`,
         `protocol: ${coreProtocol}`,
         '',
       ];
       fs.writeFileSync(manifestPath, yamlLines.join('\n'));
 
-      // Sign the manifest with ed25519 (one-shot API: sign(null, data, key)).
+      // Sign the manifest with ed25519. CI provides the key via the
+      // CORE_SIGNING_KEY secret (the file is gitignored and never committed).
       const privKeyFile = path.join(keysDir, 'core-signing-private.pem');
       const sigPath = `${manifestPath}.sig`;
+      let privKey = null;
       if (fs.existsSync(privKeyFile)) {
-        const privKey = fs.readFileSync(privKeyFile);
+        privKey = fs.readFileSync(privKeyFile);
+      } else if (process.env.CORE_SIGNING_KEY) {
+        privKey = Buffer.from(process.env.CORE_SIGNING_KEY);
+      }
+      if (privKey) {
         const manifestData = fs.readFileSync(manifestPath);
         const sig = cryptoSign(null, manifestData, privKey);
         fs.writeFileSync(sigPath, sig.toString('hex'));
         console.log(`[publish-core] signed ${manifestPath} -> ${sigPath}`);
+      } else if (process.env.GITHUB_ACTIONS === 'true') {
+        console.error('[publish-core] CORE_SIGNING_KEY secret is required to sign in CI.');
+        process.exitCode = 1;
       } else {
-        console.warn(`[publish-core] private key not found at ${privKeyFile}; skipping signature.`);
+        console.warn(`[publish-core] no signing key (${privKeyFile} or CORE_SIGNING_KEY); skipping signature.`);
       }
 
       console.log(

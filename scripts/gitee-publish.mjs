@@ -1,4 +1,5 @@
-import { readFile, stat, readdirSync } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
 
 const REPO = process.env.GITEE_REPO || 'cict_1_0/nexus-desktop';
 const TOKEN = process.env.GITEE_TOKEN;
@@ -87,9 +88,9 @@ async function main() {
     'latest.yml',
     `nexus-Setup-${version}.exe`,
     `nexus-Setup-${version}.exe.blockmap`,
-    ...fs.readdirSync(RELEASE_DIR).filter((f) => f.startsWith('core-') && f.endsWith('.tar.gz')),
+    ...readdirSync(RELEASE_DIR).filter((f) => f.startsWith('core-') && f.endsWith('.tar.gz')),
         'latest-core.yml',
-    ...fs.readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sig')),
+    ...readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sig')),
   ];
 
   for (const name of candidates) {
