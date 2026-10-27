@@ -29,6 +29,13 @@ test('package.json nexusDesktopProtocol matches the fallback constant', () => {
     'nexusDesktopProtocol in package.json must equal DESKTOP_PROTOCOL_FALLBACK');
 });
 
+test('package.json nexusCoreVersion matches the installed nexus-coder version', () => {
+  const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  const core = JSON.parse(fs.readFileSync('node_modules/nexus-coder/package.json', 'utf8'));
+  assert.equal(pkg.nexusCoreVersion, core.version,
+    'nexusCoreVersion drifted from node_modules/nexus-coder (run `npm run sync:core`)');
+});
+
 test('desktopProtocol() honours the env override', () => {
   process.env.NEXUS_DESKTOP_PROTOCOL = '7';
   assert.equal(proto.desktopProtocol(), 7);

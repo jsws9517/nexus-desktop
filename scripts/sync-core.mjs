@@ -20,7 +20,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, rmSync, cpSync, watch, readdirSync, statSync } from 'node:fs';
+import { existsSync, rmSync, cpSync, watch, readdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -69,11 +69,39 @@ function syncOnce({ quiet = false } = {}) {
   rmSync(dstDist, { recursive: true, force: true });
   cpSync(srcDist, dstDist, { recursive: true });
 
+  syncCoreVersionField();
+
   if (!quiet) {
     const srcMtime = statSync(join(srcDist, 'src', 'index.js')).mtime.toISOString();
     console.log(`[sync-core] synced ${fileCount(srcDist)} files from ${srcDist} -> ${dstDist} (core src mtime ${srcMtime})`);
   }
   return true;
+}
+
+/**
+ * Keep `package.json.nexusCoreVersion` equal to the version actually installed
+ * under node_modules/nexus-coder, so the declared value never drifts from the
+ * runtime copy (tooling + CI read it without resolving node_modules).
+ */
+function syncCoreVersionField() {
+  const corePkgPath = join(dstRoot, 'package.json');
+  const desktopPkgPath = join(root, 'package.json');
+  try {
+    const coreVersion = JSON.parse(readFileSync(corePkgPath, 'utf8')).version;
+    if (!coreVersion) return;
+    const pkg = JSON.parse(readFileSync(desktopPkgPath, 'utf8'));
+    if (pkg.nexusCoreVersion === coreVersion) return;
+    // Preserve the exact field order: replace the literal line in place.
+    const text = readFileSync(desktopPkgPath, 'utf8');
+    const next = text.replace(
+      /"nexusCoreVersion":\s*"[^"]*"/,
+      `"nexusCoreVersion": "${coreVersion}"`,
+    );
+    writeFileSync(desktopPkgPath, next);
+    console.log(`[sync-core] nexusCoreVersion -> ${coreVersion}`);
+  } catch (err) {
+    console.warn(`[sync-core] could not sync nexusCoreVersion: ${err.message}`);
+  }
 }
 
 function buildCore() {
