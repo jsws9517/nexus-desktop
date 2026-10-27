@@ -18,6 +18,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify core signing key
+        shell: bash
+        env:
+          CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
+        run: |
+          # Fail before the ~4 minute build if the release cannot sign the core
+          # manifest; otherwise the publish step fails after the installer is
+          # already produced and no release is created.
+          if [ -z "${CORE_SIGNING_KEY}" ]; then
+            echo "::error::CORE_SIGNING_KEY secret is missing."
+            exit 1
+          fi
+          case "$CORE_SIGNING_KEY" in
+            *"PRIVATE KEY"*) ;;
+            *) echo "::error::CORE_SIGNING_KEY is not a PEM private key."; exit 1 ;;
+          esac
+
       - name: Get version
         id: version
         shell: bash
@@ -159,6 +176,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Publish core update artifact
+        run: node scripts/publish-core.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -169,6 +192,10 @@ jobs:
             release/nexus-Setup-${{ steps.version.outputs.tag }}.exe
             release/latest.yml
             release/*.blockmap
+            release/core-*.tar.gz
+            release/latest-core.yml
+            release/latest-core.yml.sig
+            keys/core-signing-public.pem
 
       - name: Publish Gitee Release
         shell: bash

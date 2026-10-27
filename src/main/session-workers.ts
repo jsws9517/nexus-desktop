@@ -55,6 +55,9 @@ export class SessionWorkers {
   /** Optional cross-session rate-limit aggregator. Wired by main/index.ts. */
   rateLimitRegistry?: RateLimitRegistry;
 
+  /** Core overlay launch params (env + execArgv). Null = base copy. */
+  launch?: { env: Record<string, string> };
+
   /**
    * Health gate for the pre-warmed spare. Wired by main/index.ts (needs the
    * resource monitor + tab ceiling). Absent = never warm.
@@ -159,7 +162,7 @@ export class SessionWorkers {
     if (this.spare || this.warming) return;
     if (!this.canWarm || !this.canWarm()) return;
     this.warming = true;
-    const worker = new WorkerHost(workerScriptPath());
+    const worker = new WorkerHost(workerScriptPath(), this.launch ?? { env: {} });
     worker.onLog = (level, message) => this.onLog?.(level, message);
     worker.onExit = (code) => {
       this.onLog?.('warn', `Spare worker exited (code=${code})`);
@@ -268,7 +271,7 @@ export class SessionWorkers {
     let worker: WorkerHost | null = await this.takeSpare();
     const fromSpare = worker !== null;
     if (!worker) {
-      worker = new WorkerHost(workerScriptPath());
+      worker = new WorkerHost(workerScriptPath(), this.launch ?? { env: {} });
       worker.start();
       // Every tab proxies MCP through the single main-process hub (one OS process
       // per MCP server, shared by all tabs — no per-tab shadow processes).
@@ -353,7 +356,7 @@ export class SessionWorkers {
     let worker: WorkerHost | null = await this.takeSpare();
     const fromSpare = worker !== null;
     if (!worker) {
-      worker = new WorkerHost(workerScriptPath());
+      worker = new WorkerHost(workerScriptPath(), this.launch ?? { env: {} });
       worker.start();
       worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
     }

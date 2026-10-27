@@ -1,3 +1,6 @@
+// Must stay the first import: registers the core overlay resolve hook before any
+// nexus-coder module is evaluated. No-op unless the launcher set NEXUS_OVERLAY_CORE_DIR.
+import './bootstrap/register.js';
 import readline from 'node:readline';
 import { AgentService } from './agent-service.js';
 import type { AgentEvent } from './agent-service.js';

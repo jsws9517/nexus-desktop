@@ -137,6 +137,13 @@ Gitee Release on `cict_1_0/nexus-desktop` (body from the same changelog, via
 `scripts/gitee-publish.mjs`). Every `main` push is also auto-mirrored to Gitee
 by `gitee-sync.yml`; both workflows need the `GITEE_TOKEN` secret.
 
+The same run publishes the core overlay artifacts (`core-<nexus-coder
+version>.tar.gz`, `latest-core.yml`, `latest-core.yml.sig`) so clients can take
+core updates without a full installer. This requires the `CORE_SIGNING_KEY`
+repository secret (PEM contents of `keys/core-signing-private.pem`); without it
+the workflow fails at the preflight step on purpose.
+
+
 > Gitee caps release attachments at **100 MiB**. The NSIS installer (~110 MiB)
 > is skipped there, so installers stay GitHub-only; `latest.yml` and the
 > `.blockmap` are still uploaded for reference.

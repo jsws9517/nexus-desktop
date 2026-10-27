@@ -125,7 +125,7 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
   // practice: `vault_search` was silently dropped from every round, and a user
   // who typed "use vault_search" was told the tool did not exist.
   // test/tool-relevance.test.mjs guards this parity in both directions.
-  'vault_search', 'vault_open', 'vault_write',
+  'vault_search', 'vault_open', 'vault_write', 'inline_search',
 ]);
 
 export interface ScoreOptions {

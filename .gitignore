@@ -24,3 +24,6 @@ verify-final.mjs
 # global ~/.nexus/); any stray knowledge/ copies under a project must stay ignored.
 .nexus/knowledge/
 .nexus/memory/
+
+# Core signing keys (private key must never be committed)
+keys/core-signing-private.pem

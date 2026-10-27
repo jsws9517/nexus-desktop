@@ -5,7 +5,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
+import { prepareLaunch, markHealthy, disableActiveCore, readState, coreDirFor } from '../bootstrap/overlay.js';
+import { isProtocolCompatible, desktopProtocol, readCoreDirProtocol } from '../core-overlay/protocol.js';
 import { Updater } from './updater.js';
+import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import { SessionWorkers } from './session-workers.js';
 import { RateLimitRegistry } from './rate-limit-registry.js';
@@ -48,6 +51,7 @@ const desktopState = createDesktopState();
 sessionWorkers.rateLimitRegistry = rateLimitRegistry;
 rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
 const updater = new Updater();
+const coreUpdater = new CoreUpdateManager('https://github.com/jsws9517/nexus-desktop/releases/latest/download');
 // System resource watchdog for the multi-session protection (see resource-monitor.ts).
 const resourceMon = new ResourceMonitor({
   intervalMs: 5000,
@@ -376,28 +380,146 @@ async function openConfigWindow(): Promise<void> {
   }
 }
 
+/** Overlay root for core hot-upgrades; base copy is used when this dir is empty or disabled. */
+function coreOverlayRoot(): string {
+  return join(app.getPath('userData'), 'overlay');
+}
+
+/**
+ * The nexus-coder version the worker is actually running:
+ *   - the active overlay version when one is staged, or
+ *   - the version bundled inside app.asar (node_modules/nexus-coder).
+ */
+function currentCoreVersion(): string {
+  try {
+    const active = readState(coreOverlayRoot()).activeCore;
+    if (active) return active;
+  } catch {
+    /* fall through to the bundled copy */
+  }
+  try {
+    const pkgPath = join(app.getAppPath(), 'node_modules', 'nexus-coder', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 function startWorker(): void {
-  worker = new WorkerHost(workerPath());
+  const overlayDisabled = process.env.NEXUS_DISABLE_CORE_OVERLAY === '1';
+  let launch = { version: null as string | null, disabledNow: [] as string[], env: {} as Record<string, string> };
+  if (!overlayDisabled) {
+    try {
+      launch = prepareLaunch(coreOverlayRoot(), app.getAppPath());
+    } catch (err) {
+      logger.warn(`core overlay disabled: ${(err as Error).message}`);
+    }
+  }
+  // Protocol gate (boot-time): an overlay left active by a previous run must
+  // still speak this desktop's protocol. A desktop downgrade (or a core that
+  // declares a newer protocol) disables it here, before any worker starts.
+  if (launch.version) {
+    const coreProto = readCoreDirProtocol(coreDirFor(coreOverlayRoot(), launch.version));
+    if (!isProtocolCompatible(coreProto)) {
+      const msg = `core overlay ${launch.version} speaks protocol ${coreProto}, ` +
+        `this desktop speaks ${desktopProtocol()}; reverted to base copy`;
+      logger.error(msg);
+      send(CHANNELS.log, { level: 'error', message: msg });
+      try { disableActiveCore(coreOverlayRoot()); } catch {}
+      try {
+        launch = prepareLaunch(coreOverlayRoot(), app.getAppPath());
+      } catch {
+        launch = { version: null, disabledNow: [], env: {} };
+      }
+    }
+  }
+  const overlayActive = launch.version !== null;
+  // True while the overlay is loaded but not yet proven good. Cleared once the
+  // core initializes successfully, or when the overlay is rolled back.
+  let overlayPending = overlayActive;
+  if (overlayActive) {
+    logger.info(`core overlay active: ${launch.version}`);
+  }
+  for (const v of launch.disabledNow) {
+    logger.warn(`core overlay ${v} disabled by rollback`);
+  }
+
+  /**
+   * Settle the overlay exactly once: mark it healthy on success, or disable it
+   * on failure so the next boot (and an immediate reload) uses the base copy.
+   * Driven by the core's own init result, not by a mere process message — a
+   * broken overlay can answer RPCs while failing to construct the Agent.
+   */
+  const settleOverlay = (healthy: boolean, reason: string): void => {
+    if (!overlayPending) return;
+    overlayPending = false;
+    if (healthy) {
+      try {
+        markHealthy(coreOverlayRoot());
+      } catch (err) {
+        logger.warn(`core overlay markHealthy failed: ${(err as Error).message}`);
+      }
+      return;
+    }
+    try {
+      const v = disableActiveCore(coreOverlayRoot());
+      if (v) {
+        const msg = `Core overlay ${v} ${reason}; reverted to base copy`;
+        logger.error(msg);
+        send(CHANNELS.log, { level: 'error', message: msg });
+      } else {
+        logger.warn(`core overlay rollback: no active core to disable (${reason})`);
+      }
+    } catch (err) {
+      logger.warn(`core overlay disable failed: ${(err as Error).message}`);
+    }
+  };
+
+  worker = new WorkerHost(workerPath(), launch);
   worker.onEvent = forwardEvent;
   worker.onPermission = (req) => send(CHANNELS.permission, req);
   worker.onLog = (level, message) => send(CHANNELS.log, { level, message });
   worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
   worker.onExit = (code) => {
     send(CHANNELS.log, { level: 'warn', message: `Core worker exited (code=${code})` });
+    // Died before proving itself: the overlay itself is suspect.
+    settleOverlay(false, 'crashed before initializing');
     scheduleRestart();
   };
   worker.start();
+  // Propagate the same overlay launch params to per-session workers so all
+  // core processes load the same nexus-coder version.
+  if (launch.env && Object.keys(launch.env).length > 0) {
+    sessionWorkers.launch = { env: launch.env };
+  }
   const savedCwd = desktopState.loadSavedCwd();
   const earlyParams = savedCwd ? { cwd: savedCwd } : undefined;
   // Phase 1 (fast): construct the Agent so session list + message reads respond
   // immediately. Phase 2 (slow): MCP/skills. Read-only IPC gates on phase 1,
   // mutations on phase 2 — see EARLY_METHODS above.
+  const earlyWorker = worker;
   sessionReadyPromise = Promise.race([
     worker
       .request('earlyInit', earlyParams)
-      .then(() => {})
+      .then(() => {
+        // The Agent constructed from whatever nexus-coder the worker loaded;
+        // if that was the overlay, it has now proven itself.
+        settleOverlay(true, '');
+      })
       .catch((err) => {
         send(CHANNELS.log, { level: 'error', message: `Core early-init failed: ${err.message}` });
+        if (overlayPending) {
+          // The overlay broke the core's own init. Disable it and reload the
+          // worker with the base copy so this session recovers without a manual
+          // restart (the next startWorker() re-reads the now-cleared state).
+          settleOverlay(false, 'failed to initialize');
+          try { earlyWorker?.stop(); } catch {}
+          if (worker === earlyWorker) worker = null;
+          setTimeout(() => {
+            if (!intentionallyStopped) startWorker();
+          }, 500);
+        }
       }),
     new Promise<void>((resolve) => {
       setTimeout(() => {
@@ -457,6 +579,19 @@ if (gotLock) {
     Menu.setApplicationMenu(null);
     updater.init();
     updater.onState = (state) => send(CHANNELS.updateState, state);
+    coreUpdater.init();
+    // The manager must compare against the core the worker actually runs
+    // (active overlay, else the bundled copy), not just overlay state.json --
+    // otherwise a base-copy install is always offered an "update" to the core
+    // it already ships. `unknown` means the bundled package.json was unreadable;
+    // treat that as "no baseline" rather than as a real version.
+    coreUpdater.currentVersionProvider = () => {
+      const v = currentCoreVersion();
+      return v && v !== 'unknown' ? v : undefined;
+    };
+    // coreOverlayRoot is also used by startWorker for the overlay bootstrap;
+    // keep it consistent with the registerIpc call below.
+    logger.info(`core version: ${currentCoreVersion()}`);
     createTray();
     startWorker();
     wireSessionWorkers();
@@ -514,9 +649,31 @@ if (gotLock) {
       setLazyWorker: desktopState.setLazyWorker,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
-      rateLimitRegistry,
-    });
-    createWindow();
+       rateLimitRegistry,
+       coreUpdater,
+       coreOverlayRoot,
+       getCoreVersion: currentCoreVersion,
+       restartCoreWorker: () => { void restartWorker(); },
+sendEvent: send,
+     });
+     createWindow();
+
+    // Silent startup check for a newer core overlay. Only surfaces availability
+    // (never auto-downloads); the renderer turns an 'available' state into a
+    // toast + a badge on the settings entry. Delayed so it never competes with
+    // first-paint / worker warm-up.
+    if (process.env.NEXUS_DISABLE_CORE_UPDATE !== '1') {
+      setTimeout(() => {
+        void coreUpdater
+          .check(coreOverlayRoot())
+          .then((r) => {
+            if (r.available && r.latest) {
+              logger.info(`core update available: ${r.latest.version} (current ${r.active ?? 'bundled'})`);
+            }
+          })
+          .catch((err) => logger.warn(`core update check failed: ${(err as Error).message}`));
+      }, 10000);
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
