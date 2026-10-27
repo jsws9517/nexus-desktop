@@ -139,17 +139,6 @@ jobs:
             printf -- '- No new commits\n' >> "$BODY"
           fi
 
-      - name: Commit version bump
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
-          git commit -m "chore: release v${{ steps.version.outputs.tag }}" || echo "No changes to commit"
-          # Tag-triggered checkout is detached HEAD; push the version bump to main
-          # explicitly and never fail the release if the push is rejected.
-          git push origin HEAD:main || echo "Version bump push skipped (non-fatal)"
-
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
@@ -209,6 +198,8 @@ jobs:
           GITEE_NAME="${{ steps.version.outputs.tag }}" \
           GITEE_BODY_FILE=".release_body.md" \
           GITEE_RELEASE_DIR="release" \
+          CORE_SIGNING_KEY="${CORE_SIGNING_KEY}" \
           node scripts/gitee-publish.mjs
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}

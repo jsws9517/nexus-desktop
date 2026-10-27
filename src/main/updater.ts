@@ -2,13 +2,14 @@ import { app } from 'electron';
 import updaterModule from 'electron-updater';
 import type { UpdateInfo } from 'electron-updater';
 
-// 更新源候选：GitHub Release 直连优先，再回退到 gh-proxy 类 CDN。
+// 更新源候选：GitHub Release 直连优先，再回退到 gh-proxy 类 CDN，最后 Gitee。
 // 每个候选在 check() 时并行探测 latest.yml，取第一个可达的作为本次 feed。
 const FEED_DIRECT =
   'https://github.com/jsws9517/nexus-desktop/releases/latest/download';
 const FEED_MIRRORS = [
   'https://gh-proxy.com/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
   'https://ghfast.top/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+  'https://gitee.com/cict_1_0/nexus-desktop/releases/latest/download',
 ];
 const PROBE_TIMEOUT_MS = 6000;
 

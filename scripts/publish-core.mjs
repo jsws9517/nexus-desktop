@@ -167,6 +167,10 @@ async function main() {
         const manifestData = fs.readFileSync(manifestPath);
         const sig = cryptoSign(null, manifestData, privKey);
         fs.writeFileSync(sigPath, sig.toString('hex'));
+        // Mark the manifest signed so clients hard-refuse it if the .sig
+        // sidecar is missing (downgrade attack: deleting the signature to
+        // bypass verification).
+        fs.appendFileSync(manifestPath, 'signed: true\n');
         console.log(`[publish-core] signed ${manifestPath} -> ${sigPath}`);
       } else if (process.env.GITHUB_ACTIONS === 'true') {
         console.error('[publish-core] CORE_SIGNING_KEY secret is required to sign in CI.');

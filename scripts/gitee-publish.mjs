@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { readdirSync } from 'node:fs';
+import { readdirSync, writeFileSync } from 'node:fs';
 
 const REPO = process.env.GITEE_REPO || 'cict_1_0/nexus-desktop';
 const TOKEN = process.env.GITEE_TOKEN;
@@ -89,7 +89,7 @@ async function main() {
     `nexus-Setup-${version}.exe`,
     `nexus-Setup-${version}.exe.blockmap`,
     ...readdirSync(RELEASE_DIR).filter((f) => f.startsWith('core-') && f.endsWith('.tar.gz')),
-        'latest-core.yml',
+    'latest-core.yml',
     ...readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sig')),
   ];
 
@@ -105,7 +105,36 @@ async function main() {
       console.log(`skip ${file}: ${(info.size / 1048576).toFixed(1)} MiB > 100 MiB Gitee limit`);
       continue;
     }
-    const buffer = await readFile(file);
+    let buffer = await readFile(file);
+    // Point the manifests' `url:` fields at Gitee so Gitee-hosted updates stay
+    // self-contained; re-sign latest-core.yml because the signature covers the
+    // manifest bytes. The core tarball stays on GitHub (Gitee attachment limit
+    // is 100 MiB, the NSIS installer is ~110 MiB) — clients reach it via GitHub
+    // or gh-proxy mirrors.
+    if (name === 'latest.yml') {
+      const text = buffer.toString('utf8').replace(
+        /^url: .*$/gm,
+        `url: https://gitee.com/${REPO}/releases/download/${TAG}/${version}`,
+      );
+      buffer = Buffer.from(text);
+      console.log(`rewrote ${name} url -> Gitee download`);
+    } else if (name === 'latest-core.yml') {
+      const raw = buffer.toString('utf8');
+      const m = raw.match(/^url: .*\/([^\n]+)$/m);
+      const fileName = m?.[1] || '';
+      const text = raw
+        .replace(/^url: .*$/m, `url: https://gitee.com/${REPO}/releases/download/${TAG}/${fileName}`)
+        .replace(/^signed: true\s*$/m, '');
+      buffer = Buffer.from(text, 'utf8');
+      if (process.env.CORE_SIGNING_KEY) {
+        const { sign: cryptoSign } = await import('node:crypto');
+        const sig = cryptoSign(null, buffer, Buffer.from(process.env.CORE_SIGNING_KEY)).toString('hex');
+        writeFileSync(`${RELEASE_DIR}/${name}.sig`, sig);
+        console.log(`re-signed ${name} for the Gitee URL`);
+      } else {
+        console.log(`re-pointed ${name} at Gitee; manifest is now unsigned`);
+      }
+    }
     const form = new FormData();
     form.append('file', new Blob([buffer]), name);
     await uploadWithRetry(`${API}/releases/${releaseId}/attach_files?access_token=${TOKEN}`, form, info.size);

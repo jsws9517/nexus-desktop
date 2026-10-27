@@ -61,6 +61,8 @@ export interface ManifestEntry {
   timestamp: string;
   /** nexusDesktopProtocol the core was built against (null when undeclared). */
   protocol: number | null;
+  /** Present when the manifest was signed at publish time. */
+  signed?: boolean;
   offset: 0;
 }
 
@@ -109,7 +111,7 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
       if (current.version && current.sha512 && current.size != null) {
         entries.push({ version: current.version, sha512: current.sha512, size: current.size,
           url: current.url ?? '', timestamp: current.timestamp ?? '',
-          protocol: current.protocol ?? null, offset: 0 });
+          protocol: current.protocol ?? null, signed: current.signed, offset: 0 });
       }
       current = {};
       continue;
@@ -124,12 +126,15 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
     else if (key === 'protocol') {
       const n = Number(val);
       current.protocol = Number.isInteger(n) && n >= 0 ? n : null;
+    } else if (key === 'signed') {
+      const b = val === 'true';
+      current.signed = b ? true : undefined;
     }
   }
   if (current.version && current.sha512 && current.size != null) {
     entries.push({ version: current.version, sha512: current.sha512, size: current.size,
       url: current.url ?? '', timestamp: current.timestamp ?? '',
-      protocol: current.protocol ?? null, offset: 0 });
+      protocol: current.protocol ?? null, signed: current.signed, offset: 0 });
   }
   return entries;
 }
@@ -158,6 +163,13 @@ export function verifyManifestSignature(manifestText: string, sigHex: string): b
 /**
  * Fetch latest-core.yml (and its .sig) from a feed URL.
  * Verifies the ed25519 signature when a public key is available.
+ *
+ * A manifest that the publisher marked `signed: true` must carry a valid
+ * signature; a missing or unverifiable one is a hard error. Unsigned legacy
+ * manifests (no `signed` line) fall back to trust-by-hash: the signature is
+ * verified when a key and a sidecar are present, but a missing sidecar does
+ * not block the download.
+ *
  * Returns entries sorted descending by version (first = newest).
  */
 export async function fetchCoreManifest(feedUrl: string): Promise<ManifestEntry[]> {
@@ -171,11 +183,24 @@ export async function fetchCoreManifest(feedUrl: string): Promise<ManifestEntry[
     ]);
     if (!ymlRes.ok) throw new Error(`HTTP ${ymlRes.status}`);
     const text = await ymlRes.text();
+    const entries = parseCoreManifest(text);
     const sigHex = sigRes?.ok ? await sigRes.text() : '';
-    if (sigHex && !verifyManifestSignature(text, sigHex)) {
-      throw new Error('core manifest signature verification failed');
+    const pubKey = getPubKey();
+    const requiresSig = entries.some((e) => e.signed);
+    if (requiresSig) {
+      if (!sigHex) {
+        throw new Error('core manifest is signed but its signature is missing');
+      }
+      if (pubKey && !verifyManifestSignature(text, sigHex)) {
+        throw new Error('core manifest signature verification failed');
+      }
+    } else if (sigHex) {
+      // Legacy manifest: verify when we can, never hard-block.
+      if (pubKey && !verifyManifestSignature(text, sigHex)) {
+        throw new Error('core manifest signature verification failed');
+      }
     }
-    return parseCoreManifest(text);
+    return entries;
   } finally {
     clearTimeout(timer);
   }
