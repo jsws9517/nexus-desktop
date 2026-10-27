@@ -35,7 +35,35 @@ interface StagedZipMeta {
 }
 
 function resolveFeedUrl(base: string): string {
-  return process.env.NEXUS_CORE_UPDATE_MIRROR ?? base;
+  const override = process.env.NEXUS_CORE_UPDATE_MIRROR;
+  if (override) return override;
+  return base;
+}
+
+async function probeFeedUrl(base: string): Promise<string> {
+  const override = process.env.NEXUS_CORE_UPDATE_MIRROR;
+  if (override) return override;
+  // Parallel probe of the core feed candidates (GitHub direct first, then the
+  // CN gh-proxy mirrors, then the Gitee mirror). First reachable wins; the
+  // probe is a HEAD with a short timeout so check() stays fast on flaky links.
+  const candidates = [
+    base,
+    'https://gh-proxy.com/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+    'https://ghfast.top/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+    'https://gitee.com/cict_1_0/nexus-desktop/releases/latest/download',
+  ];
+  const results = await Promise.all(
+    candidates.map(async (url) => {
+      try {
+        const res = await fetch(`${url.replace(/\/$/, '')}/latest-core.yml`, { method: 'HEAD' });
+        if (res.ok || res.status === 404) return url; // 404 = reachable, no feed yet
+        return null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return results.find((r) => r !== null) ?? base;
 }
 
 export class CoreUpdateManager {
@@ -74,7 +102,8 @@ export class CoreUpdateManager {
     }
     this.setState({ status: 'checking', error: undefined });
     try {
-      const entries = await fetchCoreManifest(resolveFeedUrl(this.baseFeedUrl));
+      const feed = await probeFeedUrl(this.baseFeedUrl);
+      const entries = await fetchCoreManifest(feed);
       const latestEntry = entries[0] ?? null;
       const latest = latestEntry
         ? {

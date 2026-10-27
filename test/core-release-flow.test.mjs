@@ -39,7 +39,7 @@ function publish(outDir, tag) {
 }
 
 /** Serve `dir`, rewriting the manifest so its artifact URL points at the server. */
-function serveFeed(dir, tarball) {
+function serveFeed(dir, tarball, { dropSig = false } = {}) {
   return new Promise((resolve) => {
     let base = '';
     const manifest = () => fs.readFileSync(path.join(dir, 'latest-core.yml'), 'utf8')
@@ -51,6 +51,7 @@ function serveFeed(dir, tarball) {
         return;
       }
       if (name === 'latest-core.yml.sig') {
+        if (dropSig) { res.writeHead(404).end('not found'); return; }
         res.writeHead(200).end(sign(null, Buffer.from(manifest()), SIGNING.privateKey).toString('hex'));
         return;
       }
@@ -165,6 +166,47 @@ test('a downloaded core stays installable after a restart', async () => {
       JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8')).activeCore,
       version,
     );
+  } finally {
+    feed.close();
+  }
+});
+
+test('a manifest marked signed:true is hard-refused without its signature', async () => {
+  const out = fs.mkdtempSync(path.join(tmpdir(), 'core-feed-'));
+  const tarball = publish(out, 'v9.9.9');
+  const feed = await serveFeed(out, tarball, { dropSig: true });
+  try {
+    const CoreUpdateManager = await loadManager();
+    const mgr = new CoreUpdateManager(feed.base);
+    mgr.init();
+    mgr.currentVersionProvider = () => '1.0.0';
+    const checked = await mgr.check(newRoot());
+    assert.equal(checked.available, false);
+    assert.equal(mgr.getState().status, 'error');
+    assert.match(String(mgr.getState().error), /signed/i);
+  } finally {
+    feed.close();
+  }
+});
+
+test('an unsigned legacy manifest is still downloadable (trust-by-hash)', async () => {
+  const out = fs.mkdtempSync(path.join(tmpdir(), 'core-feed-'));
+  const tarball = publish(out, 'v9.9.9');
+  // Strip the signed marker: mimic a pre-gate manifest.
+  const manifestPath = path.join(out, 'latest-core.yml');
+  const text = fs.readFileSync(manifestPath, 'utf8').replace(/^signed: true$/m, '');
+  fs.writeFileSync(manifestPath, text);
+  const feed = await serveFeed(out, tarball, { dropSig: true });
+  try {
+    const CoreUpdateManager = await loadManager();
+    const mgr = new CoreUpdateManager(feed.base);
+    mgr.init();
+    mgr.currentVersionProvider = () => '1.0.0';
+    const root = newRoot();
+    const checked = await mgr.check(root);
+    assert.equal(checked.available, true, 'legacy unsigned manifest stays available');
+    const dl = await mgr.download(root);
+    assert.equal(dl.status, 'downloaded', dl.error ?? '');
   } finally {
     feed.close();
   }
