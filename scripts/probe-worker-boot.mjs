@@ -1,0 +1,15 @@
+import { spawn } from 'node:child_process';
+const dir = 'C:/Users/pgw/AppData/Local/Temp/opencode/nexus-slim-run';
+const child = spawn('node', [dir + '/dist/agent-worker.js'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] });
+let out = '';
+child.stdout.on('data', (d) => (out += d));
+child.stderr.on('data', (d) => (out += d));
+child.stdin.write(JSON.stringify({ id: 1, method: 'init' }) + '\n');
+await new Promise((r) => setTimeout(r, 12000));
+child.stdin.write(JSON.stringify({ id: 2, method: 'getStatus' }) + '\n');
+await new Promise((r) => setTimeout(r, 4000));
+child.stdin.write(JSON.stringify({ id: 3, method: 'shutdown' }) + '\n');
+const code = await new Promise((r) => child.on('exit', (c) => r(c)));
+console.log('init ok:', out.includes('"ok":true'));
+console.log('worker exit:', code);
+process.exit(code === 0 && out.includes('"ok":true') ? 0 : 1);
