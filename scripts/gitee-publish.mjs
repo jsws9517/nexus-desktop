@@ -119,12 +119,14 @@ async function main() {
       buffer = Buffer.from(text);
       console.log(`rewrote ${name} url -> Gitee download`);
     } else if (name === 'latest-core.yml') {
+      // Rewriting the artifact URL invalidates the signature (it covers the
+      // manifest bytes), so re-sign on the rewritten text. The `signed: true`
+      // marker is kept: clients hard-refuse a signed manifest without its
+      // .sig sidecar.
       const raw = buffer.toString('utf8');
       const m = raw.match(/^url: .*\/([^\n]+)$/m);
       const fileName = m?.[1] || '';
-      const text = raw
-        .replace(/^url: .*$/m, `url: https://gitee.com/${REPO}/releases/download/${TAG}/${fileName}`)
-        .replace(/^signed: true\s*$/m, '');
+      const text = raw.replace(/^url: .*$/m, `url: https://gitee.com/${REPO}/releases/download/${TAG}/${fileName}`);
       buffer = Buffer.from(text, 'utf8');
       if (process.env.CORE_SIGNING_KEY) {
         const { sign: cryptoSign } = await import('node:crypto');
