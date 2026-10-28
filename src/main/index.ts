@@ -77,16 +77,27 @@ let intentionallyStopped = false;
 let isQuitting = false;
 let restartAttempts = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
+let workerStartedAt = 0;
 const RESTART_MAX_ATTEMPTS = 3;
+/**
+ * A worker that lived at least this long before exiting has proven the setup
+ * (overlay or base) works, so its exit earns a fresh retry budget. A worker
+ * that dies sooner is crash-looping: the attempt counter must PERSIST across
+ * restarts, otherwise every fast init (deferMcp makes init resolve in ~100ms)
+ * resets it and the RESTART_MAX_ATTEMPTS breaker can never trip.
+ */
+const STABLE_WORKER_LIFETIME_MS = 5 * 60_000;
 
 function scheduleRestart(): void {
   if (intentionallyStopped) return;
   if (restartAttempts >= RESTART_MAX_ATTEMPTS) {
+    logger.error('Core worker crashed repeatedly; please restart the app.');
     send(CHANNELS.log, { level: 'error', message: 'Core worker crashed repeatedly; please restart the app.' });
     return;
   }
   const delay = Math.min(30000, 1000 * Math.pow(2, restartAttempts));
   restartAttempts++;
+  logger.warn(`Restarting core worker in ${delay}ms (attempt ${restartAttempts}/${RESTART_MAX_ATTEMPTS})`);
   send(CHANNELS.log, {
     level: 'warn',
     message: `Restarting core worker in ${delay}ms (attempt ${restartAttempts}/${RESTART_MAX_ATTEMPTS})`,
@@ -105,12 +116,12 @@ async function restartWorker(): Promise<void> {
   startWorker();
   const ok = await initOkPromise;
   if (ok) {
-    // Successful init: allow the next crash burst to also get 3 attempts,
-    // but only reset when we came from a "healthy" restart cycle — not when
-    // the overlay was just disabled (which means the base copy is stable and
-    // we do not want to keep retrying in case a *different* transient error
-    // fires onExit again).
-    restartAttempts = 0;
+    // NOTE: deliberately no restartAttempts reset here. A worker that inits
+    // fast (deferMcp makes init resolve in ~100ms) and dies young would
+    // otherwise reset the counter every cycle and crash-loop forever. The
+    // reset happens in worker.onExit, based on the worker's lifetime (see
+    // STABLE_WORKER_LIFETIME_MS).
+    logf('core worker restarted cleanly; restoring sessions');
     send(CHANNELS.workerRestarted, {});
   } else {
     // init failed: back off with the exponential schedule. If the overlay has
@@ -451,6 +462,9 @@ function startWorker(): void {
   // True while the overlay is loaded but not yet proven good. Cleared once the
   // core initializes successfully, or when the overlay is rolled back.
   let overlayPending = overlayActive;
+  // Birth of THIS worker process — the crash-loop breaker measures its
+  // lifetime on exit to decide whether the retry budget resets.
+  workerStartedAt = Date.now();
   if (overlayActive) {
     logger.info(`core overlay active: ${launch.version}`);
   }
@@ -492,10 +506,24 @@ function startWorker(): void {
   worker = new WorkerHost(workerPath(), launch);
   worker.onEvent = forwardEvent;
   worker.onPermission = (req) => send(CHANNELS.permission, req);
-  worker.onLog = (level, message) => send(CHANNELS.log, { level, message });
+  worker.onLog = (level, message) => {
+    // Mirror worker lines into the log FILES. These (worker stderr, crash
+    // notices) used to reach only the renderer, which made crash loops
+    // invisible in on-disk diagnostics.
+    if (level === 'error' || level === 'stderr') logger.error(`[worker] ${message}`);
+    else if (level === 'warn') logger.warn(`[worker] ${message}`);
+    else logf(`[worker] ${message}`);
+    send(CHANNELS.log, { level, message });
+  };
   worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
   worker.onExit = (code) => {
+    const lifetime = Date.now() - workerStartedAt;
+    logger.warn(`Core worker exited (code=${code}, lifetime=${Math.round(lifetime / 1000)}s)`);
     send(CHANNELS.log, { level: 'warn', message: `Core worker exited (code=${code})` });
+    // Refresh the retry budget ONLY when the previous worker proved stable for
+    // a meaningful stretch. A fast-init-then-die cycle must never reset the
+    // counter, or the breaker below can never trip and the app crash-loops.
+    if (lifetime >= STABLE_WORKER_LIFETIME_MS) restartAttempts = 0;
     // Died before proving itself: the overlay itself is suspect.
     if (overlayPending) {
       // This worker was launched with the overlay; a crash means the overlay
