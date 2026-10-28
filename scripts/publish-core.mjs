@@ -43,6 +43,10 @@ const keysDir = flag('keys-dir') || path.join(repoRoot, 'keys');
 // produced. Omit this flag to use the version already resident in
 // node_modules/nexus-coder (the desktop-release path).
 const explicitVersion = flag('version');
+// --release-tag <tag>  overrides the release tag the manifest URL points to.
+// Required for independent publishes where the target desktop release differs
+// from the version in package.json (which may be stale).
+const explicitReleaseTag = flag('release-tag');
 
 /** The desktop protocol declared in this repo's own package.json. */
 function readDesktopPackage() {
@@ -187,7 +191,7 @@ async function main() {
       // DESKTOP version (e.g. v0.2.21) -- not the core version. The manifest URL
       // must resolve, so build it from the release tag.
       const desktopVersion = readDesktopPackage().version;
-      const envTag = process.env.GITHUB_REF_NAME || process.env.NEXUS_RELEASE_TAG || '';
+      const envTag = explicitReleaseTag || process.env.GITHUB_REF_NAME || process.env.NEXUS_RELEASE_TAG || '';
       const releaseTag = envTag || (desktopVersion ? `v${desktopVersion}` : `v${version}`);
       if (envTag && !/^v/.test(envTag)) {
         console.warn(`[publish-core] release tag "${envTag}" does not look like a version tag; manifest URL may 404.`);

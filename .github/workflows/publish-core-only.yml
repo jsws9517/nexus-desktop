@@ -58,22 +58,19 @@ jobs:
             *) echo "::error::CORE_SIGNING_KEY is not a PEM private key."; exit 1 ;;
           esac
 
-      - name: Publish core artifact
-        run: node scripts/publish-core.mjs --version "${{ steps.core.outputs.version }}"
-        env:
-          CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
-
       - name: Find target desktop release
         id: release
         shell: bash
         run: |
-          TAG="${{ inputs.desktop_release_tag }}"
-          if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
-            # Get the latest release tag (excluding prereleases and drafts)
-            TAG=$(gh api repos/jsws9517/nexus-desktop/releases --jq 'first(.[] | select(.prerelease | not) | .tag_name)' 2>/dev/null || echo "v0.3.0")
-          fi
+          # Get the latest release tag (excluding prereleases and drafts)
+          TAG=$(gh api repos/jsws9517/nexus-desktop/releases --jq 'first(.[] | select(.prerelease | not) | .tag_name)' 2>/dev/null || echo "v0.3.0")
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Target release: $TAG"
+
+      - name: Publish core artifact
+        run: node scripts/publish-core.mjs --version "${{ steps.core.outputs.version }}" --release-tag "${{ steps.release.outputs.tag }}"
+        env:
+          CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
 
       - name: Upload core artifacts to desktop release
         shell: bash
@@ -104,6 +101,5 @@ jobs:
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
-
       - name: Print manifest for review
         run: cat release/latest-core.yml
