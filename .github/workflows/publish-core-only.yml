@@ -82,7 +82,11 @@ jobs:
           for f in "release/core-${VERSION}.tar.gz" "release/latest-core.yml" "release/latest-core.yml.sig"; do
             if [ -f "$f" ]; then
               echo "  uploading: $f"
-              gh release upload "$TAG" "$f" --repo jsws9517/nexus-desktop
+              gh release upload "$TAG" "$f" --repo jsws9517/nexus-desktop || {
+                echo "  warning: $f upload failed (may already exist); trying --clobber"
+                gh release upload "$TAG" "$f" --repo jsws9517/nexus-desktop --clobber 2>/dev/null \
+                  || echo "  warning: $f clobber also failed; release may already have this asset"
+              }
             else
               echo "  warning: $f not found, skipping"
             fi
