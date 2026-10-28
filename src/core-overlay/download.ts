@@ -105,19 +105,26 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
   const lines = text.split('\n');
   const entries: ManifestEntry[] = [];
   let current: Partial<ManifestEntry> = {};
+  const flush = () => {
+    if (current.version && current.sha512 && current.size != null) {
+      entries.push({ version: current.version, sha512: current.sha512, size: current.size,
+        url: current.url ?? '', timestamp: current.timestamp ?? '',
+        protocol: current.protocol ?? null, signed: current.signed, offset: 0 });
+    }
+  };
   for (const line of lines) {
     const idx = line.indexOf(':');
-    if (idx === -1) {
-      if (current.version && current.sha512 && current.size != null) {
-        entries.push({ version: current.version, sha512: current.sha512, size: current.size,
-          url: current.url ?? '', timestamp: current.timestamp ?? '',
-          protocol: current.protocol ?? null, signed: current.signed, offset: 0 });
-      }
-      current = {};
-      continue;
-    }
+    // Blank (or malformed) lines must NOT close the current entry block:
+    // a `signed: true` marker separated from its fields by a blank line would
+    // otherwise be parsed into an orphan block and silently dropped.
+    if (idx === -1) continue;
     const key = line.slice(0, idx).trim();
     const val = line.slice(idx + 1).trim();
+    // A repeated `version:` key starts the next entry block.
+    if (key === 'version' && current.version) {
+      flush();
+      current = {};
+    }
     if (key === 'version') current.version = val;
     else if (key === 'sha512') current.sha512 = val;
     else if (key === 'size') current.size = Number(val);
@@ -131,11 +138,7 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
       current.signed = b ? true : undefined;
     }
   }
-  if (current.version && current.sha512 && current.size != null) {
-    entries.push({ version: current.version, sha512: current.sha512, size: current.size,
-      url: current.url ?? '', timestamp: current.timestamp ?? '',
-      protocol: current.protocol ?? null, signed: current.signed, offset: 0 });
-  }
+  flush();
   return entries;
 }
 
@@ -160,6 +163,38 @@ export function verifyManifestSignature(manifestText: string, sigHex: string): b
 
 // ── Fetch ──────────────────────────────────────────────────────────────────────
 
+/** CN mirrors for github.com URLs (prefix form); tried after the direct URL. */
+const GH_MIRROR_PREFIXES = [
+  'https://gh-proxy.com/',
+  'https://ghfast.top/',
+];
+
+/** Hard deadline for fetching one core artifact (~1.4 MiB; generous for slow links). */
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+
+/**
+ * Candidate URLs for a core artifact. Non-github URLs (e.g. Gitee attachments
+ * referenced by a Gitee-hosted manifest) are used as-is; github.com URLs are
+ * retried through the CN mirrors because direct github release downloads are
+ * frequently unreachable from CN networks. Integrity never depends on the
+ * transport: the SHA-512 is verified no matter which candidate served bytes.
+ */
+export function assetCandidates(url: string): string[] {
+  if (!url.startsWith('https://github.com/')) return [url];
+  return [url, ...GH_MIRROR_PREFIXES.map((p) => `${p}${url}`)];
+}
+
+/** fetch() with a hard abort deadline (fetch alone can hang for minutes). */
+async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { redirect: 'follow', ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Fetch latest-core.yml (and its .sig) from a feed URL.
  * Verifies the ed25519 signature when a public key is available.
@@ -174,36 +209,30 @@ export function verifyManifestSignature(manifestText: string, sigHex: string): b
  */
 export async function fetchCoreManifest(feedUrl: string): Promise<ManifestEntry[]> {
   const base = feedUrl.replace(/\/$/, '');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const [ymlRes, sigRes] = await Promise.all([
-      fetch(`${base}/latest-core.yml`, { signal: controller.signal }),
-      fetch(`${base}/latest-core.yml.sig`, { signal: controller.signal }).catch(() => null),
-    ]);
-    if (!ymlRes.ok) throw new Error(`HTTP ${ymlRes.status}`);
-    const text = await ymlRes.text();
-    const entries = parseCoreManifest(text);
-    const sigHex = sigRes?.ok ? await sigRes.text() : '';
-    const pubKey = getPubKey();
-    const requiresSig = entries.some((e) => e.signed);
-    if (requiresSig) {
-      if (!sigHex) {
-        throw new Error('core manifest is signed but its signature is missing');
-      }
-      if (pubKey && !verifyManifestSignature(text, sigHex)) {
-        throw new Error('core manifest signature verification failed');
-      }
-    } else if (sigHex) {
-      // Legacy manifest: verify when we can, never hard-block.
-      if (pubKey && !verifyManifestSignature(text, sigHex)) {
-        throw new Error('core manifest signature verification failed');
-      }
+  const [ymlRes, sigRes] = await Promise.all([
+    fetchWithTimeout(`${base}/latest-core.yml`, 8000),
+    fetchWithTimeout(`${base}/latest-core.yml.sig`, 8000).catch(() => null),
+  ]);
+  if (!ymlRes.ok) throw new Error(`HTTP ${ymlRes.status}`);
+  const text = await ymlRes.text();
+  const entries = parseCoreManifest(text);
+  const sigHex = sigRes?.ok ? await sigRes.text() : '';
+  const pubKey = getPubKey();
+  const requiresSig = entries.some((e) => e.signed);
+  if (requiresSig) {
+    if (!sigHex) {
+      throw new Error('core manifest is signed but its signature is missing');
     }
-    return entries;
-  } finally {
-    clearTimeout(timer);
+    if (pubKey && !verifyManifestSignature(text, sigHex)) {
+      throw new Error('core manifest signature verification failed');
+    }
+  } else if (sigHex) {
+    // Legacy manifest: verify when we can, never hard-block.
+    if (pubKey && !verifyManifestSignature(text, sigHex)) {
+      throw new Error('core manifest signature verification failed');
+    }
   }
+  return entries;
 }
 
 // ── Staging ────────────────────────────────────────────────────────────────────
@@ -260,9 +289,31 @@ export async function downloadCoreUpdate(root: string, info: CoreUpdateInfo): Pr
 
   let downloaded = 0;
   let hash: ReturnType<typeof createHash>;
+  // Direct github.com release downloads are frequently unreachable from CN
+  // networks (connection reset / timeout), so try the CN mirror prefixes as
+  // fallbacks. The SHA-512 check below guards integrity regardless of which
+  // candidate served the bytes.
+  const candidates = assetCandidates(info.url);
+  let lastErr: unknown = null;
   try {
-    const res = await fetch(info.url);
-    if (!res.ok) throw new Error(`HTTP ${res.status} downloading core zip`);
+    let res: Response | null = null;
+    for (const candidate of candidates) {
+      try {
+        const r = await fetchWithTimeout(candidate, DOWNLOAD_TIMEOUT_MS);
+        if (r.ok) {
+          res = r;
+          break;
+        }
+        lastErr = new Error(`HTTP ${r.status} from ${candidate}`);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!res) {
+      throw lastErr instanceof Error
+        ? lastErr
+        : new Error(`all download candidates failed for ${info.url}`);
+    }
     const contentLength = Number(res.headers.get('content-length') ?? -1);
     if (contentLength !== -1 && contentLength !== info.size) {
       throw new Error(`content-length mismatch: expected ${info.size}, got ${contentLength}`);

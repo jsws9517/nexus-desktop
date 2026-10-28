@@ -98,6 +98,10 @@ jobs:
         shell: bash
         run: |
           TAG="${{ steps.release.outputs.tag }}"
+          # gitee-publish.mjs reads the release body from this file. The full
+          # desktop release flow generates it (changelog step); the core-only
+          # flow does not, so write a fallback body first.
+          [ -f .release_body.md ] || printf '# Core update (nexus-coder)\n\nCore-only publish; no desktop changelog in this run.\n' > .release_body.md
           GITEE_REPO=cict_1_0/nexus-desktop \
           GITEE_TAG="${TAG}" \
           GITEE_NAME="${TAG}" \

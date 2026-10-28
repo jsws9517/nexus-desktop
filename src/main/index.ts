@@ -51,7 +51,12 @@ const desktopState = createDesktopState();
 sessionWorkers.rateLimitRegistry = rateLimitRegistry;
 rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
 const updater = new Updater();
-const coreUpdater = new CoreUpdateManager('https://github.com/jsws9517/nexus-desktop/releases/latest/download');
+const coreUpdater = new CoreUpdateManager(
+  'https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+  // Gitee mirrors the desktop release 1:1 by tag but has no `latest/download`
+  // alias, so probe the release matching the running desktop version.
+  () => [`https://gitee.com/cict_1_0/nexus-desktop/releases/download/v${app.getVersion()}`],
+);
 // System resource watchdog for the multi-session protection (see resource-monitor.ts).
 const resourceMon = new ResourceMonitor({
   intervalMs: 5000,

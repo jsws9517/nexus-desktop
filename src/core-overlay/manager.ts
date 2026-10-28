@@ -34,36 +34,51 @@ interface StagedZipMeta {
   zipPath: string;
 }
 
-function resolveFeedUrl(base: string): string {
-  const override = process.env.NEXUS_CORE_UPDATE_MIRROR;
-  if (override) return override;
-  return base;
+type FeedProbe = 'ok' | 'missing' | 'unreachable';
+
+/**
+ * HEAD the feed with a hard timeout so a hanging host (github.com is often
+ * unreachable from CN networks) cannot stall check() indefinitely.
+ */
+async function probeFeed(base: string, timeoutMs = 4000): Promise<FeedProbe> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${base.replace(/\/$/, '')}/latest-core.yml`, {
+      method: 'HEAD',
+      signal: controller.signal,
+    });
+    if (res.ok) return 'ok';
+    if (res.status === 404) return 'missing';
+    return 'unreachable';
+  } catch {
+    return 'unreachable';
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-async function probeFeedUrl(base: string): Promise<string> {
+/**
+ * Parallel probe of the core feed candidates (GitHub direct first, then the
+ * CN gh-proxy mirrors, then any caller-supplied feeds such as the Gitee
+ * release matching the running desktop version). First OK feed wins; a feed
+ * that answers 404 is only used when nothing serves the manifest, because
+ * fetching a 404 feed would just fail check().
+ */
+async function probeFeedUrl(base: string, extra: string[] = []): Promise<string> {
   const override = process.env.NEXUS_CORE_UPDATE_MIRROR;
   if (override) return override;
-  // Parallel probe of the core feed candidates (GitHub direct first, then the
-  // CN gh-proxy mirrors, then the Gitee mirror). First reachable wins; the
-  // probe is a HEAD with a short timeout so check() stays fast on flaky links.
   const candidates = [
     base,
     'https://gh-proxy.com/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
     'https://ghfast.top/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
-    'https://gitee.com/cict_1_0/nexus-desktop/releases/latest/download',
+    ...extra,
   ];
-  const results = await Promise.all(
-    candidates.map(async (url) => {
-      try {
-        const res = await fetch(`${url.replace(/\/$/, '')}/latest-core.yml`, { method: 'HEAD' });
-        if (res.ok || res.status === 404) return url; // 404 = reachable, no feed yet
-        return null;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  return results.find((r) => r !== null) ?? base;
+  const results = await Promise.all(candidates.map((c) => probeFeed(c)));
+  const okIdx = results.indexOf('ok');
+  if (okIdx !== -1) return candidates[okIdx];
+  const missingIdx = results.indexOf('missing');
+  return missingIdx !== -1 ? candidates[missingIdx] : base;
 }
 
 export class CoreUpdateManager {
@@ -82,8 +97,16 @@ export class CoreUpdateManager {
    */
   currentVersionProvider?: () => string | undefined;
 
-  constructor(baseFeedUrl: string) {
+  /**
+   * Extra feed candidates resolved at check time, e.g. the Gitee release
+   * matching the running desktop version (Gitee has no `latest/download`
+   * alias, so the URL must be tag-based). Wired by main/index.ts.
+   */
+  extraFeeds?: () => string[];
+
+  constructor(baseFeedUrl: string, extraFeeds?: () => string[]) {
     this.baseFeedUrl = baseFeedUrl;
+    this.extraFeeds = extraFeeds;
   }
 
   init(): void {
@@ -102,7 +125,7 @@ export class CoreUpdateManager {
     }
     this.setState({ status: 'checking', error: undefined });
     try {
-      const feed = await probeFeedUrl(this.baseFeedUrl);
+      const feed = await probeFeedUrl(this.baseFeedUrl, this.extraFeeds?.() ?? []);
       const entries = await fetchCoreManifest(feed);
       const latestEntry = entries[0] ?? null;
       const latest = latestEntry

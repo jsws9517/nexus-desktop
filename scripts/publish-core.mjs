@@ -156,6 +156,10 @@ async function main() {
   fs.mkdirSync(staging, { recursive: true });
   try {
     for (const entry of fs.readdirSync(srcRoot, { withFileTypes: true })) {
+      // No nested node_modules in the overlay: bare specifiers resolve from the
+      // base app by design (resolve-hook), and the npm-pack artifact used in
+      // --version mode never carries them either.
+      if (entry.name === 'node_modules') continue;
       const src = path.join(srcRoot, entry.name);
       const dst = path.join(staging, entry.name);
       if (entry.isDirectory()) {
@@ -207,8 +211,11 @@ async function main() {
         `url: https://github.com/jsws9517/nexus-desktop/releases/download/${releaseTag}/${outFileName}`,
         `timestamp: ${isoNow}`,
         `protocol: ${coreProtocol}`,
-        '',
       ];
+      // NOTE: no blank lines in the manifest. The client parser treats a blank
+      // line as the end of the entry block, so `signed: true` after a blank
+      // line would land in an unparsed orphan block and silently disable the
+      // signature enforcement on the client.
 
       // Determine if we'll be signing BEFORE writing the manifest, so the
       // `signed: true` marker can be included in the signed bytes themselves.
@@ -223,7 +230,7 @@ async function main() {
       const willSign = !!privKey;
       if (willSign) yamlLines.push('signed: true');
 
-      fs.writeFileSync(manifestPath, yamlLines.join('\n'));
+      fs.writeFileSync(manifestPath, `${yamlLines.join('\n')}\n`);
 
       // Sign the manifest with ed25519. The signature must cover the exact
       // bytes that get uploaded, including the `signed: true` line.
