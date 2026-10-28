@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import { createInterface } from 'node:readline';
 import { app, utilityProcess } from 'electron';
@@ -21,6 +24,7 @@ interface WorkerResponse {
   ok?: boolean;
   data?: unknown;
   error?: string;
+  errorStack?: string;
   event?: AgentEvent;
   id_p?: string;
   question?: string;
@@ -160,7 +164,19 @@ export class WorkerHost {
   }
 
   private startChildProcess(): void {
-    const child = spawn('node', [WORKER_V8_FLAG, this.workerPath], {
+    // Register the overlay resolve hook via `--import` so it is in place BEFORE
+    // the entry's static import graph is linked. A static import of the hook
+    // from the entry is too late for that graph (modules are linked before
+    // evaluation), which would leave a dev-mode worker running on a MIXED
+    // base+overlay module set. The `--import` registration is a no-op when no
+    // overlay env is set, and the entry's static import stays as a backstop
+    // for paths where `--import` is unavailable. `--import` needs a URL on
+    // Windows (drive paths parse as the `d:` scheme and fail).
+    const args: string[] = [WORKER_V8_FLAG];
+    const registerPath = join(dirname(this.workerPath), 'bootstrap', 'register.js');
+    if (existsSync(registerPath)) args.push('--import', pathToFileURL(registerPath).href);
+    args.push(this.workerPath);
+    const child = spawn('node', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       env: { ...process.env, ...this.launch.env },
@@ -242,7 +258,7 @@ export class WorkerHost {
     }
     switch (msg.type) {
       case 'result':
-        this.resolveResult(msg.id!, msg.ok!, msg.data, msg.error);
+        this.resolveResult(msg.id!, msg.ok!, msg.data, msg.error, msg.errorStack);
         break;
       case 'event':
         this.onEvent?.(msg.event!);
@@ -276,12 +292,17 @@ export class WorkerHost {
     }
   }
 
-  private resolveResult(id: number, ok: boolean, data: unknown, error: string | undefined): void {
+  private resolveResult(id: number, ok: boolean, data: unknown, error: string | undefined, errorStack?: string): void {
     const p = this.pending.get(id);
     if (!p) return;
     this.pending.delete(id);
-    if (ok) p.resolve(data);
-    else p.reject(new Error(error || 'Worker error'));
+    if (ok) {
+      p.resolve(data);
+      return;
+    }
+    const e = new Error(error || 'Worker error');
+    if (errorStack) e.stack = errorStack;
+    p.reject(e);
   }
 
   private failAllPending(err: Error): void {

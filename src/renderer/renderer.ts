@@ -5805,12 +5805,19 @@ function refreshModelSelect(force = false): void {
       modelsCache.set(active, { list: filtered, ts: Date.now(), ok: res.ok, error: res.error, separatorIndex: (res as any).separatorIndex });
       if (res.ok && filtered.length > 0) {
         populateModelOptions(filtered, current, (res as any).separatorIndex);
-      } else if (res.error) {
-        modelSelect.title = `models: ${res.error}`;
+      } else {
+        // Probe failed or came back empty: fall back to the provider's
+        // configured default model so the dropdown isn't left with only the
+        // seeded entry.
+        const fallback = providers.find((p) => p.name === active)?.model;
+        if (fallback) populateModelOptions([fallback], current);
+        if (res.error) modelSelect.title = `models: ${res.error}`;
       }
       if (res.ok) await remediateDelistedModel(active, filtered, status.model);
     } catch (e) {
       modelSelect.title = 'models: fetch failed (will retry)';
+      const fallback = providers.find((p) => p.name === active)?.model;
+      if (fallback) populateModelOptions([fallback], current);
     }
   })();
 }
@@ -5832,10 +5839,16 @@ async function remediateDelistedModel(active: string, models: string[], current:
   // desktop must never push a different provider's (or a stale global worker's)
   // model onto the active pair.
   const providerDefault = providers.find((p) => p.name === active)?.model;
+  // Guard: skip auto-remediation when the provider has no configured default
+  // model — passing an empty string to switchModel surfaces as a misleading
+  // IPC authentication error ("Unable to authenticate data").
   if (!providerDefault || providerDefault === current) return;
   if (!modelFallbacked.claim(currentSessionId, active, current)) return;
   const sid = currentSessionId || undefined;
   try {
+    // Re-check: `providerDefault` may have been mutated between the guard and
+    // the call (e.g. providers array refreshed by a concurrent settings save).
+    if (!providerDefault) return;
     await window.nexusDesktop.switchModel(providerDefault, { sessionId: sid });
     status = await window.nexusDesktop.getStatus({ sessionId: sid });
     addSystem(`${t('modelDeprecated')} (${current} → ${providerDefault})`);
@@ -5866,9 +5879,15 @@ async function remediateUnavailableModel(providerName: string, modelId: string, 
   retireUnavailableModel(providerName, modelId);
   addSystem(`${t('modelUnavailableRemoved', { name: providerName, model: modelId })}`);
   const providerDefault = providers.find((p) => p.name === providerName)?.model;
+  // Guard: when the provider has no configured default model, skip the
+  // auto-switch entirely. Passing an empty string to switchModel reaches the
+  // service's setModelOverride which throws 'Model id must not be empty',
+  // and that Error surfaces across the IPC boundary as 'Unable to
+  // authenticate data'.
   if (!providerDefault || providerDefault === modelId) return;
   const sid = currentSessionId || undefined;
   try {
+    if (!providerDefault) return; // re-check before IPC call
     await window.nexusDesktop.switchModel(providerDefault, { sessionId: sid });
     status = await window.nexusDesktop.getStatus({ sessionId: sid });
     addSystem(`${t('modelDeprecated')} (${modelId} → ${providerDefault})`);
@@ -5927,8 +5946,24 @@ function populateModelOptions(models: string[], current: string, separatorIndex?
 providerSelect.addEventListener('change', async () => {
   const name = providerSelect.value;
   if (!name || name === status.provider) return;
-  await window.nexusDesktop.switchProvider(name, { sessionId: currentSessionId || undefined });
-  status = await window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined });
+  let switchErr: unknown = null;
+  try {
+    await window.nexusDesktop.switchProvider(name, { sessionId: currentSessionId || undefined });
+  } catch (err) {
+    switchErr = err;
+  }
+  status = await window.nexusDesktop
+    .getStatus({ sessionId: currentSessionId || undefined })
+    .catch(() => status);
+  if (switchErr || status.provider !== name) {
+    // The switch did not take effect: re-sync both selects to the provider
+    // that is actually active so the model list never shows another
+    // provider's options.
+    if (status.provider && status.provider !== name) providerSelect.value = status.provider;
+    if (switchErr) addSystem(`${t('error')}${errText(switchErr)}`);
+    refreshModelSelect();
+    return;
+  }
   addSystem(t('switchedProvider', { name, model: status.model }));
   // Re-arm auto-remediation for this session + force a fresh list re-pull so the
   // new provider's model id is re-validated immediately (not from TTL cache).

@@ -289,8 +289,24 @@ export function registerIpc(ctx: IpcContext): void {
     const name = params && typeof params.name === 'string' ? params.name : '';
     if (sid && sessionWorkers.has(sid)) {
       // Per-session override: never writes the shared global config.json.
-      await sessionWorkers.request(sid, 'setProviderOverride', { name });
-      await sessionWorkers.refreshState(sid);
+      if (!name) return;
+      try {
+        await sessionWorkers.request(sid, 'setProviderOverride', { name });
+        await sessionWorkers.refreshState(sid);
+      } catch (err) {
+        // Surface the failure to the renderer so it can re-sync the selects to
+        // the provider that actually took effect. Re-throw a FRESH Error: the
+        // original, structured-clone'd back through the worker IPC, loses its
+        // message and surfaces as 'Unable to authenticate data'.
+        const e = err instanceof Error ? err : new Error(String(err));
+        const msg = e.message;
+        log(`switchProvider(${sid}, ${name}) error: ${msg}`);
+        // The worker side carries the original stack (errorStack) — log it so
+        // generic-looking messages (e.g. crypto GCM auth failures) can be
+        // traced to the exact call site.
+        if (e.stack && e.stack !== msg) log(`switchProvider(${sid}, ${name}) stack:\n${e.stack}`);
+        throw new Error(msg);
+      }
       return;
     }
     await call('switchProvider')(_e, params);
@@ -300,6 +316,10 @@ export function registerIpc(ctx: IpcContext): void {
     const modelId = params && typeof params.modelId === 'string' ? params.modelId : '';
     if (sid && sessionWorkers.has(sid)) {
       // Per-session override: never writes the shared global config.json.
+      // Guard against an empty modelId — the worker throws 'Model id must not
+      // be empty' and that Error, when structured-clone'd back through the
+      // IPC boundary, surfaces as 'Unable to authenticate data'.
+      if (!modelId) return;
       const res = await sessionWorkers.request(sid, 'setModelOverride', { modelId });
       await sessionWorkers.refreshState(sid);
       return res;

@@ -91,7 +91,15 @@ function respond(id: number, data?: unknown): void {
 }
 
 function respondError(id: number, error: unknown): void {
-  send({ type: 'result', id, ok: false, error: error instanceof Error ? error.message : String(error) });
+  send({
+    type: 'result',
+    id,
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+    // Carry the stack so the host can log WHERE the failure happened (the
+    // message alone is often generic, e.g. an OpenSSL GCM auth failure).
+    errorStack: error instanceof Error ? error.stack : undefined,
+  });
 }
 
 // Worker -> main request channel (shared MCP hub proxy). The worker issues a

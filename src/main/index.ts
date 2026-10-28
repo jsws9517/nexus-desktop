@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu, nativeImage, nativeTheme, Tray } from 'electron';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -503,6 +504,30 @@ function startWorker(): void {
     }
   };
 
+  // Shared ephemeral API-key encryption key for this app instance.
+  //
+  // The core encrypts in-memory API-key blobs (`mem:`) with a per-process
+  // ephemeral key held in the env-key-encrypt.js MODULE INSTANCE. When a core
+  // overlay is active the worker can hold TWO instances of that module: the
+  // entry's static import graph (the in-entry hook registration is too late
+  // for it) resolves to the base copy in node_modules, while runtime dynamic
+  // imports resolve to the overlay copy. Each instance generates its own
+  // random key, so a `mem:` blob minted by one side (e.g. the overlay
+  // config.getProvider -> resolveApiKey) fails GCM auth on the other (base
+  // createProvider -> decryptApiKey) and every provider switch dies with
+  // "Unsupported state or unable to authenticate data".
+  //
+  // The core reads `_NEXUS_ENCRYPT_KEY` and uses it as the ephemeral key when
+  // present, so pinning a random per-launch value in the launch env makes
+  // every module instance in the worker process share one key and keeps the
+  // blobs decryptable regardless of which instance minted them. Random per
+  // launch, never persisted.
+  // Trade-off (documented in the core): the value inherits into processes the
+  // worker spawns. Acceptable here — `mem:` blobs live only in worker memory
+  // and are only ever minted/decrypted in-process — while without it the
+  // overlay leaves provider switching completely broken.
+  launch.env._NEXUS_ENCRYPT_KEY = randomBytes(32).toString('hex');
+
   worker = new WorkerHost(workerPath(), launch);
   worker.onEvent = forwardEvent;
   worker.onPermission = (req) => send(CHANNELS.permission, req);
@@ -540,10 +565,11 @@ function startWorker(): void {
   };
   worker.start();
   // Propagate the same overlay launch params to per-session workers so all
-  // core processes load the same nexus-coder version.
-  if (launch.env && Object.keys(launch.env).length > 0) {
-    sessionWorkers.launch = { env: launch.env };
-  }
+  // core processes load the same nexus-coder version. Unconditional:
+  // launch.env always carries at least the shared _NEXUS_ENCRYPT_KEY, and the
+  // session workers MUST receive the same key or their `mem:` blobs stay
+  // undecryptable against the global worker's.
+  sessionWorkers.launch = { env: launch.env };
   const savedCwd = desktopState.loadSavedCwd();
   const earlyParams = savedCwd ? { cwd: savedCwd } : undefined;
   // Phase 1 (fast): construct the Agent so session list + message reads respond
