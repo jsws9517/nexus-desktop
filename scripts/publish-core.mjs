@@ -1,12 +1,18 @@
 /**
  * Publish a core update artifact for GitHub / Gitee releases.
  *
- * Packages `node_modules/nexus-coder/dist` into `core-<version>.tar.gz`,
- * includes the package.json with the release version, computes SHA-512, and
- * writes `latest-core.yml` alongside the release artifacts.
+ * Packages nexus-coder dist into `core-<version>.tar.gz`, includes the
+ * package.json with the release version, computes SHA-512, and writes
+ * `latest-core.yml` alongside the release artifacts.
  *
  * Usage:
- *   node scripts/publish-core.mjs [--out <dir>]
+ *   node scripts/publish-core.mjs                        # uses node_modules/nexus-coder
+ *   node scripts/publish-core.mjs --version 1.2.3        # fetch from npm into temp dir
+ *   node scripts/publish-core.mjs --version 1.2.3 --out <dir>
+ *
+ * When --version is given, the package is fetched from npm into a transient
+ * directory without touching the desktop's node_modules or package-lock.json.
+ * This is the independent-publish path for nexus-coder releases.
  *
  * Defaults: --out release (same directory electron-builder emits into).
  */
@@ -31,6 +37,16 @@ function flag(name) {
 
 const outDir = flag('out') || path.join(repoRoot, 'release');
 const keysDir = flag('keys-dir') || path.join(repoRoot, 'keys');
+// --version <semver>  publishes a specific nexus-coder version fetched from npm
+// without touching the desktop's node_modules or package-lock.json. The package
+// is installed into a transient temp dir and discarded after the artifacts are
+// produced. Omit this flag to use the version already resident in
+// node_modules/nexus-coder (the desktop-release path).
+const explicitVersion = flag('version');
+// --release-tag <tag>  overrides the release tag the manifest URL points to.
+// Required for independent publishes where the target desktop release differs
+// from the version in package.json (which may be stale).
+const explicitReleaseTag = flag('release-tag');
 
 /** The desktop protocol declared in this repo's own package.json. */
 function readDesktopPackage() {
@@ -58,7 +74,46 @@ function skip(reason) {
 }
 
 async function main() {
-  const pkgFile = path.join(repoRoot, 'node_modules', 'nexus-coder', 'package.json');
+  let pkgFile;
+  let srcDist;
+  let tempDir = null;
+
+  if (explicitVersion) {
+    // Independent-publish mode: fetch nexus-coder@<version> from npm into a
+    // transient directory. The desktop's node_modules and lockfile are
+    // deliberately untouched so this can run on a CI runner that does not
+    // carry the matching package-lock.json.
+    console.log(`[publish-core] fetching nexus-coder@${explicitVersion} from npm...`);
+    tempDir = fs.mkdtempSync(path.join(tmpdir(), 'nexus-coder-pkg-'));
+    // npm pack writes `<name>-<version>.tgz` into cwd — capture the exact filename
+    // from stdout rather than hardcoding it.
+    const packedName = execSync(
+      `npm pack nexus-coder@${explicitVersion} --registry https://registry.npmjs.org/`,
+      { cwd: tempDir, stdio: 'pipe' },
+    ).toString().trim().split('\n').filter((l) => l.endsWith('.tgz')).pop();
+    if (!packedName || !fs.existsSync(path.join(tempDir, packedName))) {
+      skip(`npm pack failed for nexus-coder@${explicitVersion}; output: ${packedName ?? 'empty'}`);
+      return;
+    }
+    const tgz = path.join(tempDir, packedName);
+    const extractDir = path.join(tempDir, 'extracted');
+    fs.mkdirSync(extractDir, { recursive: true });
+    execSync(`tar xzf "${tgz}" -C "${extractDir}"`, { stdio: 'pipe' });
+    // npm pack places the package contents under "package/" (npm v9+) or at the
+    // root (older npm); handle both.
+    const pkgDir = fs.existsSync(path.join(extractDir, 'package')) ? path.join(extractDir, 'package') : extractDir;
+    pkgFile = path.join(pkgDir, 'package.json');
+    srcDist = path.join(pkgDir, 'dist');
+    if (!fs.existsSync(pkgFile)) {
+      skip(`npm pack did not yield package.json for nexus-coder@${explicitVersion}`);
+      return;
+    }
+    console.log(`[publish-core] using transient copy at ${pkgDir}`);
+  } else {
+    pkgFile = path.join(repoRoot, 'node_modules', 'nexus-coder', 'package.json');
+    srcDist = path.join(repoRoot, 'node_modules', 'nexus-coder', 'dist');
+  }
+
   if (!fs.existsSync(pkgFile)) {
     skip(`nexus-coder/package.json not found at ${pkgFile}; no core artifact published.`);
     return;
@@ -81,7 +136,6 @@ async function main() {
   const coreProtocol = declaredProtocol
     ?? (Number.isInteger(envProtocol) ? envProtocol : readDesktopProtocol());
 
-  const srcDist = path.join(repoRoot, 'node_modules', 'nexus-coder', 'dist');
   if (!fs.existsSync(srcDist)) {
     skip(`source dist missing: ${srcDist}; no core artifact published.`);
     return;
@@ -137,7 +191,7 @@ async function main() {
       // DESKTOP version (e.g. v0.2.21) -- not the core version. The manifest URL
       // must resolve, so build it from the release tag.
       const desktopVersion = readDesktopPackage().version;
-      const envTag = process.env.GITHUB_REF_NAME || process.env.NEXUS_RELEASE_TAG || '';
+      const envTag = explicitReleaseTag || process.env.GITHUB_REF_NAME || process.env.NEXUS_RELEASE_TAG || '';
       const releaseTag = envTag || (desktopVersion ? `v${desktopVersion}` : `v${version}`);
       if (envTag && !/^v/.test(envTag)) {
         console.warn(`[publish-core] release tag "${envTag}" does not look like a version tag; manifest URL may 404.`);
@@ -188,6 +242,9 @@ async function main() {
     }
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
+    if (tempDir) {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    }
   }
 }
 
