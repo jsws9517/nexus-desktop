@@ -100,9 +100,17 @@ async function restartWorker(): Promise<void> {
   startWorker();
   const ok = await initOkPromise;
   if (ok) {
+    // Successful init: allow the next crash burst to also get 3 attempts,
+    // but only reset when we came from a "healthy" restart cycle — not when
+    // the overlay was just disabled (which means the base copy is stable and
+    // we do not want to keep retrying in case a *different* transient error
+    // fires onExit again).
     restartAttempts = 0;
     send(CHANNELS.workerRestarted, {});
   } else {
+    // init failed: back off with the exponential schedule. If the overlay has
+    // been permanently disabled by settleOverlay, restartAttempts stays high
+    // so the next onExit also hits the cap quickly instead of looping.
     scheduleRestart();
   }
 }
@@ -484,8 +492,18 @@ function startWorker(): void {
   worker.onExit = (code) => {
     send(CHANNELS.log, { level: 'warn', message: `Core worker exited (code=${code})` });
     // Died before proving itself: the overlay itself is suspect.
-    settleOverlay(false, 'crashed before initializing');
-    scheduleRestart();
+    if (overlayPending) {
+      // This worker was launched with the overlay; a crash means the overlay
+      // is broken. settleOverlay disables it; the next startWorker reads the
+      // now-cleared state and uses the base copy. scheduleRestart is called
+      // so that startWorker is re-invoked with the base copy (not the overlay).
+      settleOverlay(false, 'crashed before initializing');
+      scheduleRestart();
+    } else {
+      // Base copy (or already-healthy overlay) crashed for an unrelated reason.
+      // settleOverlay is a no-op (overlayPending is false); just restart.
+      scheduleRestart();
+    }
   };
   worker.start();
   // Propagate the same overlay launch params to per-session workers so all

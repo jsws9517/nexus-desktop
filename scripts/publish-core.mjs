@@ -76,6 +76,7 @@ function skip(reason) {
 async function main() {
   let pkgFile;
   let srcDist;
+  let pkgDir = null;
   let tempDir = null;
 
   if (explicitVersion) {
@@ -99,9 +100,7 @@ async function main() {
     const extractDir = path.join(tempDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
     execSync(`tar xzf "${tgz}" -C "${extractDir}"`, { stdio: 'pipe' });
-    // npm pack places the package contents under "package/" (npm v9+) or at the
-    // root (older npm); handle both.
-    const pkgDir = fs.existsSync(path.join(extractDir, 'package')) ? path.join(extractDir, 'package') : extractDir;
+    pkgDir = fs.existsSync(path.join(extractDir, 'package')) ? path.join(extractDir, 'package') : extractDir;
     pkgFile = path.join(pkgDir, 'package.json');
     srcDist = path.join(pkgDir, 'dist');
     if (!fs.existsSync(pkgFile)) {
@@ -146,13 +145,18 @@ async function main() {
   const manifestPath = path.join(outDir, 'latest-core.yml');
   fs.mkdirSync(outDir, { recursive: true });
 
-  // Staging dir: copy srcDist contents + patched package.json at root.
+  // Staging dir: mirror the full npm package layout (package.json at root,
+  // dist/ + scripts/ alongside) so the resolve hook's `nexus-coder/<rel>` →
+  // `<overlayDir>/<rel>` mapping matches package.json "main" exactly.
+  //
+  // In --version mode pkgDir is the extracted package root (has package.json +
+  // dist/). In desktop-release mode the equivalent is node_modules/nexus-coder/.
+  const srcRoot = explicitVersion ? pkgDir : path.dirname(pkgFile);
   const staging = path.join(tmpdir(), `core-publish-${Date.now()}`);
   fs.mkdirSync(staging, { recursive: true });
   try {
-    // Copy all dist contents.
-    for (const entry of fs.readdirSync(srcDist, { withFileTypes: true })) {
-      const src = path.join(srcDist, entry.name);
+    for (const entry of fs.readdirSync(srcRoot, { withFileTypes: true })) {
+      const src = path.join(srcRoot, entry.name);
       const dst = path.join(staging, entry.name);
       if (entry.isDirectory()) {
         fs.cpSync(src, dst, { recursive: true });
