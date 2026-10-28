@@ -1,0 +1,109 @@
+name: Publish Core Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_version:
+        description: 'nexus-coder version to publish (default: latest on npm)'
+        required: false
+        type: string
+  repository_dispatch:
+    types: [nexus-coder-publish]
+
+permissions:
+  contents: write
+
+jobs:
+  publish-core:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Determine core version
+        id: core
+        shell: bash
+        run: |
+          # repository_dispatch with client_payload, or manual dispatch with input
+          if [ -n "${{ github.event.client_payload.version }}" ]; then
+            echo "version=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ inputs.core_version }}" ]; then
+            echo "version=${{ inputs.core_version }}" >> $GITHUB_OUTPUT
+          else
+            # No version specified: query npm for the latest
+            VERSION=$(npm view nexus-coder version --registry https://registry.npmjs.org/)
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "No version specified; resolved latest nexus-coder from npm: $VERSION"
+          fi
+
+      - name: Verify core signing key
+        shell: bash
+        env:
+          CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
+        run: |
+          if [ -z "${CORE_SIGNING_KEY}" ]; then
+            echo "::error::CORE_SIGNING_KEY secret is missing; cannot sign core manifest."
+            exit 1
+          fi
+          case "$CORE_SIGNING_KEY" in
+            *"PRIVATE KEY"*) ;;
+            *) echo "::error::CORE_SIGNING_KEY is not a PEM private key."; exit 1 ;;
+          esac
+
+      - name: Publish core artifact
+        run: node scripts/publish-core.mjs --version "${{ steps.core.outputs.version }}"
+        env:
+          CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
+
+      - name: Find target desktop release
+        id: release
+        shell: bash
+        run: |
+          TAG="${{ inputs.desktop_release_tag }}"
+          if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
+            # Get the latest release tag (excluding prereleases and drafts)
+            TAG=$(gh api repos/jsws9517/nexus-desktop/releases --jq 'first(.[] | select(.prerelease | not) | .tag_name)' 2>/dev/null || echo "v0.3.0")
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Target release: $TAG"
+
+      - name: Upload core artifacts to desktop release
+        shell: bash
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+          VERSION="${{ steps.core.outputs.version }}"
+          echo "Uploading core v$VERSION assets to release $TAG"
+          for f in "release/core-${VERSION}.tar.gz" "release/latest-core.yml" "release/latest-core.yml.sig"; do
+            if [ -f "$f" ]; then
+              echo "  uploading: $f"
+              gh release upload "$TAG" "$f" --repo jsws9517/nexus-desktop
+            else
+              echo "  warning: $f not found, skipping"
+            fi
+          done
+
+      - name: Mirror core artifacts to Gitee
+        shell: bash
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+          GITEE_REPO=cict_1_0/nexus-desktop \
+          GITEE_TAG="${TAG}" \
+          GITEE_NAME="${TAG}" \
+          GITEE_BODY_FILE=".release_body.md" \
+          GITEE_RELEASE_DIR="release" \
+          CORE_SIGNING_KEY="${CORE_SIGNING_KEY}" \
+          node scripts/gitee-publish.mjs
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
+
+      - name: Print manifest for review
+        run: cat release/latest-core.yml
