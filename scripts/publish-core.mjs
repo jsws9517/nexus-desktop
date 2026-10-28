@@ -205,10 +205,9 @@ async function main() {
         `protocol: ${coreProtocol}`,
         '',
       ];
-      fs.writeFileSync(manifestPath, yamlLines.join('\n'));
 
-      // Sign the manifest with ed25519. CI provides the key via the
-      // CORE_SIGNING_KEY secret (the file is gitignored and never committed).
+      // Determine if we'll be signing BEFORE writing the manifest, so the
+      // `signed: true` marker can be included in the signed bytes themselves.
       const privKeyFile = path.join(keysDir, 'core-signing-private.pem');
       const sigPath = `${manifestPath}.sig`;
       let privKey = null;
@@ -217,14 +216,17 @@ async function main() {
       } else if (process.env.CORE_SIGNING_KEY) {
         privKey = Buffer.from(process.env.CORE_SIGNING_KEY);
       }
-      if (privKey) {
+      const willSign = !!privKey;
+      if (willSign) yamlLines.push('signed: true');
+
+      fs.writeFileSync(manifestPath, yamlLines.join('\n'));
+
+      // Sign the manifest with ed25519. The signature must cover the exact
+      // bytes that get uploaded, including the `signed: true` line.
+      if (willSign) {
         const manifestData = fs.readFileSync(manifestPath);
         const sig = cryptoSign(null, manifestData, privKey);
         fs.writeFileSync(sigPath, sig.toString('hex'));
-        // Mark the manifest signed so clients hard-refuse it if the .sig
-        // sidecar is missing (downgrade attack: deleting the signature to
-        // bypass verification).
-        fs.appendFileSync(manifestPath, 'signed: true\n');
         console.log(`[publish-core] signed ${manifestPath} -> ${sigPath}`);
       } else if (process.env.GITHUB_ACTIONS === 'true') {
         console.error('[publish-core] CORE_SIGNING_KEY secret is required to sign in CI.');
