@@ -62,10 +62,11 @@ jobs:
         id: release
         shell: bash
         run: |
-          # Get the latest release tag (excluding prereleases and drafts)
           TAG=$(gh api repos/jsws9517/nexus-desktop/releases --jq 'first(.[] | select(.prerelease | not) | .tag_name)' 2>/dev/null || echo "v0.3.0")
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Target release: $TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Publish core artifact
         run: node scripts/publish-core.mjs --version "${{ steps.core.outputs.version }}" --release-tag "${{ steps.release.outputs.tag }}"
@@ -86,6 +87,8 @@ jobs:
               echo "  warning: $f not found, skipping"
             fi
           done
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Mirror core artifacts to Gitee
         shell: bash
@@ -99,6 +102,7 @@ jobs:
           CORE_SIGNING_KEY="${CORE_SIGNING_KEY}" \
           node scripts/gitee-publish.mjs
         env:
+          GH_TOKEN: ${{ github.token }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
       - name: Print manifest for review
