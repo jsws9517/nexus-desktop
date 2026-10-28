@@ -196,7 +196,7 @@ type AgentEvent =
   | { type: 'session_changed'; sessionId: string }
   | { type: 'language_changed' }
   // Core bg_ shell-job lifecycle (worker-local JobManager).
-  | { type: 'bg_job_event'; kind: 'completed' | 'status' | 'stalled'; job: CoreBgJobView; idleMs?: number };
+  | { type: 'bg_job_event'; kind: 'completed' | 'status' | 'stalled' | 'progress'; job: CoreBgJobView; idleMs?: number; elapsedMs?: number; logDeltaBytes?: number; buffered?: boolean };
 
 /** Serializable subset of a core JobManager BgJob (shell `bg_` jobs). */
 interface CoreBgJobView {
@@ -619,6 +619,15 @@ let intentRollbackEnabled = false;
 // True between a steer being accepted by the live turn and the core reporting
 // `steer_applied`. Drives the "merged into the running turn" status line.
 let steerInFlight = false;
+// Set by a live core turn of the visible session (turn_start) and cleared on
+// its session_end: mirrors the core's session span so a turn that started
+// OUTSIDE the renderer's serial chain (a post-reload in-flight turn, a model
+// probe, a bg-job wake turn) still keeps the running indicator lit.
+let activeTurnLive = false;
+// The head message was rejected with 'Agent is busy' by the core: it is parked
+// back in pendingQueue and runs when that session emits session_end (which
+// clears the hold and drains). Keeps the message out of a reject-hot-loop.
+let drainHold = false;
 // When frozen, auto-scroll is suppressed so the user can review earlier context
 // while a turn is still streaming. New content keeps rendering normally below;
 // only the viewport stays put (safe — no DOM/state is deferred). The lock is
@@ -831,46 +840,130 @@ const standaloneRunKey = (sessionId: string): string => `standalone:${sessionId}
 const fanoutBatches = new Set<string>();
 let fanoutCardEl: HTMLElement | null = null;
 
-// ---------- background job status line ----------
-/** Non-terminal core bg_ job ids — drives the idle status line. */
-const activeBgJobIds = new Set<string>();
-/** True while #input-status currently shows our jobs text (only we clear it). */
-let jobsStatusLineActive = false;
+// ---------- background job running hold ----------
+/** Non-terminal core bg_ jobs indexed by owning session (job id → session id,
+ *  '' when unknown). Waiting on a bg_ job is a RUNNING state: the turn has
+ *  ended but the session's work is still in flight, so the input area must
+ *  keep a running readout instead of dropping to the idle send-available look
+ *  that reads as "the conversation died". */
+const activeBgJobSessions = new Map<string, string>();
+
+/** Per-tab live-turn flag: sessions whose core turn started (turn_start) and
+ *  has not settled yet (a non-fan-out session_end, or the fan-out's terminal).
+ *  Kept SEPARATE from `tab.busy` (one bool) so a background tab's job terminal
+ *  event may release the chip only when NO live turn holds it — a jobs-only
+ *  hold must never look like a live turn, and a live turn must never be
+ *  dropped by the last job finishing. */
+const tabTurnLive = new Set<string>();
 
 const CORE_TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'timeout', 'killed', 'lost']);
 
-/** Idempotently fold a bg job event into the active-id set + status line. */
+/** Non-terminal bg_ jobs owned by `sessionId`; '' counts every job (no view). */
+function activeBgJobCount(sessionId: string): number {
+  if (!sessionId) return activeBgJobSessions.size;
+  let n = 0;
+  for (const s of activeBgJobSessions.values()) if (s === sessionId) n++;
+  return n;
+}
+
+/** Full chip predicate: a session HOLDS its tab's busy indicator while a live
+ *  turn, an in-flight fan-out batch, OR non-terminal background jobs exist.
+ *  Every event touching any holder recomputes this; the chip moves only when
+ *  a holder actually gained or lost. */
+function tabHoldsBusy(sessionId: string): boolean {
+  return tabTurnLive.has(sessionId) || fanoutBatches.has(sessionId) || activeBgJobCount(sessionId) > 0;
+}
+
+/** Recompute a tab's chip from the holder predicate; re-render only when the
+ *  boolean actually flips (job progress events are frequent). */
+function syncTabBusy(sessionId: string): void {
+  const tab = tabs.get(sessionId);
+  if (!tab) return;
+  const now = tabHoldsBusy(sessionId);
+  if (tab.busy === now) return;
+  tab.busy = now;
+  renderTabBar();
+}
+
+/** Write the "N background jobs running" readout into #input-status. */
+function paintJobsStatusLine(n: number): void {
+  inputStatus.textContent = t('jobsRunning', { n });
+  inputStatus.classList.add('running');
+  inputStatus.classList.remove('stopping');
+  inputStatus.classList.remove('stopped');
+}
+
+/** Enter the jobs-only hold: the running indicator stays lit and the send
+ *  button stays gated, but the stop button is hidden — with no live turn,
+ *  abort() has nothing to interrupt. A just-completed stop keeps its
+ *  confirmation for one settle before the jobs readout takes over. */
+function paintJobsWaitState(n: number): void {
+  busy = true;
+  busyIndicator.classList.remove('hidden');
+  stopBtn.classList.add('hidden');
+  (stopBtn as HTMLButtonElement).disabled = false;
+  updateSendButtonVisibility();
+  updateRollbackButtonVisibility();
+  // We entered the jobs-only hold from a RUNNING state, so the transcript
+  // edit buttons were disabled by setBusy(true). ownsWork() is FALSE here,
+  // so undo/regenerate are allowed again — re-enable to match.
+  document.querySelectorAll('.regen-btn').forEach((b) => {
+    (b as HTMLButtonElement).disabled = false;
+  });
+  if (stopRequested) {
+    inputStatus.textContent = t('stopped');
+    inputStatus.classList.add('stopped');
+    inputStatus.classList.remove('running');
+    stopRequested = false;
+  } else {
+    paintJobsStatusLine(n);
+  }
+}
+
+/** Settle the running indicator after any work-completion event: stay lit
+ *  while the renderer still owns work (serial chain, parked head, queued
+ *  follow-ups, an in-flight fan-out batch, a live core turn) or the session
+ *  still has non-terminal background jobs; only then release to fully idle.
+ *  This is THE release point — no other path clears busy directly. */
+function settleBusy(): void {
+  if (running || drainHold || activeTurnLive || pendingQueue.length > 0 || fanoutBatches.has(currentSessionId)) {
+    setBusy(true);
+    const n = activeBgJobCount(currentSessionId);
+    if (n > 0) paintJobsStatusLine(n);
+    refreshQueuedStatus();
+    return;
+  }
+  const n = activeBgJobCount(currentSessionId);
+  if (n > 0) {
+    paintJobsWaitState(n);
+    return;
+  }
+  setBusy(false);
+}
+
+/** Idempotently fold a bg job event into the active index + the running hold
+ *  (status line / tab chip). */
 function trackBgJobForStatusLine(event: AgentEvent): void {
   if (event.type !== 'bg_job_event') return;
   const job = event.job;
   const id = job?.id;
   if (!id) return;
   const terminal = event.kind === 'completed' && CORE_TERMINAL_JOB_STATUSES.has(String(job?.status));
-  if (terminal) activeBgJobIds.delete(id);
-  else activeBgJobIds.add(id);
-  updateJobsStatusLine();
-}
-
-/** Write "N background jobs" into #input-status when idle; clear only our text. */
-function updateJobsStatusLine(): void {
-  const n = activeBgJobIds.size;
-  if (busy) {
-    // The chat busy indicator owns the line — drop our claim so setBusy's
-    // clear path won't fight us; we re-apply when the turn ends.
-    jobsStatusLineActive = false;
+  if (terminal) activeBgJobSessions.delete(id);
+  else activeBgJobSessions.set(id, job?.sessionId ?? '');
+  const sid = job?.sessionId ?? '';
+  if (sid === currentSessionId) {
+    // The active input area must reflect the new job count immediately.
+    settleBusy();
+    // ...and its own chip from the same holders.
+    syncTabBusy(sid);
     return;
   }
-  if (n > 0) {
-    inputStatus.textContent = t('jobsRunning', { n });
-    inputStatus.classList.add('running');
-    jobsStatusLineActive = true;
-  } else if (jobsStatusLineActive) {
-    if (!stopRequested) {
-      inputStatus.textContent = '';
-      inputStatus.classList.remove('running');
-    }
-    jobsStatusLineActive = false;
-  }
+  // A background tab's chip: a terminal job event may be the ONLY release
+  // chance for a jobs-only hold (the owning session_end already fired), so
+  // recompute the full predicate — a live turn or fan-out batch keeps the chip
+  // lit even as the last job finishes.
+  syncTabBusy(sid);
 }
 
 /** Terminal bg-job toast (active-tab path; inactive tabs toast from applyTabEvent). */
@@ -1063,6 +1156,7 @@ function sweepStuckSubAgentRuns(stuckTtlMs: number = RUN_STUCK_TTL_MS): number {
       if (run && [...run.tasks.values()].every(isTerminalTask)) {
         if (run.kind === 'fanout') {
           fanoutBatches.delete(run.sessionId);
+          tabTurnLive.delete(run.sessionId);
           if (fanoutCardEl && run.sessionId === currentSessionId) {
             handleFanoutEnd(run.sessionId, [...run.tasks].map(([taskId, t]) => ({
               taskId,
@@ -1073,6 +1167,9 @@ function sweepStuckSubAgentRuns(stuckTtlMs: number = RUN_STUCK_TTL_MS): number {
               tokenUsage: { prompt: 0, completion: 0 },
             })));
           }
+          // A background session's batch just closed: recompute its chip from
+          // the remaining holders (jobs may still hold it).
+          syncTabBusy(run.sessionId);
         }
         void reconcileStaleFanoutMetadata(run.sessionId);
       }
@@ -1089,19 +1186,23 @@ function sweepStuckSubAgentRuns(stuckTtlMs: number = RUN_STUCK_TTL_MS): number {
     if (!run) continue;
     if (run.kind === 'fanout') {
       fanoutBatches.delete(run.sessionId);
-      const tab = tabs.get(run.sessionId);
-      if (tab) tab.busy = false;
+      tabTurnLive.delete(run.sessionId);
       // Only render the error closure on the singleton transcript card when the
       // stuck batch is the one the user is looking at — never stomp a background
       // session's card that happens to share the same DOM handle.
       if (run.sessionId === currentSessionId || fanoutCardEl === null) {
         handleFanoutError(run.sessionId, getUiLang() === 'zh-CN' ? '长时间无进展，已自动取消' : 'No progress for a long time — auto-cancelled');
       }
+      // Recompute the chip from the remaining holders (background jobs may
+      // still hold it even though the batch was auto-cancelled).
+      syncTabBusy(run.sessionId);
     }
     subAgentRuns.delete(key);
     void reconcileStaleFanoutMetadata(run.sessionId);
   }
-  if (!running && pendingQueue.length === 0) setBusy(false);
+  // Settle through the scheduler instead of forcing idle: a parked head, a
+  // queued follow-up, or the session's background jobs keep the hold lit.
+  drain();
   renderTabBar();
   notifyActiveSessionChanged(currentSessionId);
   return stuck.length;
@@ -1606,6 +1707,12 @@ function handleEvent(event: AgentEvent): void {
     case 'turn_start':
       // Keep the task progress list across turns (a worker runs many turns per
       // task; clearing on every turn made the sidebar only flash).
+      // A live core turn owns this session: keep the running hold even when
+      // the turn started OUTSIDE the renderer's serial chain (a post-reload
+      // in-flight turn, a model probe, a bg-job wake turn) — otherwise the
+      // input area would look idle while the agent is streaming.
+      activeTurnLive = true;
+      if (!busy) setBusy(true);
       break;
     case 'task_graph':
       // Replace the whole list with every task from the graph so pending tasks
@@ -1934,6 +2041,10 @@ function handleEvent(event: AgentEvent): void {
     case 'state_delta':
       break;
     case 'turn_end': {
+      // A turn_end can only come from a live turn — re-arm the live-turn hold
+      // so a missed turn_start (event loss, batched restore) still keeps the
+      // running indicator lit and the stop button reachable.
+      activeTurnLive = true;
       clearStreamRender();
       // finalize markdown rendering of accumulated text
       if (curAssistant && curAssistant.buffer) {
@@ -1985,14 +2096,15 @@ function handleEvent(event: AgentEvent): void {
       void resyncAfterTranscriptChange();
       break;
     case 'session_end':
-    // A session span ended. During a fan-out batch every sub-task's
-    // agent.chat() emits its own session_start…session_end, so clearing busy
-    // here would make the send/stop hint flash "idle" while the remaining
-    // sub-tasks are still executing (the false-ending illusion). Only clear
-    // when NO fan-out batch for this session is still in flight; the final
-
-      // drain() after chat() resolves does the real release.
-      if (!fanoutBatches.has(currentSessionId)) setBusy(false);
+      // A session span ended. Never clear busy directly: settle through the
+      // scheduler, which runs queued follow-ups next and keeps the running
+      // hold lit while this session still has non-terminal background jobs —
+      // waiting on a bg_ job is a running state, not a dead conversation.
+      // Intermediate sub-task spans of a fan-out batch keep the batch hold.
+      if (fanoutBatches.has(currentSessionId)) break;
+      activeTurnLive = false;
+      drainHold = false;
+      drain();
       break;
     case 'fanout_start':
       handleFanoutStart(event.sessionId, event.prompt, event.tasks);
@@ -2054,8 +2166,9 @@ function setBusy(value: boolean): void {
     // destructive action must not silently apply to the next send.
     rollbackArmed = false;
     (stopBtn as HTMLButtonElement).disabled = false;
-    // Re-apply the background-jobs idle line if any job is still non-terminal.
-    updateJobsStatusLine();
+    // Jobs-wait is NOT re-applied here: settleBusy() is the single release
+    // point and has already decided whether background jobs hold the
+    // running indicator before calling setBusy(false).
   }
 }
 
@@ -2075,6 +2188,11 @@ function setFrozen(value: boolean): void {
  *  core (session_end) to release so the UI never desyncs from the agent. */
 function requestStop(): void {
   if (!busy || stopRequested) return;
+  // A jobs-only hold has no live turn: abort() would be a no-op and the
+  // "stopping" readout would hang until some job happened to complete. Only
+  // interruptible work (a live core turn, the renderer's serial chain, or a
+  // fan-out batch) arms the stop.
+  if (!activeTurnLive && !running && !fanoutBatches.has(currentSessionId)) return;
   stopRequested = true;
   (stopBtn as HTMLButtonElement).disabled = true;
   inputStatus.textContent = t('stopping');
@@ -2935,7 +3053,9 @@ async function syncMsgCache(sessionId: string): Promise<void> {
 }
 
 async function startNewSession(): Promise<void> {
-  if (busy) return;
+  // A background-job hold on the current session must NOT block a new session
+  // (jobs keep running in the background); only renderer-owned work does.
+  if (ownsWork()) return;
   messagesEl.innerHTML = '';
   toolCards.clear();
   tasks.clear();
@@ -3150,6 +3270,9 @@ async function openTab(
     }
   }
   tabs.set(sessionId, { sessionId, provider, model, busy: tinfo.busy });
+  // Same seeding as syncOpenTabs: main's lit chip is a live-turn candidate
+  // (its mirror tracks turns + fan-out batches, not jobs).
+  if (tinfo.busy) tabTurnLive.add(sessionId);
   renderTabBar();
   await switchTab(sessionId);
 }
@@ -3198,7 +3321,19 @@ async function switchTab(sessionId: string): Promise<void> {
       status = await window.nexusDesktop.getStatus({ sessionId });
     } catch {}
   }
-  setBusy(Boolean(tab?.busy));
+  // Restore the running hold for the newly visible session from its holders:
+  // a live core turn keeps the running look with Stop reachable; otherwise
+  // non-terminal background jobs keep the jobs-wait hold (Stop hidden —
+  // abort() has nothing to interrupt); only then release to fully idle.
+  activeTurnLive = tab ? tabTurnLive.has(sessionId) : Boolean(status.busy);
+  // The parked head (a 'Agent is busy' reject) belongs to the session we
+  // left; its hold drops here and the message re-drains against whatever
+  // session becomes live next.
+  drainHold = false;
+  const n = activeBgJobCount(sessionId);
+  if (activeTurnLive) setBusy(true);
+  else if (n > 0) paintJobsWaitState(n);
+  else setBusy(false);
   await syncCwdLabel();
   loadDraft(sessionId);
   refreshProviderSelect();
@@ -3223,6 +3358,12 @@ async function closeTab(sessionId: string): Promise<void> {
   try {
     await window.nexusDesktop.closeSession(sessionId);
   } catch {}
+  // A closed worker's background jobs, batch, and live turn will never emit
+  // release events, so drop its holders here — otherwise the running hold
+  // pins itself on a dead session forever.
+  tabTurnLive.delete(sessionId);
+  fanoutBatches.delete(sessionId);
+  for (const [jobId, sid] of activeBgJobSessions) if (sid === sessionId) activeBgJobSessions.delete(jobId);
   if (activeTabId === sessionId) {
     activeTabId = '';
     if (tabs.size > 0) {
@@ -3230,6 +3371,8 @@ async function closeTab(sessionId: string): Promise<void> {
       await switchTab(next);
     } else {
       currentSessionId = '';
+      activeTurnLive = false;
+      drainHold = false;
       notifyActiveSessionChanged('');
       messagesEl.innerHTML = '';
       toolCards.clear();
@@ -3238,6 +3381,7 @@ async function closeTab(sessionId: string): Promise<void> {
       curAssistant = null;
       curThinking = null;
       showChatEmpty();
+      settleBusy();
     }
   } else {
     renderTabBar();
@@ -3250,16 +3394,24 @@ function applyTabEvent(sessionId: string, event: AgentEvent): void {
   if (!tab) return;
   if (event.type === 'fanout_start') {
     fanoutBatches.add(sessionId);
-    tab.busy = true;
+    syncTabBusy(sessionId);
   } else if (event.type === 'fanout_end' || event.type === 'fanout_error') {
+    // The batch is over: release its holders (the last sub-task span's live
+    // turn dies with the batch), then settle the chip to a jobs-only hold if
+    // one remains.
     fanoutBatches.delete(sessionId);
-    tab.busy = false;
+    tabTurnLive.delete(sessionId);
+    syncTabBusy(sessionId);
   } else if (event.type === 'turn_start') {
-    tab.busy = true;
+    tabTurnLive.add(sessionId);
+    syncTabBusy(sessionId);
   } else if (event.type === 'session_end') {
-    // A sub-task span ended, not necessarily the whole batch — keep the tab
-    // busy until the owning fan-out batch (if any) truly finishes.
-    tab.busy = fanoutBatches.has(sessionId);
+    // A sub-task span ended, not necessarily the whole batch — an in-flight
+    // fan-out batch keeps the hold. Otherwise the live turn is over;
+    // non-terminal background jobs keep the chip lit the same way (the turn
+    // may have ended while its work is still in flight).
+    if (!fanoutBatches.has(sessionId)) tabTurnLive.delete(sessionId);
+    syncTabBusy(sessionId);
   } else if (event.type === 'fanout_task_progress') {
     // Per-sub-task heartbeat: keep the batch's stuck-detector alive and flip
     // the shared task status so scoped sidebar cards track progress live.
@@ -3302,7 +3454,13 @@ async function syncOpenTabs(): Promise<void> {
     open = await window.nexusDesktop.getOpenTabs();
   } catch {}
   tabs.clear();
-  for (const t of open) if (t.sessionId) tabs.set(t.sessionId, t);
+  tabTurnLive.clear();
+  for (const t of open) if (t.sessionId) {
+    tabs.set(t.sessionId, t);
+    // Main's busy mirror tracks live turns + fan-out batches (not jobs): a lit
+    // chip is a live-turn candidate until that tab's own events recompute it.
+    if (t.busy) tabTurnLive.add(t.sessionId);
+  }
   if (currentSessionId && tabs.has(currentSessionId)) activeTabId = currentSessionId;
   renderTabBar();
 }
@@ -3992,11 +4150,20 @@ function handleFanoutStart(
 
 function handleFanoutEnd(sessionId: string, tasks: SubTaskResult[]): void {
   touchFanoutRun(sessionId);
-  // The batch is over. The final setBusy(false) is normally handled by drain()
-  // once the chat() IPC resolves; this only rescues edge paths (restored state,
-  // errors) where no serial turn is driving the busy transition any more.
+  // The batch is over: release its holders on the current session (the last
+  // sub-task span's live turn dies with the batch; a parked head can now
+  // settle instead of holding forever), then settle through the scheduler.
+  // drain() keeps the running hold lit while queued follow-ups, a parked
+  // head, or the session's background jobs remain, and rescues edge paths
+  // (restored state, errors) where no serial turn is driving the busy
+  // transition any more.
   fanoutBatches.delete(sessionId);
-  if (!running && pendingQueue.length === 0) setBusy(false);
+  tabTurnLive.delete(sessionId);
+  if (sessionId === currentSessionId) {
+    activeTurnLive = false;
+    drainHold = false;
+  }
+  drain();
 
   const run = subAgentRuns.get(fanoutRunKey(sessionId));
   if (!run) return;
@@ -4067,9 +4234,17 @@ function handleFanoutEnd(sessionId: string, tasks: SubTaskResult[]): void {
 function handleFanoutError(sessionId: string, error: string): void {
   touchFanoutRun(sessionId);
   // Release the in-flight marker even when the run was never registered (e.g. it
-  // died before a card existed) so busy never sticks.
+  // died before a card existed), and release the current session's live-turn /
+  // parked-head holds the same way a successful end does; then settle through
+  // the scheduler so a parked head, queued follow-up, or the session's
+  // background jobs keep the hold lit.
   fanoutBatches.delete(sessionId);
-  if (!running && pendingQueue.length === 0) setBusy(false);
+  tabTurnLive.delete(sessionId);
+  if (sessionId === currentSessionId) {
+    activeTurnLive = false;
+    drainHold = false;
+  }
+  drain();
 
   const run = subAgentRuns.get(fanoutRunKey(sessionId));
   if (!run) return;
@@ -4388,7 +4563,7 @@ function maybeHandleIterativeIntent(text: string, rollback: boolean): void {
  *  absorbed. Leaves the plain "running" readout alone when there is nothing to
  *  report. */
 function refreshQueuedStatus(): void {
-  if (!running) return;
+  if (!running && !drainHold) return;
   if (stopRequested) {
     inputStatus.textContent = t('stopping');
     inputStatus.classList.add('stopping');
@@ -4407,10 +4582,17 @@ function drain(): void {
     refreshQueuedStatus();
     return;
   }
+  if (drainHold) {
+    // The head message was just rejected as 'Agent is busy': the owning core
+    // turn must finish first. Do NOT re-fire chat() into the same rejection;
+    // the session's session_end clears the hold and drains this head next.
+    settleBusy();
+    return;
+  }
   steerInFlight = false;
   const text = pendingQueue.shift();
   if (text === undefined) {
-    setBusy(false);
+    settleBusy();
     return;
   }
   running = true;
@@ -4435,11 +4617,23 @@ function drain(): void {
       await refreshSessions(currentSessionId);
       await syncMsgCache(currentSessionId);
     } catch (err) {
+      // The core rejects with the RAW string 'Agent is busy' (AgentService.chat)
+      // when its session span is still held — an in-flight turn after a
+      // renderer reload, a model probe, a bg-job wake turn. That is expected
+      // contention, not a failure: park the message back at the queue head and
+      // hold the scheduler instead of printing an error line and dropping it.
+      const rawError = err instanceof Error ? err.message : String(err);
+      if (/agent is busy/i.test(rawError)) {
+        pendingQueue.unshift(text);
+        drainHold = true;
+        setBusy(true);
+        refreshQueuedStatus();
+        return;
+      }
       addSystem(`${t('error')}${errText(err)}`);
       // Remediation matches the RAW provider message: errText() localizes and
       // truncates it, which would hide both the real "model unavailable" wording
       // and the difference between it and a plain auth failure.
-      const rawError = err instanceof Error ? err.message : String(err);
       void remediateUnavailableModel(attemptProvider, attemptModel, rawError);
     } finally {
       running = false;
@@ -4451,6 +4645,14 @@ function drain(): void {
       void Promise.resolve().then(() => drain());
     }
   })();
+}
+
+/** Does the renderer itself own work on the VISIBLE session (serial turn,
+ *  parked head, queued follow-ups, in-flight fan-out batch)? Unlike `busy`,
+ *  it excludes background-job holds: a jobs-only session must still allow
+ *  opening a new session and editing the transcript (undo/regenerate). */
+function ownsWork(): boolean {
+  return running || drainHold || pendingQueue.length > 0 || fanoutBatches.has(currentSessionId);
 }
 
 async function sendMessage(): Promise<void> {
@@ -4546,7 +4748,10 @@ async function handleNewCommand(): Promise<void> {
  *  context (no re-run), then paste the original prompt back into the input box
  *  so the user can fix typos/homophones and resubmit manually. */
 async function undoAt(wrap: HTMLElement, userIndex: number): Promise<void> {
-  if (busy) return;
+  // A jobs-only hold on this session must NOT block transcript editing; only
+  // renderer-owned work (a serial turn, a parked head, queued follow-ups, or a
+  // fan-out batch) does.
+  if (ownsWork()) return;
   const ok = await confirmDialog(t('undoAsk'));
   if (!ok) return;
   try {
@@ -4570,7 +4775,10 @@ async function undoAt(wrap: HTMLElement, userIndex: number): Promise<void> {
  *  Runs through the same busy/serial scheduler as a normal send so Stop works
  *  and the queue stays consistent. */
 async function regenerateAt(wrap: HTMLElement, userIndex: number): Promise<void> {
-  if (busy) return;
+  // A jobs-only hold on this session must NOT block a transcript re-run; only
+  // renderer-owned work (a serial turn, a parked head, queued follow-ups, or a
+  // fan-out batch) does.
+  if (ownsWork()) return;
   // Remove the stale assistant/thinking/tool cards after the target message.
   let el = wrap.nextElementSibling;
   while (el) {
