@@ -21,6 +21,15 @@ import { EARLY_METHODS } from '../shared/constants.js';
 import { registerIpc } from '../ipc/register.js';
 import { CHANNELS } from '../ipc/channels.js';
 
+// Windows UTF-8 child stdio contract (same as nexus-core's
+// bootstrapProcessEncoding in src/utils/child-env.ts): on Chinese Windows a
+// Python child with piped stdio encodes text as GBK and dies on the first
+// non-GBK character (emoji…). Set it BEFORE any child spawn; user-set values
+// always win.
+if (process.platform === 'win32' && process.env.PYTHONIOENCODING === undefined) {
+  process.env.PYTHONIOENCODING = 'utf-8';
+}
+
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 function logf(msg: string): void {
