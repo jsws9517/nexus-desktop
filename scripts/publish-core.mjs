@@ -35,6 +35,82 @@ function flag(name) {
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
 }
 
+const NPM_REGISTRY = 'https://registry.npmjs.org/';
+// How long to keep waiting for a just-published nexus-coder version to become
+// visible on the registry. The auto repository_dispatch that triggers this
+// path fires seconds after `npm publish` in the core repo, while the new
+// version's metadata can still be propagating across npm's CDN — in that
+// window both `npm view` and `npm pack` fail with ETARGET.
+const NPM_WAIT_DEADLINE_MS = 9 * 60_000;
+const NPM_VIEW_POLL_MS = 30_000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll the registry until nexus-coder@<version> is visible.
+ *
+ * A version that is not (yet) in the metadata fails with ETARGET /
+ * "No matching version found" (npm pack) or E404 / "No match found for
+ * version" (npm view on a not-yet-visible prerelease) — so waiting on
+ * `npm view` with both treated as transient means `npm pack` after this
+ * point succeeds. Anything else (auth, network, ...) fails fast instead
+ * of polling for the whole window.
+ */
+async function waitForNpmVersion(version) {
+  const deadline = Date.now() + NPM_WAIT_DEADLINE_MS;
+  for (;;) {
+    try {
+      execSync(
+        `npm view nexus-coder@${version} version --registry ${NPM_REGISTRY}`,
+        { stdio: 'pipe' },
+      );
+      return;
+    } catch (e) {
+      const detail = String(e.message ?? '').slice(0, 300);
+      // "version not visible on the registry yet" — `npm view` reports a
+      // missing version as E404, `npm pack` as ETARGET.
+      const transient = /ETARGET|No matching version|No match found for version|E404/i.test(detail);
+      if (!transient) {
+        throw new Error(
+          `nexus-coder@${version} unavailable on npm (not a registry lag): ${detail}`,
+        );
+      }
+      if (Date.now() + NPM_VIEW_POLL_MS > deadline) {
+        throw new Error(
+          `nexus-coder@${version} still not visible on npm after ${NPM_WAIT_DEADLINE_MS / 60000} min`,
+        );
+      }
+      console.log(
+        `[publish-core] nexus-coder@${version} not on registry yet; retrying in ${NPM_VIEW_POLL_MS / 1000}s...`,
+      );
+      await sleep(NPM_VIEW_POLL_MS);
+    }
+  }
+}
+
+/** `npm pack nexus-coder@<version>` into cwd, with a few retries. */
+async function packFromNpm(version, cwd) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      // npm pack writes `<name>-<version>.tgz` into cwd — capture the exact
+      // filename from stdout rather than hardcoding it.
+      const out = execSync(
+        `npm pack nexus-coder@${version} --registry ${NPM_REGISTRY}`,
+        { cwd, stdio: 'pipe' },
+      ).toString();
+      return out.trim().split('\n').filter((l) => l.endsWith('.tgz')).pop();
+    } catch (e) {
+      if (attempt >= 3) {
+        throw new Error(`npm pack nexus-coder@${version} failed: ${String(e.message ?? '').slice(0, 300)}`);
+      }
+      console.log(`[publish-core] npm pack attempt ${attempt} failed; retrying in 15s...`);
+      await sleep(15_000);
+    }
+  }
+}
+
 const outDir = flag('out') || path.join(repoRoot, 'release');
 const keysDir = flag('keys-dir') || path.join(repoRoot, 'keys');
 // --version <semver>  publishes a specific nexus-coder version fetched from npm
@@ -84,14 +160,15 @@ async function main() {
     // transient directory. The desktop's node_modules and lockfile are
     // deliberately untouched so this can run on a CI runner that does not
     // carry the matching package-lock.json.
+    //
+    // When the auto dispatch fires seconds after the core publish, the
+    // version may not be visible on the registry yet; waitForNpmVersion
+    // polls it into existence so the chain self-heals (no manual
+    // escape-hatch re-trigger needed for the propagation lag).
     console.log(`[publish-core] fetching nexus-coder@${explicitVersion} from npm...`);
+    await waitForNpmVersion(explicitVersion);
     tempDir = fs.mkdtempSync(path.join(tmpdir(), 'nexus-coder-pkg-'));
-    // npm pack writes `<name>-<version>.tgz` into cwd — capture the exact filename
-    // from stdout rather than hardcoding it.
-    const packedName = execSync(
-      `npm pack nexus-coder@${explicitVersion} --registry https://registry.npmjs.org/`,
-      { cwd: tempDir, stdio: 'pipe' },
-    ).toString().trim().split('\n').filter((l) => l.endsWith('.tgz')).pop();
+    const packedName = await packFromNpm(explicitVersion, tempDir);
     if (!packedName || !fs.existsSync(path.join(tempDir, packedName))) {
       skip(`npm pack failed for nexus-coder@${explicitVersion}; output: ${packedName ?? 'empty'}`);
       return;
