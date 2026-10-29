@@ -17,6 +17,10 @@ import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
 import type { SlashLogEntry } from '../slash-log.js';
 import { cleanupSessionCaches, registerCacheFile } from '../main/cache-cleanup.js';
 import type { Agent } from 'nexus-coder/dist/src/agent.js';
+import { JobWatcher } from 'nexus-coder/dist/src/jobs/job-watcher.js';
+import type { JobWakePolicy, WakeTurnRequest, WakeKind } from 'nexus-coder/dist/src/jobs/job-watcher.js';
+import type { JobManager } from 'nexus-coder/dist/src/jobs/manager.js';
+import { buildWakePrompt } from 'nexus-coder/dist/src/jobs/wake-prompt.js';
 import { createProvider } from 'nexus-coder/dist/src/llm/provider.js';
 import { createEmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/index.js';
 import type { EmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/types.js';
@@ -299,6 +303,12 @@ export class AgentService {
   private activeRepMonitor: RepetitionMonitor | null = null;
   /** Accumulates tool calls within the current LLM turn for cross-turn repetition detection. */
   private toolCallsAcc: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+  /** JobWatcher attached to the lazily-created JobManager: stalled alerts,
+   *  progress one-liners, and auto-continue "wake turns" for finished jobs. */
+  private jobWatcher: JobWatcher | undefined;
+  /** Re-entrancy guard: at most one wake turn in flight at a time. */
+  private wakeTurnRunning = false;
   /**
    * One-shot flag preventing the debug-discipline override from being prepended
    * multiple times. Must live on the instance rather than relying on message-
@@ -679,6 +689,16 @@ export class AgentService {
     const { Agent } = await import('nexus-coder/dist/src/agent.js');
     this.agent = new Agent();
 
+    // Desktop host: background-job wake turns (auto-continue). The CLI wires
+    // the same JobWatcher behind config `wake.enabled` (default OFF, opt-in);
+    // the desktop host defaults ON so a finished job's result is injected and
+    // the agent keeps working without the user nudging. Cooldown / rate /
+    // stall params still come from the shared wake config, and an explicit
+    // opt-out (config wake.enabled:false or NEXUS_WAKE_ENABLED=0/false) is
+    // honored. The manager is created lazily (first bg_job use / exec
+    // auto-route), so this hook fires on demand — nothing is eager.
+    this.agent.onBgJobManagerReady = (mgr) => this.attachJobWatcher(mgr);
+
     // Raise the session's bound projectDir to the TOP of the system prompt
     // (message 0) before every LLM call. The core's own [Project Directory]
     // block (agent.js chat()) is appended to the END of the message list via
@@ -1046,6 +1066,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (agent) await agent.shutdown();
     this.initialized = false;
     this.agent = null;
+    this.jobWatcher = undefined;
+    this.wakeTurnRunning = false;
   }
 
   /**
@@ -1343,6 +1365,73 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
     const usage = monitor.finish();
     return usage;
+  }
+
+  /**
+   * Attach the desktop JobWatcher to the lazily-created JobManager (one per
+   * worker process; fires on first bg_job use or exec auto-route). Mirrors
+   * the CLI's chat.ts attach with two host differences:
+   *  - out-of-band rule text (stalled alerts, progress one-liners) is routed
+   *    into the chat UI as text events; terminal completions are suppressed
+   *    (emitCompletedText:false) because Agent.getBgJobManager already
+   *    announces them via bg_job_event + a text summary, and a second line
+   *    would duplicate in the conversation;
+   *  - a wake turn runs through runTurn() — the same choke point as every
+   *    user turn — so usage reporting, the repetition monitor, and the
+   *    renderer's running-hold (turn_start/turn_end events) all apply.
+   */
+  private attachJobWatcher(mgr: JobManager): void {
+    if (this.jobWatcher || !this.agent) return;
+    const agent = this.agent;
+    const cfg = agent.config.getWakeConfig();
+    // Desktop host default: ON. An explicit value still wins in both
+    // directions, in the same env > config overlay order getWakeConfig uses;
+    // only the fallback default flips (the CLI keeps its conservative OFF).
+    const rawEnabled = (agent.config.get() as unknown as { wake?: { enabled?: boolean } }).wake?.enabled;
+    const env = process.env.NEXUS_WAKE_ENABLED;
+    const enabled =
+      env != null ? /^(1|true|yes|on)$/i.test(env.trim()) : (rawEnabled ?? true);
+    const policy: JobWakePolicy = {
+      enabled,
+      cooldownMs: cfg.cooldownMs,
+      maxTurnsPerHour: cfg.maxTurnsPerHour,
+      kinds: new Set(cfg.kinds as WakeKind[]),
+      stallAlertMs: cfg.stallAlertMs,
+    };
+    this.jobWatcher = new JobWatcher({
+      manager: mgr,
+      emitOutOfBand: (text: string) => {
+        if (!text) return;
+        this.onEvent?.({ type: 'text', text: text.endsWith('\n') ? text : text + '\n' });
+      },
+      emitCompletedText: false,
+      wake: {
+        policy,
+        runWakeTurn: (req) => this.runWakeTurn(req),
+        canWake: () => !this.wakeTurnRunning && !this.busy,
+      },
+    });
+  }
+
+  /**
+   * Run one background-job wake turn: inject the finished job's result as a
+   * synthetic user message (buildWakePrompt carries the wake_turn_guard so
+   * the model treats it as a job result, not a fresh request) and let the
+   * agent react — continue testing, report the outcome, fix a failure —
+   * without the user re-prompting. Gated by canWake (never mid-turn) and
+   * the JobWatcher's cooldown/hourly ledger; failures are swallowed so a
+   * wake turn can never crash the manager's event loop.
+   */
+  private async runWakeTurn(req: WakeTurnRequest): Promise<void> {
+    if (this.wakeTurnRunning) return;
+    this.wakeTurnRunning = true;
+    try {
+      await this.runTurn(buildWakePrompt(req));
+    } catch (err) {
+      this.onLog?.('warn', `Wake turn failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.wakeTurnRunning = false;
+    }
   }
 
   /**
