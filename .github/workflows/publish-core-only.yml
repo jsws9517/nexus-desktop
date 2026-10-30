@@ -63,7 +63,15 @@ jobs:
         id: release
         shell: bash
         run: |
-          TAG=$(gh api repos/jsws9517/nexus-desktop/releases --jq 'first(.[] | select(.prerelease | not) | .tag_name)' 2>/dev/null || echo "v0.3.0")
+          # Newest non-prerelease desktop release on GitHub is the target
+          # for the core overlay. Fail hard when it cannot be resolved:
+          # guessing (a hardcoded tag) is how a future v0.4.0 would get its
+          # core update attached to a stale v0.3.0 release.
+          TAG=$(gh api repos/jsws9517/nexus-desktop/releases --jq 'first(.[] | select(.prerelease | not) | .tag_name)' 2>/dev/null || echo "")
+          if [ -z "$TAG" ]; then
+            echo "::error::could not resolve the newest non-prerelease desktop release; refusing to guess a target tag"
+            exit 1
+          fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Target release: $TAG"
         env:
@@ -103,11 +111,15 @@ jobs:
           # desktop release flow generates it (changelog step); the core-only
           # flow does not, so write a fallback body first.
           [ -f .release_body.md ] || printf '# Core update (nexus-coder)\n\nCore-only publish; no desktop changelog in this run.\n' > .release_body.md
+          # PRESERVE: a core-only publish must never wipe the desktop release's
+          # assets (latest.yml / installer / blockmap). Keep the existing
+          # Gitee release, attach only what is missing.
           GITEE_REPO=cict_1_0/nexus-desktop \
           GITEE_TAG="${TAG}" \
           GITEE_NAME="${TAG}" \
           GITEE_BODY_FILE=".release_body.md" \
           GITEE_RELEASE_DIR="release" \
+          GITEE_PRESERVE_ASSETS=1 \
           CORE_SIGNING_KEY="${CORE_SIGNING_KEY}" \
           node scripts/gitee-publish.mjs
         env:

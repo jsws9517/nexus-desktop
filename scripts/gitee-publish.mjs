@@ -18,6 +18,12 @@ const API = `https://gitee.com/api/v5/repos/${REPO}`;
 const UPLOAD_TIMEOUT = 180_000;
 const MAX_RETRIES = 3;
 
+// GITEE_PRESERVE_ASSETS=1 → supplemental publish (e.g. core-only re-publish
+// onto an existing desktop release): keep the existing release and its
+// assets, only attach files that are missing. Default (unset) keeps the
+// historical delete + recreate semantics for full desktop re-publishes.
+const PRESERVE = process.env.GITEE_PRESERVE_ASSETS === '1';
+
 async function request(url, options = {}) {
   const res = await fetch(url, options);
   const text = await res.text();
@@ -61,37 +67,83 @@ async function findReleaseByTag() {
 }
 
 async function main() {
-  const body = await readFile(BODY_FILE, 'utf8');
+  // The release body only matters when creating a fresh release; a missing
+  // body file must not abort a supplemental (preserve) publish.
+  let body = '';
+  try {
+    body = await readFile(BODY_FILE, 'utf8');
+  } catch {
+    body = '';
+  }
 
   const existing = await findReleaseByTag();
-  if (existing?.id) {
+  let releaseId;
+  const existingAssets = new Set((existing?.assets ?? []).map((a) => a.name));
+
+  if (existing?.id && PRESERVE) {
+    // Supplemental publish: never delete the release, keep its body and all
+    // existing assets; below we only attach files that are still missing.
+    releaseId = existing.id;
+    console.log(
+      `gitee release for ${TAG} exists (id=${releaseId}); preserving its ${existingAssets.size} existing asset(s)`,
+    );
+  } else if (existing?.id) {
     console.log(`gitee release for ${TAG} already exists (id=${existing.id}), replacing it`);
     await request(`${API}/releases/${existing.id}?access_token=${TOKEN}`, { method: 'DELETE' });
   }
 
-  const release = await request(`${API}/releases?access_token=${TOKEN}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json;charset=UTF-8' },
-    body: JSON.stringify({
-      tag_name: TAG,
-      name: NAME,
-      body,
-      target_commitish: 'main',
-      prerelease: false,
-    }),
-  });
-  console.log(`gitee release created: id=${release.id} tag=${TAG} name=${NAME}`);
+  if (!releaseId) {
+    if (PRESERVE) {
+      console.error(
+        `gitee-publish: GITEE_PRESERVE_ASSETS=1 but no existing gitee release for ${TAG}. ` +
+        'A supplemental publish has nothing to supplement; refusing to create a bare release. ' +
+        'Publish the desktop tag first, or run without the preserve flag.',
+      );
+      process.exit(1);
+    }
+    const release = await request(`${API}/releases?access_token=${TOKEN}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+      body: JSON.stringify({
+        tag_name: TAG,
+        name: NAME,
+        body,
+        target_commitish: 'main',
+        prerelease: false,
+      }),
+    });
+    releaseId = release.id;
+    console.log(`gitee release created: id=${release.id} tag=${TAG} name=${NAME}`);
+  }
 
-  const releaseId = release.id;
   const version = TAG.replace(/^v/, '');
+  const exeName = `nexus-Setup-${version}.exe`;
+
+  // Only the core tarball referenced by the current manifest belongs on the
+  // release: stale core-*.tar.gz files left behind in a local release dir
+  // must not leak onto Gitee.
+  let manifestVersion = '';
+  try {
+    manifestVersion =
+      (await readFile(`${RELEASE_DIR}/latest-core.yml`, 'utf8')).match(/^version:\s*(.+)$/m)?.[1]?.trim() || '';
+  } catch { /* no manifest yet */ }
+  const coreTarball = manifestVersion ? `core-${manifestVersion}.tar.gz` : null;
+
   const candidates = [
     'latest.yml',
-    `nexus-Setup-${version}.exe`,
-    `nexus-Setup-${version}.exe.blockmap`,
-    ...readdirSync(RELEASE_DIR).filter((f) => f.startsWith('core-') && f.endsWith('.tar.gz')),
+    exeName,
+    `${exeName}.blockmap`,
+    ...(coreTarball ? [coreTarball] : []),
     'latest-core.yml',
     ...readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sig')),
   ];
+
+  // Will the installer be downloadable from Gitee after this run?
+  let exeFitsGitee = false;
+  try {
+    exeFitsGitee = (await stat(`${RELEASE_DIR}/${exeName}`)).size <= MAX_ATTACH_BYTES;
+  } catch { /* no exe in this run */ }
+  const exeOnGiteeAfterRun = PRESERVE ? exeFitsGitee || existingAssets.has(exeName) : exeFitsGitee;
 
   for (const name of candidates) {
     const file = `${RELEASE_DIR}/${name}`;
@@ -99,6 +151,10 @@ async function main() {
     try {
       info = await stat(file);
     } catch {
+      continue;
+    }
+    if (PRESERVE && existingAssets.has(name)) {
+      console.log(`skip ${name}: already attached to the gitee release (preserved)`);
       continue;
     }
     if (info.size > MAX_ATTACH_BYTES) {
@@ -112,12 +168,22 @@ async function main() {
     // is 100 MiB, the NSIS installer is ~110 MiB) — clients reach it via GitHub
     // or gh-proxy mirrors.
     if (name === 'latest.yml') {
-      const text = buffer.toString('utf8').replace(
-        /^url: .*$/gm,
-        `url: https://gitee.com/${REPO}/releases/download/${TAG}/${version}`,
-      );
-      buffer = Buffer.from(text);
-      console.log(`rewrote ${name} url -> Gitee download`);
+      // electron-builder emits a *relative* exe url (nexus-Setup-X.exe),
+      // which electron-updater resolves against the feed that served the
+      // manifest — the same file is therefore valid on both GitHub and
+      // Gitee. Only when the installer will NOT be downloadable from Gitee
+      // (Gitee attachment limit) do we pin the url to GitHub explicitly;
+      // otherwise we keep the relative url untouched.
+      if (!exeOnGiteeAfterRun) {
+        const text = buffer.toString('utf8').replace(
+          /^url: .*$/gm,
+          `url: https://github.com/jsws9517/nexus-desktop/releases/download/${TAG}/${exeName}`,
+        );
+        buffer = Buffer.from(text);
+        console.log(`rewrote ${name} url -> GitHub download (installer not on Gitee)`);
+      } else {
+        console.log(`kept ${name} url relative (resolves on the serving host; installer on Gitee)`);
+      }
     } else if (name === 'latest-core.yml') {
       // Rewriting the artifact URL invalidates the signature (it covers the
       // manifest bytes), so re-sign on the rewritten text. The `signed: true`

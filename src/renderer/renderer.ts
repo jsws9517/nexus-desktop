@@ -5594,6 +5594,15 @@ type UpdateStateType =
   | { status: 'error'; message?: string };
 
 let updateVersion = '';
+// Live status lines must render inside the active settings tab, not at the
+// settings root (the pre-refactor layout bug: the status line was appended to
+// #settings-body, outside the visible "Update" panel, so clicking
+// "Check for Updates" appeared to do nothing).
+let updateStatusSlot: HTMLElement | null = null;
+let coreStatusSlot: HTMLElement | null = null;
+function statusHost(slot: HTMLElement | null): HTMLElement {
+  return slot ?? settingsBody;
+}
 function buildUpdateSection(container?: HTMLElement): void {
   const target = container || settingsBody;
   const title = document.createElement('div');
@@ -5620,11 +5629,18 @@ function buildUpdateSection(container?: HTMLElement): void {
   wrap.appendChild(info);
   wrap.appendChild(btn);
   target.appendChild(wrap);
+  // Dedicated slot so the status line always lands inside the active tab
+  // panel, right below the version row.
+  const slot = document.createElement('div');
+  slot.className = 'update-status-slot';
+  target.appendChild(slot);
+  updateStatusSlot = slot;
   renderUpdateStatus({ status: 'idle' });
 }
 
 function renderUpdateStatus(state: UpdateStateType): void {
-  const existing = settingsBody.querySelector<HTMLElement>('.update-status');
+  const host = statusHost(updateStatusSlot);
+  const existing = host.querySelector<HTMLElement>('.update-status');
   if (existing) existing.remove();
   if (state.status === 'idle' || state.status === 'not-available') {
     if (state.status === 'not-available') showUpdateMsg(t('updateNotAvailable'));
@@ -5653,16 +5669,17 @@ function renderUpdateStatus(state: UpdateStateType): void {
   } else if (state.status === 'error') {
     line.textContent = t('updateError', { message: state.message ?? '' });
   }
-  settingsBody.appendChild(line);
+  host.appendChild(line);
 }
 
 function showUpdateMsg(msg: string): void {
-  const existing = settingsBody.querySelector<HTMLElement>('.update-status');
+  const host = statusHost(updateStatusSlot);
+  const existing = host.querySelector<HTMLElement>('.update-status');
   if (existing) existing.remove();
   const line = document.createElement('div');
   line.className = 'update-status';
   line.textContent = msg;
-  settingsBody.appendChild(line);
+  host.appendChild(line);
 }
 
 type CoreUpdateStateType =
@@ -5708,11 +5725,16 @@ function buildCoreUpdateSection(container?: HTMLElement): void {
   wrap.appendChild(info);
   wrap.appendChild(btn);
   target.appendChild(wrap);
+  const slot = document.createElement('div');
+  slot.className = 'core-update-status-slot';
+  target.appendChild(slot);
+  coreStatusSlot = slot;
   renderCoreUpdateStatus({ status: 'idle' });
 }
 
 function renderCoreUpdateStatus(state: CoreUpdateStateType): void {
-  const existing = settingsBody.querySelector<HTMLElement>('.core-update-status');
+  const host = statusHost(coreStatusSlot);
+  const existing = host.querySelector<HTMLElement>('.core-update-status');
   if (existing) existing.remove();
   if (state.status === 'idle' || state.status === 'not-available') {
     if (state.status === 'not-available') showCoreUpdateMsg(t('coreUpdateNotAvailable'));
@@ -5755,16 +5777,17 @@ function renderCoreUpdateStatus(state: CoreUpdateStateType): void {
     check.addEventListener('click', () => void runUpdateCheck(check));
     line.appendChild(check);
   }
-  settingsBody.appendChild(line);
+  host.appendChild(line);
 }
 
 function showCoreUpdateMsg(msg: string): void {
-  const existing = settingsBody.querySelector<HTMLElement>('.core-update-status');
+  const host = statusHost(coreStatusSlot);
+  const existing = host.querySelector<HTMLElement>('.core-update-status');
   if (existing) existing.remove();
   const line = document.createElement('div');
   line.className = 'core-update-status';
   line.textContent = msg;
-  settingsBody.appendChild(line);
+  host.appendChild(line);
 }
 
 async function runCoreUpdateCheck(btn: HTMLButtonElement): Promise<void> {

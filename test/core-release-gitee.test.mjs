@@ -14,8 +14,9 @@
  *      the Gitee-published bytes.
  *
  * The test downloads the real Gitee assets for the tag in `NEXUS_GITEE_TAG`
- * (default: the newest desktop release, `latest`). It is skipped when the
- * network is unavailable, so it never breaks an offline CI run.
+ * (default: the newest non-prerelease desktop release, resolved via the Gitee
+ * releases API — Gitee has no `/releases/latest` alias). It is skipped when
+ * the network is unavailable, so it never breaks an offline CI run.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,12 +25,8 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtempSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { sign, createPublicKey } from 'node:crypto';
 
-const REPO = 'jsws9517/nexus-desktop';
 const GITEE_REPO = 'cict_1_0/nexus-desktop';
-const GITEE_RELEASES = `https://gitee.com/${GITEE_REPO}/releases`;
-const NEXUS = `https://github.com/${REPO}/releases`;
 
 async function fetchText(url, { timeoutMs = 15_000 } = {}) {
   const ctrl = new AbortController();
@@ -45,17 +42,34 @@ async function fetchText(url, { timeoutMs = 15_000 } = {}) {
 
 /** The newest non-prerelease release on Gitee, or `null` when unreachable. */
 async function latestGiteeTag() {
-  const raw = await fetchText(`${GITEE_RELEASES}/latest`);
-  const data = JSON.parse(raw);
-  return data?.tag_name || null;
+  // Gitee has no GitHub-style `/releases/latest` JSON alias, so ask the API.
+  const raw = await fetchText(`https://gitee.com/api/v5/repos/${GITEE_REPO}/releases`);
+  const releases = Array.isArray(raw ? JSON.parse(raw) : null) ? JSON.parse(raw) : [];
+  const parse = (tag) => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(tag);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const tagged = releases
+    .map((r) => ({ tag: r.tag_name ?? '', prerelease: r.prerelease === true, v: parse(r.tag_name ?? '') }))
+    .filter((r) => r.v !== null);
+  if (tagged.length === 0) return null;
+  const stable = tagged.filter((r) => !r.prerelease);
+  const pool = stable.length > 0 ? stable : tagged;
+  pool.sort((a, b) => a.v[0] - b.v[0] || a.v[1] - b.v[1] || a.v[2] - b.v[2]);
+  return pool[pool.length - 1].tag;
 }
 
 async function giteeAssetUrls(tag, names) {
-  const raw = await fetchText(`${GITEE_RELEASES}/tags/${encodeURIComponent(tag)}`);
+  const raw = await fetchText(`https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${encodeURIComponent(tag)}`);
   const data = JSON.parse(raw);
   const assets = Array.isArray(data?.assets) ? data.assets : [];
   const urls = {};
-  for (const n of names) urls[n] = assets.find((a) => a.name === n)?.url ?? null;
+  for (const n of names) {
+    const hit = assets.find((a) => a.name === n);
+    // Gitee API v5 assets expose `browser_download_url` (the `url` field is
+    // the asset's API object URL, not the file).
+    urls[n] = hit?.browser_download_url ?? hit?.url ?? null;
+  }
   return urls;
 }
 
@@ -102,8 +116,12 @@ test('Gitee-published release keeps the core overlay feed signed and reachable',
     throw new Error('Gitee manifest is marked `signed: true` but no .sig asset was attached');
   }
 
-  // Full client flow: serve the Gitee bytes on a local mirror, drive
-  // check -> download -> activate through the shipped manager.
+  // Full client flow: serve the Gitee-published manifest + sig bytes on a
+  // local mirror, drive check -> download -> activate through the shipped
+  // manager. The manifest is served byte-exact: the .sig sidecar signs these
+  // exact bytes, so any local rewrite of the url field would break the
+  // signature check. The tarball follows the manifest's url (Gitee), with a
+  // proxy branch kept for relative-url manifests.
   const { createServer } = await import('node:http');
   const { CoreUpdateManager } = await import(
     pathToFileURL(path.join(DIST, 'core-overlay', 'manager.js')).href
@@ -117,31 +135,18 @@ test('Gitee-published release keeps the core overlay feed signed and reachable',
   const server = createServer(async (req, res) => {
     const name = decodeURIComponent((req.url || '/').split('?')[0].replace(/^\//, ''));
     if (name === 'latest-core.yml') {
-      const base = `http://127.0.0.1:${serverPort}`;
-      const body = manifest.replace(/^url:\s*.*$/m, `url: ${base}/${tarName}`);
-      res.writeHead(200, { 'content-type': 'text/yaml' }).end(body);
+      res.writeHead(200, { 'content-type': 'text/yaml' }).end(manifest);
       return;
     }
     if (name === 'latest-core.yml.sig') {
-      const base = `http://127.0.0.1:${serverPort}`;
-      const body = manifest.replace(/^url:\s*.*$/m, `url: ${base}/${tarName}`);
-      const priv = process.env.NEXUS_CORE_SIGNING_KEY || null;
-      if (priv) {
-        res.writeHead(200).end(sign(null, Buffer.from(body), priv).toString('hex'));
-      } else {
-        // Fall back to the Gitee-published sig: it still verifies the local
-        // bytes because the body here is the manifest with only the url field
-        // rewritten — the signature check above already proved the rewrite
-        // was re-signed by the publisher.
-        res.writeHead(200).end(sigUrl ? await fetchText(sigUrl).then((t) => t.trim()) : '');
-      }
+      const body = sigUrl ? await fetchText(sigUrl).then((t) => t.trim()) : '';
+      res.writeHead(200).end(body);
       return;
     }
     if (name === tarName) {
       const res2 = await fetch(tarballUrl);
-      res.writeHead(res2.status, { 'content-type': 'application/octet-stream' });
-      Buffer.from(await res2.arrayBuffer()).pipe ?
-        res.end(Buffer.from(await res2.arrayBuffer())) : res.end();
+      const buf = Buffer.from(await res2.arrayBuffer());
+      res.writeHead(res2.status, { 'content-type': 'application/octet-stream' }).end(buf);
       return;
     }
     res.writeHead(404).end('not found');

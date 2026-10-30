@@ -9,9 +9,23 @@ const FEED_DIRECT =
 const FEED_MIRRORS = [
   'https://gh-proxy.com/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
   'https://ghfast.top/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
-  'https://gitee.com/cict_1_0/nexus-desktop/releases/latest/download',
 ];
+const GITEE_REPO = 'cict_1_0/nexus-desktop';
 const PROBE_TIMEOUT_MS = 6000;
+
+function parseTagVersion(tag: string): [number, number, number] | null {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(tag);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function compareVersions(
+  a: [number, number, number],
+  b: [number, number, number],
+): number {
+  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
+}
 
 // electron-updater v6 exposes `autoUpdater` as a lazy getter on the CJS default
 // export; the named import (`import { autoUpdater }`) fails under NodeNext ESM
@@ -132,10 +146,58 @@ export class Updater {
   private async resolveFeedUrl(): Promise<string> {
     const override = process.env.NEXUS_UPDATE_MIRROR;
     if (override) return override;
-    const results = await Promise.all(
-      this.feedCandidates().map(async (url) => ((await this.probe(url)) ? url : null)),
-    );
+    // Gitee is the last-resort CN fallback and is resolved dynamically (it
+    // has no static feed URL), so probe it in parallel with the static
+    // GitHub candidates.
+    const results = await Promise.all([
+      ...this.feedCandidates().map(async (url) => ((await this.probe(url)) ? url : null)),
+      this.resolveGiteeFeed(),
+    ]);
     return results.find((url) => url !== null) ?? FEED_DIRECT;
+  }
+
+  /**
+   * Gitee does not implement GitHub's `releases/latest/download` alias — that
+   * path 404s even when assets are attached — and pinning the feed to the
+   * app's own version tag would defeat the point of an update check (the new
+   * tag is exactly what we are trying to discover). So query Gitee's public
+   * releases API, pick the newest stable tag, and return its tag-based
+   * download base, trusted only after probing that `latest.yml` is attached.
+   * Returns null when the API or the manifest probe fails.
+   */
+  private async resolveGiteeFeed(): Promise<string | null> {
+    let releases: Array<{ tag_name?: string; prerelease?: boolean }> = [];
+    {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+      try {
+        const res = await fetch(`https://gitee.com/api/v5/repos/${GITEE_REPO}/releases`, {
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        });
+        if (res.ok) {
+          releases = (await res.json()) as Array<{ tag_name?: string; prerelease?: boolean }>;
+        }
+      } catch {
+        /* Gitee API unreachable: CN fallback unavailable */
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    const tagged = releases
+      .map((r) => {
+        const tag = r.tag_name ?? '';
+        return { tag, prerelease: r.prerelease === true, version: parseTagVersion(tag) };
+      })
+      .filter((r): r is { tag: string; prerelease: boolean; version: [number, number, number] } =>
+        r.version !== null,
+      );
+    const stable = tagged.filter((r) => !r.prerelease);
+    const pool = stable.length > 0 ? stable : tagged;
+    if (pool.length === 0) return null;
+    pool.sort((a, b) => compareVersions(a.version, b.version));
+    const base = `https://gitee.com/${GITEE_REPO}/releases/download/${pool[pool.length - 1].tag}`;
+    return (await this.probe(base)) ? base : null;
   }
 
   private async probe(url: string): Promise<boolean> {
