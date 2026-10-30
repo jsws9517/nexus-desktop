@@ -161,9 +161,24 @@ repository secret (PEM contents of `keys/core-signing-private.pem`); without it
 the workflow fails at the preflight step on purpose.
 
 
-> Gitee caps release attachments at **100 MiB**. The NSIS installer (~110 MiB)
-> is skipped there, so installers stay GitHub-only; `latest.yml` and the
-> `.blockmap` are still uploaded for reference.
+> Gitee caps release attachments at **100 MiB**. `gitee-publish.mjs` handles
+> both cases: when the NSIS installer fits (it is ~98.5 MiB as of v0.3.0), it
+> is attached and `latest.yml` keeps its *relative* exe url, so the Gitee
+> mirror is a fully self-contained update feed. When the installer exceeds the
+> cap, `latest.yml` is re-pinned to the GitHub download URL explicitly so a
+> Gitee-hosted manifest never points at a file that does not exist on Gitee.
+>
+> Two Gitee-specific facts the client code relies on:
+>
+> - Gitee has **no** `releases/latest/download` alias (GitHub's). The app
+>   updater therefore resolves the Gitee feed at check time: newest
+>   non-prerelease release via Gitee's public releases API, then
+>   `releases/download/<tag>`, trusted only after probing that `latest.yml`
+>   is attached (`src/main/updater.ts`).
+> - A **core-only re-publish** mirrors with `GITEE_PRESERVE_ASSETS=1`: the
+>   existing Gitee release and its desktop assets are kept; only missing
+>   files are attached. A full desktop tag publish keeps the historical
+>   delete + recreate semantics.
 
 ---
 

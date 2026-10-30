@@ -129,7 +129,11 @@ src/
 - GitHub：https://github.com/jsws9517/nexus-desktop
 - Gitee 镜像：https://gitee.com/cict_1_0/nexus-desktop
 
-安装包二进制（约 110 MiB）仅发布在 GitHub，因为 Gitee 对附件上限为 100 MiB。
+安装包二进制在两个平台都会上传，只要不超过 Gitee 附件上限 100 MiB（v0.3.0
+的安装包约 98.5 MiB，因此 Gitee 镜像本身就是一个自包含的更新源：
+`latest.yml` 保留相对安装包 url，由提供 manifest 的主机解析）。若未来安装包
+超过上限，`scripts/gitee-publish.mjs` 会把 Gitee 版 `latest.yml` 的 url 固定
+指向 GitHub 下载地址，保证镜像不会指向 Gitee 上不存在的文件。
 
 ## 快速开始
 

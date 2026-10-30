@@ -135,6 +135,17 @@ uses the `CORE_SIGNING_KEY` repository secret (the same PEM contents). A release
 fails before building when that secret is missing, and `publish-core.mjs` fails
 in CI instead of silently shipping an unsigned manifest.
 
+Gitee mirror notes: the Gitee release for a desktop tag is re-published by
+`publish-core-only.yml` with `GITEE_PRESERVE_ASSETS=1` — the existing release
+(and its desktop assets: `latest.yml`, installer, `.blockmap`) is kept, only
+missing core files are attached, and the Gitee copy of `latest-core.yml` is
+rewritten to a Gitee download URL and re-signed. Gitee does not implement
+GitHub's `releases/latest/download` alias, so the client's Gitee core feed is
+tag-based (`releases/download/v<app version>`, wired in `src/main/index.ts`
+as `extraFeeds`): a running app resolves core updates on the release that
+matches its own desktop version, which is exactly where the core-only flow
+attaches the new artifacts.
+
 
 ## Environment switches
 

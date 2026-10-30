@@ -177,8 +177,13 @@ The source (`main` + tags) is auto-mirrored to Gitee on every push
 - GitHub: https://github.com/jsws9517/nexus-desktop
 - Gitee mirror: https://gitee.com/cict_1_0/nexus-desktop
 
-Installer binaries (~110 MiB) are GitHub-only because Gitee caps release
-attachments at 100 MiB.
+Installer binaries are attached on both hosts while they fit under Gitee's
+100 MiB attachment cap (the v0.3.0 installer is ~98.5 MiB, so the Gitee mirror
+is a self-contained update feed: `latest.yml` keeps its relative installer
+url, which resolves against whichever host serves the manifest). If a future
+installer exceeds the cap, `scripts/gitee-publish.mjs` pins the Gitee copy of
+`latest.yml` to the GitHub download URL so the mirror never points at a file
+that does not exist on Gitee.
 
 ## Getting started
 

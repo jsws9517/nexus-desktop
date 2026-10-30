@@ -162,11 +162,11 @@ async function main() {
       continue;
     }
     let buffer = await readFile(file);
-    // Point the manifests' `url:` fields at Gitee so Gitee-hosted updates stay
-    // self-contained; re-sign latest-core.yml because the signature covers the
-    // manifest bytes. The core tarball stays on GitHub (Gitee attachment limit
-    // is 100 MiB, the NSIS installer is ~110 MiB) — clients reach it via GitHub
-    // or gh-proxy mirrors.
+    // For latest-core.yml: point the artifact url at Gitee so the mirror is
+    // self-contained for CN clients (the core tarball is ~1.4 MiB, far below
+    // Gitee's 100 MiB attachment cap) and re-sign, because the signature
+    // covers the manifest bytes. latest.yml is handled in its own branch
+    // below (relative url vs. GitHub-pinned, depending on the installer).
     if (name === 'latest.yml') {
       // electron-builder emits a *relative* exe url (nexus-Setup-X.exe),
       // which electron-updater resolves against the feed that served the
