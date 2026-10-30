@@ -86,15 +86,32 @@ Tag naming follows the existing convention: `v1.0.2`, `v1.1.0`, … `v1.1.6`.
 
 ## 2. Desktop release (repo: `nexus-desktop`)
 
-### 2.1 Bump the core dependency
+### 2.1 Pin the core dependency (automated in CI)
 
-After a core publish, point the desktop at the new version:
+Since the self-healing release pipeline, a desktop tag does not require a
+manual dependency bump: `.github/workflows/release.yml` runs
+`node scripts/set-core-version.mjs` before `npm ci`.
+
+- Resolves the newest `nexus-coder` among the `latest` and `beta`
+  dist-tags (`scripts/core-version-select.mjs` picks the larger; a missing
+  `beta` falls back to `latest`).
+- Refuses to proceed if the resolved core's `nexusDesktopProtocol`
+  disagrees with the desktop's (exact-protocol gate, legacy = field
+  absent).
+- Writes the exact version into `package.json`
+  (`dependencies["nexus-coder"]` + `nexusCoreVersion`) and the lockfile,
+  so the `publish-core.mjs` baseline read of `node_modules` ships the same
+  version it just pinned.
+
+For local work (or to pin a version older than the newest dist-tag, which
+the tag-based flow cannot express), pin manually:
 
 ```bash
-npm install nexus-coder@1.1.7
+npm install nexus-coder@1.1.7   # exact install
+node scripts/set-core-version.mjs --version 1.1.7   # optional: align fields
 ```
 
-Commit `package.json` + `package-lock.json`.
+Dry-run preview of the CI decision: `node scripts/set-core-version.mjs --dry-run`.
 
 ### 2.2 Build + smoke test
 
@@ -154,7 +171,6 @@ the workflow fails at the preflight step on purpose.
 
 - [ ] `npm run typecheck && npm run build && npm test` green on `dev`
 - [ ] Core published to npm (tag `beta` → then `latest`)
-- [ ] `npm view nexus-coder dist-tags` shows the new version
-- [ ] Desktop `npm install nexus-coder` + smoke test green
+- [ ] `npm view nexus-coder dist-tags` shows the new version (newest of `latest`/`beta` is auto-pinned into the desktop by `release.yml`; no manual bump needed)
 - [ ] `vX.Y.Z` tag pushed to `nexus-coder` (and `nexus-desktop`)
 - [ ] `master` fast-forwarded on `nexus-coder` (stable only)

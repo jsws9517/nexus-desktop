@@ -184,17 +184,24 @@ attachments at 100 MiB.
 
 ```bash
 npm install          # on CN networks: ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
-npm start            # build + launch in dev mode
+npm start            # rebuild the sibling nexus-coder core (if present), build + launch in dev mode
 ```
 
 `npm start` requires an API key configured (see the Settings window).
+
+> **Dev loop:** `npm start` first runs `npm run build` in the sibling core
+> source (`../nexus-coder`, override with `NEXUS_CODER_SRC`), then copies its
+> fresh `dist/` into `node_modules/nexus-coder` before building the desktop —
+> so local core fixes are picked up on every launch. A missing core source is
+> skipped silently (registry copy stays as-is); a failing core build aborts
+> the start. Skip the rebuild with `NEXUS_SKIP_CORE_BUILD=1 npm start`.
 
 ## Scripts
 
 | Command             | Purpose                                              |
 | ------------------- | ---------------------------------------------------- |
 | `npm run build`     | compile TS, copy static assets                        |
-| `npm start`         | build + run Electron in dev                          |
+| `npm start`         | rebuild sibling core (if present), build + run Electron in dev |
 | `npm run typecheck` | type-check                                           |
 | `npm run test:unit` | headless unit suite (`node --test`, incl. IPC + tools) |
 | `npm run test:smoke`| headless RPC smoke test (no GUI, no LLM)             |

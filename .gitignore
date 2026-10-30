@@ -27,3 +27,7 @@ verify-final.mjs
 
 # Core signing keys (private key must never be committed)
 keys/core-signing-private.pem
+
+# Personal "escape hatch" helper for manually triggering a core-only publish
+# (fallback when the auto repository_dispatch chain breaks). Local-only, never committed.
+ESCAPE-HATCH-publish-core.ps1

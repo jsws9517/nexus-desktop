@@ -120,8 +120,12 @@ node scripts/publish-core.mjs
   -> release/latest-core.yml.sig   (manifest carries `protocol: <desktop protocol>`)
 ```
 
-CI (`.github/workflows/release.yml`) runs `publish-core.mjs` after the installer
-build and uploads the artifacts to GitHub Releases (and mirrors to Gitee via
+CI (`.github/workflows/release.yml`) first pins the newest core —
+`node scripts/set-core-version.mjs` picks the larger of the `latest` /
+`beta` dist-tags (exact version, `nexusCoreVersion` kept in lockstep, and
+a hard gate when the resolved core's `nexusDesktopProtocol` differs from
+the desktop's), then runs `publish-core.mjs` after the installer build and
+uploads the artifacts to GitHub Releases (and mirrors to Gitee via
 `scripts/gitee-publish.mjs`). The manifest URL is pinned to the **desktop**
 release tag (`v<desktop version>`) because that is the release the asset is
 attached to, not the core version.
@@ -142,6 +146,8 @@ in CI instead of silently shipping an unsigned manifest.
 | `NEXUS_CORE_SIGNING_PUBKEY_HEX` | override the trusted signing key (tests) |
 | `NEXUS_DESKTOP_PROTOCOL` | override the desktop protocol (tests) |
 | `NEXUS_CORE_PROTOCOL` | stamp a protocol into a manifest in `publish-core.mjs` (tests) |
+| `NEXUS_SKIP_CORE_BUILD=1` | `sync-core.mjs --build` (and thus `npm start`) skips rebuilding the sibling core |
+| `NEXUS_CODER_SRC` | override the core source root (default `../nexus-coder`) |
 
 ## Tests
 
@@ -152,6 +158,7 @@ in CI instead of silently shipping an unsigned manifest.
 | `test/core-signature.test.mjs` | ed25519 verification |
 | `test/core-manager.test.mjs` | check() state transitions (mocked feed) |
 | `test/core-protocol.test.mjs` | protocol gate + field invariants |
+| `test/core-version-select.test.mjs` | latest/beta dist-tag selection + CI-safe `--build` skip |
 | `scripts/smoke-e2e.mjs` | dev-mode S1–S4 |
 | `scripts/smoke-asar.mjs` | packed asar contains the bootstrap + import order |
 | `scripts/smoke-packaged.mjs` | real win-unpacked app: P1 base / P2 overlay / P3 rollback / P4 protocol gate |

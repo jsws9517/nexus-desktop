@@ -13,10 +13,14 @@
  *   node scripts/sync-core.mjs --watch         copy + watch for changes & resync
  *
  * Env: NEXUS_CODER_SRC overrides the core source root (default: ../nexus-coder).
+ *       NEXUS_SKIP_CORE_BUILD=1 skips the --build step (core stays as-is).
  *
  * CI / packaging safety: if the source root is not present (e.g. GitHub
- * Actions `npm ci`), this exits 0 with a notice — it never fails a clean
- * registry-based install/build.
+ * Actions `npm ci`), the copy and the --build step both skip with a notice
+ * and exit 0 — they never fail a clean registry-based install/build.
+ *
+ * Local dev: a failing core build (source present, tsc errors) aborts with
+ * exit 1 so the desktop never compiles against a stale dist.
  */
 
 import { execSync } from 'node:child_process';
@@ -105,12 +109,19 @@ function syncCoreVersionField() {
 }
 
 function buildCore() {
+  if (process.env.NEXUS_SKIP_CORE_BUILD === '1') {
+    console.log('[sync-core] NEXUS_SKIP_CORE_BUILD=1 — skipping core build (using existing dist / registry copy).');
+    return false;
+  }
   if (!existsSync(srcRoot)) {
-    console.error(`[sync-core] core source not found at ${srcRoot} — cannot build.`);
-    process.exitCode = 1;
+    // CI / clean-checkout safety: no sibling core source is expected, so a
+    // missing source is a notice, not an error (mirrors syncOnce above).
+    console.log(`[sync-core] core source not found at ${srcRoot} — skipping build (registry copy stays as-is).`);
     return false;
   }
   console.log(`[sync-core] building core in ${srcRoot} ...`);
+  // Throws on failure — the caller aborts so the desktop never compiles
+  // against a stale or broken dist.
   execSync('npm run build', { cwd: srcRoot, stdio: 'inherit' });
   return true;
 }
@@ -189,7 +200,15 @@ const wantBuild = args.includes('--build');
 const wantWatch = args.includes('--watch');
 
 if (wantBuild) {
-  buildCore();
+  try {
+    buildCore();
+  } catch (e) {
+    // Source present but `npm run build` failed — aborting here is the
+    // point: continuing would let the desktop compile against a stale dist.
+    console.error(`[sync-core] core build failed: ${String(e.message ?? e).slice(0, 300)}`);
+    console.error(`[sync-core] hint: fix the core build, or skip with NEXUS_SKIP_CORE_BUILD=1`);
+    process.exit(1);
+  }
 }
 
 if (wantWatch) {

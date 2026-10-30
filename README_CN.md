@@ -135,17 +135,23 @@ src/
 
 ```bash
 npm install          # 国内网络：ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
-npm start            # 构建并启动开发模式
+npm start            # 先重建同级 nexus-coder 核心（若存在），再构建并启动开发模式
 ```
 
 `npm start` 需要先在设置窗口配置 API key。
+
+> **本地调试核心**：`npm start` 会先在核心源码目录（默认 `../nexus-coder`，可用
+> `NEXUS_CODER_SRC` 覆盖）执行 `npm run build`，并把新的 `dist/` 同步到
+> `node_modules/nexus-coder`，因此每次启动都能拿到本地最新核心。核心源码目录
+> 不存在时会静默跳过（继续用 registry 版本）；核心构建失败会中止启动。
+> 可用 `NEXUS_SKIP_CORE_BUILD=1 npm start` 跳过核心重建。
 
 ## 脚本
 
 | 命令                | 说明                                                 |
 | ------------------- | ---------------------------------------------------- |
 | `npm run build`     | 编译 TS，拷贝静态资源                                 |
-| `npm start`         | 构建并运行 Electron 开发模式                          |
+| `npm start`         | 重建同级核心（若存在）、构建并运行 Electron 开发模式   |
 | `npm run typecheck` | 类型检查                                             |
 | `npm run test:unit` | 无头单元测试（`node --test`，含 IPC 与内置工具）      |
 | `npm run test:smoke`| 无头 RPC 冒烟测试（无 GUI、无 LLM）                   |
