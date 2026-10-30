@@ -5833,12 +5833,28 @@ async function runCoreUpdateInstall(inst: HTMLButtonElement, line: HTMLElement):
   }
 }
 
+function renderUpdateSource(source: { label: string; url: string } | null | undefined): void {
+  const host = statusHost(updateStatusSlot);
+  const existing = host.querySelector<HTMLElement>('.update-source');
+  if (existing) existing.remove();
+  const line = document.createElement('div');
+  line.className = 'update-source';
+  line.textContent = source
+    ? t('updateSource', { source: source.label })
+    : t('updateSourceNone');
+  if (source) line.title = source.url;
+  host.appendChild(line);
+}
+
 async function runUpdateCheck(btn: HTMLButtonElement): Promise<void> {
   btn.disabled = true;
   renderUpdateStatus({ status: 'checking' });
   try {
-    const state = await window.nexusDesktop.checkForUpdate();
-    renderUpdateStatus(state as UpdateStateType);
+    const result = (await window.nexusDesktop.checkForUpdate()) as UpdateStateType & {
+      source?: { label: string; url: string } | null;
+    };
+    renderUpdateStatus(result);
+    renderUpdateSource(result.source);
   } catch (err) {
     renderUpdateStatus({ status: 'error', message: errText(err) });
   } finally {

@@ -4,11 +4,24 @@ import type { UpdateInfo } from 'electron-updater';
 
 // 更新源候选：GitHub Release 直连优先，再回退到 gh-proxy 类 CDN，最后 Gitee。
 // 每个候选在 check() 时并行探测 latest.yml，取第一个可达的作为本次 feed。
-const FEED_DIRECT =
-  'https://github.com/jsws9517/nexus-desktop/releases/latest/download';
-const FEED_MIRRORS = [
-  'https://gh-proxy.com/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
-  'https://ghfast.top/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+export interface FeedSource {
+  label: string;
+  url: string;
+}
+
+const FEED_DIRECT: FeedSource = {
+  label: 'GitHub',
+  url: 'https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+};
+const FEED_MIRRORS: FeedSource[] = [
+  {
+    label: 'gh-proxy.com',
+    url: 'https://gh-proxy.com/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+  },
+  {
+    label: 'ghfast.top',
+    url: 'https://ghfast.top/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
+  },
 ];
 const GITEE_REPO = 'cict_1_0/nexus-desktop';
 const PROBE_TIMEOUT_MS = 6000;
@@ -56,10 +69,13 @@ export type UpdateState =
   | { status: 'downloaded'; version: string }
   | { status: 'error'; message: string };
 
+export type UpdateStateWithSource = UpdateState & { source: FeedSource | null };
+
 export class Updater {
   private enabled = false;
   private state: UpdateState = { status: 'idle' };
   private availableInfo: UpdateInfo | null = null;
+  private source: FeedSource | null = null;
 
   onState?: (state: UpdateState) => void;
 
@@ -105,20 +121,30 @@ export class Updater {
   }
 
   /** Step 1 — check for a newer release. Never downloads. */
-  async check(): Promise<UpdateState> {
+  async check(): Promise<UpdateStateWithSource> {
     if (!this.enabled) {
       this.setState({ status: 'error', message: 'Update checks are only available in the packaged app' });
-      return this.state;
+      return this.withSource();
     }
     try {
       const autoUpdater = getAutoUpdater();
-      const feedUrl = await this.resolveFeedUrl();
-      autoUpdater.setFeedURL(feedUrl);
+      const feed = await this.resolveFeedUrl();
+      this.source = feed;
+      autoUpdater.setFeedURL((feed ?? FEED_DIRECT).url);
       await autoUpdater.checkForUpdates();
     } catch (e) {
       this.setState({ status: 'error', message: e instanceof Error ? e.message : String(e) });
     }
-    return this.state;
+    return this.withSource();
+  }
+
+  /** The feed the last check() resolved to; null when no candidate was reachable. */
+  getSource(): FeedSource | null {
+    return this.source;
+  }
+
+  private withSource(): UpdateStateWithSource {
+    return { ...this.state, source: this.source };
   }
 
   /** Step 2 — download the available update. Only valid after check() found one. */
@@ -139,21 +165,21 @@ export class Updater {
     getAutoUpdater().quitAndInstall(false, true);
   }
 
-  private feedCandidates(): string[] {
+  private feedCandidates(): FeedSource[] {
     return [FEED_DIRECT, ...FEED_MIRRORS];
   }
 
-  private async resolveFeedUrl(): Promise<string> {
+  private async resolveFeedUrl(): Promise<FeedSource | null> {
     const override = process.env.NEXUS_UPDATE_MIRROR;
-    if (override) return override;
+    if (override) return { label: 'NEXUS_UPDATE_MIRROR', url: override };
     // Gitee is the last-resort CN fallback and is resolved dynamically (it
     // has no static feed URL), so probe it in parallel with the static
     // GitHub candidates.
     const results = await Promise.all([
-      ...this.feedCandidates().map(async (url) => ((await this.probe(url)) ? url : null)),
+      ...this.feedCandidates().map(async (src) => ((await this.probe(src.url)) ? src : null)),
       this.resolveGiteeFeed(),
     ]);
-    return results.find((url) => url !== null) ?? FEED_DIRECT;
+    return results.find((src): src is FeedSource => src !== null) ?? null;
   }
 
   /**
@@ -165,7 +191,7 @@ export class Updater {
    * download base, trusted only after probing that `latest.yml` is attached.
    * Returns null when the API or the manifest probe fails.
    */
-  private async resolveGiteeFeed(): Promise<string | null> {
+  private async resolveGiteeFeed(): Promise<FeedSource | null> {
     let releases: Array<{ tag_name?: string; prerelease?: boolean }> = [];
     {
       const controller = new AbortController();
@@ -197,7 +223,7 @@ export class Updater {
     if (pool.length === 0) return null;
     pool.sort((a, b) => compareVersions(a.version, b.version));
     const base = `https://gitee.com/${GITEE_REPO}/releases/download/${pool[pool.length - 1].tag}`;
-    return (await this.probe(base)) ? base : null;
+    return (await this.probe(base)) ? { label: 'Gitee', url: base } : null;
   }
 
   private async probe(url: string): Promise<boolean> {

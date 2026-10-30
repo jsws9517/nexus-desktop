@@ -1384,6 +1384,12 @@ body {
   padding: 4px 2px;
 }
 .update-status .btn { margin-left: 4px; }
+.update-source {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 0 2px;
+  word-break: break-all;
+}
 .startup-row {
   display: flex;
   flex-direction: column;
