@@ -39,10 +39,14 @@ jobs:
           elif [ -n "${{ inputs.core_version }}" ]; then
             echo "version=${{ inputs.core_version }}" >> $GITHUB_OUTPUT
           else
-            # No version specified: query npm for the latest
-            VERSION=$(npm view nexus-coder version --registry https://registry.npmjs.org/)
+            # No version specified: pick the newest core among the `latest`
+            # and `beta` dist-tags (same rule as release.yml's auto-pin).
+            # Plain `npm view nexus-coder version` reads only `latest` and
+            # would silently publish a stale core while a newer beta exists
+            # (e.g. latest=1.1.25, beta=1.1.26-3).
+            VERSION=$(node scripts/core-version-select.mjs --registry https://registry.npmjs.org/)
             echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "No version specified; resolved latest nexus-coder from npm: $VERSION"
+            echo "No version specified; resolved newest nexus-coder (latest/beta) from npm: $VERSION"
           fi
 
       - name: Verify core signing key

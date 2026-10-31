@@ -92,3 +92,37 @@ export function pickNewestCore(distTags) {
   }
   return best;
 }
+
+// ---- CLI -------------------------------------------------------------------
+// node scripts/core-version-select.mjs [--registry URL]
+// Prints the newest nexus-coder among the `latest`/`beta` dist-tags.
+// publish-core-only.yml uses this instead of `npm view nexus-coder version`,
+// which reads only `latest` and would silently publish a stale core once a
+// newer `beta` is out (e.g. latest=1.1.25, beta=1.1.26-3).
+//
+// Runs only when executed directly (`node scripts/core-version-select.mjs`),
+// never when imported (set-core-version.mjs imports pickNewestCore).
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+const isCliMain =
+  process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isCliMain) {
+  const { execSync } = await import('node:child_process');
+  const regIdx = process.argv.indexOf('--registry');
+  const registry = regIdx !== -1 ? process.argv[regIdx + 1] : 'https://registry.npmjs.org/';
+  const out = execSync(
+    `npm view nexus-coder dist-tags --json --registry ${registry}`,
+    { stdio: 'pipe' },
+  ).toString();
+  try {
+    console.log(pickNewestCore(JSON.parse(out)));
+  } catch {
+    const m = out.match(/\{[\s\S]*\}/); // tolerate stray npm notice lines
+    if (!m) {
+      console.error(`core-version-select: cannot parse dist-tags: ${out.slice(0, 300)}`);
+      process.exit(1);
+    }
+    console.log(pickNewestCore(JSON.parse(m[0])));
+  }
+}
