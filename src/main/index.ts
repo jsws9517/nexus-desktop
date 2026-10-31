@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
+import { RestartSupervisor } from './restart-supervisor.js';
 import { prepareLaunch, markHealthy, disableActiveCore, readState, coreDirFor } from '../bootstrap/overlay.js';
 import { isProtocolCompatible, desktopProtocol, readCoreDirProtocol } from '../core-overlay/protocol.js';
 import { Updater } from './updater.js';
@@ -83,43 +84,32 @@ let sessionReadyPromise: Promise<void> = Promise.resolve();
 let initOkPromise: Promise<boolean> = Promise.resolve(true);
 
 // ---- worker crash auto-restart ----
-let intentionallyStopped = false;
-let isQuitting = false;
-let restartAttempts = 0;
-let restartTimer: ReturnType<typeof setTimeout> | null = null;
-let workerStartedAt = 0;
-const RESTART_MAX_ATTEMPTS = 3;
-/**
- * A worker that lived at least this long before exiting has proven the setup
- * (overlay or base) works, so its exit earns a fresh retry budget. A worker
- * that dies sooner is crash-looping: the attempt counter must PERSIST across
- * restarts, otherwise every fast init (deferMcp makes init resolve in ~100ms)
- * resets it and the RESTART_MAX_ATTEMPTS breaker can never trip.
- */
-const STABLE_WORKER_LIFETIME_MS = 5 * 60_000;
-
-function scheduleRestart(): void {
-  if (intentionallyStopped) return;
-  if (restartAttempts >= RESTART_MAX_ATTEMPTS) {
-    logger.error('Core worker crashed repeatedly; please restart the app.');
-    send(CHANNELS.log, { level: 'error', message: 'Core worker crashed repeatedly; please restart the app.' });
-    return;
-  }
-  const delay = Math.min(30000, 1000 * Math.pow(2, restartAttempts));
-  restartAttempts++;
-  logger.warn(`Restarting core worker in ${delay}ms (attempt ${restartAttempts}/${RESTART_MAX_ATTEMPTS})`);
-  send(CHANNELS.log, {
-    level: 'warn',
-    message: `Restarting core worker in ${delay}ms (attempt ${restartAttempts}/${RESTART_MAX_ATTEMPTS})`,
-  });
-  restartTimer = setTimeout(() => {
+// The supervisor owns the "expected exit vs. crash" state machine, the
+// backoff counter, and the breaker. Key property: a host we stopped
+// intentionally (hot restart, overlay rollback, quit) is tagged, so its
+// exit — which arrives seconds later because of the 3 s graceful shutdown —
+// is EXPECTED and never schedules another restart. That expectation is what
+// used to break: the dying old host's exit looked like a crash, stopped the
+// healthy replacement, cascaded into the breaker, and left no worker at
+// all (hot restart failed, only a full app restart recovered).
+const restartSupervisor = new RestartSupervisor({
+  onLog: (level, message) => {
+    if (level === 'error') logger.error(message);
+    else logger.warn(message);
+    send(CHANNELS.log, { level, message });
+  },
+  onRestart: () => {
     void restartWorker();
-  }, delay);
-}
+  },
+});
+let isQuitting = false;
+let workerStartedAt = 0;
 
 async function restartWorker(): Promise<void> {
-  if (intentionallyStopped) return;
+  if (restartSupervisor.isAppExiting) return;
   try {
+    const old = worker;
+    if (old) restartSupervisor.markStopped(old);
     worker?.stop();
   } catch {}
   worker = null;
@@ -129,15 +119,14 @@ async function restartWorker(): Promise<void> {
     // NOTE: deliberately no restartAttempts reset here. A worker that inits
     // fast (deferMcp makes init resolve in ~100ms) and dies young would
     // otherwise reset the counter every cycle and crash-loop forever. The
-    // reset happens in worker.onExit, based on the worker's lifetime (see
-    // STABLE_WORKER_LIFETIME_MS).
+    // reset happens in the supervisor's recordExit, based on lifetime.
     logf('core worker restarted cleanly; restoring sessions');
     send(CHANNELS.workerRestarted, {});
   } else {
     // init failed: back off with the exponential schedule. If the overlay has
-    // been permanently disabled by settleOverlay, restartAttempts stays high
-    // so the next onExit also hits the cap quickly instead of looping.
-    scheduleRestart();
+    // been permanently disabled by settleOverlay, attempts stay high so the
+    // next exit also hits the cap quickly instead of looping.
+    restartSupervisor.requestCrashRestart();
   }
 }
 
@@ -550,27 +539,24 @@ function startWorker(): void {
     send(CHANNELS.log, { level, message });
   };
   worker.onMcpRequest = (op, params) => mcpHub.handle(op, params);
-  worker.onExit = (code) => {
-    const lifetime = Date.now() - workerStartedAt;
-    logger.warn(`Core worker exited (code=${code}, lifetime=${Math.round(lifetime / 1000)}s)`);
-    send(CHANNELS.log, { level: 'warn', message: `Core worker exited (code=${code})` });
-    // Refresh the retry budget ONLY when the previous worker proved stable for
-    // a meaningful stretch. A fast-init-then-die cycle must never reset the
-    // counter, or the breaker below can never trip and the app crash-loops.
-    if (lifetime >= STABLE_WORKER_LIFETIME_MS) restartAttempts = 0;
-    // Died before proving itself: the overlay itself is suspect.
-    if (overlayPending) {
-      // This worker was launched with the overlay; a crash means the overlay
-      // is broken. settleOverlay disables it; the next startWorker reads the
-      // now-cleared state and uses the base copy. scheduleRestart is called
-      // so that startWorker is re-invoked with the base copy (not the overlay).
-      settleOverlay(false, 'crashed before initializing');
-      scheduleRestart();
-    } else {
-      // Base copy (or already-healthy overlay) crashed for an unrelated reason.
-      // settleOverlay is a no-op (overlayPending is false); just restart.
-      scheduleRestart();
+  const host = worker;
+  host.onExit = (code) => {
+    // Expected exit (we stopped this host: hot restart / overlay rollback /
+    // quit). The supervisor already skipped crash handling; just note it.
+    if (restartSupervisor.recordExit(host, Date.now() - workerStartedAt)) {
+      logger.info(`Core worker stopped (code=${code}, intentional)`);
+      send(CHANNELS.log, { level: 'info', message: 'Core worker stopped (intentional)' });
+      return;
     }
+    // recordExit handled the crash side: lifetime-based budget refresh and
+    // the backoff schedule (or the breaker). Settle the overlay if THIS
+    // worker was still proving it — a crash before init means the overlay
+    // is suspect, and the next startWorker re-reads the cleared state.
+    if (overlayPending) {
+      settleOverlay(false, 'crashed before initializing');
+    }
+    logger.warn(`Core worker exited (code=${code}, lifetime=${Math.round((Date.now() - workerStartedAt) / 1000)}s)`);
+    send(CHANNELS.log, { level: 'warn', message: `Core worker exited (code=${code})` });
   };
   worker.start();
   // Propagate the same overlay launch params to per-session workers so all
@@ -600,10 +586,17 @@ function startWorker(): void {
           // worker with the base copy so this session recovers without a manual
           // restart (the next startWorker() re-reads the now-cleared state).
           settleOverlay(false, 'failed to initialize');
-          try { earlyWorker?.stop(); } catch {}
+          try {
+            if (earlyWorker) restartSupervisor.markStopped(earlyWorker);
+            earlyWorker?.stop();
+          } catch {}
           if (worker === earlyWorker) worker = null;
           setTimeout(() => {
-            if (!intentionallyStopped) startWorker();
+            if (restartSupervisor.isAppExiting) return;
+            // A newer worker already owns the slot (e.g. a crash-restart
+            // timer ran first): don't pile a second startWorker on top of it.
+            if (worker !== null && worker !== earlyWorker) return;
+            startWorker();
           }, 500);
         }
       }),
@@ -775,10 +768,12 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  intentionallyStopped = true;
-  if (restartTimer) clearTimeout(restartTimer);
+  restartSupervisor.markAppExiting();
   resourceMon.stop();
   desktopState.setLastOpenTabs(sessionWorkers.tabs().map((t) => t.sessionId));
   sessionWorkers.closeAll();
-  worker?.stop();
+  try {
+    if (worker) restartSupervisor.markStopped(worker);
+    worker?.stop();
+  } catch {}
 });
