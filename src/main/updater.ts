@@ -69,7 +69,11 @@ export type UpdateState =
   | { status: 'downloaded'; version: string }
   | { status: 'error'; message: string };
 
-export type UpdateStateWithSource = UpdateState & { source: FeedSource | null };
+export type UpdateStateWithSource = UpdateState & {
+  source: FeedSource | null;
+  /** True when the check never ran (unpackaged dev build): no probe was made. */
+  devMode?: boolean;
+};
 
 export class Updater {
   private enabled = false;
@@ -124,7 +128,7 @@ export class Updater {
   async check(): Promise<UpdateStateWithSource> {
     if (!this.enabled) {
       this.setState({ status: 'error', message: 'Update checks are only available in the packaged app' });
-      return this.withSource();
+      return { ...this.withSource(), devMode: true };
     }
     try {
       const autoUpdater = getAutoUpdater();

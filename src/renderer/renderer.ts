@@ -5852,9 +5852,12 @@ async function runUpdateCheck(btn: HTMLButtonElement): Promise<void> {
   try {
     const result = (await window.nexusDesktop.checkForUpdate()) as UpdateStateType & {
       source?: { label: string; url: string } | null;
+      devMode?: boolean;
     };
     renderUpdateStatus(result);
-    renderUpdateSource(result.source);
+    // devMode: no feed probe ran at all (unpackaged build) — the source line
+    // would claim "all sources unreachable", which is false.
+    if (!result.devMode) renderUpdateSource(result.source);
   } catch (err) {
     renderUpdateStatus({ status: 'error', message: errText(err) });
   } finally {
