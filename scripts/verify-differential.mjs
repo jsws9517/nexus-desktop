@@ -35,7 +35,7 @@ import {
 const OLD_VERSION = '0.3.0';
 const NEW_VERSION = '0.3.1';
 const OLD_PUBLISHED_SIZE = 117_461_643; // published v0.3.0 exe
-const NEW_PUBLISHED_SIZE = 103_336_609; // published v0.3.1 exe (2026-10-31 overwrite, e745d99)
+const NEW_PUBLISHED_SIZE = 103_337_602; // published v0.3.1 exe (2026-10-31 2nd overwrite, 14e0e55, hot-restart fix)
 
 function fetchBuffer(url, timeoutMs = 30_000) {
   const controller = new AbortController();
