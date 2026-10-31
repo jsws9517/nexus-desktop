@@ -3,6 +3,7 @@
 import { initFx } from './fx.js';
 import { isModelUnavailableError, RemediationLedger } from './model-remediation.js';
 import { isWorkerBlockText, PROVIDER_CATEGORIES, stripProtocolXml } from '../shared/constants.js';
+import { formatSpeed } from '../shared/update-sources.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError, onI18nApplied } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { tryMountArtifact } from './artifacts/index.js';
@@ -5589,7 +5590,16 @@ type UpdateStateType =
   | { status: 'checking' }
   | { status: 'available'; version?: string; releaseNotes?: string }
   | { status: 'not-available'; version?: string }
-  | { status: 'downloading'; percent?: number }
+  | {
+      status: 'downloading';
+      percent?: number;
+      transferred?: number;
+      total?: number;
+      bytesPerSecond?: number;
+      /** True when the bytes on the wire are a diff, not the full installer. */
+      differential?: boolean;
+      source?: { label: string; url: string } | null;
+    }
   | { status: 'downloaded'; version?: string }
   | { status: 'error'; message?: string };
 
@@ -5658,7 +5668,12 @@ function renderUpdateStatus(state: UpdateStateType): void {
     dl.addEventListener('click', () => void window.nexusDesktop.downloadUpdate());
     line.appendChild(dl);
   } else if (state.status === 'downloading') {
-    line.textContent = t('updateDownloading', { percent: state.percent ?? 0 });
+    const speed = formatSpeed(state.bytesPerSecond ?? 0);
+    line.textContent = speed
+      ? t('updateDownloadingSpeed', { percent: state.percent ?? 0, speed })
+      : t('updateDownloading', { percent: state.percent ?? 0 });
+    if (state.differential === true) appendUpdateModeBadge(line, t('updateDifferential'));
+    else if (state.differential === false) appendUpdateModeBadge(line, t('updateFullDownload'));
   } else if (state.status === 'downloaded') {
     line.textContent = t('updateReady');
     const inst = document.createElement('button');
@@ -5682,13 +5697,28 @@ function showUpdateMsg(msg: string): void {
   host.appendChild(line);
 }
 
+/** Small pill appended to the download line: differential vs full download. */
+function appendUpdateModeBadge(line: HTMLElement, label: string): void {
+  const badge = document.createElement('span');
+  badge.className = 'update-mode-badge';
+  badge.textContent = label;
+  line.appendChild(badge);
+}
+
 type CoreUpdateStateType =
   | { status: 'idle' }
   | { status: 'checking' }
   | { status: 'available'; version?: string; latest?: { version?: string } | null }
   | { status: 'incompatible'; version?: string; latest?: { version?: string } | null }
   | { status: 'not-available'; version?: string }
-  | { status: 'downloading'; percent?: number }
+  | {
+      status: 'downloading';
+      percent?: number;
+      transferred?: number;
+      total?: number;
+      bytesPerSecond?: number;
+      source?: string;
+    }
   | { status: 'downloaded'; version?: string }
   | { status: 'error'; message?: string; error?: string };
 
@@ -5752,7 +5782,16 @@ function renderCoreUpdateStatus(state: CoreUpdateStateType): void {
     dl.addEventListener('click', () => void runCoreUpdateDownload(dl, line));
     line.appendChild(dl);
   } else if (state.status === 'downloading') {
-    line.textContent = t('coreUpdateDownloading', { percent: state.percent ?? 0 });
+    const speed = formatSpeed(state.bytesPerSecond ?? 0);
+    line.textContent = speed
+      ? t('coreUpdateDownloadingSpeed', { percent: state.percent ?? 0, speed })
+      : t('coreUpdateDownloading', { percent: state.percent ?? 0 });
+    if (state.source) {
+      const src = document.createElement('span');
+      src.className = 'core-update-source';
+      src.textContent = t('coreUpdateSource', { source: state.source });
+      line.appendChild(src);
+    }
     const cancel = document.createElement('button');
     cancel.className = 'btn ghost small';
     cancel.textContent = t('coreUpdateCancel');
@@ -5933,6 +5972,9 @@ settingsOverlay.addEventListener('click', (e) => {
 window.nexusDesktop.onUpdateState((state) => {
   if (settingsOverlay.classList.contains('hidden')) return;
   renderUpdateStatus(state as UpdateStateType);
+  // Keep the "update source" line current while a download is in flight.
+  const s = state as UpdateStateType;
+  if (s.status === 'downloading') renderUpdateSource(s.source ?? null);
 });
 window.nexusDesktop.onCoreUpdateState((state) => {
   const s = state as CoreUpdateStateType & { latest?: { version?: string } | null };

@@ -9,8 +9,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { OverlayState } from '../bootstrap/overlay.js';
 import { readState, writeState, activateCore, coreDirFor } from '../bootstrap/overlay.js';
-import type { CoreUpdateInfo, ManifestEntry, DownloadResult } from './download.js';
-import { fetchCoreManifest, downloadCoreUpdate, readStagedMeta, releaseStaged } from './download.js';
+import type { CoreUpdateInfo, ManifestEntry, DownloadResult, CoreDownloadProgress } from './download.js';
+import {
+  fetchCoreManifest,
+  downloadCoreUpdate,
+  readStagedMeta,
+  releaseStaged,
+  mergeCoreManifestEntries,
+  CoreManifestSignatureError,
+} from './download.js';
+import { GITHUB_MIRRORS } from '../shared/update-sources.js';
 import { isProtocolCompatible, desktopProtocol, readCoreDirProtocol } from './protocol.js';
 
 export interface CheckResult {
@@ -18,6 +26,8 @@ export interface CheckResult {
   latest: CoreUpdateInfo | null;
   staged: CoreUpdateInfo | null;
   active: string | null;
+  /** Label of the feed that announced the latest version (null when unknown). */
+  source: string | null;
 }
 
 export interface UpdateState {
@@ -27,58 +37,16 @@ export interface UpdateState {
   active?: string | null;
   error?: string;
   percent?: number;
+  transferred?: number;
+  total?: number;
+  bytesPerSecond?: number;
+  /** Label of the source currently leading the download. */
+  source?: string;
 }
 
 interface StagedZipMeta {
   version: string;
   zipPath: string;
-}
-
-type FeedProbe = 'ok' | 'missing' | 'unreachable';
-
-/**
- * HEAD the feed with a hard timeout so a hanging host (github.com is often
- * unreachable from CN networks) cannot stall check() indefinitely.
- */
-async function probeFeed(base: string, timeoutMs = 4000): Promise<FeedProbe> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${base.replace(/\/$/, '')}/latest-core.yml`, {
-      method: 'HEAD',
-      signal: controller.signal,
-    });
-    if (res.ok) return 'ok';
-    if (res.status === 404) return 'missing';
-    return 'unreachable';
-  } catch {
-    return 'unreachable';
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Parallel probe of the core feed candidates (GitHub direct first, then the
- * CN gh-proxy mirrors, then any caller-supplied feeds such as the Gitee
- * release matching the running desktop version). First OK feed wins; a feed
- * that answers 404 is only used when nothing serves the manifest, because
- * fetching a 404 feed would just fail check().
- */
-async function probeFeedUrl(base: string, extra: string[] = []): Promise<string> {
-  const override = process.env.NEXUS_CORE_UPDATE_MIRROR;
-  if (override) return override;
-  const candidates = [
-    base,
-    'https://gh-proxy.com/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
-    'https://ghfast.top/https://github.com/jsws9517/nexus-desktop/releases/latest/download',
-    ...extra,
-  ];
-  const results = await Promise.all(candidates.map((c) => probeFeed(c)));
-  const okIdx = results.indexOf('ok');
-  if (okIdx !== -1) return candidates[okIdx];
-  const missingIdx = results.indexOf('missing');
-  return missingIdx !== -1 ? candidates[missingIdx] : base;
 }
 
 export class CoreUpdateManager {
@@ -117,6 +85,27 @@ export class CoreUpdateManager {
     return this.state;
   }
 
+  /**
+   * All feeds to read `latest-core.yml` from, in parallel: the base GitHub
+   * feed, every CN mirror of it (speed-ordered), and the caller-supplied
+   * extras (Gitee tag feed). Mirrors are only expanded for a github.com
+   * base — a non-GitHub base (tests, self-hosted feeds) is used as-is,
+   * because a `gh-proxy` prefix on a non-GitHub URL is meaningless and the
+   * extra candidates just mask the real failure. `NEXUS_CORE_UPDATE_MIRROR`
+   * overrides the lot.
+   */
+  private manifestFeeds(): string[] {
+    const override = process.env.NEXUS_CORE_UPDATE_MIRROR;
+    if (override) return [override];
+    const base = this.baseFeedUrl.replace(/\/$/, '');
+    const feeds = [base];
+    if (base.startsWith('https://github.com/')) {
+      for (const m of GITHUB_MIRRORS) feeds.push(`${m.prefix}${base}`);
+    }
+    for (const extra of this.extraFeeds?.() ?? []) feeds.push(extra);
+    return feeds;
+  }
+
   /** Step 1: fetch latest manifest, compare against staged/active. No mutations. */
   async check(root: string): Promise<CheckResult> {
     if (!this.enabled) {
@@ -125,19 +114,40 @@ export class CoreUpdateManager {
     }
     this.setState({ status: 'checking', error: undefined });
     try {
-      const feed = await probeFeedUrl(this.baseFeedUrl, this.extraFeeds?.() ?? []);
-      const entries = await fetchCoreManifest(feed);
-      const latestEntry = entries[0] ?? null;
-      const latest = latestEntry
-        ? {
-            version: latestEntry.version,
-            sha512: latestEntry.sha512,
-            size: latestEntry.size,
-            url: latestEntry.url,
-            timestamp: latestEntry.timestamp,
-            protocol: latestEntry.protocol,
-          }
-        : null;
+      // Read every manifest in parallel and merge: a feed that is down for
+      // the user's network never shadows a working one, and each version's
+      // download URLs are unioned (GitHub + Gitee raced at download time).
+      const feeds = this.manifestFeeds();
+      const results = await Promise.allSettled(feeds.map((feed) => fetchCoreManifest(feed)));
+      const merged = mergeCoreManifestEntries(results);
+      if (merged.length === 0) {
+        // A signature refusal is a hard "don't install this", not a transient
+        // "can't reach the feed": if every feed rejected the manifest because
+        // of its signature, surface that refusal rather than the generic
+        // reachability error (which would mask it).
+        const sigRejection = results.find(
+          (r): r is PromiseRejectedResult =>
+            r.status === 'rejected' && r.reason instanceof CoreManifestSignatureError,
+        );
+        if (sigRejection) {
+          throw sigRejection.reason;
+        }
+        throw new Error(
+          `no core manifest reachable (${feeds.length} feeds tried; ` +
+            `${results.filter((r) => r.status === 'rejected').length} failed)`,
+        );
+      }
+      const latestEntry = merged[0];
+      const source = feeds[results.findIndex((r) => r.status === 'fulfilled')];
+      const latest = {
+        version: latestEntry.version,
+        sha512: latestEntry.sha512,
+        size: latestEntry.size,
+        url: latestEntry.url,
+        urls: latestEntry.urls,
+        timestamp: latestEntry.timestamp,
+        protocol: latestEntry.protocol,
+      };
       // Protocol gate: a core built against a different desktop protocol must
       // not be installed as an overlay (it could silently break IPC).
       if (latest && !isProtocolCompatible(latest.protocol)) {
@@ -147,9 +157,9 @@ export class CoreUpdateManager {
           active: this.activeVersion(root),
           error: `core ${latest.version} speaks protocol ${latest.protocol}, this desktop speaks ${desktopProtocol()}`,
         });
-        return this.checkResult(root, null, false);
+        return this.checkResult(root, null, false, source ?? null);
       }
-      const result = this.checkResult(root, latest);
+      const result = this.checkResult(root, latest, true, source ?? null);
       const stagedIsLatest = !!(latest && result.staged
         && result.staged.version === latest.version
         && result.staged.sha512 === latest.sha512
@@ -169,7 +179,7 @@ export class CoreUpdateManager {
       return result;
     } catch (e) {
       this.setState({ status: 'error', error: e instanceof Error ? e.message : String(e) });
-      return this.checkResult(root, null);
+      return this.checkResult(root, null, true, null);
     }
   }
 
@@ -184,9 +194,26 @@ export class CoreUpdateManager {
           `this desktop speaks ${desktopProtocol()}`,
       });
     }
-    this.setState({ status: 'downloading' });
+    const info = this.state.latest;
+    const onProgress = (p: CoreDownloadProgress): void => {
+      this.setState({
+        status: 'downloading',
+        percent: p.percent,
+        transferred: p.transferred,
+        total: p.total,
+        bytesPerSecond: p.bytesPerSecond,
+        source: p.source,
+      });
+    };
+    this.setState({
+      status: 'downloading',
+      percent: 0,
+      transferred: 0,
+      total: info.size,
+      bytesPerSecond: 0,
+    });
     try {
-      const result = await downloadCoreUpdate(root, this.state.latest);
+      const result = await downloadCoreUpdate(root, info, { onProgress });
       this.stagedZip = { version: result.version, zipPath: result.zipPath };
       this.setState({
         status: 'downloaded',
@@ -311,7 +338,7 @@ export class CoreUpdateManager {
     try { return readState(root).activeCore ?? null; } catch { return null; }
   }
 
-  private checkResult(root: string, latest: CoreUpdateInfo | null, gateProtocol = true): CheckResult {
+  private checkResult(root: string, latest: CoreUpdateInfo | null, gateProtocol = true, source: string | null = null): CheckResult {
     let staged: CoreUpdateInfo | null = null;
     try {
       const meta = readStagedMeta(root, latest?.version ?? '');
@@ -327,7 +354,7 @@ export class CoreUpdateManager {
       && latest !== null
       && latest.version !== active
       && (staged === null || staged.version !== latest.version || staged.sha512 !== latest.sha512);
-    return { available, latest, staged, active };
+    return { available, latest, staged, active, source };
   }
 
   private setState(next: Partial<UpdateState>): UpdateState {

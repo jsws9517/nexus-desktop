@@ -13,9 +13,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createPublicKey, verify as cryptoVerify, type KeyLike } from 'node:crypto';
-import { Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import { createReadStream } from 'node:fs';
+import {
+  assetCandidates as sharedAssetCandidates,
+  compareVersions,
+  type FeedSource,
+} from '../shared/update-sources.js';
 
 const STAGED_DIR = 'staged';
 
@@ -27,6 +29,12 @@ export interface CoreUpdateInfo {
   size: number;
   /** Download URL for `core-<version>.zip`. */
   url: string;
+  /**
+   * Alternate download URLs for the same artifact+hash, collected when
+   * manifests from several feeds are merged (e.g. the Gitee attachment
+   * next to the GitHub one). All are raced in parallel.
+   */
+  urls?: string[];
   /** ISO-8601 timestamp of the release. */
   timestamp: string;
   /** nexusDesktopProtocol the core was built against (null when undeclared). */
@@ -58,6 +66,8 @@ export interface ManifestEntry {
   sha512: string;
   size: number;
   url: string;
+  /** Alternate URLs for the same artifact+hash (manifest merge). */
+  urls?: string[];
   timestamp: string;
   /** nexusDesktopProtocol the core was built against (null when undeclared). */
   protocol: number | null;
@@ -163,25 +173,50 @@ export function verifyManifestSignature(manifestText: string, sigHex: string): b
 
 // ── Fetch ──────────────────────────────────────────────────────────────────────
 
-/** CN mirrors for github.com URLs (prefix form); tried after the direct URL. */
-const GH_MIRROR_PREFIXES = [
-  'https://gh-proxy.com/',
-  'https://ghfast.top/',
-];
-
-/** Hard deadline for fetching one core artifact (~1.4 MiB; generous for slow links). */
-const DOWNLOAD_TIMEOUT_MS = 60_000;
+/**
+ * A manifest that the publisher marked `signed: true` but whose signature is
+ * missing or invalid. Carried through `Promise.allSettled` so the manager
+ * can distinguish "every feed is down" (retryable) from "every reachable
+ * feed rejected the signature" (hard refusal that must not be masked).
+ */
+export class CoreManifestSignatureError extends Error {}
 
 /**
- * Candidate URLs for a core artifact. Non-github URLs (e.g. Gitee attachments
- * referenced by a Gitee-hosted manifest) are used as-is; github.com URLs are
- * retried through the CN mirrors because direct github release downloads are
- * frequently unreachable from CN networks. Integrity never depends on the
- * transport: the SHA-512 is verified no matter which candidate served bytes.
+ * Candidate download sources for a core artifact: the manifest's own URL
+ * first, then (for github.com assets) every CN mirror in measured speed
+ * order, plus any alternate URLs the manifest merge collected (e.g. the
+ * Gitee attachment). Integrity never depends on the transport: the SHA-512
+ * is verified no matter which candidate served the bytes.
  */
-export function assetCandidates(url: string): string[] {
-  if (!url.startsWith('https://github.com/')) return [url];
-  return [url, ...GH_MIRROR_PREFIXES.map((p) => `${p}${url}`)];
+export function assetCandidates(info: { url: string; urls?: string[] }): FeedSource[] {
+  const sources: FeedSource[] = [...sharedAssetCandidates(info.url)];
+  for (const alt of info.urls ?? []) {
+    if (alt === info.url) continue;
+    for (const s of sharedAssetCandidates(alt)) {
+      if (!sources.some((x) => x.url === s.url)) sources.push(s);
+    }
+  }
+  return sources;
+}
+
+/** Live download progress, reported for the currently leading source. */
+export interface CoreDownloadProgress {
+  percent: number;
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+  /** Label of the leading source (e.g. "gh-proxy.org", "Gitee"). */
+  source: string;
+}
+
+export interface CoreDownloadOptions {
+  onProgress?: (p: CoreDownloadProgress) => void;
+  /** Abort the whole download (user cancel). */
+  signal?: AbortSignal;
+  /** Hard deadline for the whole download (default 120s). */
+  timeoutMs?: number;
+  /** Abort when no bytes arrive from ANY source for this window (default 15s). */
+  stallMs?: number;
 }
 
 /** fetch() with a hard abort deadline (fetch alone can hang for minutes). */
@@ -221,18 +256,50 @@ export async function fetchCoreManifest(feedUrl: string): Promise<ManifestEntry[
   const requiresSig = entries.some((e) => e.signed);
   if (requiresSig) {
     if (!sigHex) {
-      throw new Error('core manifest is signed but its signature is missing');
+      throw new CoreManifestSignatureError('core manifest is signed but its signature is missing');
     }
     if (pubKey && !verifyManifestSignature(text, sigHex)) {
-      throw new Error('core manifest signature verification failed');
+      throw new CoreManifestSignatureError('core manifest signature verification failed');
     }
   } else if (sigHex) {
     // Legacy manifest: verify when we can, never hard-block.
     if (pubKey && !verifyManifestSignature(text, sigHex)) {
-      throw new Error('core manifest signature verification failed');
+      throw new CoreManifestSignatureError('core manifest signature verification failed');
     }
   }
   return entries;
+}
+
+/**
+ * Merge the per-feed results of parallel `fetchCoreManifest()` calls into
+ * one list: the newest version wins, and per-version download URLs are
+ * unioned (a GitHub-absolute URL next to a Gitee attachment, for example).
+ * Failed/unreachable feeds simply contribute nothing.
+ */
+export function mergeCoreManifestEntries(
+  results: Array<PromiseSettledResult<ManifestEntry[]>>,
+): ManifestEntry[] {
+  const byVersion = new Map<string, ManifestEntry>();
+  for (const r of results) {
+    if (r.status !== 'fulfilled') continue;
+    for (const entry of r.value) {
+      const existing = byVersion.get(entry.version);
+      if (!existing) {
+        byVersion.set(entry.version, { ...entry, urls: [entry.url] });
+        continue;
+      }
+      // Same version from several feeds: union the URLs when the artifact
+      // is identical (same hash), otherwise keep the first-observed entry.
+      if (entry.sha512 === existing.sha512 && entry.url) {
+        const urls = existing.urls ?? [existing.url];
+        if (!urls.includes(entry.url)) {
+          urls.push(entry.url);
+          existing.urls = urls;
+        }
+      }
+    }
+  }
+  return [...byVersion.values()].sort((a, b) => compareVersions(b.version, a.version));
 }
 
 // ── Staging ────────────────────────────────────────────────────────────────────
@@ -272,8 +339,18 @@ export function readStagedMeta(root: string, version: string): StagedCoreMeta | 
 /**
  * Download a core zip, verify SHA-512, write the staged metadata sidecar.
  * The zip is written atomically via a temp file + rename to avoid partial writes.
+ *
+ * All candidate sources run in parallel (memory-buffered; the artifact is
+ * ~1.4 MiB) and the FIRST one that completes with matching size + SHA-512
+ * wins; the losers are aborted. Progress is reported for the currently
+ * leading source. A stall (no bytes from anywhere for `stallMs`) or the
+ * overall deadline aborts the race.
  */
-export async function downloadCoreUpdate(root: string, info: CoreUpdateInfo): Promise<DownloadResult> {
+export async function downloadCoreUpdate(
+  root: string,
+  info: CoreUpdateInfo,
+  opts: CoreDownloadOptions = {},
+): Promise<DownloadResult> {
   const zipPath = stagedZipPath(root, info.version);
   const metaPath = stagedMetaPath(root, info.version);
   const tmpPath = `${zipPath}.${process.pid}.tmp`;
@@ -287,56 +364,15 @@ export async function downloadCoreUpdate(root: string, info: CoreUpdateInfo): Pr
   const dir = path.dirname(tmpPath);
   fs.mkdirSync(dir, { recursive: true });
 
-  let downloaded = 0;
-  let hash: ReturnType<typeof createHash>;
-  // Direct github.com release downloads are frequently unreachable from CN
-  // networks (connection reset / timeout), so try the CN mirror prefixes as
-  // fallbacks. The SHA-512 check below guards integrity regardless of which
-  // candidate served the bytes.
-  const candidates = assetCandidates(info.url);
-  let lastErr: unknown = null;
+  let data: Buffer;
   try {
-    let res: Response | null = null;
-    for (const candidate of candidates) {
-      try {
-        const r = await fetchWithTimeout(candidate, DOWNLOAD_TIMEOUT_MS);
-        if (r.ok) {
-          res = r;
-          break;
-        }
-        lastErr = new Error(`HTTP ${r.status} from ${candidate}`);
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    if (!res) {
-      throw lastErr instanceof Error
-        ? lastErr
-        : new Error(`all download candidates failed for ${info.url}`);
-    }
-    const contentLength = Number(res.headers.get('content-length') ?? -1);
-    if (contentLength !== -1 && contentLength !== info.size) {
-      throw new Error(`content-length mismatch: expected ${info.size}, got ${contentLength}`);
-    }
-    hash = createHash('sha512');
-    const dest = fs.createWriteStream(tmpPath, { flags: 'w' });
-    if (!res.body) throw new Error('response body is null');
-    // Hash the same bytes that are written to disk. Hashing the response body
-    // separately (or not at all) silently compares against an empty digest.
-    const hasher = new Transform({
-      transform(chunk, _enc, cb) {
-        hash.update(chunk);
-        cb(null, chunk);
-      },
-    });
-    await pipeline(res.body, hasher, dest);
-    downloaded = dest.bytesWritten;
+    data = await raceDownload(info, opts);
   } catch (e) {
     try { fs.unlinkSync(tmpPath); } catch {}
     throw e;
   }
 
-  const actual = hash.digest('hex');
+  const actual = createHash('sha512').update(data).digest('hex');
   if (actual !== info.sha512) {
     try { fs.unlinkSync(tmpPath); } catch {}
     throw new Error(
@@ -344,10 +380,133 @@ export async function downloadCoreUpdate(root: string, info: CoreUpdateInfo): Pr
     );
   }
 
+  fs.writeFileSync(tmpPath, data);
   fs.renameSync(tmpPath, zipPath);
   fs.writeFileSync(metaPath,
     `version: ${info.version}\nsha512: ${info.sha512}\nsize: ${info.size}\nurl: ${info.url}\ntimestamp: ${info.timestamp}\n`);
-  return { version: info.version, zipPath, metaPath, bytesWritten: downloaded };
+  return { version: info.version, zipPath, metaPath, bytesWritten: data.length };
+}
+
+/**
+ * Parallel race across all candidate sources. Buffers in memory (the core
+ * tarball is ~1.4 MiB), verifies the winner against size + SHA-512 before
+ * returning it.
+ */
+async function raceDownload(
+  info: CoreUpdateInfo,
+  opts: CoreDownloadOptions,
+): Promise<Buffer> {
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const stallMs = opts.stallMs ?? 15_000;
+  const candidates = assetCandidates(info);
+  if (candidates.length === 0) throw new Error(`no download candidates for core ${info.version}`);
+  const total = info.size;
+
+  const controller = new AbortController();
+  let abortReason: string | null = null;
+  const onOuterAbort = (): void => {
+    abortReason = 'cancelled';
+    controller.abort();
+  };
+  if (opts.signal) {
+    if (opts.signal.aborted) onOuterAbort();
+    else opts.signal.addEventListener('abort', onOuterAbort, { once: true });
+  }
+  let stallTimer = setTimeout(() => {
+    abortReason = `no data received for ${Math.round(stallMs / 1000)}s`;
+    controller.abort();
+  }, stallMs);
+  const overallTimer = setTimeout(() => {
+    abortReason = `all sources timed out after ${Math.round(timeoutMs / 1000)}s`;
+    controller.abort();
+  }, timeoutMs);
+  const startedAt = Date.now();
+  let lastProgressAt = 0;
+
+  interface Lane {
+    label: string;
+    chunks: Uint8Array[];
+    received: number;
+  }
+  let leader: Lane | null = null;
+  const reportProgress = (): void => {
+    if (!opts.onProgress || !leader) return;
+    const now = Date.now();
+    // Throttle the IPC chatter; always report at 100%.
+    if (leader.received < total && now - lastProgressAt < 400) return;
+    lastProgressAt = now;
+    const elapsed = Math.max(1, now - startedAt);
+    opts.onProgress({
+      percent: Math.min(99, Math.round((leader.received / total) * 100)),
+      transferred: leader.received,
+      total,
+      bytesPerSecond: Math.round((leader.received * 1000) / elapsed),
+      source: leader.label,
+    });
+  };
+
+  const lanes = candidates.map(
+    async (cand): Promise<{ data: Buffer | null; error: string | null; label: string }> => {
+      const lane: Lane = { label: cand.label, chunks: [], received: 0 };
+      try {
+        const res = await fetchWithTimeout(cand.url, timeoutMs, { signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const contentLength = Number(res.headers.get('content-length') ?? -1);
+        if (contentLength !== -1 && contentLength !== total) {
+          throw new Error(`content-length ${contentLength} != expected ${total}`);
+        }
+        if (!res.body) throw new Error('response body is null');
+        const reader = res.body.getReader();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!value || value.length === 0) continue;
+          lane.chunks.push(value);
+          lane.received += value.length;
+          clearTimeout(stallTimer);
+          stallTimer = setTimeout(() => {
+            abortReason = `no data received for ${Math.round(stallMs / 1000)}s`;
+            controller.abort();
+          }, stallMs);
+          if (!leader || lane.received > leader.received) leader = lane;
+          reportProgress();
+        }
+        const data = Buffer.concat(lane.chunks);
+        if (data.length !== total) throw new Error(`short read: ${data.length}/${total}`);
+        const digest = createHash('sha512').update(data).digest('hex');
+        if (digest !== info.sha512) throw new Error(`SHA-512 mismatch for core ${info.version} from winner`);
+        controller.abort(); // win the race; cancel the remaining lanes
+        return { data, error: null, label: cand.label };
+      } catch (e) {
+        return { data: null, error: `${cand.label}: ${e instanceof Error ? e.message : String(e)}`, label: cand.label };
+      }
+    },
+  );
+
+  const outcomes = await Promise.all(lanes);
+  clearTimeout(stallTimer);
+  clearTimeout(overallTimer);
+  if (opts.signal) opts.signal.removeEventListener('abort', onOuterAbort);
+
+  const winner = outcomes.find((o) => o.data !== null);
+  if (winner?.data) {
+    if (opts.onProgress) {
+      opts.onProgress({
+        percent: 100,
+        transferred: total,
+        total,
+        bytesPerSecond: 0,
+        source: winner.label,
+      });
+    }
+    return winner.data;
+  }
+  if (abortReason === 'cancelled') throw new Error('core download cancelled');
+  if (abortReason) throw new Error(`core download aborted: ${abortReason}`);
+  const errors = outcomes.map((o) => o.error).filter((e) => e !== null);
+  throw new Error(
+    `all ${candidates.length} core download sources failed: ${errors.join(' | ').slice(0, 400)}`,
+  );
 }
 
 /** Remove staged data for a version (e.g. after activation or user cancellation). */
