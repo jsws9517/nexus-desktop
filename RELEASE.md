@@ -161,12 +161,19 @@ repository secret (PEM contents of `keys/core-signing-private.pem`); without it
 the workflow fails at the preflight step on purpose.
 
 
-> Gitee caps release attachments at **100 MiB**. `gitee-publish.mjs` handles
-> both cases: when the NSIS installer fits (it is ~98.5 MiB as of v0.3.0), it
-> is attached and `latest.yml` keeps its *relative* exe url, so the Gitee
-> mirror is a fully self-contained update feed. When the installer exceeds the
-> cap, `latest.yml` is re-pinned to the GitHub download URL explicitly so a
-> Gitee-hosted manifest never points at a file that does not exist on Gitee.
+> Gitee caps release attachments at **100 MiB** — and ~98 MiB installer
+> uploads are exactly the range where Gitee's `attach_files` API stalls
+> (the upload completes but the server-side processing outlasts any sane
+> timeout, leaving a half-built release and a broken feed that aborts the
+> whole publish). So by default `gitee-publish.mjs` does **not** mirror the
+> installer: it attaches the small feed files (`latest.yml`, blockmap, core
+> tarball, manifest + sig) and pins the Gitee copy of `latest.yml` at the
+> GitHub download URL, keeping the fast manifest + self-contained core
+> channel on Gitee for CN clients. A Gitee-hosted manifest never points at a
+> file that is missing on Gitee. Set `GITEE_UPLOAD_INSTALLER=1` to mirror
+> the installer anyway (then the relative url is kept when the upload
+> succeeds; a failed upload degrades to the GitHub-pinned url instead of
+> aborting the run).
 >
 > Two Gitee-specific facts the client code relies on:
 >

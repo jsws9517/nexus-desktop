@@ -137,9 +137,11 @@ in CI instead of silently shipping an unsigned manifest.
 
 Gitee mirror notes: the Gitee release for a desktop tag is re-published by
 `publish-core-only.yml` with `GITEE_PRESERVE_ASSETS=1` — the existing release
-(and its desktop assets: `latest.yml`, installer, `.blockmap`) is kept, only
-missing core files are attached, and the Gitee copy of `latest-core.yml` is
-rewritten to a Gitee download URL and re-signed. Gitee does not implement
+(and its desktop feed assets: `latest.yml`, `.blockmap`) is kept, only missing
+core files are attached, and the Gitee copy of `latest-core.yml` is rewritten
+to a Gitee download URL and re-signed. The installer itself is not mirrored to
+Gitee by default (the large `attach_files` upload stalls the Gitee API); the
+Gitee `latest.yml` pins the installer url at GitHub. Gitee does not implement
 GitHub's `releases/latest/download` alias, so the client's Gitee core feed is
 tag-based (`releases/download/v<app version>`, wired in `src/main/index.ts`
 as `extraFeeds`): a running app resolves core updates on the release that
