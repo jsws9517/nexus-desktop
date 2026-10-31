@@ -786,7 +786,14 @@ export function registerIpc(ctx: IpcContext): void {
     const overlayRoot = ctx.coreOverlayRoot;
     ipcMain.handle(CHANNELS.getCoreUpdateState, () => coreUpdater.getState());
     ipcMain.handle(CHANNELS.getCoreVersion, () => ctx.getCoreVersion());
-    ipcMain.handle(CHANNELS.checkCoreUpdate, () => coreUpdater.check(overlayRoot()));
+    ipcMain.handle(CHANNELS.checkCoreUpdate, async () => {
+      // check() returns a bare CheckResult ({available, latest, staged, active})
+      // with no status/error fields; the renderer renders the manager's rich
+      // state, so returning it raw made every outcome (available /
+      // not-available / incompatible / error) surface as an empty status line.
+      await coreUpdater.check(overlayRoot());
+      return coreUpdater.getState();
+    });
     ipcMain.handle(CHANNELS.downloadCoreUpdate, () => coreUpdater.download(overlayRoot()));
     ipcMain.handle(CHANNELS.activateCoreUpdate, async () => {
       const result = await coreUpdater.activate(overlayRoot());
