@@ -128,10 +128,12 @@ export class Updater {
     autoUpdater.on('download-progress', (p) => {
       let differential: boolean | undefined;
       const total = p.total ?? 0;
-      if (this.differentialMode === 'diff' && total > 0) {
-        // With single-Range requests `total` is the actual diff byte count,
-        // not the full installer size.
-        differential = total < this.expectedFullSize * 0.9;
+      if (this.differentialMode === 'diff') {
+        // With single-Range requests `total` is the actual diff byte count.
+        // If electron-updater fell back to a full download (differential
+        // attempt failed mid-flight), `total` is the full installer size —
+        // trust the wire over the session flag.
+        differential = total === 0 ? undefined : total < this.expectedFullSize * 0.9;
       } else if (this.differentialMode === 'full') {
         differential = false;
       }
