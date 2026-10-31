@@ -15,14 +15,32 @@ if (!TOKEN || !TAG) {
 }
 
 const API = `https://gitee.com/api/v5/repos/${REPO}`;
-const UPLOAD_TIMEOUT = 180_000;
 const MAX_RETRIES = 3;
+
+// A 98 MiB installer pushed over the US→Gitee intercontinental link used by
+// GitHub runners can exceed 180s per attempt even on a healthy pipe (the
+// v0.3.1 run aborted three times and left a dead Gitee feed whose latest.yml
+// pointed at a missing installer), so the per-attempt timeout scales with
+// file size; small manifests keep the short bound.
+function uploadTimeoutFor(bytes) {
+  return bytes > 50 * 1048576 ? 600_000 : 180_000;
+}
 
 // GITEE_PRESERVE_ASSETS=1 → supplemental publish (e.g. core-only re-publish
 // onto an existing desktop release): keep the existing release and its
 // assets, only attach files that are missing. Default (unset) keeps the
 // historical delete + recreate semantics for full desktop re-publishes.
 const PRESERVE = process.env.GITEE_PRESERVE_ASSETS === '1';
+
+// The installer (~98 MiB) is deliberately NOT mirrored to Gitee: the
+// attach_files API stalls on it (uploads complete but responses/processing
+// can exceed any sane timeout, leaving a broken feed half-built), and it
+// buys little — CN clients get the small manifests (fast, self-contained
+// core channel) from Gitee and download the installer from GitHub. Set
+// GITEE_UPLOAD_INSTALLER=1 to mirror the installer anyway (legacy behavior,
+// keep the relative latest.yml url; if the upload fails the feed degrades
+// to a GitHub-pinned url instead of aborting the run).
+const UPLOAD_INSTALLER = process.env.GITEE_UPLOAD_INSTALLER === '1';
 
 async function request(url, options = {}) {
   const res = await fetch(url, options);
@@ -35,10 +53,11 @@ async function request(url, options = {}) {
 
 async function uploadWithRetry(url, form, size, retries = MAX_RETRIES) {
   const name = form.get('file')?.name || 'unknown';
+  const timeout = uploadTimeoutFor(size);
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT);
+      const timer = setTimeout(() => controller.abort(), timeout);
       const res = await fetch(url, { method: 'POST', body: form, signal: controller.signal });
       clearTimeout(timer);
       if (!res.ok) {
@@ -129,21 +148,31 @@ async function main() {
   } catch { /* no manifest yet */ }
   const coreTarball = manifestVersion ? `core-${manifestVersion}.tar.gz` : null;
 
+  // Order matters: the installer (when opted in via GITEE_UPLOAD_INSTALLER)
+  // is by far the largest asset and the one most likely to fail on the
+  // US→CN link, so it goes FIRST and its outcome decides how latest.yml is
+  // written. latest.yml therefore goes LAST; the core channel ships
+  // regardless. The .blockmap always mirrors: electron-updater resolves
+  // it against the feed that served latest.yml (Gitee), while the exe
+  // itself may be pinned at GitHub.
   const candidates = [
-    'latest.yml',
-    exeName,
+    ...(UPLOAD_INSTALLER ? [exeName] : []),
     `${exeName}.blockmap`,
     ...(coreTarball ? [coreTarball] : []),
     'latest-core.yml',
     ...readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sig')),
+    'latest.yml',
   ];
 
-  // Will the installer be downloadable from Gitee after this run?
-  let exeFitsGitee = false;
-  try {
-    exeFitsGitee = (await stat(`${RELEASE_DIR}/${exeName}`)).size <= MAX_ATTACH_BYTES;
-  } catch { /* no exe in this run */ }
-  const exeOnGiteeAfterRun = PRESERVE ? exeFitsGitee || existingAssets.has(exeName) : exeFitsGitee;
+  // Will the installer be downloadable from Gitee after this run? Starts
+  // true only when opted in AND already attached (preserve mode); the
+  // upload loop below confirms it after a successful upload, and keeps it
+  // false when the upload fails, the file is too big to attach, or the
+  // installer is not mirrored at all (the default).
+  let exeOnGiteeAfterRun = UPLOAD_INSTALLER && PRESERVE && existingAssets.has(exeName);
+  if (!UPLOAD_INSTALLER) {
+    console.log(`installer not mirrored to Gitee (default; latest.yml will pin GitHub); opt in with GITEE_UPLOAD_INSTALLER=1`);
+  }
 
   for (const name of candidates) {
     const file = `${RELEASE_DIR}/${name}`;
@@ -175,9 +204,12 @@ async function main() {
       // (Gitee attachment limit) do we pin the url to GitHub explicitly;
       // otherwise we keep the relative url untouched.
       if (!exeOnGiteeAfterRun) {
+        // electron-builder puts the exe url inside the `files:` entry as
+        // `  - url: ...` (no top-level url line), so the anchor must allow
+        // the list-dash indentation; pin only that line to GitHub.
         const text = buffer.toString('utf8').replace(
-          /^url: .*$/gm,
-          `url: https://github.com/jsws9517/nexus-desktop/releases/download/${TAG}/${exeName}`,
+          /^(\s*-?\s*)url: .*$/gm,
+          `$1url: https://github.com/jsws9517/nexus-desktop/releases/download/${TAG}/${exeName}`,
         );
         buffer = Buffer.from(text);
         console.log(`rewrote ${name} url -> GitHub download (installer not on Gitee)`);
@@ -205,7 +237,26 @@ async function main() {
     }
     const form = new FormData();
     form.append('file', new Blob([buffer]), name);
-    await uploadWithRetry(`${API}/releases/${releaseId}/attach_files?access_token=${TOKEN}`, form, info.size);
+    try {
+      await uploadWithRetry(`${API}/releases/${releaseId}/attach_files?access_token=${TOKEN}`, form, buffer.length);
+      if (name === exeName) exeOnGiteeAfterRun = true;
+    } catch (err) {
+      if (name !== exeName) throw err;
+      // The installer is the only asset that may fail without aborting the
+      // whole publish: latest.yml is uploaded LAST and will pin its url at
+      // the GitHub download, and the core channel still ships complete.
+      // (A broken Gitee app feed that aborts the run is the v0.3.1 bug.)
+      console.error(
+        `upload ${exeName} failed (${err.message}); degrading: latest.yml will pin GitHub, core assets still attached`,
+      );
+      continue;
+    }
+    // The latest-core.yml branch above re-signs in place, which can create
+    // a .sig sidecar that the initial readdir did not see; pick it up.
+    if (name === 'latest-core.yml' && process.env.CORE_SIGNING_KEY) {
+      const sigName = `${name}.sig`;
+      if (!candidates.includes(sigName)) candidates.push(sigName);
+    }
   }
 }
 
