@@ -116,8 +116,10 @@ jobs:
           # flow does not, so write a fallback body first.
           [ -f .release_body.md ] || printf '# Core update (nexus-coder)\n\nCore-only publish; no desktop changelog in this run.\n' > .release_body.md
           # PRESERVE: a core-only publish must never wipe the desktop release's
-          # assets (latest.yml / installer / blockmap). Keep the existing
-          # Gitee release, attach only what is missing.
+          # assets (latest.yml / blockmap). The installer is not mirrored to
+          # Gitee by default (GITEE_UPLOAD_INSTALLER=1 opts back in), so it is
+          # not part of what is preserved. Keep the existing Gitee release,
+          # attach only what is missing.
           GITEE_REPO=cict_1_0/nexus-desktop \
           GITEE_TAG="${TAG}" \
           GITEE_NAME="${TAG}" \
