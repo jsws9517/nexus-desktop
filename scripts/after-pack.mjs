@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,9 +33,11 @@ export default function afterPack(context) {
   if (!existsSync(electronNode)) {
     throw new Error(`[afterPack] Missing Electron-ABI build at ${electronNode}. Run \`npm run prepare:electron-native\` (or dist:win) first.`);
   }
-  if (!existsSync(releaseNode)) {
-    throw new Error(`[afterPack] Expected packaged binary not found at ${releaseNode}`);
-  }
+  // The target .node may or may not already be present in the unpacked output:
+  // build.files strips every non-Windows prebuild (linux-x64, …) to keep the
+  // asar small, so on non-Windows builds there is NO placeholder to swap.
+  // Create the directory if needed and write the Electron-ABI binary either way.
+  mkdirSync(dirname(releaseNode), { recursive: true });
   copyFileSync(electronNode, releaseNode);
   console.log(`[afterPack] swapped in Electron-ABI better-sqlite3 (${file})`);
 }

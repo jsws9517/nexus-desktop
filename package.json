@@ -32,7 +32,8 @@
     "pack": "npm run build && npm pack",
     "prepare:electron-native": "node scripts/prepare-electron-native.mjs",
     "rebuild:electron": "node scripts/rebuild-electron.mjs",
-    "dist:win": "npm run icon && npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis"
+    "dist:win": "npm run icon && npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis",
+    "dist:linux": "npm run build && node scripts/prepare-electron-native.mjs && electron-builder --linux AppImage deb"
   },
   "keywords": [
     "nexus",
@@ -139,6 +140,24 @@
           ]
         }
       ]
+    },
+    "linux": {
+      "category": "Utility",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "nexus-${version}-${arch}.${ext}"
     },
     "artifactName": "nexus-Setup-${version}.${ext}",
     "nsis": {
