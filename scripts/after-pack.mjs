@@ -33,10 +33,13 @@ export default function afterPack(context) {
   if (!existsSync(electronNode)) {
     throw new Error(`[afterPack] Missing Electron-ABI build at ${electronNode}. Run \`npm run prepare:electron-native\` (or dist:win) first.`);
   }
-  // The target .node may or may not already be present in the unpacked output:
-  // build.files strips every non-Windows prebuild (linux-x64, …) to keep the
-  // asar small, so on non-Windows builds there is NO placeholder to swap.
-  // Create the directory if needed and write the Electron-ABI binary either way.
+  // The target .node (e.g. linux-x64.node) ships INSIDE app.asar on every
+  // platform build so asarUnpack maps it and the asar loader redirects reads
+  // to this unpacked path; binding.js resolves the prebuild only when
+  // fs.existsSync() is true against the asar path. The asar header's unpacked
+  // flag is fixed at pack time, so we swap the unpacked file in place (byte
+  // replacement, same path — no repack needed). Create the directory if the
+  // file was ever missing and write the Electron-ABI binary either way.
   mkdirSync(dirname(releaseNode), { recursive: true });
   copyFileSync(electronNode, releaseNode);
   console.log(`[afterPack] swapped in Electron-ABI better-sqlite3 (${file})`);
