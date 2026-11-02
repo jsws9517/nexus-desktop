@@ -18,6 +18,7 @@ import { mcpHub } from './mcp-hub.js';
 import { createDesktopState } from './desktop-state.js';
 import type { AgentEvent } from '../agent-service.js';
 import { logger } from '../shared/logger.js';
+import { installStderrNoiseFilter } from '../shared/stderr-noise.js';
 import { EARLY_METHODS } from '../shared/constants.js';
 import { registerIpc } from '../ipc/register.js';
 import { CHANNELS } from '../ipc/channels.js';
@@ -32,6 +33,21 @@ if (process.platform === 'win32' && process.env.PYTHONIOENCODING === undefined) 
 }
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+
+// Quieten known non-fatal Chromium runtime notices (GPU transient failures,
+// GLib gsignal) on the interactive terminal, tracing them to ~/.nexus/logs.
+// Piped stderr (CI/`tee`) is left untouched. No-op in that case.
+installStderrNoiseFilter();
+
+// Opt-in: force software rendering so the GPU command-buffer transient notices
+// never even fire (VM / headless / software-GL desktop). Trade-off: loses 2D
+// hardware acceleration. Default OFF — the stderr filter above already quiets
+// the terminal; set this only when the user wants zero GPU noise at the cost of
+// HW accel. Must run before app.whenReady().
+if (process.env.NEXUS_DISABLE_GPU === '1') {
+  app.disableHardwareAcceleration();
+  logger.info('NEXUS_DISABLE_GPU=1 — hardware acceleration disabled (software rendering)');
+}
 
 function logf(msg: string): void {
   logger.info(msg);
