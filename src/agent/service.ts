@@ -2612,7 +2612,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   async listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: Session[]; total: number }> {
-    if (!this.agent) throw new Error('Agent not initialized');
+    // Read-only: when the Agent is not yet built (fresh install, or the global
+    // worker's earlyInit is still racing / timed out), there is simply nothing
+    // to list yet. Return an empty page instead of throwing — the main process
+    // falls back to this worker exactly when its direct DB read finds no rows,
+    // so on a cold start "no sessions" is the truthful answer. Throwing here
+    // used to surface as "Agent not initialized" and crash the renderer's
+    // startup listSessions call. The sidebar self-heals once earlyInit lands.
+    if (!this.agent) return { items: [], total: 0 };
     const limit = options?.limit;
     const offset = options?.offset ?? 0;
     const q = options?.search?.trim().toLowerCase();
@@ -2666,7 +2673,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     sessionId: string,
     options?: { last?: number; limit?: number; offset?: number },
   ): Promise<{ items: StoredRow[]; total: number; userBefore: number }> {
-    if (!this.agent) throw new Error('Agent not initialized');
+    // Read-only, like listSessions: if the Agent/session-store is not built yet
+    // (cold start / earlyInit racing), an empty window is the correct answer for
+    // an unknown or not-yet-persisted session rather than a hard throw. The
+    // renderer treats { items: [], total: 0 } as "nothing to show yet".
+    if (!this.agent) return { items: [], total: 0, userBefore: 0 };
     // SQL-windowed reads (src/session-db.ts) so a long session never loads
     // every row into memory just to paginate.
     const { getMessageWindow, getMessageLast } = await loadSessionDb();
