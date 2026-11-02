@@ -143,6 +143,7 @@
     },
     "linux": {
       "category": "Utility",
+      "syncDesktopName": true,
       "target": [
         {
           "target": "AppImage",
@@ -176,6 +177,7 @@
       "language": "2052"
     }
   },
+  "desktopName": "nexus",
   "allowScripts": {
     "better-sqlite3": true,
     "electron-winstaller": true,
