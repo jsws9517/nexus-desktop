@@ -3477,7 +3477,17 @@ private resetAttachmentRagRoundCache(): void {
   getRateLimitStatus(): RateLimitStatus | null {
     if (!this.agent) return null;
     const providerName = this.getActiveProvider();
-    const providerCfg = this.agent.config.getProvider(providerName);
+    // The session's bound provider may have been deleted from the global
+    // config out from under it (overrideName / activeProvider can point at a
+    // provider that no longer exists). getProvider throws in that case —
+    // degrade to a family='unknown' status instead of crashing the whole
+    // nexus:getStatus handler (mirrors getModels' try/catch at ~line 3509).
+    let providerCfg: { baseUrl?: string } | undefined;
+    try {
+      providerCfg = this.agent.config.getProvider(providerName);
+    } catch {
+      providerCfg = undefined;
+    }
     const family = inferProviderFamily(providerCfg?.baseUrl);
     return this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
   }
