@@ -144,6 +144,7 @@
     "linux": {
       "category": "Utility",
       "syncDesktopName": true,
+      "maintainer": "ddupws <herdkid@gmail.com>",
       "target": [
         {
           "target": "AppImage",
