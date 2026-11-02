@@ -3645,7 +3645,20 @@ reloadConfig(): { ok: boolean } {
 
   /** Speech (STT/TTS) + vision provider config with masked keys and active selection. */
   getSpeechVisionConfig(): Record<string, unknown> {
-    if (!this.agent?.config) return {};
+    // Always return the full shape so renderer consumers can call
+    // .filter/.find on speechProviders/visionProviders. When config is not
+    // ready (fresh install / early startup) we return empty arrays instead of
+    // {} — returning {} made `svConfig.speechProviders` undefined and the
+    // renderer crashed with "Cannot read properties of undefined (reading 'filter')".
+    if (!this.agent?.config) {
+      return {
+        activeSpeech: '',
+        activeTts: '',
+        activeVision: '',
+        speechProviders: [],
+        visionProviders: [],
+      };
+    }
     const cfg = this.agent.config;
     const speech: Array<Record<string, unknown>> = Object.entries(
       (cfg.getSpeechProviders?.() ?? {}) as Record<string, Record<string, unknown>>,

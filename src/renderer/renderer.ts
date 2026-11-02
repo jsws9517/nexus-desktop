@@ -3719,9 +3719,23 @@ let svConfig: SpeechVisionConfig = {
   visionProviders: [],
 };
 
+/** Coerce the IPC result to a complete shape so downstream .filter/.find never
+ *  hit undefined. The main process returns {} before agent config is ready; a
+ *  bare undefined/absent field here would crash the settings panel. */
+function normalizeSpeechVision(raw: unknown): SpeechVisionConfig {
+  const c = (raw ?? {}) as Partial<SpeechVisionConfig>;
+  return {
+    activeSpeech: c.activeSpeech ?? '',
+    activeTts: c.activeTts ?? '',
+    activeVision: c.activeVision ?? '',
+    speechProviders: c.speechProviders ?? [],
+    visionProviders: c.visionProviders ?? [],
+  };
+}
+
 async function refreshSidebarModels(): Promise<void> {
   try {
-    svConfig = await window.nexusDesktop.getSpeechVisionConfig();
+    svConfig = normalizeSpeechVision(await window.nexusDesktop.getSpeechVisionConfig());
   } catch {
     svConfig = { activeSpeech: '', activeTts: '', activeVision: '', speechProviders: [], visionProviders: [] };
   }
@@ -5910,7 +5924,7 @@ async function openSettings(): Promise<void> {
   trapFocus(settingsOverlay.querySelector('.modal')!);
   try {
     providers = await window.nexusDesktop.getProviders();
-    svConfig = await window.nexusDesktop.getSpeechVisionConfig();
+    svConfig = normalizeSpeechVision(await window.nexusDesktop.getSpeechVisionConfig());
     buildSettings(providers);
   } catch (err) {
     settingsMsg.textContent = errText(err);
