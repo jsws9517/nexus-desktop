@@ -312,11 +312,11 @@ jobs:
       - name: Upload Linux assets to GitHub Release
         # The Release was created by the Windows job; gh release upload
         # appends to it. `--clobber` replaces same-named assets on re-run.
-        run: gh release upload "${{ github.ref_name }}" \
-            release/nexus-x86_64.AppImage \
-            "release/nexus-${{ steps.version.outputs.tag }}-amd64.deb" \
-            release/latest-linux.yml \
-            --clobber
+        # Kept on a single line: a backslash-continuation inside a YAML
+        # multi-line `run:` would keep the next line's leading spaces as
+        # part of the first filename, and `gh` treats that as a literal
+        # glob ("no matches found for ` release/...`").
+        run: gh release upload "${{ github.ref_name }}" release/nexus-x86_64.AppImage "release/nexus-${{ steps.version.outputs.tag }}-amd64.deb" release/latest-linux.yml --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
