@@ -81,26 +81,34 @@ if (!existsSync(join(contentsDir, 'MacOS', 'nexus'))) {
 
 // ── 1. better-sqlite3 Electron-ABI prebuild swapped into the asar ───────────
 // after-pack.mjs byte-copies `.native/electron/.../prebuilds/<prebuild>` into
-// the unpacked asar. So the two must be byte-identical. (They will BOTH
-// differ from the system-Node-ABI prebuild that `npm ci` shipped into the
-// main node_modules, which is fine — that one was intentionally overwritten
-// inside `.native/electron` by the Electron-ABI source build.)
+// the unpacked asar BEFORE ad-hoc codesign runs. But on macOS, signing a
+// bundle with `codesign --force` re-writes files under
+// `app.asar.unpacked/` in place (the signature must cover the current
+// bytes), so the post-signing bytes are NOT guaranteed to equal the
+// pre-signing bytes in `.native/electron`.
+//
+// The semantic invariant we CAN assert: the swapped binary must DIFFER from
+// the system-Node-ABI prebuild that `npm ci` ships in the top-level
+// node_modules. Same source, different V8 ABI → different bytes. If the
+// swap never happened, asar.unpacked still holds the Node-ABI binary
+// (copied by electron-builder from the top-level node_modules), and this
+// check catches it.
 const unpackedPrebuild = join(resourcesDir, 'app.asar.unpacked', 'node_modules', 'better-sqlite3', 'prebuilds', prebuild);
-const electronPrebuild = join(root, '.native', 'electron', 'node_modules', 'better-sqlite3', 'prebuilds', prebuild);
+const topLevelPrebuild = join(root, 'node_modules', 'better-sqlite3', 'prebuilds', prebuild);
 if (!existsSync(unpackedPrebuild)) {
   fail(`missing ${unpackedPrebuild} — afterPack swap did not land`);
-} else if (!existsSync(electronPrebuild)) {
-  fail(`missing Electron-ABI source ${electronPrebuild} — prepare:electron-native did not run?`);
+} else if (!existsSync(topLevelPrebuild)) {
+  fail(`missing system-Node reference ${topLevelPrebuild} — cannot prove the swap`);
 } else {
   const a = sha256(unpackedPrebuild);
-  const b = sha256(electronPrebuild);
+  const b = sha256(topLevelPrebuild);
   const size = statSync(unpackedPrebuild).size;
   if (size < 1024 * 1024) {
     fail(`${prebuild} too small (${size} bytes) — likely not the Electron-ABI build`);
-  } else if (a !== b) {
-    fail(`${prebuild} in asar.unpacked is NOT byte-identical to .native/electron (sha256 ${a.slice(0, 12)}… vs ${b.slice(0, 12)}…)`);
+  } else if (a === b) {
+    fail(`${prebuild} in asar.unpacked is BYTE-IDENTICAL to the system-Node prebuild (sha256 ${a.slice(0, 12)}…) — the afterPack swap did not land`);
   } else {
-    ok(`${prebuild} swapped into asar.unpacked (${(size / 1048576).toFixed(2)} MiB, sha256 ${a.slice(0, 12)}… matches .native/electron)`);
+    ok(`${prebuild} in asar.unpacked differs from system-Node prebuild (${(size / 1048576).toFixed(2)} MiB, sha256 ${a.slice(0, 12)}… ≠ ${b.slice(0, 12)}…) — Electron-ABI swap landed`);
   }
 }
 
