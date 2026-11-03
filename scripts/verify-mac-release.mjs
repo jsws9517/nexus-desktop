@@ -37,9 +37,20 @@ if (arch !== 'arm64' && arch !== 'x64') {
 
 const root = process.cwd();
 const releaseDir = join(root, 'release');
-// electron-builder lays out the mac build as release/mac/<app>.app (the arch
-// suffix is omitted when the built arch is the runner's default arch).
-const appOutDir = join(releaseDir, 'mac');
+// electron-builder writes the mac build to `release/mac-<arch>` when the
+// target arch is NOT the runner's default, and to `release/mac` when it IS.
+// An arm64 runner building --arm64 produces `release/mac`; an x64 runner
+// building --arm64 produces `release/mac-arm64`. Search for the candidate
+// directories that actually exist and pick the one containing `nexus.app`.
+const candidateAppOutDirs = [join(releaseDir, `mac-${arch}`), join(releaseDir, 'mac')];
+const appOutDir = candidateAppOutDirs.find((d) => existsSync(join(d, 'nexus.app')));
+if (!appOutDir) {
+  console.error(
+    `[verify-mac] no mac build found in: ${candidateAppOutDirs.map((d) => d).join(', ')}\n` +
+    '  did `electron-builder --mac` run, and did it target the arch you asked for?',
+  );
+  process.exit(1);
+}
 const appBundle = join(appOutDir, 'nexus.app');
 const contentsDir = join(appBundle, 'Contents');
 const resourcesDir = join(contentsDir, 'Resources');

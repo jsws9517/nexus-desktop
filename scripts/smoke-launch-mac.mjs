@@ -30,6 +30,21 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * electron-builder writes the mac build to `release/mac-<arch>` when the target
+ * arch is NOT the runner's default, and to `release/mac` when it IS. On the
+ * arm64 runner used by CI (`macos-15`, arch=arm64), `--arm64` produces
+ * `release/mac` *only when the runner is arm64* — but on an x64 runner it
+ * would produce `release/mac-arm64`. Search both candidate directories.
+ */
+function findAppBundle(arch) {
+  const candidates = [join(releaseDir, `mac-${arch}`, 'nexus.app'), join(releaseDir, 'mac', 'nexus.app')];
+  for (const c of candidates) {
+    if (existsSync(join(c, 'Contents', 'MacOS', 'nexus'))) return c;
+  }
+  return null;
+}
+
 function summarizeLines(files, needle) {
   let hits = 0;
   for (const f of files) {
@@ -44,12 +59,12 @@ function summarizeLines(files, needle) {
 }
 
 async function main() {
-  const appBundle = join(releaseDir, 'mac', 'nexus.app');
-  const bin = join(appBundle, 'Contents', 'MacOS', 'nexus');
-  if (!existsSync(bin)) {
-    console.error(`[smoke-launch-mac] missing ${bin} — did electron-builder --mac run?`);
+  const appBundle = findAppBundle(arch);
+  if (!appBundle) {
+    console.error(`[smoke-launch-mac] no .app found under release/ for arch=${arch}`);
     process.exit(1);
   }
+  const bin = join(appBundle, 'Contents', 'MacOS', 'nexus');
 
   const home = mkdtempSync(join(tmpdir(), 'nexus-mac-smoke-'));
   console.log(`[smoke-launch-mac] isolated HOME at ${home}`);
