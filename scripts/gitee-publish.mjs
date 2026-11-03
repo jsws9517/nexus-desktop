@@ -52,7 +52,7 @@ const UPLOAD_INSTALLER = process.env.GITEE_UPLOAD_INSTALLER === '1';
 const LINUX_ONLY = process.env.GITEE_LINUX_ONLY === '1';
 
 /** GitHub download base (used to pin Linux manifest URLs at GitHub). */
-const GITHUB_RELEASE_BASE = (tag: string) =>
+const GITHUB_RELEASE_BASE = (tag) =>
   `https://github.com/jsws9517/nexus-desktop/releases/download/${tag}`;
 
 async function request(url, options = {}) {
@@ -151,6 +151,16 @@ async function main() {
   const version = TAG.replace(/^v/, '');
   const exeName = `nexus-Setup-${version}.exe`;
 
+  // Only the core tarball referenced by the current manifest belongs on the
+  // release: stale core-*.tar.gz files left behind in a local release dir
+  // must not leak onto Gitee.
+  let manifestVersion = '';
+  try {
+    manifestVersion =
+      (await readFile(`${RELEASE_DIR}/latest-core.yml`, 'utf8')).match(/^version:\s*(.+)$/m)?.[1]?.trim() || '';
+  } catch { /* no manifest yet */ }
+  const coreTarball = manifestVersion ? `core-${manifestVersion}.tar.gz` : null;
+
   // GITEE_LINUX_ONLY: attach only the Linux update manifest. No exe, no
   // core tarball, no .sig files — just `latest-linux.yml`. The candidates
   // list is reduced to a single entry so the upload loop below does not
@@ -170,16 +180,6 @@ async function main() {
     console.log('GITEE_LINUX_ONLY=1 → only latest-linux.yml is attached');
   }
 
-  // Only the core tarball referenced by the current manifest belongs on the
-  // release: stale core-*.tar.gz files left behind in a local release dir
-  // must not leak onto Gitee.
-  let manifestVersion = '';
-  try {
-    manifestVersion =
-      (await readFile(`${RELEASE_DIR}/latest-core.yml`, 'utf8')).match(/^version:\s*(.+)$/m)?.[1]?.trim() || '';
-  } catch { /* no manifest yet */ }
-  const coreTarball = manifestVersion ? `core-${manifestVersion}.tar.gz` : null;
-
   // Order matters: the installer (when opted in via GITEE_UPLOAD_INSTALLER)
   // is by far the largest asset and the one most likely to fail on the
   // US→CN link, so it goes FIRST and its outcome decides how latest.yml is
@@ -187,14 +187,6 @@ async function main() {
   // regardless. The .blockmap always mirrors: electron-updater resolves
   // it against the feed that served latest.yml (Gitee), while the exe
   // itself may be pinned at GitHub.
-  const candidates = [
-    ...(UPLOAD_INSTALLER ? [exeName] : []),
-    `${exeName}.blockmap`,
-    ...(coreTarball ? [coreTarball] : []),
-    'latest-core.yml',
-    ...readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sig')),
-    'latest.yml',
-  ];
 
   // Will the installer be downloadable from Gitee after this run? Starts
   // true only when opted in AND already attached (preserve mode); the
