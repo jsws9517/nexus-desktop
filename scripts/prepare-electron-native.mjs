@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, statSync, cpSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,16 +71,16 @@ function probeUnderElectron() {
 }
 
 function run(cmd, args, opts) {
-  // npm 11 forwards the user-level `allow-scripts` config as npm_config_allow_scripts
-  // into this process's env, which the inner `npm install` then treats as a
-  // CLI/env-layer policy and rejects (EALLOWSCRIPTS) for project-scoped installs.
-  // The compile must run regardless, so strip it before spawning.
-  const { cwdOverride, ...env } = opts ?? {};
+  // npm 11 forwards the user-level `allow-scripts` config as
+  // npm_config_allow_scripts into this process's env; strip it so the inner
+  // compile is not rejected with EALLOWSCRIPTS.
+  const { cwdOverride, ...extraEnv } = opts ?? {};
+  const env = { ...process.env, ...extraEnv };
+  delete env.npm_config_allow_scripts;
   const res = spawnSync(cmd, args, {
     cwd: cwdOverride ?? nativeDir,
-    env: env,
+    env,
     stdio: 'inherit',
-    shell: process.platform === 'win32',
     timeout: 15 * 60_000,
   });
   return res.status === 0;
@@ -146,42 +146,62 @@ function compile(modVersion) {
     throw new Error(`Missing ${pkg}`);
   }
   const moduleDir = join(nativeDir, 'node_modules', nativeModuleName);
-  // First ensure the package itself is installed (binding.gyp must exist).
-  // --ignore-scripts: skip better-sqlite3's install script (prebuild-install)
-  // which would download the system-Node-ABI binary into prebuilds/ — we
-  // need the source tree only so node-gyp can compile the Electron-ABI build.
+  // Ensure the source tree is present in .native/electron.
+  // CI runners start with no .native/electron/node_modules at all.
+  // Instead of running `npm install` (which triggers prebuild-install and
+  // fetches the system-Node-ABI binary, or hits the network), we copy the
+  // package directly from the top-level node_modules (already installed by
+  // the "Install dependencies" step above). Only the files node-gyp needs
+  // are copied: binding.gyp, package.json, src/, lib/.
   if (!existsSync(join(moduleDir, 'binding.gyp'))) {
-    console.log(`[prepare-electron-native] installing ${nativeModuleName} into ${nativeDir} (--ignore-scripts)...`);
-    if (!run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
-      cwdOverride: nativeDir,
-    })) {
+    const topLevelModule = join(root, 'node_modules', nativeModuleName);
+    if (!existsSync(join(topLevelModule, 'binding.gyp'))) {
+      console.error(`[prepare-electron-native] ${topLevelModule}/binding.gyp not found — cannot source the package`);
+      return false;
+    }
+    console.log(`[prepare-electron-native] copying ${nativeModuleName} source files from top-level node_modules to ${nativeDir}...`);
+    mkdirSync(moduleDir, { recursive: true });
+    // cpSync with recursive copies files and directories; only used on
+    // the specific sub-paths node-gyp needs (not the whole module tree,
+    // to avoid copying the prebuilds/ dir that contains the Node-ABI binary).
+    for (const item of ['binding.gyp', 'package.json', 'src', 'lib', 'deps', 'third_party']) {
+      const src = join(topLevelModule, item);
+      const dest = join(moduleDir, item);
+      if (existsSync(src)) {
+        cpSync(src, dest, { recursive: true });
+      }
+    }
+    if (!existsSync(join(moduleDir, 'binding.gyp'))) {
+      console.error(`[prepare-electron-native] copy failed — ${moduleDir}/binding.gyp still missing`);
       return false;
     }
   }
-  if (!existsSync(join(moduleDir, 'binding.gyp'))) {
-    console.error(`[prepare-electron-native] ${moduleDir}/binding.gyp still missing after npm install`);
-    return false;
-  }
   console.log(`[prepare-electron-native] compiling ${nativeModuleName}@${modVersion} for electron ${electronVersion} (${process.platform}-${arch})...`);
   // node-gyp rebuild: force a source compile against the Electron ABI.
-  // The npm `prebuild-install` step (run by `npm install`) only fetches a
-  // *system-Node* prebuild into `prebuilds/`; the Electron-ABI binary must be
-  // compiled here into `build/Release/` and then moved into the prebuilds
-  // slot by `placePrebuild()`.
+  // Use the node-gyp script bundled in the top-level node_modules; run it
+  // directly with the current Node binary to avoid the shell:true deprecation
+  // warning and any npx network fetch.
+  const nodeGypScript = join(root, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
+  if (!existsSync(nodeGypScript)) {
+    console.error(`[prepare-electron-native] ${nodeGypScript} not found — run \`npm install\` at the project root first`);
+    return false;
+  }
   const nodeGypArgs = [
+    nodeGypScript,
     'rebuild',
     '--runtime=electron',
     `--target=${electronVersion}`,
     `--arch=${arch}`,
     `--dist-url=https://electronjs.org/headers`,
-    // node-gyp writes the artifact under build/Release/.
-    '--build-dir=build',
   ];
-  // Locate node-gyp via npx (works without a global install).
-  if (!run(process.execPath === 'node' ? 'npx' : 'npx', ['node-gyp', ...nodeGypArgs], {
-    // The build dir is the better-sqlite3 module dir itself.
-    cwdOverride: moduleDir,
-  })) {
+  const res = spawnSync(process.execPath, nodeGypArgs, {
+    cwd: moduleDir,
+    env: { ...process.env },
+    stdio: 'inherit',
+    timeout: 15 * 60_000,
+  });
+  if (res.status !== 0) {
+    console.error('[prepare-electron-native] node-gyp rebuild failed');
     return false;
   }
   // The npm install above compiles into build/Release/, not prebuilds/.
