@@ -21,14 +21,18 @@
  *      (if it did, electron-updater would treat it as a deb install and the
  *      self-update path would pick DebUpdater → broken).
  */
-import { existsSync, readFileSync, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 const root = process.cwd();
 const releaseDir = join(root, 'release');
-const appImage = join(releaseDir, 'nexus-x64.AppImage');
+// electron-builder on Linux emits the arch as `x86_64` (AppImage) and
+// `amd64` (deb, Debian ABI naming) — *not* `x64`. Hardcode the names to
+// match `package.json`'s artifactName overrides; if they ever drift the
+// release dir scan below catches it.
+const appImage = join(releaseDir, 'nexus-x86_64.AppImage');
 const ymlPath = join(releaseDir, 'latest-linux.yml');
 const linuxUnpacked = join(releaseDir, 'linux-unpacked');
 
@@ -91,7 +95,7 @@ if (!existsSync(ymlPath)) {
 }
 
 // ── 3. binaries exist, are executable, sane size ───────────────────────────
-for (const f of [appImage, join(releaseDir, `nexus-${expectedVersion}-x64.deb`), ymlPath]) {
+for (const f of [appImage, join(releaseDir, `nexus-${expectedVersion}-amd64.deb`), ymlPath]) {
   if (!existsSync(f)) {
     fail(`missing ${f}`);
     continue;
@@ -104,6 +108,20 @@ for (const f of [appImage, join(releaseDir, `nexus-${expectedVersion}-x64.deb`),
   } else if (!failures.some((m) => m.includes(f))) {
     ok(`${f.split('/').pop()} (${(size / 1048576).toFixed(1)} MiB)`);
   }
+}
+
+// ── 3b. name-drift guard: exactly one .AppImage and one versioned .deb ───────
+// A future artifactName change in package.json would silently break the
+// workflow's `gh release upload` lines (which reference the names above);
+// assert the expected files are the only candidates so the drift is loud.
+const releaseFiles = readdirSync(releaseDir);
+const appImageCandidates = releaseFiles.filter((f) => f.endsWith('.AppImage'));
+const debCandidates = releaseFiles.filter((f) => f.endsWith('.deb'));
+if (appImageCandidates.length !== 1 || !appImageCandidates.includes('nexus-x86_64.AppImage')) {
+  fail(`unexpected .AppImage artifacts in release/: ${appImageCandidates.join(', ') || '(none)'}`);
+}
+if (debCandidates.length !== 1 || !debCandidates.includes(`nexus-${expectedVersion}-amd64.deb`)) {
+  fail(`unexpected .deb artifacts in release/: ${debCandidates.join(', ') || '(none)'}`);
 }
 
 // ── 4. AppImage must NOT ship resources/package-type ────────────────────────

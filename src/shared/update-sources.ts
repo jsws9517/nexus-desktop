@@ -195,6 +195,14 @@ export interface UpdateYmlFile {
   size: number | null;
   sha512: string | null;
   blockmapUrl: string | null;
+  /**
+   * AppImage (Linux) only: electron-builder embeds the differential blockmap
+   * into the AppImage binary and writes its size here. electron-updater's
+   * AppImageUpdater reads `blockMapSize` from the running $APPIMAGE at
+   * download time — without it, differential updates silently fall back to
+   * a full download.
+   */
+  blockMapSize?: number | null;
 }
 
 export interface ParsedUpdateYml {
@@ -233,6 +241,7 @@ export function parseUpdateYml(text: string): ParsedUpdateYml | null {
     else if (key === 'size') f.size = Number(val) || null;
     else if (key === 'sha512') f.sha512 = val;
     else if (key === 'blockmapUrl') f.blockmapUrl = val;
+    else if (key === 'blockMapSize') f.blockMapSize = Number(val) || null;
   };
 
   for (const raw of text.split(/\r?\n/)) {

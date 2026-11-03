@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseUpdateYml,
+  pickUpdateFile,
   compareVersions,
   isNewer,
   assetCandidates,
@@ -48,6 +49,21 @@ files:
 path: nexus-Setup-0.3.1.exe
 `;
 
+// Linux manifest (electron-builder `latest-linux.yml`): ships BOTH the
+// AppImage (with an embedded blockmap → blockMapSize) and the deb entry.
+const YML_LINUX = `version: 0.3.2
+files:
+  - url: nexus-x86_64.AppImage
+    sha512: Aaa==
+    size: 120000000
+    blockMapSize: 45678
+  - url: nexus-0.3.2-amd64.deb
+    sha512: Bbb==
+    size: 118000000
+path: nexus-x86_64.AppImage
+sha512: Aaa==
+`;
+
 test('parseUpdateYml handles block-style items', () => {
   const m = parseUpdateYml(YML_BLOCK);
   assert.ok(m);
@@ -80,6 +96,30 @@ test('parseUpdateYml keeps absolute file URLs untouched', () => {
 
 test('parseUpdateYml returns null without a version', () => {
   assert.equal(parseUpdateYml('files:\n- url: x.exe\n'), null);
+});
+
+test('parseUpdateYml handles the Linux manifest (AppImage + deb, blockMapSize)', () => {
+  const m = parseUpdateYml(YML_LINUX);
+  assert.ok(m);
+  assert.equal(m.version, '0.3.2');
+  assert.equal(m.files.length, 2);
+  const appImage = m.files.find((f) => f.url.endsWith('.AppImage'));
+  const deb = m.files.find((f) => f.url.endsWith('.deb'));
+  assert.ok(appImage && deb, 'both entries present');
+  assert.equal(appImage.size, 120000000);
+  assert.equal(appImage.blockMapSize, 45678);
+  assert.equal(deb.blockMapSize, undefined);
+});
+
+test('pickUpdateFile selects by preferred extension order', () => {
+  const m = parseUpdateYml(YML_LINUX);
+  assert.ok(m);
+  const byAppImage = pickUpdateFile(m.files, ['.AppImage', '.deb']);
+  assert.ok(byAppImage && byAppImage.url.endsWith('.AppImage'));
+  const byDeb = pickUpdateFile(m.files, ['.deb', '.AppImage']);
+  assert.ok(byDeb && byDeb.url.endsWith('.deb'));
+  const none = pickUpdateFile([], ['.AppImage']);
+  assert.equal(none, null);
 });
 
 // ── compareVersions ───────────────────────────────────────────────────────────

@@ -162,10 +162,10 @@
       ]
     },
     "appImage": {
-      "artifactName": "nexus-${arch}.${ext}"
+      "artifactName": "nexus-x86_64.${ext}"
     },
     "deb": {
-      "artifactName": "nexus-${version}-${arch}.${ext}"
+      "artifactName": "nexus-${version}-amd64.${ext}"
     },
     "artifactName": "nexus-Setup-${version}.${ext}",
     "nsis": {

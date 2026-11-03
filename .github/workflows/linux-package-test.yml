@@ -89,8 +89,8 @@ jobs:
         with:
           name: linux-packages
           path: |
-            release/nexus-x64.AppImage
-            release/nexus-*-x64.deb
+            release/nexus-x86_64.AppImage
+            release/nexus-*-amd64.deb
             release/latest-linux.yml
           retention-days: 14
           if-no-files-found: error

@@ -103,18 +103,18 @@ jobs:
 
           **Linux (AppImage)**
           ```bash
-          chmod +x nexus-x64.AppImage
-          ./nexus-x64.AppImage
+          chmod +x nexus-x86_64.AppImage
+          ./nexus-x86_64.AppImage
           ```
           - Ubuntu 22.04+ / Debian 12+ ships `libfuse2`; on distros without it install the
-            `libfuse2` package, or run `./nexus-x64.AppImage --appimage-extract-and-run`
+            `libfuse2` package, or run `./nexus-x86_64.AppImage --appimage-extract-and-run`
             to bypass FUSE entirely.
           - Integrate with your desktop (optional): install [AppImageLauncher](https://github.com/AppImageLauncher/AppImageLauncher)
             and right-click → "Integrate and Launch" to get a `.desktop` entry.
 
           **Linux (deb)**
           ```bash
-          sudo apt install ./nexus-${{ steps.version.outputs.tag }}-x64.deb
+          sudo apt install ./nexus-${{ steps.version.outputs.tag }}-amd64.deb
           ```
           Installs to `/opt/nexus` with a `/usr/bin/nexus` wrapper and a desktop entry.
 
@@ -313,8 +313,8 @@ jobs:
         # The Release was created by the Windows job; gh release upload
         # appends to it. `--clobber` replaces same-named assets on re-run.
         run: gh release upload "${{ github.ref_name }}" \
-            release/nexus-x64.AppImage \
-            "release/nexus-${{ steps.version.outputs.tag }}-x64.deb" \
+            release/nexus-x86_64.AppImage \
+            "release/nexus-${{ steps.version.outputs.tag }}-amd64.deb" \
             release/latest-linux.yml \
             --clobber
         env:
