@@ -79,11 +79,16 @@ if (!existsSync(join(contentsDir, 'MacOS', 'nexus'))) {
   summarize();
 }
 
-// ── 1. better-sqlite3 Electron-ABI prebuild swapped + byte-matches ──────────
+// ── 1. better-sqlite3 Electron-ABI prebuild swapped into the asar ───────────
+// after-pack.mjs byte-copies `.native/electron/.../prebuilds/<prebuild>` into
+// the unpacked asar. So the two must be byte-identical. (They will BOTH
+// differ from the system-Node-ABI prebuild that `npm ci` shipped into the
+// main node_modules, which is fine — that one was intentionally overwritten
+// inside `.native/electron` by the Electron-ABI source build.)
 const unpackedPrebuild = join(resourcesDir, 'app.asar.unpacked', 'node_modules', 'better-sqlite3', 'prebuilds', prebuild);
 const electronPrebuild = join(root, '.native', 'electron', 'node_modules', 'better-sqlite3', 'prebuilds', prebuild);
 if (!existsSync(unpackedPrebuild)) {
-  fail(`missing ${unpackedPrebuild}`);
+  fail(`missing ${unpackedPrebuild} — afterPack swap did not land`);
 } else if (!existsSync(electronPrebuild)) {
   fail(`missing Electron-ABI source ${electronPrebuild} — prepare:electron-native did not run?`);
 } else {
@@ -93,9 +98,9 @@ if (!existsSync(unpackedPrebuild)) {
   if (size < 1024 * 1024) {
     fail(`${prebuild} too small (${size} bytes) — likely not the Electron-ABI build`);
   } else if (a !== b) {
-    fail(`${prebuild} does NOT match the Electron-ABI build (sha256 ${a.slice(0, 12)}… vs ${b.slice(0, 12)}…)`);
+    fail(`${prebuild} in asar.unpacked is NOT byte-identical to .native/electron (sha256 ${a.slice(0, 12)}… vs ${b.slice(0, 12)}…)`);
   } else {
-    ok(`${prebuild} swapped into asar.unpacked (${(size / 1048576).toFixed(2)} MiB, sha256 ${a.slice(0, 12)}…)`);
+    ok(`${prebuild} swapped into asar.unpacked (${(size / 1048576).toFixed(2)} MiB, sha256 ${a.slice(0, 12)}… matches .native/electron)`);
   }
 }
 
@@ -149,12 +154,18 @@ if (!existsSync(ymlPath)) {
     ok(`.zip entry present`);
   }
   // Cross-check the manifest against what actually landed in release/.
+  // electron-builder expands `${ext}` to the target's real extension:
+  //   - dmg target → `.dmg`
+  //   - zip target → `.zip`   (NOT `mac.zip`)
   const expectDmg = `nexus-${expectedVersion}-${arch}.dmg`;
+  const expectZip = `nexus-${expectedVersion}-${arch}.zip`;
   if (!existsSync(join(releaseDir, expectDmg))) {
     fail(`expected ${expectDmg} in release/ (found: ${dmgCandidates.join(', ') || '(none)'})`);
   }
-  if (!existsSync(join(releaseDir, `nexus-${expectedVersion}-${arch}-mac.zip`))) {
-    fail(`expected nexus-${expectedVersion}-${arch}-mac.zip in release/`);
+  const zipCandidates = spawnSync('ls', [releaseDir], { encoding: 'utf8' })
+    .stdout.split('\n').filter((f) => f.endsWith('.zip'));
+  if (!existsSync(join(releaseDir, expectZip))) {
+    fail(`expected ${expectZip} in release/ (found: ${zipCandidates.join(', ') || '(none)'})`);
   }
 }
 
@@ -167,23 +178,24 @@ if (existsSync(dmgPath)) {
   } else {
     ok(`hdiutil verify passed for ${dmgPath}`);
   }
-  const attach = spawnSync('hdiutil', ['attach', '-nobrowse', '-readonly', dmgPath], {
+  // Mount and inspect Info.plist. Use `attach -plist` to get the mount point
+  // as a reliable JSON key, not by parsing the human-readable table (which
+  // breaks on volumes whose names contain spaces, e.g. "Nexus 0.3.3-arm64").
+  const mount = spawnSync('hdiutil', ['attach', '-nobrowse', '-readonly', '-plist', dmgPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 120_000,
     encoding: 'utf8',
   });
-  const attachOut = String(attach.stdout ?? '');
-  const volume = attachOut.split('\n').find((l) => l.includes('/Volumes/'));
-  const detach = (code) => {
-    if (volume) {
-      const mountPoint = volume.split(/\s+/).at(-1);
-      spawnSync('hdiutil', ['detach', mountPoint], { stdio: 'ignore', timeout: 60_000 });
-    }
-  };
-  if (attach.status !== 0 || !volume) {
-    fail(`hdiutil attach failed (exit ${attach.status}): ${attachOut}`);
+  let mountPoint = null;
+  if (mount.status === 0) {
+    // hdiutil -plist prints a top-level dict with "system-entities" → an array
+    // of { mount-point, image-path, ... }.
+    const xml = mount.stdout || '';
+    mountPoint = xml.match(/<key>mount-point<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? null;
+  }
+  if (mount.status !== 0 || !mountPoint) {
+    fail(`hdiutil attach failed (exit ${mount.status}): ${String(mount.stdout ?? '').trim()}`);
   } else {
-    const mountPoint = volume.split(/\s+/).at(-1);
     const mountedApp = join(mountPoint, 'nexus.app');
     const plistPath = join(mountedApp, 'Contents', 'Info.plist');
     if (!existsSync(plistPath)) {
@@ -211,7 +223,7 @@ if (existsSync(dmgPath)) {
         ok(`Info.plist: ${bundleId} v${shortVer} "${display}"`);
       }
     }
-    detach();
+    spawnSync('hdiutil', ['detach', mountPoint], { stdio: 'ignore', timeout: 60_000 });
   }
 }
 
@@ -224,12 +236,22 @@ if (csVerify.status !== 0) {
   fail(`codesign --verify failed (exit ${csVerify.status}): ${String(csVerify.stderr ?? '').trim()}`);
 } else {
   ok('codesign --verify --deep --strict passed');
-  const csInfo = spawnSync('codesign', ['-vv', appBundle], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+  const csInfo = spawnSync('codesign', ['-dv', '--verbose=4', appBundle], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+  });
   const info = String((csInfo.stdout || '') + (csInfo.stderr || ''));
-  if (/Signature=adhoc/i.test(info) || /adhoc/i.test(info)) {
-    ok('signature is ad-hoc (expected for the unsigned beta stage)');
+  const sigLines = info.split('\n').filter((l) => /signature|authority/i.test(l));
+  // Ad-hoc signature: `Signature=adhoc` (or `Signature type=Application` on
+  // some macOS builds) AND **no** `Authority=` lines (a real Developer ID
+  // cert would print `Authority=Nexus` + `Authority=Apple Root...`).
+  const isAdhoc = /Signature=adhoc/i.test(info) && !/Authority=/.test(info);
+  if (isAdhoc) {
+    ok(`signature is ad-hoc (expected at the unsigned beta stage): ${sigLines.join(' | ')}`);
+  } else if (/Authority=/.test(info)) {
+    fail(`expected an ad-hoc signature but found a Developer ID: ${sigLines.join(' | ')}`);
   } else {
-    fail(`expected an ad-hoc signature, got: ${info.split('\n').filter((l) => /signature/i.test(l)).join(' ')}`);
+    fail(`could not detect signature type; raw: ${info.slice(0, 400)}`);
   }
 }
 // Notarization is intentionally NOT done at this stage: spctl must reject the

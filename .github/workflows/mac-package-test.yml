@@ -86,12 +86,14 @@ jobs:
 
       # Compile better-sqlite3 for the Electron ABI (arm64). Cached so the
       # ~2–4 minute source build only runs when better-sqlite3/electron bump.
+      # Key off the lockfile (stable + tracked) and the compile script (so a
+      # script change forces a fresh build).
       - name: Cache Electron-ABI native
         uses: actions/cache@v4
         id: native-cache
         with:
           path: .native/electron/node_modules/better-sqlite3/prebuilds
-          key: electron-${{ hashFiles('node_modules/electron/package.json') }}-better-sqlite3-${{ hashFiles('node_modules/better-sqlite3/package.json') }}-arm64
+          key: electron-native-${{ hashFiles('package-lock.json') }}-${{ hashFiles('scripts/prepare-electron-native.mjs') }}-arm64
 
       - name: Prepare Electron native
         env:
@@ -117,7 +119,7 @@ jobs:
           name: mac-arm64
           path: |
             release/nexus-${{ steps.version.outputs.tag }}-arm64.dmg
-            release/nexus-${{ steps.version.outputs.tag }}-arm64-mac.zip
+            release/nexus-${{ steps.version.outputs.tag }}-arm64.zip
             release/latest-mac.yml
           retention-days: 90
           if-no-files-found: error
