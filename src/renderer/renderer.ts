@@ -5615,7 +5615,8 @@ type UpdateStateType =
       source?: { label: string; url: string } | null;
     }
   | { status: 'downloaded'; version?: string }
-  | { status: 'error'; message?: string };
+  | { status: 'error'; message?: string }
+  | { status: 'unsupported' };
 
 let updateVersion = '';
 // Live status lines must render inside the active settings tab, not at the
@@ -5659,7 +5660,31 @@ function buildUpdateSection(container?: HTMLElement): void {
   slot.className = 'update-status-slot';
   target.appendChild(slot);
   updateStatusSlot = slot;
-  renderUpdateStatus({ status: 'idle' });
+  // Backfill the live state so a download that finished while the settings
+  // modal was closed still shows its "Restart & Install" button (and a deb
+  // install hint) when the panel is opened — without this, every open would
+  // reset the panel to 'idle' and the in-progress state would vanish.
+  void window.nexusDesktop.getUpdateState().then((state) => {
+    // The section may have been rebuilt (language change) after the IPC
+    // resolved; render into the current slot, not a stale one.
+    renderUpdateStatus((state ?? { status: 'idle' }) as UpdateStateType);
+  }).catch(() => {
+    renderUpdateStatus({ status: 'idle' });
+  });
+}
+
+/** True when the running app is a Linux deb install (the state is tagged by the main process). */
+function isDebInstall(state: UpdateStateType): boolean {
+  // The main process tags 'available' / 'downloaded' states with
+  // `packageKind` when it is a deb install; absent = non-deb.
+  return (state as Record<string, unknown>).packageKind === 'deb';
+}
+
+function appendUpdateDebHint(line: HTMLElement, key: 'updateDebHint' | 'updateInstallDebHint'): void {
+  const hint = document.createElement('div');
+  hint.className = 'update-hint';
+  hint.textContent = t(key);
+  line.appendChild(hint);
 }
 
 function renderUpdateStatus(state: UpdateStateType): void {
@@ -5681,6 +5706,7 @@ function renderUpdateStatus(state: UpdateStateType): void {
     dl.textContent = t('updateDownload');
     dl.addEventListener('click', () => void window.nexusDesktop.downloadUpdate());
     line.appendChild(dl);
+    if (isDebInstall(state)) appendUpdateDebHint(line, 'updateDebHint');
   } else if (state.status === 'downloading') {
     const speed = formatSpeed(state.bytesPerSecond ?? 0);
     line.textContent = speed
@@ -5695,8 +5721,11 @@ function renderUpdateStatus(state: UpdateStateType): void {
     inst.textContent = t('updateInstall');
     inst.addEventListener('click', () => void window.nexusDesktop.installUpdate());
     line.appendChild(inst);
+    if (isDebInstall(state)) appendUpdateDebHint(line, 'updateInstallDebHint');
   } else if (state.status === 'error') {
     line.textContent = t('updateError', { message: state.message ?? '' });
+  } else if (state.status === 'unsupported') {
+    line.textContent = t('updateUnsupported');
   }
   host.appendChild(line);
 }
@@ -5984,10 +6013,27 @@ settingsOverlay.addEventListener('click', (e) => {
 // Live-update the settings update section from main-process events (progress,
 // downloaded, errors) without re-opening the modal.
 window.nexusDesktop.onUpdateState((state) => {
-  if (settingsOverlay.classList.contains('hidden')) return;
-  renderUpdateStatus(state as UpdateStateType);
-  // Keep the "update source" line current while a download is in flight.
   const s = state as UpdateStateType;
+  // Proactive notice when the settings modal is CLOSED: an auto-download
+  // finishing (or a new release becoming available) is the only moment the
+  // user would otherwise not notice. `unsupported` is silent — there is
+  // nothing the user can do in-app, and a toast would be noise.
+  if (s.status === 'downloaded' || s.status === 'available') {
+    if (settingsOverlay.classList.contains('hidden')) {
+      const v = s.version ?? '';
+      showToast(
+        s.status === 'downloaded'
+          ? t('updateDownloadedToast', { version: v })
+          : t('updateAvailable', { version: v }),
+        'success',
+        8000,
+      );
+    }
+    markSettingsUpdateBadge(true);
+  }
+  if (settingsOverlay.classList.contains('hidden')) return;
+  renderUpdateStatus(s);
+  // Keep the "update source" line current while a download is in flight.
   if (s.status === 'downloading') renderUpdateSource(s.source ?? null);
 });
 window.nexusDesktop.onCoreUpdateState((state) => {

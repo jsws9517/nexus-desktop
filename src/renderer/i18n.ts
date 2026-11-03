@@ -234,6 +234,22 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   updateInstall: { 'zh-CN': '重启并安装', en: 'Restart & Install' },
   updateError: { 'zh-CN': '更新失败：{message}', en: 'Update failed: {message}' },
   updateUnavailable: { 'zh-CN': '仅安装版支持自动更新', en: 'Auto-update is only available in the installed app' },
+  updateUnsupported: {
+    'zh-CN': '当前安装方式不支持应用内更新（请使用 AppImage 或 deb 安装包）',
+    en: 'This install type does not support in-app updates (use an AppImage or .deb install)',
+  },
+  updateDownloadedToast: {
+    'zh-CN': '新版本 v{version} 已下载，重启后自动安装',
+    en: 'v{version} downloaded — it will install when the app restarts',
+  },
+  updateDebHint: {
+    'zh-CN': '安装 deb 更新时会请求系统授权',
+    en: 'Installing this .deb update will prompt for system authorization',
+  },
+  updateInstallDebHint: {
+    'zh-CN': '点击下方按钮后系统会弹出授权框；若无法授权，请到发布页手动下载安装包',
+    en: 'Clicking below prompts for system authorization; if unavailable, download the .deb from the release page and install manually',
+  },
   coreUpdateSection: { 'zh-CN': '核心更新', en: 'Core Updates' },
   coreUpdateCurrent: { 'zh-CN': '当前核心版本：v{version}', en: 'Current core: v{version}' },
   coreUpdateCheck: { 'zh-CN': '检查核心更新', en: 'Check Core Update' },
