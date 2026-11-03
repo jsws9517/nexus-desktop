@@ -146,8 +146,20 @@ function compile(modVersion) {
     throw new Error(`Missing ${pkg}`);
   }
   const moduleDir = join(nativeDir, 'node_modules', nativeModuleName);
+  // First ensure the package itself is installed (binding.gyp must exist).
+  // --ignore-scripts: skip better-sqlite3's install script (prebuild-install)
+  // which would download the system-Node-ABI binary into prebuilds/ — we
+  // need the source tree only so node-gyp can compile the Electron-ABI build.
   if (!existsSync(join(moduleDir, 'binding.gyp'))) {
-    console.error(`[prepare-electron-native] ${moduleDir}/binding.gyp missing — run \`npm install\` in ${nativeDir} first`);
+    console.log(`[prepare-electron-native] installing ${nativeModuleName} into ${nativeDir} (--ignore-scripts)...`);
+    if (!run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
+      cwdOverride: nativeDir,
+    })) {
+      return false;
+    }
+  }
+  if (!existsSync(join(moduleDir, 'binding.gyp'))) {
+    console.error(`[prepare-electron-native] ${moduleDir}/binding.gyp still missing after npm install`);
     return false;
   }
   console.log(`[prepare-electron-native] compiling ${nativeModuleName}@${modVersion} for electron ${electronVersion} (${process.platform}-${arch})...`);
