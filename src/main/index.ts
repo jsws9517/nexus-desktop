@@ -664,9 +664,47 @@ function startWorker(): void {
 
 if (gotLock) {
   app.whenReady().then(async () => {
-    // No default Electron window menu bar in any window (settings/config view
-    // should not reuse the app's menu styling).
-    Menu.setApplicationMenu(null);
+    // No default Electron window menu bar on Windows/Linux (settings/config view
+    // should not reuse the app's menu styling). On macOS a null menu removes the
+    // whole menu bar, which breaks Cmd+Q/Cmd+C/Cmd+V — so darwin keeps a minimal
+    // app + Edit + Window menu with system roles.
+    if (process.platform === 'darwin') {
+      Menu.setApplicationMenu(
+        Menu.buildFromTemplate([
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' },
+              { type: 'separator' },
+              { role: 'services' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              { role: 'quit' },
+            ],
+          },
+          {
+            label: 'Edit',
+            submenu: [
+              { role: 'undo' },
+              { role: 'redo' },
+              { type: 'separator' },
+              { role: 'cut' },
+              { role: 'copy' },
+              { role: 'paste' },
+              { role: 'selectAll' },
+            ],
+          },
+          {
+            label: 'Window',
+            submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }],
+          },
+        ]),
+      );
+    } else {
+      Menu.setApplicationMenu(null);
+    }
     updater.init();
     updater.onState = (state) => send(CHANNELS.updateState, state);
     //

@@ -1,0 +1,123 @@
+name: macOS Package Test
+
+# Dry-run of the macOS (arm64) packaging path without touching the Release or Gitee.
+# Use this to validate the Electron-ABI native swap, electron-builder dmg+zip build,
+# and the launch smoke test BEFORE cutting a real mac tag.
+#
+# Triggers manually: Actions → macOS Package Test → Run workflow.
+# Outputs are uploaded as workflow artifacts (downloadable for ~90 days)
+# instead of a GitHub Release / Gitee publish.
+#
+# ad-hoc signing stage: no Apple Developer secrets are read. The build sets
+# `mac.identity: "-"` so the arm64 .app is ad-hoc signed and still launchable
+# after `xattr -dr com.apple.quarantine`.
+
+on:
+  workflow_dispatch:
+    # Pin a specific nexus-coder core version; empty = latest.
+    inputs:
+      coreVersion:
+        description: 'nexus-coder version to pin (empty = newest)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    # macos-15 = Apple Silicon arm64 runner (3 vCPU / 7 GB). Pinned on purpose:
+    # `macos-latest` now tracks macOS 26 and would silently move the CI.
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        shell: bash
+        # No tag in a dispatch run — read the version from package.json.
+        run: |
+          set -euo pipefail
+          V=$(node -p "require('./package.json').version")
+          echo "tag=${V}" >> "$GITHUB_OUTPUT"
+
+      - name: Update package.json version (idempotent)
+        shell: bash
+        run: node scripts/set-version.mjs "${{ steps.version.outputs.tag }}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin nexus-coder
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.coreVersion }}" ]; then
+            node scripts/set-core-version.mjs --version "${{ inputs.coreVersion }}"
+          else
+            node scripts/set-core-version.mjs
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test (system-Node worker)
+        run: npm run test:smoke
+        env:
+          ANTHROPIC_API_KEY: ci-placeholder-key
+
+      - name: Generate icons (.icns)
+        # electron does offscreen SVG rasterization; on a macOS runner this
+        # works without an X display. `iconutil -c icns` produces build/icon.icns.
+        run: npm run icon
+
+      # Compile better-sqlite3 for the Electron ABI (arm64). Cached so the
+      # ~2–4 minute source build only runs when better-sqlite3/electron bump.
+      - name: Cache Electron-ABI native
+        uses: actions/cache@v4
+        id: native-cache
+        with:
+          path: .native/electron/node_modules/better-sqlite3/prebuilds
+          key: electron-${{ hashFiles('node_modules/electron/package.json') }}-better-sqlite3-${{ hashFiles('node_modules/better-sqlite3/package.json') }}-arm64
+
+      - name: Prepare Electron native
+        env:
+          NATIVE_ARCH: arm64
+        run: npm run prepare:electron-native
+
+      - name: Build macOS packages
+        # dmg (user-facing) + zip (the carrier electron-updater will use later
+        # for Mac auto-update; building it now keeps latest-mac.yml complete).
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
+
+      - name: Verify macOS artifacts
+        run: node scripts/verify-mac-release.mjs --arch arm64
+
+      - name: Launch smoke test (packaged .app)
+        # Runs the real .app binary with an isolated HOME; waits for the app's
+        # own log to say "Core ready". Proves the native module actually loaded.
+        run: node scripts/smoke-launch-mac.mjs --arch arm64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-arm64
+          path: |
+            release/nexus-${{ steps.version.outputs.tag }}-arm64.dmg
+            release/nexus-${{ steps.version.outputs.tag }}-arm64-mac.zip
+            release/latest-mac.yml
+          retention-days: 90
+          if-no-files-found: error

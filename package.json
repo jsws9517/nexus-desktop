@@ -33,7 +33,8 @@
     "prepare:electron-native": "node scripts/prepare-electron-native.mjs",
     "rebuild:electron": "node scripts/rebuild-electron.mjs",
     "dist:win": "npm run icon && npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis",
-    "dist:linux": "npm run icon && npm run build && node scripts/prepare-electron-native.mjs && electron-builder --linux AppImage deb"
+    "dist:linux": "npm run icon && npm run build && node scripts/prepare-electron-native.mjs && electron-builder --linux AppImage deb",
+    "dist:mac": "npm run icon && npm run build && node scripts/prepare-electron-native.mjs && electron-builder --mac dmg zip --arm64"
   },
   "keywords": [
     "nexus",
@@ -97,7 +98,7 @@
       "!node_modules/better-sqlite3/deps/**/*",
       "!node_modules/better-sqlite3/src/**/*",
       "!node_modules/better-sqlite3/build/**/*",
-      "!node_modules/better-sqlite3/prebuilds/{darwin-x64,darwin-arm64,win32-arm64}.node",
+      "!node_modules/better-sqlite3/prebuilds/{darwin-x64,win32-arm64}.node",
       "!node_modules/onnxruntime-*/**",
       "!node_modules/@huggingface/**",
       "!node_modules/@emnapi/**",
@@ -160,6 +161,32 @@
           ]
         }
       ]
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "nexus-${version}-${arch}.${ext}",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "entitlements": "scripts/entitlements.mac.plist",
+      "entitlementsInherit": "scripts/entitlements.mac.plist",
+      "identity": "-",
+      "extendInfo": {
+        "CFBundleDisplayName": "Nexus"
+      }
     },
     "appImage": {
       "artifactName": "nexus-x86_64.${ext}"

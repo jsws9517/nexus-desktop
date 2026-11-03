@@ -189,6 +189,34 @@ the workflow fails at the preflight step on purpose.
 
 ---
 
+## 2.6 macOS (arm64) — beta stage
+
+macOS packaging is validated by `.github/workflows/mac-package-test.yml`
+(manual dispatch, artifacts only — no Release / Gitee). Run it from
+**Actions → macOS Package Test → Run workflow**; the `mac-arm64` artifact
+contains the `.dmg`, `.zip` and `latest-mac.yml` for a real Mac to test.
+
+Current stage decisions:
+
+- **ad-hoc signed, not notarized** (`mac.identity: "-"`). Users must
+  right-click → Open, or run `xattr -dr com.apple.quarantine
+  /Applications/nexus.app`. Gatekeeper's "developer cannot be verified"
+  is expected at this stage.
+- **arm64 only.** `mac.target` in `package.json` is pinned to `arm64`;
+  Intel Macs are not covered yet.
+- **Self-update is off.** `src/main/updater.ts` reports `unsupported`
+  on darwin, so the settings panel shows "updates not supported" and
+  nothing more. The `zip` target + `latest-mac.yml` are still shipped so
+  a future Developer ID + notarized build can enable `MacUpdater` without
+  re-architecting.
+- **`better-sqlite3` ships its `darwin-arm64` prebuild into the asar**
+  (`build.files` excludes only `darwin-x64` + `win32-arm64`), and
+  `after-pack.mjs` swaps the Electron-ABI build from `.native/electron/`
+  in place — same mechanism as win/linux.
+- **Minimal macOS menu bar** (app / Edit / Window with system roles).
+  `Menu.setApplicationMenu(null)` remains on Windows/Linux; on macOS a
+  null menu would kill Cmd+Q/Cmd+C/Cmd+V.
+
 ## 3. Checklist before a stable release
 
 - [ ] `npm run typecheck && npm run build && npm test` green on `dev`
@@ -196,3 +224,9 @@ the workflow fails at the preflight step on purpose.
 - [ ] `npm view nexus-coder dist-tags` shows the new version (newest of `latest`/`beta` is auto-pinned into the desktop by `release.yml`; no manual bump needed)
 - [ ] `vX.Y.Z` tag pushed to `nexus-coder` (and `nexus-desktop`)
 - [ ] `master` fast-forwarded on `nexus-coder` (stable only)
+- [ ] macOS (arm64): `mac-package-test.yml` green, `mac-arm64` artifact passes
+      `verify-mac-release.mjs` + `smoke-launch-mac.mjs` on a real Mac
+      (right-click → Open or `xattr -dr com.apple.quarantine`), menu bar
+      Cmd+C/V/Q works, settings panel + session list render, one agent turn
+      completes, `~/.nexus/` and `~/Library/Application Support/nexus/`
+      get populated.

@@ -90,7 +90,9 @@ function run(cmd, args, opts) {
 function compile(modVersion) {
   mkdirSync(nativeDir, { recursive: true });
   const electronVersion = electronPkg.version;
-  const arch = process.arch;
+  // Compile for an explicit target arch when NATIVE_ARCH is set (e.g. a CI
+  // runner of one arch building for the other), otherwise the host arch.
+  const arch = process.env.NATIVE_ARCH || process.arch;
   if (!existsSync(pkg)) {
     throw new Error(`Missing ${pkg}`);
   }
@@ -125,7 +127,8 @@ function compile(modVersion) {
 function main() {
   const modVersion = getModuleVersion();
   const stamp = getStamp();
-  if (stamp && stamp.modVersion === modVersion && stamp.electronVersion === electronPkg.version && stamp.arch === process.arch) {
+  const arch = process.env.NATIVE_ARCH || process.arch;
+  if (stamp && stamp.modVersion === modVersion && stamp.electronVersion === electronPkg.version && stamp.arch === arch) {
     console.log('[prepare-electron-native] stamp matches  - skipping (force with `npm run rebuild:electron`)');
     return;
   }

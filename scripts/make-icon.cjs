@@ -3,13 +3,19 @@
 //   - desktop/build/icon.ico          (Windows, PNG-compressed multi-size)
 //   - desktop/build/icon.png          (512px, Linux single-file fallback)
 //   - desktop/build/icons/<s>x<s>.png (electron-builder Linux icon set)
+//   - desktop/build/icon.icns         (macOS, via iconutil on darwin)
 //
 // Linux builds (AppImage/deb) need a real PNG icon, not the Electron default,
 // so a 512px source capture is resized to the sizes electron-builder looks
 // for in a `build/icons` directory: 16, 24, 32, 48, 64, 128, 256, 512.
+//
+// macOS needs a 1024px master (electron-builder converts .png → .icns, but the
+// 1024 master is also used to assemble a .iconset for `iconutil`, which is
+// the only thing that produces a spec-compliant .icns on every macOS version).
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 // Disable HW acceleration so offscreen page capture (capturePage) doesn't fail
 // with Chromium "UnknownVizError" on GPU-less/remote sessions.
@@ -21,6 +27,9 @@ const OUT = path.join(OUT_DIR, 'icon.ico');
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
 // electron-builder Linux icon-set sizes (file named `<s>x<s>.png`).
 const LINUX_SIZES = [16, 24, 32, 48, 64, 128, 256, 512];
+// macOS iconset entry sizes. `<base>x<base>` and `<base>x<base>@2x` must each
+// be a true 1x/2x pair, i.e. 16/32, 32/64, 128/256, 256/512, 512/1024.
+const ICONSET_BASES = [16, 32, 128, 256, 512];
 
 async function run() {
   await app.whenReady();
@@ -63,6 +72,40 @@ async function run() {
   const master = img.resize({ width: 512, height: 512, quality: 'best' }).toPNG();
   fs.writeFileSync(path.join(OUT_DIR, 'icon.png'), master);
   console.log('wrote', pngIconDir, sizes.length, 'png files');
+
+  // macOS .icns: assemble a .iconset from the 1024px master and run iconutil.
+  // iconutil is a macOS built-in; on Windows/Linux this step is skipped and the
+  // CI mac job (or electron-builder's png→icns conversion) covers it.
+  if (process.platform === 'darwin') {
+    const iconsetDir = path.join(OUT_DIR, 'icon.iconset');
+    fs.rmSync(iconsetDir, { recursive: true, force: true });
+    fs.mkdirSync(iconsetDir, { recursive: true });
+    const master1024 = img.resize({ width: 1024, height: 1024, quality: 'best' }).toPNG();
+    const pairs = [
+      ['icon_16x16.png', 16],
+      ['icon_16x16@2x.png', 32],
+      ['icon_32x32.png', 32],
+      ['icon_32x32@2x.png', 64],
+      ['icon_128x128.png', 128],
+      ['icon_128x128@2x.png', 256],
+      ['icon_256x256.png', 256],
+      ['icon_256x256@2x.png', 512],
+      ['icon_512x512.png', 512],
+      ['icon_512x512@2x.png', 1024],
+    ];
+    for (const [name, px] of pairs) {
+      const png = px === 1024 ? master1024 : img.resize({ width: px, height: px, quality: 'best' }).toPNG();
+      fs.writeFileSync(path.join(iconsetDir, name), png);
+    }
+    const icnsOut = path.join(OUT_DIR, 'icon.icns');
+    const res = spawnSync('iconutil', ['-c', 'icns', iconsetDir, '-o', icnsOut], { stdio: 'inherit' });
+    if (res.status === 0) {
+      fs.rmSync(iconsetDir, { recursive: true, force: true });
+      console.log('wrote', icnsOut);
+    } else {
+      console.error('iconutil failed (exit', res.status, ') — macOS .icns not generated');
+    }
+  }
 
   const count = pngs.length;
   const header = Buffer.alloc(6);
