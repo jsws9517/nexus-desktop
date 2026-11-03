@@ -1,0 +1,96 @@
+name: Linux Package Test
+
+# Dry-run of the Linux packaging path without touching the Release or Gitee.
+# Use this to validate icon generation, native binary swap, electron-builder
+# AppImage+deb build, and the verify script BEFORE cutting a real tag.
+#
+# Triggers manually: Actions → Linux Package Test → Run workflow.
+# Outputs are uploaded as workflow artifacts (downloadable for ~90 days)
+# instead of a GitHub Release / Gitee publish.
+
+on:
+  workflow_dispatch:
+    # Pin a specific nexus-coder core version; empty = latest.
+    inputs:
+      coreVersion:
+        description: 'nexus-coder version to pin (empty = newest)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        shell: bash
+        # No tag in a dispatch run — read the version from package.json.
+        run: |
+          set -euo pipefail
+          V=$(node -p "require('./package.json').version")
+          echo "tag=${V}" >> "$GITHUB_OUTPUT"
+
+      - name: Update package.json version (idempotent)
+        shell: bash
+        run: node scripts/set-version.mjs "${{ steps.version.outputs.tag }}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin nexus-coder
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.coreVersion }}" ]; then
+            node scripts/set-core-version.mjs --version "${{ inputs.coreVersion }}"
+          else
+            node scripts/set-core-version.mjs
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Generate icons
+        run: xvfb-run -a npm run icon
+        env:
+          ELECTRON_DISABLE_SANDBOX: "1"
+
+      - name: Prepare Electron native
+        run: npm run prepare:electron-native
+
+      - name: Build Linux packages
+        run: npx electron-builder --linux AppImage deb --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify Linux artifacts
+        run: node scripts/verify-linux-release.mjs
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            release/nexus-x64.AppImage
+            release/nexus-*-x64.deb
+            release/latest-linux.yml
+          retention-days: 14
+          if-no-files-found: error

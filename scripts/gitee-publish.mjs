@@ -42,6 +42,19 @@ const PRESERVE = process.env.GITEE_PRESERVE_ASSETS === '1';
 // to a GitHub-pinned url instead of aborting the run).
 const UPLOAD_INSTALLER = process.env.GITEE_UPLOAD_INSTALLER === '1';
 
+// GITEE_LINUX_ONLY=1 → attach only the Linux manifest (`latest-linux.yml`)
+// to an already-published Gitee release. Used by the Linux build job
+// (which runs AFTER the Windows job has created + populated the Gitee
+// release); the AppImage and the deb both exceed Gitee's 100 MiB cap, so
+// the manifest is a discovery-only mirror — its `files[].url` lines are
+// rewritten to GitHub absolute addresses so CN Linux users still get
+// version discovery without a huge intercontinental upload.
+const LINUX_ONLY = process.env.GITEE_LINUX_ONLY === '1';
+
+/** GitHub download base (used to pin Linux manifest URLs at GitHub). */
+const GITHUB_RELEASE_BASE = (tag: string) =>
+  `https://github.com/jsws9517/nexus-desktop/releases/download/${tag}`;
+
 async function request(url, options = {}) {
   const res = await fetch(url, options);
   const text = await res.text();
@@ -138,6 +151,25 @@ async function main() {
   const version = TAG.replace(/^v/, '');
   const exeName = `nexus-Setup-${version}.exe`;
 
+  // GITEE_LINUX_ONLY: attach only the Linux update manifest. No exe, no
+  // core tarball, no .sig files — just `latest-linux.yml`. The candidates
+  // list is reduced to a single entry so the upload loop below does not
+  // accidentally mirror any Windows asset.
+  const candidates = LINUX_ONLY
+    ? ['latest-linux.yml']
+    : [
+        ...(UPLOAD_INSTALLER ? [exeName] : []),
+        `${exeName}.blockmap`,
+        ...(coreTarball ? [coreTarball] : []),
+        'latest-core.yml',
+        ...readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sig')),
+        'latest.yml',
+      ];
+
+  if (LINUX_ONLY) {
+    console.log('GITEE_LINUX_ONLY=1 → only latest-linux.yml is attached');
+  }
+
   // Only the core tarball referenced by the current manifest belongs on the
   // release: stale core-*.tar.gz files left behind in a local release dir
   // must not leak onto Gitee.
@@ -216,6 +248,27 @@ async function main() {
       } else {
         console.log(`kept ${name} url relative (resolves on the serving host; installer on Gitee)`);
       }
+    } else if (name === 'latest-linux.yml') {
+      // The Linux manifest ships BOTH a `.AppImage` and a `.deb` entry in
+      // `files[]`. Neither is uploaded to Gitee (both exceed the 100 MiB
+      // attachment cap), so every `files[].url` line must point at GitHub
+      // absolute addresses. The rewrite is line-scoped: each `url:` line
+      // keeps its own basename and only gets the GitHub prefix prepended.
+      //
+      // electron-builder writes relative basenames (e.g. `nexus-x64.AppImage`),
+      // and Gitee's own `releases/download/.../...` URLs (if any) are left
+      // untouched — only truly relative entries are pinned to GitHub.
+      const text = buffer.toString('utf8').replace(
+        /^(\s*-?\s*url:\s*)(\S+)\s*$/gm,
+        (whole, indentAndKey, value) => {
+          // Strip any quoting electron-builder may have added.
+          const raw = value.replace(/^(['"]|`)/, '').replace(/(['"]|`)$/, '');
+          if (/^https?:/i.test(raw)) return whole; // already absolute
+          return `${indentAndKey}${GITHUB_RELEASE_BASE(TAG)}/${raw}`;
+        },
+      );
+      buffer = Buffer.from(text, 'utf8');
+      console.log(`rewrote ${name} urls -> GitHub download (${TAG})`);
     } else if (name === 'latest-core.yml') {
       // Rewriting the artifact URL invalidates the signature (it covers the
       // manifest bytes), so re-sign on the rewritten text. The `signed: true`

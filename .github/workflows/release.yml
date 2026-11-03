@@ -92,11 +92,38 @@ jobs:
 
           ### System Requirements
           - Windows 10/11 (64-bit)
+          - Linux x64 (AppImage or deb)
 
           ### Installation
-          1. Download the installer below
+
+          **Windows**
+          1. Download `nexus-Setup-${{ steps.version.outputs.tag }}.exe`
           2. Run it and choose the install directory
           3. Launch the app and set your API Key in Settings
+
+          **Linux (AppImage)**
+          ```bash
+          chmod +x nexus-x64.AppImage
+          ./nexus-x64.AppImage
+          ```
+          - Ubuntu 22.04+ / Debian 12+ ships `libfuse2`; on distros without it install the
+            `libfuse2` package, or run `./nexus-x64.AppImage --appimage-extract-and-run`
+            to bypass FUSE entirely.
+          - Integrate with your desktop (optional): install [AppImageLauncher](https://github.com/AppImageLauncher/AppImageLauncher)
+            and right-click → "Integrate and Launch" to get a `.desktop` entry.
+
+          **Linux (deb)**
+          ```bash
+          sudo apt install ./nexus-${{ steps.version.outputs.tag }}-x64.deb
+          ```
+          Installs to `/opt/nexus` with a `/usr/bin/nexus` wrapper and a desktop entry.
+
+          ### In-app Updates
+          - Windows: the installer self-updates; no extra steps needed.
+          - Linux AppImage: the app downloads a differential update and swaps the file on quit.
+          - Linux deb: the app downloads the new `.deb` and requests system authorization
+            (polkit / `pkexec`) to install. If the prompt is unavailable, fall back to a
+            manual `sudo apt install` of the new `.deb` in this release.
 
           ### Features
           - **Multi-model support** - Claude, GPT and other major LLMs, unified interface switching
@@ -206,3 +233,111 @@ jobs:
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           CORE_SIGNING_KEY: ${{ secrets.CORE_SIGNING_KEY }}
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Linux packaging (AppImage + deb).
+  #
+  # electron-builder cannot cross-build AppImage/deb from Windows (the AppImage
+  # toolchain and `fpm` both use platform-specific binaries), so this job
+  # runs on `ubuntu-latest`.
+  #
+  # `needs: build-and-release` ensures the GitHub Release (created by the
+  # Windows job) already exists, so this job just appends its assets. It also
+  # means the Gitee release was (re)created first, so the Gitee step below can
+  # attach the Linux manifest without creating a second release.
+  # ───────────────────────────────────────────────────────────────────────────
+  build-linux:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update package.json version
+        shell: bash
+        run: node scripts/set-version.mjs "${{ steps.version.outputs.tag }}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin newest nexus-coder (latest vs beta)
+        run: node scripts/set-core-version.mjs
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Generate icons
+        # electron does offscreen SVG rasterization (capturePage); on a
+        # headless CI runner it needs an X display, so wrap in xvfb.
+        # `ELECTRON_DISABLE_SANDBOX=1` guards against a runner without the
+        # SUID sandbox helper.
+        run: xvfb-run -a npm run icon
+        env:
+          ELECTRON_DISABLE_SANDBOX: "1"
+
+      - name: Prepare Electron native
+        run: npm run prepare:electron-native
+
+      - name: Build Linux packages
+        # Target order matters: AppImage is built from `linux-unpacked`
+        # BEFORE the deb target writes `resources/package-type`, so the
+        # AppImage does not carry a `package-type` marker. If the order
+        # regressed, electron-updater would treat the AppImage as a deb
+        # install and pick DebUpdater (broken self-update).
+        run: npx electron-builder --linux AppImage deb --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify Linux artifacts
+        run: node scripts/verify-linux-release.mjs
+
+      - name: Upload Linux assets to GitHub Release
+        # The Release was created by the Windows job; gh release upload
+        # appends to it. `--clobber` replaces same-named assets on re-run.
+        run: gh release upload "${{ github.ref_name }}" \
+            release/nexus-x64.AppImage \
+            "release/nexus-${{ steps.version.outputs.tag }}-x64.deb" \
+            release/latest-linux.yml \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach Linux manifest to Gitee
+        shell: bash
+        # Only the manifest (~1 KB) is mirrored to Gitee. The AppImage and
+        # the deb both exceed Gitee's 100 MiB attachment cap, and the 98 MiB
+        # Windows exe already stalls the intercontinental link on upload
+        # (see the v0.3.1 incident). `gitee-publish.mjs` (GITEE_LINUX_ONLY=1)
+        # rewrites the manifest's `files[].url` lines to GitHub absolute
+        # addresses, so discovery works from Gitee while the download still
+        # comes from GitHub / mirrors.
+        #
+        # Non-fatal: the Gitee manifest is a discovery fallback, not a gate.
+        run: |
+          GITEE_PRESERVE_ASSETS=1 \
+          GITEE_LINUX_ONLY=1 \
+          GITEE_REPO=cict_1_0/nexus-desktop \
+          GITEE_TAG="${GITHUB_REF_NAME}" \
+          GITEE_RELEASE_DIR="release" \
+          node scripts/gitee-publish.mjs || \
+            echo "gitee linux manifest attach failed (non-fatal)"
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
