@@ -33,7 +33,7 @@
     "prepare:electron-native": "node scripts/prepare-electron-native.mjs",
     "rebuild:electron": "node scripts/rebuild-electron.mjs",
     "dist:win": "npm run icon && npm run build && node scripts/prepare-electron-native.mjs && electron-builder --win nsis",
-    "dist:linux": "npm run build && node scripts/prepare-electron-native.mjs && electron-builder --linux AppImage deb"
+    "dist:linux": "npm run icon && npm run build && node scripts/prepare-electron-native.mjs && electron-builder --linux AppImage deb"
   },
   "keywords": [
     "nexus",
@@ -145,6 +145,7 @@
       "category": "Utility",
       "syncDesktopName": true,
       "maintainer": "ddupws <herdkid@gmail.com>",
+      "icon": "build/icons",
       "target": [
         {
           "target": "AppImage",
@@ -158,7 +159,12 @@
             "x64"
           ]
         }
-      ],
+      ]
+    },
+    "appImage": {
+      "artifactName": "nexus-${arch}.${ext}"
+    },
+    "deb": {
       "artifactName": "nexus-${version}-${arch}.${ext}"
     },
     "artifactName": "nexus-Setup-${version}.${ext}",

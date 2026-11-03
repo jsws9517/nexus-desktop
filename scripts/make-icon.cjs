@@ -1,5 +1,12 @@
-// Build the Windows app icon from source SVG -> multi-size .ico (PNG-compressed entries).
-// Runs under Electron (offscreen rasterization), outputs desktop/build/icon.ico.
+// Build app icons from the source SVG.
+// Runs under Electron (offscreen rasterization). Outputs:
+//   - desktop/build/icon.ico          (Windows, PNG-compressed multi-size)
+//   - desktop/build/icon.png          (512px, Linux single-file fallback)
+//   - desktop/build/icons/<s>x<s>.png (electron-builder Linux icon set)
+//
+// Linux builds (AppImage/deb) need a real PNG icon, not the Electron default,
+// so a 512px source capture is resized to the sizes electron-builder looks
+// for in a `build/icons` directory: 16, 24, 32, 48, 64, 128, 256, 512.
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +19,8 @@ const SRC = path.join(__dirname, '..', 'icon.svg');
 const OUT_DIR = path.join(__dirname, '..', 'build');
 const OUT = path.join(OUT_DIR, 'icon.ico');
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
+// electron-builder Linux icon-set sizes (file named `<s>x<s>.png`).
+const LINUX_SIZES = [16, 24, 32, 48, 64, 128, 256, 512];
 
 async function run() {
   await app.whenReady();
@@ -31,11 +40,29 @@ async function run() {
   await new Promise((r) => setTimeout(r, 800));
 
   const img = await win.webContents.capturePage();
+
+  // Windows .ico source buffers (PNG-compressed entries).
   const pngs = [];
   for (const s of SIZES) {
     const resized = img.resize({ width: s, height: s, quality: 'best' });
     pngs.push({ size: s, buffer: resized.toPNG() });
   }
+
+  // Linux icon set: 16x16.png … 512x512.png, plus a 512px master `icon.png`.
+  // Capture the 512px resize once and reuse it for both the master PNG and the
+  // 512 entry of the Linux set (identical bytes).
+  const pngIconDir = path.join(OUT_DIR, 'icons');
+  fs.mkdirSync(pngIconDir, { recursive: true });
+  const sizes = Array.from(new Set([...LINUX_SIZES, 512]));
+  for (const s of sizes) {
+    const resized = s === 512 ? img.resize({ width: 512, height: 512, quality: 'best' })
+                              : img.resize({ width: s, height: s, quality: 'best' });
+    fs.writeFileSync(path.join(pngIconDir, `${s}x${s}.png`), resized.toPNG());
+  }
+  // Master 512px source PNG (Linux single-file fallback when a directory is not given).
+  const master = img.resize({ width: 512, height: 512, quality: 'best' }).toPNG();
+  fs.writeFileSync(path.join(OUT_DIR, 'icon.png'), master);
+  console.log('wrote', pngIconDir, sizes.length, 'png files');
 
   const count = pngs.length;
   const header = Buffer.alloc(6);
