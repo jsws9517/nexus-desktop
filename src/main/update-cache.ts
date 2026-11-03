@@ -1,6 +1,11 @@
 /**
  * Differential-update cache helpers (A4).
  *
+ * **Windows-only.** This module implements NSIS installer differential
+ * blockmap seeding. It is only ever called from `Updater.download()` when
+ * the install kind is `nsis` (see `src/main/updater.ts`); Linux (AppImage /
+ * deb) and macOS update paths never enter it.
+ *
  * electron-updater's NSIS differential download (v6 `differentialDownloadInstaller`):
  *
  *   1. downloads the NEW blockmap (`blockmapFileUrls[1]`, served by the

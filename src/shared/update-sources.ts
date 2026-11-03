@@ -116,6 +116,78 @@ export function appVersionFeeds(version: string): FeedSource[] {
   ];
 }
 
+// ── Platform-specific manifest names ─────────────────────────────────────────
+
+/**
+ * The electron-builder update manifest file name for a given platform.
+ *
+ * electron-builder's `getUpdateInfoFileName()` (app-builder-lib) is:
+ *   - Windows: `latest.yml`
+ *   - Linux:   `latest-linux.yml`   (x64 has no arch suffix)
+ *   - macOS:   `latest-mac.yml`
+ *
+ * We only support Windows + Linux, but the helper accepts any platform key
+ * and falls back to the Windows name for unknowns. Browser-safe.
+ */
+export function appManifestFileName(platform: string): string {
+  switch (platform) {
+    case 'win32':
+      return 'latest.yml';
+    case 'darwin':
+      return 'latest-mac.yml';
+    default:
+      // Linux and anything unknown → the Linux name; Linux is the only
+      // non-Windows platform we ship today.
+      return 'latest-linux.yml';
+  }
+}
+
+/**
+ * Pick the installer entry from a parsed manifest's `files[]` that matches
+ * the platform + package kind the app is currently running.
+ *
+ * A Linux release ships BOTH `.AppImage` and `.deb` in the same `files[]`
+ * (electron-builder merges the two target entries). The Windows release has
+ * a single `.exe`. Which one we care about depends on how the running app
+ * was installed:
+ *   - Windows / NSIS        → `.exe`
+ *   - Linux / AppImage      → `.AppImage`
+ *   - Linux / deb install    → `.deb`
+ *
+ * The chosen entry's `url` / `size` are what the app will actually download
+ * (electron-updater's `findFile` does the same selection by extension).
+ *
+ * `preferred` is a list of extensions in priority order. First match wins.
+ * Returns the first file when nothing matches (defensive: the manifest
+ * always has at least one entry, and electron-updater's own selection is
+ * the authority — this helper only drives discovery/probe sizing).
+ */
+export function pickUpdateFile(files: UpdateYmlFile[], preferred: Array<string>): UpdateYmlFile | null {
+  if (files.length === 0) return null;
+  for (const ext of preferred) {
+    const found = files.find((f) => f.url.toLowerCase().endsWith(ext.toLowerCase()));
+    if (found) return found;
+  }
+  return files[0];
+}
+
+/**
+ * How the currently-running app was installed / how its self-update runs.
+ * Shared by `Updater.packageKind()` (main) and the settings UI (renderer),
+ * which reads it from state updates so it can show deb-specific install hints.
+ *
+ *   - `nsis`      — Windows: NsisUpdater, silent differential install on quit.
+ *   - `appimage`  — Linux: AppImageUpdater. Diff read from the running
+ *                    $APPIMAGE; install is a file-swap on quit.
+ *   - `deb`       — Linux: DebUpdater. Full .deb download; install requires
+ *                    system authorization (polkit/pkexec), never silent.
+ *   - `unsupported` — packaged but not a recognized install shape (an
+ *                    extracted AppImage, an rpm/pacman build, or a run from
+ *                    linux-unpacked). Discovery still works; no in-app
+ *                    install path is safe.
+ */
+export type AppPackageKind = 'nsis' | 'appimage' | 'deb' | 'unsupported';
+
 // ── Manifest parsing ─────────────────────────────────────────────────────────
 
 export interface UpdateYmlFile {

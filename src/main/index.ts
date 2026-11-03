@@ -669,6 +669,20 @@ if (gotLock) {
     Menu.setApplicationMenu(null);
     updater.init();
     updater.onState = (state) => send(CHANNELS.updateState, state);
+    //
+    // Auto-update: silently check for a newer app release shortly after
+    // launch and, when found, start downloading it. Errors are swallowed
+    // (the user will notice via the settings panel once the download
+    // completes). Opt out with `NEXUS_DISABLE_AUTO_UPDATE=1` (e.g. for
+    // metered-connection field testing).
+    //
+    // The 40 s delay lets the app fully start and the tray/worker come up
+    // before a network probe begins.
+    if (process.env.NEXUS_DISABLE_AUTO_UPDATE !== '1') {
+      setTimeout(() => {
+        void updater.autoCheck();
+      }, 40_000);
+    }
     coreUpdater.init();
     // The manager must compare against the core the worker actually runs
     // (active overlay, else the bundled copy), not just overlay state.json --

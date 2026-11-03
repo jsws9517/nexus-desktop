@@ -1,13 +1,18 @@
 import { app } from 'electron';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import updaterModule from 'electron-updater';
 import type { UpdateInfo } from 'electron-updater';
 import {
   GITEE_REPO,
+  appManifestFileName,
   appManifestFeeds,
   appVersionFeeds,
   compareVersions,
   giteeReleaseBase,
   parseUpdateYml,
+  pickUpdateFile,
+  type AppPackageKind,
   type FeedSource,
 } from '../shared/update-sources.js';
 import { seedOldBlockmapFor } from './update-cache.js';
@@ -59,6 +64,8 @@ export interface DiscoveredUpdate {
 /** electron-updater's autoUpdater resolved lazily (see getAutoUpdater). */
 type AutoUpdater = (typeof import('electron-updater'))['autoUpdater'];
 
+export type { AppPackageKind } from '../shared/update-sources.js';
+
 export type UpdateState =
   | { status: 'idle' }
   | { status: 'checking' }
@@ -74,7 +81,8 @@ export type UpdateState =
       differential?: boolean;
     }
   | { status: 'downloaded'; version: string }
-  | { status: 'error'; message: string };
+  | { status: 'error'; message: string }
+  | { status: 'unsupported' };
 
 export type UpdateStateWithSource = UpdateState & {
   source: FeedSource | null;
@@ -96,12 +104,39 @@ export class Updater {
    * differential is disabled for this session, null before any download.
    */
   private differentialMode: 'diff' | 'full' | null = null;
+  /**
+   * How the running app was installed. Resolved lazily on first access;
+   * cached. Drives the manifest file name, which `files[]` entry we probe,
+   * whether `seedOldBlockmapFor` is called, and whether install-on-quit
+   * is safe (deb installs require polkit/pkexec, never silent).
+   */
+  private cachedKind: AppPackageKind | null = null;
+  /** Guards concurrent check()/download()/autoCheck() invocations. */
+  private busy = false;
 
-  onState?: (state: UpdateState) => void;
+  onState?: (state: UpdateState & { packageKind?: AppPackageKind }) => void;
 
   /** Current app version (for the settings UI). */
   static currentVersion(): string {
     return app.getVersion();
+  }
+
+  /**
+   * How the running app was installed (and which electron-updater branch
+   * applies). See {@link AppPackageKind}.
+   *
+   * Detected from two signals, checked in order:
+   *   1. `resources/package-type` — written only by the FpmTarget when
+   *      packaging a deb/rpm/pacman; the AppImage target does NOT write
+   *      it (build order is AppImage → deb). Its presence and value is
+   *      the authoritative signal for deb.
+   *   2. `process.env.APPIMAGE` — set by the AppImage runtime; when
+   *      running an AppImage this is the absolute path of the file.
+   */
+  packageKind(): AppPackageKind {
+    if (this.cachedKind) return this.cachedKind;
+    this.cachedKind = resolvePackageKind();
+    return this.cachedKind;
   }
 
   init(): void {
@@ -109,7 +144,18 @@ export class Updater {
     this.enabled = true;
     const autoUpdater = getAutoUpdater();
     autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = false;
+    //
+    // Install-on-quit policy:
+    //   - Windows NSIS and Linux AppImage: silent, no system prompt → allow.
+    //   - Linux deb: dpkg needs polkit/pkexec, which must happen WITH the
+    //     user present → disable; the "Restart & Install" button is the
+    //     only path, and the error text surfaces pkexec failures.
+    //
+    // electron-updater's default is `autoInstallOnAppQuit = true` on every
+    // platform; the previous `= false` here was set to keep Windows
+    // install behavior explicit. Restoring the default for the two
+    // silent-safe kinds while keeping deb explicit.
+    autoUpdater.autoInstallOnAppQuit = this.packageKind() !== 'deb';
 
     autoUpdater.on('checking-for-update', () => {
       this.setState({ status: 'checking' });
@@ -164,8 +210,17 @@ export class Updater {
       this.setState({ status: 'error', message: 'Update checks are only available in the packaged app' });
       return { ...this.withSource(), devMode: true };
     }
-    this.setState({ status: 'checking' });
+    if (this.busy) return this.withSource();
+    this.busy = true;
     try {
+      // Unsupported package kinds (extracted AppImage, rpm/pacman, …) can
+      // still discover a newer release, but electron-updater has no install
+      // path for them. Surface the state without touching electron-updater.
+      if (this.packageKind() === 'unsupported') {
+        this.setState({ status: 'unsupported' });
+        return this.withSource();
+      }
+      this.setState({ status: 'checking' });
       const current = this.currentVersion();
       const discovered = await this.discoverLatest();
       if (!discovered) {
@@ -190,11 +245,52 @@ export class Updater {
       this.source = ranked[0];
       const autoUpdater = getAutoUpdater();
       this.applyFeed(autoUpdater, ranked[0]);
-      await autoUpdater.checkForUpdates();
+      const result = await autoUpdater.checkForUpdates();
+      // electron-updater returns null when its updater is inactive (e.g. the
+      // AppImage was launched in a way that does not set APPIMAGE, or the
+      // autoUpdater was constructed without a usable feed). No 'update-available'
+      // / 'update-not-available' event will fire in that case, so without
+      // this the state would stay stuck at 'checking'.
+      if (result === null && this.getState().status === 'checking') {
+        this.setState({ status: 'unsupported' });
+      }
+      // Defensive: even with a live updater, events are async — if the check
+      // completed without ever reaching 'available' / 'not-available' / 'error',
+      // resolve the hang with a not-available marker so the UI never stalls.
+      if (this.getState().status === 'checking') {
+        this.setState({ status: 'not-available', version: latest.version });
+      }
+      return this.withSource();
     } catch (e) {
       this.setState({ status: 'error', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      this.busy = false;
     }
     return this.withSource();
+  }
+
+  /**
+   * Auto-update entry point used by the startup timer in `src/main/index.ts`.
+   *
+   * Silently checks for a newer release and, when one is found, immediately
+   * starts the download. Errors are logged, not surfaced — the user only
+   * notices via the settings panel / badge once the download has finished.
+   *
+   * No-op on `unsupported` package kinds: an extracted AppImage / rpm /
+   * pacman install cannot self-update in-app, and there is nothing to do
+   * here.
+   */
+  async autoCheck(): Promise<void> {
+    if (!this.enabled || this.busy) return;
+    if (this.packageKind() === 'unsupported') return;
+    const s = await this.check();
+    if (s.status === 'available') {
+      try {
+        await this.download();
+      } catch (e) {
+        logger.error(`autoCheck: download failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
   }
 
   /** The feed the last check() resolved to; null when no candidate was reachable. */
@@ -209,59 +305,89 @@ export class Updater {
   /** Step 2 — download the available update. Only valid after check() found one. */
   async download(): Promise<UpdateStateWithSource> {
     if (!this.enabled) return this.withSource();
-    if (this.state.status !== 'available') return this.withSource();
-    if (this.rankedFeeds.length === 0) {
-      this.setState({ status: 'error', message: 'No update source resolved; check for updates first' });
-      return this.withSource();
-    }
-    const autoUpdater = getAutoUpdater();
-    // A4: seed the old version's blockmap (verified against the cached
-    // installer) so the differential download can run without its own
-    // old-blockmap download. Unverifiable cache ⇒ full download this session.
-    const seed = await seedOldBlockmapFor(this.currentVersion(), this.cachePath());
-    autoUpdater.disableDifferentialDownload = !seed.differential;
-    this.differentialMode = seed.differential ? 'diff' : 'full';
-    logger.info(`update download: differential=${seed.differential} (${seed.detail})`);
-    this.setState({
-      status: 'downloading',
-      percent: 0,
-      transferred: 0,
-      total: this.expectedFullSize,
-      bytesPerSecond: 0,
-    });
-    // Initial attempt + up to MAX_SOURCE_RETRIES on the next-ranked feeds.
-    const maxAttempts = this.rankedFeeds.length <= 1 ? 1 : Math.min(1 + MAX_SOURCE_RETRIES, this.rankedFeeds.length);
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const feed = this.rankedFeeds[attempt];
-      if (!feed) break;
-      if (attempt > 0) {
-        // Switching feeds requires a re-check: electron-updater baked the
-        // previous feed's absolute URLs into updateInfoAndProvider.
-        this.source = feed;
-        this.applyFeed(autoUpdater, feed);
-        this.setState({ status: 'checking' });
+    if (this.busy) return this.withSource();
+    this.busy = true;
+    try {
+      if (this.state.status !== 'available') return this.withSource();
+      if (this.rankedFeeds.length === 0) {
+        this.setState({ status: 'error', message: 'No update source resolved; check for updates first' });
+        return this.withSource();
+      }
+      const autoUpdater = getAutoUpdater();
+      const kind = this.packageKind();
+      if (kind === 'unsupported') {
+        this.setState({ status: 'unsupported' });
+        return this.withSource();
+      }
+      //
+      // Differential setup differs per install kind:
+      //
+      //   nsis      — seed the old blockmap cache (verified against the
+      //               cached installer.exe) so the diff can run; otherwise
+      //               fall back to a full download this session.
+      //   appimage  — differential is read from the running $APPIMAGE's
+      //               embedded blockmap; nothing to seed. Keep diff on.
+      //   deb       — no differential (deb packages are replaced, not
+      //               patched); disable and label the download "full".
+      if (kind === 'nsis') {
+        const seed = await seedOldBlockmapFor(this.currentVersion(), this.cachePath());
+        autoUpdater.disableDifferentialDownload = !seed.differential;
+        this.differentialMode = seed.differential ? 'diff' : 'full';
+        logger.info(`update download: differential=${seed.differential} (${seed.detail})`);
+      } else if (kind === 'appimage') {
+        autoUpdater.disableDifferentialDownload = false;
+        this.differentialMode = 'diff';
+        logger.info('update download: appimage differential (embedded blockmap)');
+      } else {
+        autoUpdater.disableDifferentialDownload = true;
+        this.differentialMode = 'full';
+      }
+      this.setState({
+        status: 'downloading',
+        percent: 0,
+        transferred: 0,
+        total: this.expectedFullSize,
+        bytesPerSecond: 0,
+      });
+      // Initial attempt + up to MAX_SOURCE_RETRIES on the next-ranked feeds.
+      const maxAttempts = this.rankedFeeds.length <= 1 ? 1 : Math.min(1 + MAX_SOURCE_RETRIES, this.rankedFeeds.length);
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const feed = this.rankedFeeds[attempt];
+        if (!feed) break;
+        if (attempt > 0) {
+          // Switching feeds requires a re-check: electron-updater baked the
+          // previous feed's absolute URLs into updateInfoAndProvider.
+          this.source = feed;
+          this.applyFeed(autoUpdater, feed);
+          this.setState({ status: 'checking' });
+          try {
+            await autoUpdater.checkForUpdates();
+          } catch {
+            // the 'error' event already updated the state
+          }
+        }
         try {
-          await autoUpdater.checkForUpdates();
+          await autoUpdater.downloadUpdate();
+          return this.withSource();
         } catch {
-          // the 'error' event already updated the state
+          // The 'error' event set the state; try the next-ranked source.
         }
       }
-      try {
-        await autoUpdater.downloadUpdate();
-        return this.withSource();
-      } catch {
-        // The 'error' event set the state; try the next-ranked source.
+      if ((this.getState() as UpdateState).status !== 'downloaded') {
+        this.setState({ status: 'error', message: 'Download failed on all update sources' });
       }
+      return this.withSource();
+    } finally {
+      this.busy = false;
     }
-    if ((this.getState() as UpdateState).status !== 'downloaded') {
-      this.setState({ status: 'error', message: 'Download failed on all update sources' });
-    }
-    return this.withSource();
   }
 
   /** Step 3 — quit the app and install the downloaded update. */
   install(): void {
     if (!this.enabled || this.state.status !== 'downloaded') return;
+    // Unsupported kinds never reach 'downloaded' (download() guards), so
+    // this is only reached for nsis/appimage/deb. Deb's pkexec/prompt is
+    // surfaced via the 'error' event on failure.
     getAutoUpdater().quitAndInstall(false, true);
   }
 
@@ -292,23 +418,25 @@ export class Updater {
   // ── Stage 1: discovery ─────────────────────────────────────────────────────
 
   /**
-   * Parallel `latest.yml` fetch across all candidate feeds; returns the
+   * Parallel update-manifest fetch across all candidate feeds; returns the
    * newest discovered version (with the feed that announced it) or null
-   * when nothing was reachable.
+   * when nothing was reachable. The manifest file name is chosen per
+   * platform (Windows `latest.yml`, Linux `latest-linux.yml`).
    */
   private async discoverLatest(): Promise<DiscoveredUpdate | null> {
+    const manifest = this.manifestName();
     const override = process.env.NEXUS_UPDATE_MIRROR;
     const feeds = override ? [{ label: 'NEXUS_UPDATE_MIRROR', url: override }] : appManifestFeeds();
     const results = await Promise.allSettled(
-      feeds.map(async (feed) => this.fetchManifest(feed.url, feed.label)),
+      feeds.map(async (feed) => this.fetchManifest(feed.url, feed.label, manifest)),
     );
     const found: DiscoveredUpdate[] = results.flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []));
     if (!override) {
       // Gitee is a manifest-only fallback (never enters the download race —
-      // its published latest.yml pins the installer at a GitHub absolute
-      // URL), but it keeps discovery alive when GitHub and every mirror
-      // are unreachable from the user's network.
-      const gitee = await this.fetchGiteeManifest();
+      // its published manifest pins the installer at a GitHub absolute URL),
+      // but it keeps discovery alive when GitHub and every mirror are
+      // unreachable from the user's network.
+      const gitee = await this.fetchGiteeManifest(manifest);
       if (gitee) found.push(gitee);
     }
     if (found.length === 0) return null;
@@ -316,20 +444,25 @@ export class Updater {
     return found[0];
   }
 
-  private async fetchManifest(feedBase: string, label: string): Promise<DiscoveredUpdate | null> {
-    const url = `${feedBase.replace(/\/$/, '')}/latest.yml`;
+  private async fetchManifest(feedBase: string, label: string, manifest: string): Promise<DiscoveredUpdate | null> {
+    const url = `${feedBase.replace(/\/$/, '')}/${manifest}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), MANIFEST_TIMEOUT_MS);
     try {
       const res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
       if (!res.ok) return null;
       const parsed = parseUpdateYml(await res.text());
-      if (!parsed || !parsed.version || !parsed.files[0]?.url) return null;
+      if (!parsed || !parsed.version) return null;
+      // Pick the `files[]` entry that matches this install kind so the
+      // probe and the expected-download size line up with what
+      // electron-updater will actually download.
+      const picked = pickUpdateFile(parsed.files, this.preferredExtensions());
+      if (!picked) return null;
       return {
         feed: { label, url: feedBase },
         version: parsed.version,
-        fileUrl: parsed.files[0].url,
-        fileSize: parsed.files[0].size ?? 0,
+        fileUrl: picked.url,
+        fileSize: picked.size ?? 0,
       };
     } catch {
       return null;
@@ -338,12 +471,39 @@ export class Updater {
     }
   }
 
+  /** The update-manifest file name for this platform. */
+  private manifestName(): string {
+    return appManifestFileName(process.platform);
+  }
+
+  /**
+   * Preferred `files[]` entry extensions, in order, for this install kind.
+   * electron-updater's own `findFile()` resolves the same selection at
+   * download time; this only drives discovery probing and size estimation.
+   */
+  private preferredExtensions(): string[] {
+    switch (this.packageKind()) {
+      case 'deb':
+        // A deb install downloads the .deb; the AppImage entry is unused.
+        return ['.deb', '.AppImage'];
+      case 'appimage':
+        // An AppImage downloads the .AppImage; the .deb entry is unused.
+        return ['.AppImage', '.deb'];
+      case 'nsis':
+      case 'unsupported':
+      default:
+        // Windows: single .exe entry. For unsupported Linux kinds we still
+        // report the .AppImage entry (the larger, self-contained one).
+        return [this.packageKind() === 'nsis' ? '.exe' : '.AppImage'];
+    }
+  }
+
   /**
    * Gitee does not implement GitHub's `releases/latest/download` alias, so
    * query the public releases API, pick the newest stable tag, and read that
-   * tag's `latest.yml`. Returns null when the API or the manifest fails.
+   * tag's update manifest. Returns null when the API or the manifest fails.
    */
-  private async fetchGiteeManifest(): Promise<DiscoveredUpdate | null> {
+  private async fetchGiteeManifest(manifest: string): Promise<DiscoveredUpdate | null> {
     let releases: Array<{ tag_name?: string; prerelease?: boolean }> = [];
     {
       const controller = new AbortController();
@@ -374,7 +534,7 @@ export class Updater {
     if (pool.length === 0) return null;
     pool.sort((a, b) => compareVersions(b.version, a.version));
     const base = giteeReleaseBase(pool[0].tag);
-    return this.fetchManifest(base, 'Gitee');
+    return this.fetchManifest(base, 'Gitee', manifest);
   }
 
   // ── Stage 2: throughput race ───────────────────────────────────────────────
@@ -445,6 +605,12 @@ export class Updater {
 
   private setState(state: UpdateState): void {
     this.state = state;
+    // Tag deb-install states so the settings UI can render install hints
+    // (deb installs prompt for system authorization; AppImage/NSIS do not).
+    if (state.status === 'available' || state.status === 'downloaded') {
+      this.onState?.({ ...state, packageKind: this.packageKind() });
+      return;
+    }
     this.onState?.(state);
   }
 }
@@ -462,4 +628,36 @@ function parseTagVersion(tag: string): string | null {
 // Electron's app), so resolve it lazily inside init() — never at module load.
 function getAutoUpdater(): AutoUpdater {
   return (updaterModule as unknown as { autoUpdater: AutoUpdater }).autoUpdater;
+}
+
+/**
+ * Resolve the install kind of the running app.
+ *
+ * See {@link AppPackageKind}. Only meaningful when `app.isPackaged`; in an
+ * unpackaged build the calling code does not call `packageKind()` (the
+ * `enabled` flag is false), so this may assume the packaged layout.
+ */
+function resolvePackageKind(): AppPackageKind {
+  if (process.platform === 'win32') return 'nsis';
+  if (process.platform !== 'linux') return 'unsupported';
+
+  // 1) resources/package-type — written only by FpmTarget (deb/rpm/pacman).
+  // The AppImage target does not write it, so its presence is a deb/rpm
+  // marker. We ship only deb, so any value other than 'deb' is
+  // 'unsupported' (e.g. a user-built rpm we cannot self-update).
+  const packageTypePath = join(process.resourcesPath ?? '', 'package-type');
+  if (existsSync(packageTypePath)) {
+    try {
+      const value = readFileSync(packageTypePath, 'utf8').trim();
+      return value === 'deb' ? 'deb' : 'unsupported';
+    } catch {
+      return 'unsupported';
+    }
+  }
+
+  // 2) The AppImage runtime sets APPIMAGE to the running file's absolute
+  // path. When the user extracted the AppImage and ran `AppDir/nexus` by
+  // hand, the variable is unset and AppImageUpdater's isUpdaterActive()
+  // returns false — which we surface as 'unsupported'.
+  return process.env.APPIMAGE ? 'appimage' : 'unsupported';
 }
