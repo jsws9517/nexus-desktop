@@ -84,17 +84,14 @@ jobs:
         # works without an X display. `iconutil -c icns` produces build/icon.icns.
         run: npm run icon
 
-      # Compile better-sqlite3 for the Electron ABI (arm64). Cached so the
-      # ~2–4 minute source build only runs when better-sqlite3/electron bump.
-      # Key off the lockfile (stable + tracked) and the compile script (so a
-      # script change forces a fresh build).
-      - name: Cache Electron-ABI native
-        uses: actions/cache@v4
-        id: native-cache
-        with:
-          path: .native/electron/node_modules/better-sqlite3/prebuilds
-          key: electron-native-${{ hashFiles('package-lock.json') }}-${{ hashFiles('scripts/prepare-electron-native.mjs') }}-arm64
-
+      # Compile better-sqlite3 for the Electron ABI (arm64).
+      #
+      # Intentionally NOT cached: `actions/cache` would restore the npm
+      # system-Node-ABI prebuild into .native/electron/node_modules/.../prebuilds,
+      # and `prepare-electron-native`'s stamp check would then short-circuit and
+      # skip the source compile — leaving the asar with a Node-ABI binary that
+      # does not load under Electron 43. Compiling from source on a macOS
+      # runner is ~30–60s, cheap enough to always run.
       - name: Prepare Electron native
         env:
           NATIVE_ARCH: arm64

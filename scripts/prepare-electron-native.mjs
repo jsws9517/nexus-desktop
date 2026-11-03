@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -75,16 +75,65 @@ function run(cmd, args, opts) {
   // into this process's env, which the inner `npm install` then treats as a
   // CLI/env-layer policy and rejects (EALLOWSCRIPTS) for project-scoped installs.
   // The compile must run regardless, so strip it before spawning.
-  const env = { ...process.env, ...opts };
-  delete env.npm_config_allow_scripts;
+  const { cwdOverride, ...env } = opts ?? {};
   const res = spawnSync(cmd, args, {
-    cwd: nativeDir,
-    env,
+    cwd: cwdOverride ?? nativeDir,
+    env: env,
     stdio: 'inherit',
     shell: process.platform === 'win32',
     timeout: 15 * 60_000,
   });
   return res.status === 0;
+}
+
+/**
+ * After `node-gyp rebuild`, better-sqlite3's compiled binary lands under
+ * `.native/electron/node_modules/better-sqlite3/build/`. The exact layout
+ * depends on platform:
+ *   - Linux/macOS (make/Xcode):  build/Release/better_sqlite3.node
+ *   - Windows (MSBuild):         build/better_sqlite3.node  (or sometimes
+ *                                 the link step is skipped and only .obj
+ *                                 files remain — in which case the user must
+ *                                 use the prebuilds/ fallback path)
+ *
+ * The packaged app's `binding.js` only resolves `prebuilds/<plat>-<arch>.node`,
+ * so we copy whichever compiled artifact exists into that slot. Without this
+ * step the npm-shipped Node-ABI prebuild stays in place and the packaged app
+ * crashes on load (V8 ABI mismatch).
+ */
+function placePrebuild(arch) {
+  const plat = process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux';
+  const a = arch === 'arm64' ? 'arm64' : 'x64';
+  const moduleName = join(nativeDir, 'node_modules', nativeModuleName);
+  const buildDir = join(moduleName, 'build');
+  const target = join(moduleName, 'prebuilds', `${plat}-${a}.node`);
+  // Recursively find any .node under build/ (covers build/Release/x.node,
+  // build/x.node, build/obj/x.node, etc.).
+  const found = existsSync(buildDir) ? findNodeArtifacts(buildDir) : [];
+  // Prefer the one matching the target name (better_sqlite3.node) over
+  // test_extension.node.
+  const candidates = found
+    .filter((f) => f.includes('better_sqlite3'))
+    .concat(found.filter((f) => !f.includes('better_sqlite3')));
+  for (const src of candidates) {
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(src, target);
+    const size = statSync(target).size;
+    console.log(`[prepare-electron-native] placed Electron-ABI ${plat}-${a}.node (${(size / 1048576).toFixed(2)} MiB) from ${src}`);
+    return true;
+  }
+  console.error(`[prepare-electron-native] no compiled artifact found under ${buildDir}`);
+  return false;
+}
+
+function findNodeArtifacts(dir) {
+  let out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) out = out.concat(findNodeArtifacts(p));
+    else if (entry.isFile() && entry.name.endsWith('.node')) out.push(p);
+  }
+  return out;
 }
 
 function compile(modVersion) {
@@ -96,23 +145,38 @@ function compile(modVersion) {
   if (!existsSync(pkg)) {
     throw new Error(`Missing ${pkg}`);
   }
-  const env = {
-    // Force a source compile: no prebuild exists for electron-v148, and we want
-    // to skip prebuild-install's attempt to hit the blocked GitHub host.
-    npm_config_build_from_source: 'true',
-    npm_config_runtime: 'electron',
-    npm_config_target: electronVersion,
-    // electronjs.org headers host has a correct SHASUMS256.txt for node-gyp
-    // checksum verification; npmmirror's SHASUMS256.txt is missing the
-    // node-v43.2.0-headers.tar.gz entry and fails the check.
-    npm_config_disturl: 'https://electronjs.org/headers',
-    npm_config_arch: arch,
-    npm_config_platform: process.platform,
-  };
+  const moduleDir = join(nativeDir, 'node_modules', nativeModuleName);
+  if (!existsSync(join(moduleDir, 'binding.gyp'))) {
+    console.error(`[prepare-electron-native] ${moduleDir}/binding.gyp missing — run \`npm install\` in ${nativeDir} first`);
+    return false;
+  }
   console.log(`[prepare-electron-native] compiling ${nativeModuleName}@${modVersion} for electron ${electronVersion} (${process.platform}-${arch})...`);
-  // install runs prebuild-install || node-gyp rebuild; build_from_source makes
-  // it compile for the electron runtime using the npmmirror headers mirror.
-  if (!run('npm', ['install', '--no-audit', '--no-fund'], env)) {
+  // node-gyp rebuild: force a source compile against the Electron ABI.
+  // The npm `prebuild-install` step (run by `npm install`) only fetches a
+  // *system-Node* prebuild into `prebuilds/`; the Electron-ABI binary must be
+  // compiled here into `build/Release/` and then moved into the prebuilds
+  // slot by `placePrebuild()`.
+  const nodeGypArgs = [
+    'rebuild',
+    '--runtime=electron',
+    `--target=${electronVersion}`,
+    `--arch=${arch}`,
+    `--dist-url=https://electronjs.org/headers`,
+    // node-gyp writes the artifact under build/Release/.
+    '--build-dir=build',
+  ];
+  // Locate node-gyp via npx (works without a global install).
+  if (!run(process.execPath === 'node' ? 'npx' : 'npx', ['node-gyp', ...nodeGypArgs], {
+    // The build dir is the better-sqlite3 module dir itself.
+    cwdOverride: moduleDir,
+  })) {
+    return false;
+  }
+  // The npm install above compiles into build/Release/, not prebuilds/.
+  // Move the Electron-ABI artifact into the prebuilds slot that binding.js
+  // resolves at runtime — otherwise the Node-ABI npm prebuild stays put and
+  // the packaged app will crash on load.
+  if (!placePrebuild(arch)) {
     return false;
   }
   if (!probeUnderElectron()) {
