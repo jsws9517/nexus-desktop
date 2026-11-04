@@ -76,6 +76,12 @@ async function main() {
     NEXUS_CONFIG_DIR: join(home, '.nexus'),
     NEXUS_DISABLE_AUTO_UPDATE: '1',
     NEXUS_DISABLE_CORE_UPDATE: '1',
+    // Isolated HOME means no user config, so the default anthropic provider
+    // has no API key and core init refuses to start ("No usable API key").
+    // The smoke test only proves boot + native module load + sessions.db
+    // creation, so a placeholder key is sufficient — no network call is
+    // made at this stage.
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || 'ci-placeholder-key',
   };
   // No GUI on a headless CI session: headless mode keeps the smoke meaningful
   // (Electron still runs the full main-process lifecycle: window creation,
