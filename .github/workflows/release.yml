@@ -93,6 +93,7 @@ jobs:
           ### System Requirements
           - Windows 10/11 (64-bit)
           - Linux x64 (AppImage or deb)
+          - macOS 14+ (Apple Silicon) — beta, ad-hoc signed (see note below)
 
           ### Installation
 
@@ -118,12 +119,23 @@ jobs:
           ```
           Installs to `/opt/nexus` with a `/usr/bin/nexus` wrapper and a desktop entry.
 
+          **macOS (arm64, beta)**
+          1. Download `nexus-${{ steps.version.outputs.tag }}-arm64.dmg`
+          2. Open it and drag `nexus` to `/Applications`
+          3. **Right-click → Open** (or run
+             `xattr -dr com.apple.quarantine /Applications/nexus.app`) — the app is
+             ad-hoc signed and not yet notarized, so Gatekeeper will show
+             "developer cannot be verified" on first launch. This is expected
+             at the beta stage and is unrelated to the app's behavior.
+
           ### In-app Updates
           - Windows: the installer self-updates; no extra steps needed.
           - Linux AppImage: the app downloads a differential update and swaps the file on quit.
           - Linux deb: the app downloads the new `.deb` and requests system authorization
             (polkit / `pkexec`) to install. If the prompt is unavailable, fall back to a
             manual `sudo apt install` of the new `.deb` in this release.
+          - macOS: updates are not yet supported (beta stage). Re-download the latest
+            `.dmg` when a new release appears.
 
           ### Features
           - **Multi-model support** - Claude, GPT and other major LLMs, unified interface switching
@@ -207,6 +219,11 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ steps.version.outputs.tag }}
           body_path: .release_body.md
+          # A tag containing '-' (e.g. v0.3.4-beta.1) becomes a GitHub prerelease.
+          # electron-updater ignores prereleases by default, so stable users are
+          # not auto-updated into an unnotarized mac build. Regular vX.Y.Z tags
+          # are unaffected (contains() is false).
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             release/nexus-Setup-${{ steps.version.outputs.tag }}.exe
             release/latest.yml
@@ -341,3 +358,113 @@ jobs:
             echo "gitee linux manifest attach failed (non-fatal)"
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # macOS packaging (arm64, ad-hoc signed — beta stage, see RELEASE.md §2.6).
+  #
+  # Mirrors the validated dry run in .github/workflows/mac-package-test.yml
+  # step-for-step, but uploads into the GitHub Release that build-and-release
+  # already created. Runs in parallel with build-linux (both `needs` only the
+  # Windows job), so a mac failure does NOT block the Linux release: it just
+  # means the Release is missing its mac assets. Recovery: re-run this single
+  # job (gh run rerun --job) — the upload step uses --clobber, so it attaches
+  # cleanly to the existing release.
+  #
+  # Beta-stage invariants (keep in sync with mac-package-test.yml):
+  #   - ad-hoc signed, not notarized (mac.identity: "-" in package.json)
+  #   - arm64 only (mac.target in package.json is pinned)
+  #   - self-update reports `unsupported` on darwin (src/main/updater.ts), so
+  #     latest-mac.yml is inert until a Developer ID + notarized build lands
+  #   - NOT mirrored to Gitee (dmg is large + slow cross-continent link);
+  #     mac beta assets live on GitHub only
+  # ───────────────────────────────────────────────────────────────────────────
+  build-mac:
+    needs: build-and-release
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update package.json version
+        shell: bash
+        run: node scripts/set-version.mjs "${{ steps.version.outputs.tag }}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin newest nexus-coder (latest vs beta)
+        run: node scripts/set-core-version.mjs
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test (system-Node worker)
+        run: npm run test:smoke
+        env:
+          ANTHROPIC_API_KEY: ci-placeholder-key
+
+      - name: Generate icons (.icns)
+        # electron does offscreen SVG rasterization; on a macOS runner this
+        # works without an X display. `iconutil -c icns` produces
+        # build/icon.icns.
+        run: npm run icon
+
+      # Compile better-sqlite3 for the Electron ABI (arm64).
+      #
+      # Intentionally NOT cached: `actions/cache` would restore the npm
+      # system-Node-ABI prebuild into .native/electron/node_modules/.../prebuilds,
+      # and `prepare-electron-native`'s stamp check would then short-circuit and
+      # skip the source compile — leaving the asar with a Node-ABI binary that
+      # does not load under Electron 43. Compiling from source on a macOS
+      # runner is ~30–60s, cheap enough to always run.
+      - name: Prepare Electron native
+        env:
+          NATIVE_ARCH: arm64
+        run: npm run prepare:electron-native
+
+      - name: Build macOS packages
+        # dmg (user-facing) + zip (the carrier a future notarized build will
+        # use for Mac auto-update; building it now keeps latest-mac.yml
+        # complete). --publish never keeps the upload step in this workflow
+        # the single source of truth for what lands in the Release.
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
+        env:
+          # Ad-hoc identity is set via mac.identity: "-" in package.json;
+          # disable cert discovery so a stray Developer ID on the runner can
+          # never leak into the beta build.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Verify macOS artifacts
+        run: node scripts/verify-mac-release.mjs --arch arm64
+
+      - name: Launch smoke test (packaged .app)
+        # Runs the real .app binary with an isolated HOME; waits for the app's
+        # own log to show core init. Proves the native module actually loaded.
+        run: node scripts/smoke-launch-mac.mjs --arch arm64
+
+      - name: Upload macOS assets to GitHub Release
+        # The Release was created by the Windows job; gh release upload
+        # appends to it. Kept on a single line: a backslash-continuation
+        # inside a YAML multi-line `run:` would keep the next line's leading
+        # spaces as part of the first filename (same trap as build-linux).
+        run: gh release upload "${{ github.ref_name }}" "release/nexus-${{ steps.version.outputs.tag }}-arm64.dmg" "release/nexus-${{ steps.version.outputs.tag }}-arm64.zip" release/latest-mac.yml --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

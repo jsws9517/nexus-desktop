@@ -191,10 +191,21 @@ the workflow fails at the preflight step on purpose.
 
 ## 2.6 macOS (arm64) — beta stage
 
-macOS packaging is validated by `.github/workflows/mac-package-test.yml`
-(manual dispatch, artifacts only — no Release / Gitee). Run it from
-**Actions → macOS Package Test → Run workflow**; the `mac-arm64` artifact
-contains the `.dmg`, `.zip` and `latest-mac.yml` for a real Mac to test.
+macOS packaging is wired into two workflows:
+
+1. **Dry run — `.github/workflows/mac-package-test.yml`** (manual dispatch,
+   artifacts only, no Release / Gitee). Run it from
+   **Actions → macOS Package Test → Run workflow**; the `mac-arm64`
+   artifact contains the `.dmg`, `.zip` and `latest-mac.yml` for a real
+   Mac to test before a tag is cut.
+2. **Real release — the `build-mac` job in `release.yml`**. Runs on
+   every `v*` tag push, in parallel with `build-linux` (both only depend
+   on the Windows job). It mirrors the dry run step-for-step, then
+   `gh release upload --clobber` appends the three mac assets to the
+   GitHub Release the Windows job already created. **mac assets are not
+   mirrored to Gitee** at the beta stage (dmg is large and the
+   cross-continent link is slow — see the `v0.3.1` Windows incident);
+   they live on GitHub only.
 
 Current stage decisions:
 
@@ -216,6 +227,10 @@ Current stage decisions:
 - **Minimal macOS menu bar** (app / Edit / Window with system roles).
   `Menu.setApplicationMenu(null)` remains on Windows/Linux; on macOS a
   null menu would kill Cmd+Q/Cmd+C/Cmd+V.
+- **First mac-bearing tag should be a prerelease** (e.g. `v0.3.4-beta.1`).
+  `release.yml` sets `prerelease: contains(github.ref_name, '-')` on the
+  GitHub Release, so electron-updater (which ignores prereleases by
+  default) will not push it to stable users.
 
 ## 3. Checklist before a stable release
 
@@ -230,3 +245,6 @@ Current stage decisions:
       Cmd+C/V/Q works, settings panel + session list render, one agent turn
       completes, `~/.nexus/` and `~/Library/Application Support/nexus/`
       get populated.
+- [ ] For the first mac-bearing tag use a prerelease version
+      (`vX.Y.Z-beta.N`); `release.yml` marks the GitHub Release as
+      prerelease so stable users are not auto-updated.
