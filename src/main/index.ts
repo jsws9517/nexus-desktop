@@ -133,6 +133,10 @@ async function restartWorker(): Promise<void> {
     // reset happens in the supervisor's recordExit, based on lifetime.
     logf('core worker restarted cleanly; restoring sessions');
     send(CHANNELS.workerRestarted, {});
+    // Hot-restart every open session worker so each tab re-binds on the new
+    // core overlay (the main worker above switched, but tab processes still
+    // hold the old module set and the old per-launch encrypt key).
+    void sessionWorkers.restartAll();
   } else {
     // init failed: back off with the exponential schedule. If the overlay has
     // been permanently disabled by settleOverlay, attempts stay high so the

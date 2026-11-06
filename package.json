@@ -1,7 +1,7 @@
 {
   "name": "nexus-desktop",
   "version": "0.3.3",
-  "nexusCoreVersion": "1.2.0",
+  "nexusCoreVersion": "1.2.1",
   "nexusDesktopProtocol": 1,
   "description": "Nexus — where every agent finds home.",
   "type": "module",
@@ -55,7 +55,7 @@
     "electron-updater": "^6.8.9",
     "exceljs": "^3.4.0",
     "http-cache-semantics": "^4.3.0",
-    "nexus-coder": "^1.2.0",
+    "nexus-coder": "^1.2.1",
     "proxy-addr": "^2.0.8",
     "tar": "^7.5.22",
     "undici": "^8.11.2",
@@ -68,7 +68,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.0.1",
     "electron": "^43.7.7",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "^25.1.0",
     "happy-dom": "^21.0.4",
     "typescript": "^6.0.3"
   },

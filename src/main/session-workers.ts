@@ -35,6 +35,8 @@ interface BoundWorker {
   model: string;
   busy: boolean;
   fanout: boolean;
+  /** Working directory the tab was opened with (null when the process cwd was kept). */
+  cwd: string | null;
   worker: WorkerHost;
 }
 
@@ -283,6 +285,7 @@ export class SessionWorkers {
       model: '',
       busy: false,
       fanout: false,
+      cwd: opts?.cwd ?? null,
       worker,
     };
     this.wire(bound);
@@ -366,6 +369,7 @@ export class SessionWorkers {
       model: '',
       busy: false,
       fanout: false,
+      cwd: opts?.cwd ?? null,
       worker,
     };
     this.wire(bound);
@@ -459,6 +463,78 @@ export class SessionWorkers {
       b.model = typeof status.model === 'string' ? status.model : b.model;
       b.busy = !!status.busy;
     } catch {}
+  }
+
+  /**
+   * Hot-restart every open session worker so it re-binds to the same session
+   * but on the new core overlay. Used after `activateCoreUpdate()` — the main
+   * worker restarts itself but each tab's own OS process still holds the old
+   * nexus-coder module set and the old per-launch `_NEXUS_ENCRYPT_KEY`, so its
+   * in-memory `mem:` blobs can't be decrypted by the new main worker and every
+   * provider call in those tabs fails. Restarting here makes every tab load
+   * the active overlay on its next spawn, matching what a full app restart does.
+   */
+  async restartAll(): Promise<void> {
+    for (const [sessionId, bound] of [...this.map.entries()]) {
+      const launch = this.launch ?? { env: {} };
+      const provider = bound.provider;
+      const model = bound.model;
+      const fanout = bound.fanout;
+      const old = bound.worker;
+      // Drop the old host from the registry before spawning so its exit event
+      // (3s graceful shutdown) can't race the new binding.
+      this.map.delete(sessionId);
+      try {
+        old.stop();
+      } catch {}
+      const b: BoundWorker = { sessionId, provider, model, busy: false, fanout, cwd: bound.cwd, worker: old };
+      let worker: WorkerHost | null = null;
+      try {
+        const w = new WorkerHost(workerScriptPath(), launch);
+        worker = w;
+        w.start();
+        w.onMcpRequest = (op, params) => mcpHub.handle(op, params);
+        // Fresh spawn: run earlyInit first (matching open()) so the Agent
+        // constructor picks up the new overlay, then re-bind.
+        await w.request('earlyInit', bound.cwd ? { cwd: bound.cwd } : undefined);
+        await w.request('initAcp');
+      } catch (err) {
+        this.onLog?.('warn', `session worker restart init failed (sessionId=${sessionId}): ${err instanceof Error ? err.message : String(err)}`);
+        // Restore the row with the OLD (now dying) host so the tab is not
+        // silently lost; the next switch/refresh re-spawns it cleanly.
+        this.map.set(sessionId, b);
+        continue;
+      }
+      const w = worker!;
+      b.worker = w;
+      this.wire(b);
+      try {
+        await w.request('setCwd', { cwd: bound.cwd ?? undefined });
+        await w.request('startSession', { sessionId });
+        const status = (await w.request('getStatus')) as {
+          provider?: string; model?: string; busy?: boolean;
+        };
+        b.provider = typeof status.provider === 'string' && status.provider ? status.provider : provider;
+        b.model = typeof status.model === 'string' && status.model ? status.model : model;
+        b.busy = !!status.busy;
+        await this.applySessionBinding(b);
+        this.map.set(b.sessionId, b);
+        this.onChange?.(this.tabs());
+      } catch (err) {
+        this.onLog?.('warn', `session worker restart re-bind failed (sessionId=${sessionId}): ${err instanceof Error ? err.message : String(err)}`);
+        try { w.stop(); } catch {}
+        this.map.delete(sessionId);
+        this.onChange?.(this.tabs());
+      }
+    }
+    // The pre-warmed spare was built against the old launch env — discard it
+    // so the next open() spawns fresh with the new overlay.
+    if (this.spare) {
+      const s = this.spare;
+      this.spare = null;
+      try { s.stop(); } catch {}
+      this.onLog?.('info', 'Spare worker discarded (core overlay restart)');
+    }
   }
 
   close(sessionId: string): void {
