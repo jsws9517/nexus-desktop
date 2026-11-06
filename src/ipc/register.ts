@@ -452,6 +452,14 @@ export function registerIpc(ctx: IpcContext): void {
     ctx.setPanelIdleMs(ms);
     return { ok: true };
   });
+  // Editing & clipboard: Linux-style select-to-copy / right-click paste. The
+  // renderer applies the value live, so no restart is needed.
+  ipcMain.handle(CHANNELS.getLinuxClipboard, (): boolean => ctx.getLinuxClipboard());
+  ipcMain.handle(CHANNELS.setLinuxClipboard, (_e, enabled: unknown): { ok: boolean } => {
+    if (!isBoolean(enabled)) return { ok: false };
+    ctx.setLinuxClipboard(enabled);
+    return { ok: true };
+  });
   ipcMain.handle(CHANNELS.getResourceState, (): ResourceState => resourceMon.getState());
 
   // ── Multi-tab: per-session worker lifecycle ──
@@ -766,6 +774,26 @@ export function registerIpc(ctx: IpcContext): void {
     } catch {
       return null;
     }
+  });
+
+  // Write a transcript selection to the system clipboard. Used by the
+  // Linux-style select-to-copy / middle-click path, which may not run inside a
+  // user-activation window that `navigator.clipboard` demands.
+  ipcMain.handle(CHANNELS.writeClipboard, (_e, params: { text?: unknown }): { ok: boolean } => {
+    const text = typeof params?.text === 'string' ? params.text : '';
+    if (!text) return { ok: false };
+    clipboard.writeText(text);
+    return { ok: true };
+  });
+
+  // Linux-style right-click paste in the composer. Replay the native paste
+  // command in the focused element so the renderer's `paste` handler still
+  // turns clipboard images/files into attachments (same path as Ctrl+V).
+  ipcMain.handle(CHANNELS.pasteClipboard, (): { ok: boolean } => {
+    const win = ctx.getBrowserWindow();
+    if (!win || win.isDestroyed()) return { ok: false };
+    win.webContents.paste();
+    return { ok: true };
   });
 
   ipcMain.handle(CHANNELS.openConfigWeb, async (): Promise<{ ok: boolean; port?: number; error?: string }> => {

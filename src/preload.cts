@@ -93,6 +93,10 @@ const api = {
   readImagePreview: (path: string) => ipcRenderer.invoke('nexus:readImagePreview', path),
   // Paste image from system clipboard (consistent with coder-core ALT+V).
   pasteImage: () => ipcRenderer.invoke('nexus:pasteImage') as Promise<{ path: string; preview: string } | null>,
+  // Linux-style clipboard actions: write a transcript selection, or replay the
+  // native paste command into the focused composer (right-click paste).
+  writeClipboard: (text: string) => ipcRenderer.invoke('nexus:writeClipboard', { text }) as Promise<{ ok: boolean }>,
+  pasteClipboard: () => ipcRenderer.invoke('nexus:pasteClipboard') as Promise<{ ok: boolean }>,
   // Export an artifact payload (base64 bytes or text) via a save dialog.
   saveArtifact: (defaultName: string, data: string, encoding?: 'base64' | 'text') =>
     ipcRenderer.invoke('nexus:saveArtifact', { defaultName, data, encoding }) as Promise<{ ok: boolean; path?: string; error?: string }>,
@@ -152,6 +156,9 @@ const api = {
   setLazyWorker: (enabled: boolean) => ipcRenderer.invoke('nexus:setLazyWorker', enabled),
   getPanelIdleMs: () => ipcRenderer.invoke('nexus:getPanelIdleMs'),
   setPanelIdleMs: (ms: number) => ipcRenderer.invoke('nexus:setPanelIdleMs', ms),
+  getLinuxClipboard: () => ipcRenderer.invoke('nexus:getLinuxClipboard') as Promise<boolean>,
+  setLinuxClipboard: (enabled: boolean) =>
+    ipcRenderer.invoke('nexus:setLinuxClipboard', enabled) as Promise<{ ok: boolean }>,
   getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
   getRateLimitStatus: () => ipcRenderer.invoke('nexus:getRateLimitStatus'),
 

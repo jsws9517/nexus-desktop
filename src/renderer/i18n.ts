@@ -290,6 +290,7 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   fileSizeMb: { 'zh-CN': '{n} MB', en: '{n} MB' },
   dropHint: { 'zh-CN': '拖拽文件到此处，或 📎 选择', en: 'Drop files here or use 📎 to attach' },
   copied: { 'zh-CN': '已复制', en: 'Copied' },
+  selectionCopied: { 'zh-CN': '已复制选中内容', en: 'Selection copied' },
   copiedSessionId: { 'zh-CN': '会话 ID 已复制', en: 'Session ID copied' },
   copiedProjectDir: { 'zh-CN': '项目目录已复制', en: 'Project dir copied' },
   copy: { 'zh-CN': '复制', en: 'Copy' },
@@ -314,6 +315,25 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   settingsNavAria: { 'zh-CN': '设置导航', en: 'Settings navigation' },
   inputRowsLabel: { 'zh-CN': '输入框行数', en: 'Input box rows' },
   inputRowsHint: { 'zh-CN': '输入框的默认可见行数（1–20）', en: 'Default visible rows for the input box (1–20)' },
+  editingSection: { 'zh-CN': '编辑与剪贴板', en: 'Editing & Clipboard' },
+  linuxClipboardLabel: { 'zh-CN': 'Linux 风格剪贴板', en: 'Linux-style clipboard' },
+  linuxClipboardHint: {
+    'zh-CN':
+      '开启（默认）：历史消息区选中即复制；Ctrl+C 复制选区；中键复制选区且不触发页面自动滚动；输入框右键等同 Ctrl+V（文本 / 图片 / 文件均可粘贴）。关闭：恢复 Windows 习惯——选区不写入剪贴板，中键恢复自动滚动，右键不粘贴，只保留 Ctrl+C / Ctrl+V。',
+    en: 'On (default): selecting transcript text copies it, Ctrl+C copies the selection, middle-click copies the selection without page autoscroll, and right-clicking the composer pastes like Ctrl+V (text, images and files). Off: Windows defaults — selections leave the clipboard alone, middle-click autoscrolls, right-click does not paste, and only Ctrl+C / Ctrl+V copy and paste.',
+  },
+  linuxClipboardEnabled: {
+    'zh-CN': '已开启：Linux 风格剪贴板（立即生效）',
+    en: 'On: Linux-style clipboard (applied immediately)',
+  },
+  linuxClipboardDisabled: {
+    'zh-CN': '已关闭：恢复 Windows 默认编辑行为（立即生效）',
+    en: 'Off: Windows default editing behaviour (applied immediately)',
+  },
+  linuxClipboardSaveFailed: {
+    'zh-CN': '保存失败，请重试',
+    en: 'Failed to save, please try again',
+  },
   resourceSection: { 'zh-CN': '资源与会话', en: 'Resources & Sessions' },
   rulesSection: { 'zh-CN': '全局规则', en: 'Rules' },
   rulesGlobalHint: {

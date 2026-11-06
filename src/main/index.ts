@@ -795,6 +795,8 @@ if (gotLock) {
       setLazyWorker: desktopState.setLazyWorker,
       getPanelIdleMs: desktopState.getPanelIdleMs,
       setPanelIdleMs: desktopState.setPanelIdleMs,
+      getLinuxClipboard: desktopState.getLinuxClipboard,
+      setLinuxClipboard: desktopState.setLinuxClipboard,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
        rateLimitRegistry,

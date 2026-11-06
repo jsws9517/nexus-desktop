@@ -104,6 +104,8 @@ export const CHANNELS = {
   setLazyWorker: 'nexus:setLazyWorker',
   getPanelIdleMs: 'nexus:getPanelIdleMs',
   setPanelIdleMs: 'nexus:setPanelIdleMs',
+  getLinuxClipboard: 'nexus:getLinuxClipboard',
+  setLinuxClipboard: 'nexus:setLinuxClipboard',
   getResourceState: 'nexus:getResourceState',
 
   // renderer → main: main-local (no worker round-trip) channels.
@@ -122,6 +124,8 @@ export const CHANNELS = {
   getGitStatus: 'nexus:getGitStatus',
   readImagePreview: 'nexus:readImagePreview',
   pasteImage: 'nexus:pasteImage',
+  writeClipboard: 'nexus:writeClipboard',
+  pasteClipboard: 'nexus:pasteClipboard',
   saveArtifact: 'nexus:saveArtifact',
   openConfigWeb: 'nexus:openConfigWeb',
   getUpdateState: 'nexus:getUpdateState',

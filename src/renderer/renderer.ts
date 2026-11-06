@@ -16,6 +16,7 @@ import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
+import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 
 interface SessionInfo {
   id: string;
@@ -293,6 +294,10 @@ declare global {
       readImagePreview(path: string): Promise<string | undefined>;
       // Paste image from system clipboard (consistent with coder-core ALT+V).
       pasteImage(): Promise<{ path: string; preview: string } | null>;
+      // Linux-style clipboard actions: write a transcript selection, or replay
+      // the native paste command into the focused composer (right-click paste).
+      writeClipboard(text: string): Promise<{ ok: boolean }>;
+      pasteClipboard(): Promise<{ ok: boolean }>;
       // Export an artifact payload (base64 bytes or text) via a save dialog.
       saveArtifact(defaultName: string, data: string, encoding?: 'base64' | 'text'): Promise<{ ok: boolean; path?: string; error?: string }>;
       getPathForFile(file: File): string;
@@ -338,6 +343,8 @@ declare global {
       setLazyWorker(enabled: boolean): Promise<{ ok: boolean }>;
       getPanelIdleMs(): Promise<number>;
       setPanelIdleMs(ms: number): Promise<{ ok: boolean }>;
+      getLinuxClipboard(): Promise<boolean>;
+      setLinuxClipboard(enabled: boolean): Promise<{ ok: boolean }>;
       getResourceState(): Promise<ResourceStateInfo>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
@@ -5191,6 +5198,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
     { id: 'speech', label: t('speechSection') },
     { id: 'vision', label: t('visionSection') },
     { id: 'startup', label: t('startupSection') },
+    { id: 'editing', label: t('editingSection') },
     { id: 'rules', label: t('rulesSection') },
     { id: 'resource', label: t('resourceSection') },
     { id: 'appearance', label: t('appearanceSection') },
@@ -5331,6 +5339,10 @@ function buildSettings(providersList: ProviderInfo[]): void {
   const startupSection = sectionElements['startup'];
   buildStartupSection(startupSection);
 
+  // Build editing section (clipboard behaviour)
+  const editingSection = sectionElements['editing'];
+  buildEditingSection(editingSection);
+
   // Build rules section (user-level global rules)
   const rulesSection = sectionElements['rules'];
   buildRulesSection(rulesSection);
@@ -5368,6 +5380,37 @@ function buildStartupSection(container?: HTMLElement): void {
     settingsMsg.textContent = v ? t('restoreSessionEnabled') : t('restoreSessionDisabled');
     return window.nexusDesktop.setRestoreSessionOnLaunch(v);
   }, target);
+}
+
+/**
+ * Editing behaviour. Currently the Linux-style clipboard affordances:
+ * select-to-copy / Ctrl+C / middle-click in the transcript and right-click
+ * paste in the composer. Persisted to ~/.nexus/desktop.json and applied live
+ * (no restart) so Windows-heavy users can switch back and forth safely.
+ */
+function buildEditingSection(container?: HTMLElement): void {
+  const target = container || settingsBody;
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('editingSection');
+  target.appendChild(title);
+
+  buildToggle(
+    t('linuxClipboardLabel'),
+    t('linuxClipboardHint'),
+    window.nexusDesktop.getLinuxClipboard().catch(() => true),
+    (v) =>
+      window.nexusDesktop.setLinuxClipboard(v).then((res) => {
+        if (!res.ok) throw new Error(t('linuxClipboardSaveFailed'));
+        applyLinuxClipboard(v);
+        // buildToggle clears settingsMsg once this promise settles, so defer
+        // the confirmation by a tick to keep it visible.
+        setTimeout(() => {
+          settingsMsg.textContent = v ? t('linuxClipboardEnabled') : t('linuxClipboardDisabled');
+        }, 0);
+      }),
+    target,
+  );
 }
 
 /**
@@ -6728,6 +6771,51 @@ inputEl.addEventListener('paste', (e) => {
       .catch(() => {});
   }
 });
+
+// ---------- Linux-style clipboard affordances (toggleable) ----------
+// History: a finished selection copies immediately (Linux "primary selection"
+// feel), and Ctrl/Cmd+C + middle-click are explicit fallbacks. Only the
+// transcript is observed, so editing the composer keeps its native shortcuts.
+// Composer: right-click behaves like Ctrl+V. It replays the native paste
+// command (not a direct clipboard read), so the paste handler above still
+// attaches clipboard images/files exactly as Ctrl+V does. The `+` attach
+// picker and the `◈` RAG picker are separate buttons outside the textarea and
+// are not affected.
+let historySelectionCopy: ReturnType<typeof installHistorySelectionCopy> | null = null;
+let rightClickPaste: ReturnType<typeof installRightClickPaste> | null = null;
+
+/** Install or remove the affordances live (Settings toggle, no reload). */
+function applyLinuxClipboard(enabled: boolean): void {
+  if (enabled) {
+    if (!historySelectionCopy) {
+      historySelectionCopy = installHistorySelectionCopy({
+        root: messagesEl,
+        writeText: (text) => window.nexusDesktop.writeClipboard(text),
+        onCopied: (_text, source) => {
+          if (source !== 'selection') showToast(t('selectionCopied'), 'success', 900);
+        },
+      });
+    }
+    if (!rightClickPaste) {
+      rightClickPaste = installRightClickPaste({
+        input: inputEl,
+        paste: () => window.nexusDesktop.pasteClipboard(),
+      });
+    }
+    return;
+  }
+  historySelectionCopy?.dispose();
+  historySelectionCopy = null;
+  rightClickPaste?.dispose();
+  rightClickPaste = null;
+}
+
+// Opt-out persisted in ~/.nexus/desktop.json; default ON. Resolve before
+// installing so an explicit "off" is honoured from the very first interaction.
+void window.nexusDesktop
+  .getLinuxClipboard()
+  .then((enabled) => applyLinuxClipboard(enabled !== false))
+  .catch(() => applyLinuxClipboard(true));
 
 // ---------- wire events ----------
 window.nexusDesktop.onEvent((event) => {

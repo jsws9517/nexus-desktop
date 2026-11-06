@@ -35,6 +35,9 @@ interface DesktopStateData {
   lastOpenTabs?: string[];
   // Idle auto-collapse delay for the sidebar/file-browser panels (ms).
   panelIdleMs?: number;
+  // Linux-style clipboard affordances (select-to-copy / middle-click copy /
+  // right-click paste in the composer). Defaults to true.
+  linuxClipboard?: boolean;
   // Resource/session governance (desktop-only; the core schema strips unknowns).
   maxTabs?: number;
   memThresholdPct?: number;
@@ -78,6 +81,9 @@ export interface DesktopStateAccess {
   setLazyWorker(enabled: boolean): void;
   getPanelIdleMs(): number;
   setPanelIdleMs(ms: number): void;
+  /** Linux-style clipboard affordances; defaults to enabled. */
+  getLinuxClipboard(): boolean;
+  setLinuxClipboard(enabled: boolean): void;
   /** Model capability blacklist (absorbed from model-blacklist.json). */
   getModelBlacklist(): Record<string, Record<string, string>>;
   setModelBlacklist(data: Record<string, Record<string, string>>): void;
@@ -204,6 +210,11 @@ export function createDesktopState(): DesktopStateStore {
     const v = read().panelIdleMs;
     return typeof v === 'number' && v >= 5_000 && v <= 300_000 ? Math.round(v) : DEFAULT_PANEL_IDLE_MS;
   };
+  /** Linux-style clipboard is opt-out: absent means enabled. */
+  const getLinuxClipboard = (): boolean => {
+    const v = read().linuxClipboard;
+    return typeof v === 'boolean' ? v : true;
+  };
 
   return {
     getDeferMcp(): boolean {
@@ -269,6 +280,10 @@ export function createDesktopState(): DesktopStateStore {
     getPanelIdleMs,
     setPanelIdleMs(ms: number): void {
       write({ panelIdleMs: Math.max(5_000, Math.min(300_000, Math.round(ms))) });
+    },
+    getLinuxClipboard,
+    setLinuxClipboard(enabled: boolean): void {
+      write({ linuxClipboard: enabled });
     },
     getModelBlacklist(): Record<string, Record<string, string>> {
       const bl = read().modelBlacklist;
