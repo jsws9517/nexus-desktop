@@ -1264,11 +1264,20 @@ const slashLogFetched = new Set<string>();
 // before msgItems[0] — the renderer uses it to rebuild the global regenerate()
 // user index regardless of how much history has been loaded.
 const MSG_WINDOW = 40;
+/** Page size used when loading a session's entire history (DB caps one read
+ *  at 500 rows, so "load all" walks the DB in pages and renders once). */
+const HISTORY_PAGE = 500;
 let msgItems: StoredMsg[] = [];
 let msgOffset = 0;
 let msgTotal = 0;
 let msgUserBefore = 0;
 let msgWindowStart = 0;
+/** Sessions whose full history was explicitly loaded (right-click on the
+ *  "load earlier" control). Switching worker tabs keeps them fully expanded;
+ *  closing the tab or restarting the app forgets the marker. */
+const fullyLoadedSessions = new Set<string>();
+/** Guards the (potentially multi-page) full-history load against re-entry. */
+let loadingAllHistory = false;
 
 // ---------- Accessibility & UX utilities ----------
 
@@ -2611,6 +2620,7 @@ function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void
       delete mcpPrefs[s.id];
       saveMcpPrefs();
       clearMsgCache(s.id);
+      fullyLoadedSessions.delete(s.id);
       pinnedIds = pinnedIds.filter((x) => x !== s.id);
       showToast(`会话「${s.name}」已删除`, 'success');
       if (currentSessionId === s.id) {
@@ -2962,6 +2972,15 @@ function renderMessageWindow(scroll = true): void {
     btn.className = 'btn ghost small';
     btn.textContent = t('loadEarlier');
     btn.addEventListener('click', () => void loadEarlier());
+    // Hover hint + right-click bulk load live ONLY on this control. Do not bind
+    // them to the message list: a tooltip/context menu anywhere else would be
+    // an unrelated affordance and would fire while reading the transcript.
+    bar.title = t('loadEarlierHint');
+    btn.title = t('loadEarlierHint');
+    bar.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      void loadAllEarlier();
+    });
     bar.appendChild(btn);
     messagesEl.appendChild(bar);
   }
@@ -2994,6 +3013,72 @@ async function loadEarlier(): Promise<void> {
   messagesEl.scrollTop = messagesEl.scrollHeight - distFromBottom;
 }
 
+/** Read every message row for a session. The DB clamps a single page to 500
+ *  rows, so walk it in pages rather than asking for one oversized window. */
+async function fetchAllHistory(sessionId: string): Promise<{
+  items: StoredMsg[];
+  total: number;
+  userBefore: number;
+}> {
+  const first = await window.nexusDesktop.getMessages(sessionId, {
+    limit: HISTORY_PAGE,
+    offset: 0,
+  });
+  let items = first.items;
+  let total = first.total;
+  while (items.length < total) {
+    const next = await window.nexusDesktop.getMessages(sessionId, {
+      limit: HISTORY_PAGE,
+      offset: items.length,
+    });
+    if (next.items.length === 0) break;
+    items = items.concat(next.items);
+    total = next.total;
+  }
+  return { items, total, userBefore: first.userBefore };
+}
+
+/** Right-click action on the "load earlier" control: replace the windowed
+ *  transcript with the session's entire history in one pass. Kept out of the
+ *  busy path for the same reason as loadEarlier() — re-rendering detaches the
+ *  live streaming nodes. */
+async function loadAllEarlier(): Promise<void> {
+  if (!currentSessionId || msgOffset <= 0 || busy || loadingAllHistory) return;
+  const sessionId = currentSessionId;
+  const bar = messagesEl.querySelector('.load-earlier');
+  const btn = bar?.querySelector<HTMLButtonElement>('button');
+  loadingAllHistory = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = t('loadingAllHistory');
+  }
+  const distFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop;
+  try {
+    const fresh = await fetchAllHistory(sessionId);
+    // The user switched tabs while the pages were in flight: the result no
+    // longer describes the visible conversation.
+    if (sessionId !== currentSessionId) return;
+    fullyLoadedSessions.add(sessionId);
+    msgItems = fresh.items;
+    msgTotal = fresh.total;
+    msgOffset = 0;
+    msgUserBefore = fresh.userBefore;
+    msgWindowStart = 0;
+    renderMessageWindow(false);
+    insertSlashCards();
+    messagesEl.scrollTop = messagesEl.scrollHeight - distFromBottom;
+  } catch (err) {
+    showToast(t('loadAllFailed'), 'error');
+    console.error('Load all history error:', err);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = t('loadEarlier');
+    }
+  } finally {
+    loadingAllHistory = false;
+  }
+}
+
 // localStorage cache of the latest loaded history window, so resuming a session
 // paints instantly and reconciles with fresh data in the background.
 const MAX_MSG_CACHE_SESSIONS = 5;
@@ -3019,9 +3104,15 @@ function loadMsgCache(id: string): MsgCache | null {
 }
 function saveMsgCache(id: string, fresh: { items: StoredMsg[]; total: number; userBefore: number }): void {
   try {
+    // Only the tail is persisted: the cache is for instant first paint, and a
+    // fully-expanded history window would blow the localStorage quota.
+    const items = fresh.items.length > MSG_WINDOW ? fresh.items.slice(-MSG_WINDOW) : fresh.items;
+    const dropped = fresh.items.length - items.length;
+    const userBefore =
+      fresh.userBefore + (dropped > 0 ? countUserRows(fresh.items.slice(0, dropped)) : 0);
     localStorage.setItem(
       msgCacheKey(id),
-      JSON.stringify({ items: fresh.items, total: fresh.total, userBefore: fresh.userBefore, ts: Date.now() }),
+      JSON.stringify({ items, total: fresh.total, userBefore, ts: Date.now() }),
     );
     // Prune stale entries so the cache never grows unbounded.
     const keys: Array<{ key: string; ts: number }> = [];
@@ -3064,7 +3155,11 @@ function applyMsgWindow(fresh: { items: StoredMsg[]; total: number; userBefore: 
 async function syncMsgCache(sessionId: string): Promise<void> {
   if (!sessionId) return;
   try {
-    const fresh = await window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
+    // A session explicitly expanded via right-click stays fully loaded across
+    // turns and transcript edits; anything else keeps the bounded window.
+    const fresh = fullyLoadedSessions.has(sessionId)
+      ? await fetchAllHistory(sessionId)
+      : await window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
     applyMsgWindow(fresh);
     saveMsgCache(sessionId, fresh);
   } catch {}
@@ -3323,7 +3418,11 @@ async function switchTab(sessionId: string): Promise<void> {
   hideChatEmpty();
   resetViewState();
   try {
-    const fresh = await window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
+    // Keep an explicitly expanded session expanded when its worker tab is
+    // reactivated; first restores (and sessions never expanded) stay windowed.
+    const fresh = fullyLoadedSessions.has(sessionId)
+      ? await fetchAllHistory(sessionId)
+      : await window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
     applyMsgWindow(fresh);
     renderMessageWindow();
     saveMsgCache(sessionId, fresh);
@@ -3373,6 +3472,9 @@ async function closeTab(sessionId: string): Promise<void> {
   // so its slash log is re-read from disk instead of a stale cache.
   slashLogFetched.delete(sessionId);
   slashLogCache.delete(sessionId);
+  // Closing the tab ends the explicitly-expanded history mode: reopening the
+  // session is a fresh restore that starts back at the bounded window.
+  fullyLoadedSessions.delete(sessionId);
   try {
     await window.nexusDesktop.closeSession(sessionId);
   } catch {}

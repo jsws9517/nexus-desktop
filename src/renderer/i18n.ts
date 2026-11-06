@@ -155,6 +155,12 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   pagerPrev: { 'zh-CN': '‹ 上一页', en: '‹ Prev' },
   pagerNext: { 'zh-CN': '下一页 ›', en: 'Next ›' },
   loadEarlier: { 'zh-CN': '↑ 加载更早的消息', en: '↑ Load earlier messages' },
+  loadEarlierHint: {
+    'zh-CN': '左键加载更早的消息 · 右键加载全部历史',
+    en: 'Left-click: load earlier · Right-click: load full history',
+  },
+  loadingAllHistory: { 'zh-CN': '正在加载全部历史…', en: 'Loading full history…' },
+  loadAllFailed: { 'zh-CN': '加载全部历史失败', en: 'Failed to load full history' },
   openLog: { 'zh-CN': '打开日志文件', en: 'Open log file' },
   undo: { 'zh-CN': '撤回', en: 'Undo' },
   undoHint: {
