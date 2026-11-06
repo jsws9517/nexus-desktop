@@ -9,7 +9,7 @@
  */
 
 import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
-import { access, readdir, readFile, stat } from 'node:fs/promises';
+import { access, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, sep } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -50,6 +50,34 @@ async function imageDataUrl(path: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Extensions that must never be handed to the OS default handler. The file
+ * browser's "open" actions are for looking at project files, not for
+ * launching programs: a renderer-side injection could otherwise turn a
+ * single click into arbitrary code execution.
+ */
+const DANGEROUS_OPEN_EXT = new Set([
+  '.exe', '.bat', '.cmd', '.com', '.pif', '.scr', '.msi', '.msix', '.appx',
+  '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.hta',
+  '.lnk', '.url', '.reg', '.cpl', '.scf', '.jar',
+  '.sh', '.bash', '.zsh', '.run', '.bin', '.desktop', '.command',
+]);
+
+/** `~/.nexus` (or `NEXUS_CONFIG_DIR` when set). */
+function nexusRoot(): string {
+  return process.env.NEXUS_CONFIG_DIR || join(homedir(), '.nexus');
+}
+
+/** Case-aware "is `child` equal to or below `parent`?" (both canonical). */
+function isWithin(child: string, parent: string): boolean {
+  const win = process.platform === 'win32';
+  const c = win ? normalize(child).toLowerCase() : normalize(child);
+  const p = win ? normalize(parent).toLowerCase() : normalize(parent);
+  if (c === p) return true;
+  const prefix = p.endsWith(sep) ? p : p + sep;
+  return c.startsWith(prefix);
 }
 
 /** Spawn a detached GUI app; resolves false when the binary is missing so the
@@ -100,6 +128,8 @@ export interface IpcContext extends DesktopStateAccess {
   getBrowserWindow: () => BrowserWindow | null;
   openConfigWindow: () => Promise<void>;
   configPort: () => number | undefined;
+  /** Last project dir the user opened (canonical candidate for path containment). */
+  loadSavedCwd: () => string | undefined;
   saveSavedCwd: (cwd: string) => void;
   applyResourceConfig: (monitor: ResourceMonitor) => void;
   countOpenTabs: () => number;
@@ -174,6 +204,68 @@ export function registerIpc(ctx: IpcContext): void {
       }
       return call(method)(_e, params);
     };
+
+  /**
+   * Only the main window's top-level frame may use the file-system IPC. This
+   * blocks calls from iframes/child windows (and anything else that is not the
+   * trusted renderer), which is the first half of the H3 hardening; the
+   * path/extension checks below are the second half.
+   */
+  const isTrustedSender = (event: unknown): boolean => {
+    const win = ctx.getBrowserWindow();
+    if (!win || win.isDestroyed()) return false;
+    const frame = (event as Electron.IpcMainInvokeEvent | undefined)?.senderFrame;
+    return !!frame && frame === win.webContents.mainFrame;
+  };
+
+  /**
+   * Canonical roots a renderer may touch: project dirs the user actually
+   * opened (last saved cwd + every open tab), the shared `~/.nexus` data dir,
+   * the OS temp dir, and the process working directory (the fallback project
+   * dir for sessions opened without one).
+   */
+  const allowedRoots = async (): Promise<string[]> => {
+    const candidates = [
+      ctx.loadSavedCwd(),
+      ...sessionWorkers.cwds(),
+      nexusRoot(),
+      tmpdir(),
+      process.cwd(),
+    ].filter((p): p is string => !!p);
+    const out: string[] = [];
+    for (const p of candidates) {
+      try {
+        out.push(await realpath(p));
+      } catch {
+        /* root is missing: ignore it */
+      }
+    }
+    return out;
+  };
+
+  /** Resolve an open/edit request to a canonical path that is safe to hand to the OS. */
+  const resolveOpenable = async (
+    raw: unknown,
+  ): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+    if (!isNonEmptyString(raw) || raw.length > 4096 || !isAbsolute(raw)) {
+      return { ok: false, error: 'invalid path' };
+    }
+    let real: string;
+    try {
+      real = await realpath(raw);
+    } catch {
+      return { ok: false, error: 'invalid path' };
+    }
+    const ext = extname(real).toLowerCase();
+    if (DANGEROUS_OPEN_EXT.has(ext)) {
+      return { ok: false, error: `refusing to open executable file (${ext})` };
+    }
+    const roots = await allowedRoots();
+    if (!roots.some((allowed) => isWithin(real, allowed))) {
+      return { ok: false, error: 'path outside allowed roots' };
+    }
+    return { ok: true, path: real };
+  };
 
   ipcMain.handle(CHANNELS.chat, callForSession('chat'));
   // Steer is the mid-turn counterpart of chat: it must reach the worker even
@@ -547,7 +639,8 @@ export function registerIpc(ctx: IpcContext): void {
     return { canceled: false, paths: result.filePaths };
   });
 
-  ipcMain.handle(CHANNELS.revealFile, (_e, path: unknown): { ok: boolean } => {
+  ipcMain.handle(CHANNELS.revealFile, (event, path: unknown): { ok: boolean } => {
+    if (!isTrustedSender(event)) return { ok: false };
     if (isNonEmptyString(path)) shell.showItemInFolder(path);
     return { ok: true };
   });
@@ -610,26 +703,31 @@ export function registerIpc(ctx: IpcContext): void {
   });
 
   // Right-panel file browser: list one directory level with entry types/sizes.
-  // Path containment is enforced against the caller-supplied project root so a
-  // renderer can never enumerate directories outside the active project.
+  // The root must be one of the project dirs the user actually opened; `path`
+  // is resolved with realpath first so symlinks/junctions cannot escape it.
   const MAX_LIST_ENTRIES = 2000;
   ipcMain.handle(
     CHANNELS.listDirectory,
-    async (_e, params: { root?: unknown; path?: unknown }): Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }> => {
+    async (event, params: { root?: unknown; path?: unknown }): Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }> => {
+      if (!isTrustedSender(event)) return { ok: false, error: 'untrusted sender' };
       const root = typeof params?.root === 'string' ? params.root : '';
       const path = typeof params?.path === 'string' ? params.path : '';
       if (!root || !path || path.length > 4096 || root.length > 4096) return { ok: false, error: 'invalid path' };
-      const rootNorm = normalize(root);
-      const pathNorm = normalize(path);
-      const isWin = process.platform === 'win32';
-      const rootPrefix = rootNorm.endsWith(sep) ? rootNorm : rootNorm + sep;
-      const isContained =
-        pathNorm === rootNorm ||
-        (isWin ? pathNorm.toLowerCase().startsWith(rootPrefix.toLowerCase()) : pathNorm.startsWith(rootPrefix));
-      if (!isContained) return { ok: false, error: 'path outside project root' };
+      let rootReal: string;
+      let pathReal: string;
+      try {
+        [rootReal, pathReal] = await Promise.all([realpath(root), realpath(path)]);
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+      const roots = await allowedRoots();
+      if (!roots.some((allowed) => isWithin(rootReal, allowed))) {
+        return { ok: false, error: 'path outside project root' };
+      }
+      if (!isWithin(pathReal, rootReal)) return { ok: false, error: 'path outside project root' };
       let dirents: import('node:fs').Dirent[];
       try {
-        dirents = await readdir(pathNorm, { withFileTypes: true });
+        dirents = await readdir(pathReal, { withFileTypes: true });
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
@@ -644,7 +742,7 @@ export function registerIpc(ctx: IpcContext): void {
         let size = 0;
         if (d.isFile()) {
           try {
-            size = (await stat(join(pathNorm, d.name))).size;
+            size = (await stat(join(pathReal, d.name))).size;
           } catch { /* size 0 on stat failure */ }
         }
         entries.push({ name: d.name, type: d.isDirectory() ? 'directory' : 'file', size });
@@ -658,12 +756,14 @@ export function registerIpc(ctx: IpcContext): void {
   );
 
   // Open a file with the OS default application (right-panel file browser).
-  ipcMain.handle(CHANNELS.openExternalFile, async (_e, path: unknown): Promise<{ ok: boolean; error?: string }> => {
-    if (!isNonEmptyString(path) || path.length > 4096 || !isAbsolute(path)) return { ok: false, error: 'invalid path' };
+  ipcMain.handle(CHANNELS.openExternalFile, async (event, path: unknown): Promise<{ ok: boolean; error?: string }> => {
+    if (!isTrustedSender(event)) return { ok: false, error: 'untrusted sender' };
+    const resolved = await resolveOpenable(path);
+    if (!resolved.ok) return resolved;
     try {
-      const st = await stat(path);
+      const st = await stat(resolved.path);
       if (!st.isFile()) return { ok: false, error: 'not a file' };
-      const err = await shell.openPath(path);
+      const err = await shell.openPath(resolved.path);
       return err ? { ok: false, error: err } : { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -674,13 +774,15 @@ export function registerIpc(ctx: IpcContext): void {
   // On Windows the OS association (via shell.openPath) is used because that is
   // the only reliable way to surface the editor; elsewhere a dedicated editor
   // is spawned with a fallback to the OS default application.
-  ipcMain.handle(CHANNELS.openInEditor, async (_e, path: unknown): Promise<{ ok: boolean; error?: string }> => {
-    if (!isNonEmptyString(path) || path.length > 4096 || !isAbsolute(path)) return { ok: false, error: 'invalid path' };
+  ipcMain.handle(CHANNELS.openInEditor, async (event, path: unknown): Promise<{ ok: boolean; error?: string }> => {
+    if (!isTrustedSender(event)) return { ok: false, error: 'untrusted sender' };
+    const resolved = await resolveOpenable(path);
+    if (!resolved.ok) return resolved;
     try {
-      const st = await stat(path);
+      const st = await stat(resolved.path);
       if (!st.isFile()) return { ok: false, error: 'not a file' };
-      if (await openInTextEditor(path)) return { ok: true };
-      const err = await shell.openPath(path);
+      if (await openInTextEditor(resolved.path)) return { ok: true };
+      const err = await shell.openPath(resolved.path);
       return err ? { ok: false, error: err } : { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -690,7 +792,8 @@ export function registerIpc(ctx: IpcContext): void {
   // Git working-tree status for the right-panel file browser badges. Entry
   // paths are absolute (forward slashes); git-internal resolves the repo root
   // from 	oot itself, so a path outside any repo just returns isRepo:false.
-  ipcMain.handle(CHANNELS.getGitStatus, async (_e, root: unknown): Promise<RepoStatusResult> => {
+  ipcMain.handle(CHANNELS.getGitStatus, async (event, root: unknown): Promise<RepoStatusResult> => {
+    if (!isTrustedSender(event)) return { ok: false, isRepo: false, error: 'untrusted sender' };
     if (!isNonEmptyString(root) || root.length > 4096) return { ok: false, isRepo: false, error: 'invalid path' };
     try {
       return await getRepoGitStatus(root);
@@ -732,7 +835,8 @@ export function registerIpc(ctx: IpcContext): void {
   // chips with size and thumbnails without exposing the fs to the renderer.
   ipcMain.handle(
     CHANNELS.getFileInfos,
-    async (_e, paths: unknown): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>> => {
+    async (event, paths: unknown): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>> => {
+      if (!isTrustedSender(event)) return [];
       if (!isValidPathList(paths)) return [];
       const out: Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }> = [];
       for (const p of paths) {
@@ -754,7 +858,8 @@ export function registerIpc(ctx: IpcContext): void {
   );
 
   // Load a local image as a data URL for markdown rendering (hydrateImages).
-  ipcMain.handle(CHANNELS.readImagePreview, async (_e, path: unknown): Promise<string | undefined> => {
+  ipcMain.handle(CHANNELS.readImagePreview, async (event, path: unknown): Promise<string | undefined> => {
+    if (!isTrustedSender(event)) return undefined;
     if (!isString(path) || path.length === 0 || path.length > 4096) return undefined;
     return imageDataUrl(path);
   });

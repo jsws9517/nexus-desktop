@@ -183,16 +183,16 @@ test('a manifest marked signed:true is hard-refused without its signature', asyn
     const checked = await mgr.check(newRoot());
     assert.equal(checked.available, false);
     assert.equal(mgr.getState().status, 'error');
-    assert.match(String(mgr.getState().error), /signed/i);
+    assert.match(String(mgr.getState().error), /signature/i);
   } finally {
     feed.close();
   }
 });
 
-test('an unsigned legacy manifest is still downloadable (trust-by-hash)', async () => {
+test('an unsigned legacy manifest is refused (fail-closed)', async () => {
   const out = fs.mkdtempSync(path.join(tmpdir(), 'core-feed-'));
   const tarball = publish(out, 'v9.9.9');
-  // Strip the signed marker: mimic a pre-gate manifest.
+  // Strip the signed marker and drop the .sig: mimic a pre-gate manifest.
   const manifestPath = path.join(out, 'latest-core.yml');
   const text = fs.readFileSync(manifestPath, 'utf8').replace(/^signed: true$/m, '');
   fs.writeFileSync(manifestPath, text);
@@ -204,9 +204,9 @@ test('an unsigned legacy manifest is still downloadable (trust-by-hash)', async 
     mgr.currentVersionProvider = () => '1.0.0';
     const root = newRoot();
     const checked = await mgr.check(root);
-    assert.equal(checked.available, true, 'legacy unsigned manifest stays available');
-    const dl = await mgr.download(root);
-    assert.equal(dl.status, 'downloaded', dl.error ?? '');
+    assert.equal(checked.available, false, 'unsigned manifest must not be offered');
+    assert.equal(mgr.getState().status, 'error');
+    assert.match(String(mgr.getState().error), /signature/i);
   } finally {
     feed.close();
   }

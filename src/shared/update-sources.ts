@@ -103,6 +103,22 @@ export function appManifestFeeds(): FeedSource[] {
 }
 
 /**
+ * Authoritative (non-mirror) manifest sources for a concrete version.
+ *
+ * Mirrors exist to make the *binary* download fast, but they are untrusted
+ * transport: each one could serve a different `latest.yml`. The update client
+ * therefore cross-checks the discovered manifest against these two official
+ * hosts (GitHub direct + Gitee) before downloading anything. Both serve tiny
+ * files, so this stays cheap even on networks where only mirrors are fast.
+ */
+export function appAuthoritativeFeeds(version: string): FeedSource[] {
+  return [
+    { label: GITHUB_SOURCE.label, url: githubReleaseBase(version) },
+    { label: 'Gitee', url: giteeReleaseBase(version) },
+  ];
+}
+
+/**
  * Pinned, version-fixed app installer feeds (mirrors + GitHub direct).
  * Gitee is deliberately excluded: its published latest.yml pins the exe to
  * GitHub absolute URLs (by design), so it can only serve as a manifest

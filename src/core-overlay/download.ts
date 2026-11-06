@@ -154,15 +154,14 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
 
 /**
  * Verify the ed25519 signature on a manifest text against its .sig sidecar.
- * Returns true when the signature is valid, false when missing/unverifiable,
- * and throws when the signature is present but invalid.
- *
- * When no public key is available the function returns true (signature
- * verification is opt-in; a missing key means "trust by hash only").
+ * Returns true only when the signature is valid and a public key is
+ * configured. A missing key or missing signature is a verification failure
+ * (fail-closed) — otherwise a hostile feed could downgrade the update by
+ * simply omitting the `.sig` sidecar.
  */
 export function verifyManifestSignature(manifestText: string, sigHex: string): boolean {
   const pubKey = getPubKey();
-  if (!pubKey || !sigHex) return true;
+  if (!pubKey || !sigHex) return false;
   try {
     const sig = Buffer.from(sigHex.trim(), 'hex');
     return cryptoVerify(null, Buffer.from(manifestText), pubKey, sig);
@@ -234,11 +233,11 @@ async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestIn
  * Fetch latest-core.yml (and its .sig) from a feed URL.
  * Verifies the ed25519 signature when a public key is available.
  *
- * A manifest that the publisher marked `signed: true` must carry a valid
- * signature; a missing or unverifiable one is a hard error. Unsigned legacy
- * manifests (no `signed` line) fall back to trust-by-hash: the signature is
- * verified when a key and a sidecar are present, but a missing sidecar does
- * not block the download.
+ * Every manifest must carry a valid ed25519 signature. This is deliberately
+ * fail-closed: a missing `.sig` sidecar or an unavailable public key is a
+ * hard error, so a hostile feed cannot bypass verification by omitting the
+ * signature (the old `signed: true` opt-in marker was controlled by the
+ * untrusted manifest itself and therefore offered no protection).
  *
  * Returns entries sorted descending by version (first = newest).
  */
@@ -251,21 +250,18 @@ export async function fetchCoreManifest(feedUrl: string): Promise<ManifestEntry[
   if (!ymlRes.ok) throw new Error(`HTTP ${ymlRes.status}`);
   const text = await ymlRes.text();
   const entries = parseCoreManifest(text);
-  const sigHex = sigRes?.ok ? await sigRes.text() : '';
-  const pubKey = getPubKey();
-  const requiresSig = entries.some((e) => e.signed);
-  if (requiresSig) {
-    if (!sigHex) {
-      throw new CoreManifestSignatureError('core manifest is signed but its signature is missing');
-    }
-    if (pubKey && !verifyManifestSignature(text, sigHex)) {
-      throw new CoreManifestSignatureError('core manifest signature verification failed');
-    }
-  } else if (sigHex) {
-    // Legacy manifest: verify when we can, never hard-block.
-    if (pubKey && !verifyManifestSignature(text, sigHex)) {
-      throw new CoreManifestSignatureError('core manifest signature verification failed');
-    }
+  if (!sigRes?.ok) {
+    throw new CoreManifestSignatureError('core manifest signature is missing');
+  }
+  const sigHex = (await sigRes.text()).trim();
+  if (!sigHex) {
+    throw new CoreManifestSignatureError('core manifest signature is missing');
+  }
+  if (!getPubKey()) {
+    throw new CoreManifestSignatureError('no core signing public key configured');
+  }
+  if (!verifyManifestSignature(text, sigHex)) {
+    throw new CoreManifestSignatureError('core manifest signature verification failed');
   }
   return entries;
 }

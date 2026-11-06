@@ -7,6 +7,9 @@
  * src/fetch/src/mcp_server_fetch/server.py.
  */
 
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+
 export type FetchToolResult = { content: string; isError: boolean };
 
 export const FETCH_TOOLS = new Set(['fetch']);
@@ -62,6 +65,147 @@ const UA_TOKEN = 'ModelContextProtocol';
 
 const S = (v: unknown): string => (typeof v === 'string' ? v : '');
 const N = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+
+// ── SSRF guard ────────────────────────────────────────────────────────────────
+//
+// The fetch tool is used by unattended agents for legitimate local work
+// (`http://localhost:3000` self-checks, local model servers, LAN devices), so
+// loopback/private ranges stay allowed by default. What is never allowed is
+// the cloud-metadata / link-local surface: those endpoints hand out
+// credentials and are never a legitimate agent target. Set
+// NEXUS_FETCH_ALLOW_PRIVATE=0 to also reject loopback / RFC1918 / ULA hosts.
+const ALLOW_PRIVATE_HOSTS = !/^(0|false|no|off)$/i.test(process.env.NEXUS_FETCH_ALLOW_PRIVATE ?? 'true');
+
+/** Hostnames that reach cloud instance metadata on common providers. */
+const METADATA_HOSTS = new Set([
+  'metadata.google.internal',
+  'metadata.goog',
+  'metadata.tencentyun.com',
+  'metadata.azure.com',
+  'instance-data',
+]);
+
+function isAlwaysBlockedAddress(addr: string): boolean {
+  const ip = addr.trim().toLowerCase();
+  const family = isIP(ip);
+  if (family === 4) {
+    if (ip === '0.0.0.0' || ip.startsWith('0.')) return true;
+    if (ip.startsWith('169.254.')) return true; // link-local + 169.254.169.254
+    if (ip === '100.100.100.200') return true; // Alibaba Cloud metadata
+    return false;
+  }
+  if (family === 6) {
+    if (ip === '::' || ip === '0:0:0:0:0:0:0:0') return true;
+    if (ip === 'fd00:ec2::254') return true; // AWS IMDS over IPv6
+    if (ip.startsWith('fe8') || ip.startsWith('fe9') || ip.startsWith('fea') || ip.startsWith('feb')) {
+      return true; // fe80::/10 link-local
+    }
+    // IPv4-mapped IPv6 (::ffff:169.254.169.254) — reuse the v4 rules.
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
+    if (mapped) return isAlwaysBlockedAddress(mapped[1]);
+    return false;
+  }
+  return false;
+}
+
+function isPrivateAddress(addr: string): boolean {
+  const ip = addr.trim().toLowerCase();
+  const family = isIP(ip);
+  if (family === 4) {
+    if (ip.startsWith('10.') || ip.startsWith('127.')) return true;
+    if (ip.startsWith('192.168.')) return true;
+    const m = /^172\.(\d+)\./.exec(ip);
+    if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+    const cgnat = /^100\.(\d+)\./.exec(ip);
+    if (cgnat && Number(cgnat[1]) >= 64 && Number(cgnat[1]) <= 127) return true;
+    if (/^198\.(18|19)\./.test(ip)) return true;
+    if (/^(22[4-9]|23\d|24\d|25[0-5])\./.test(ip)) return true; // multicast/reserved
+    return false;
+  }
+  if (family === 6) {
+    if (ip === '::1' || ip === '0:0:0:0:0:0:0:1') return true;
+    if (ip.startsWith('fc') || ip.startsWith('fd')) return true; // ULA
+    if (ip.startsWith('fe8') || ip.startsWith('fe9') || ip.startsWith('fea') || ip.startsWith('feb')) return true;
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
+    if (mapped) return isPrivateAddress(mapped[1]);
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Validate one URL before any bytes leave the machine:
+ *   - http/https only,
+ *   - metadata hostnames always rejected,
+ *   - resolved addresses checked (all of them, so a split-horizon / rebinding
+ *     answer cannot smuggle a blocked address past the check),
+ *   - loopback/private rejected only when NEXUS_FETCH_ALLOW_PRIVATE=0.
+ */
+async function assertUrlAllowed(rawUrl: string): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`Input should be a valid URL`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Input should be a valid URL`);
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase().replace(/\.$/, '');
+  if (!host) throw new Error(`Input should be a valid URL`);
+  if (METADATA_HOSTS.has(host) || host.endsWith('.metadata.google.internal')) {
+    throw new Error(`Refusing to fetch ${rawUrl}: cloud metadata host`);
+  }
+  if (!ALLOW_PRIVATE_HOSTS && (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local'))) {
+    throw new Error(`Refusing to fetch ${rawUrl}: private host`);
+  }
+  let addresses: string[];
+  if (isIP(host)) {
+    addresses = [host];
+  } else {
+    try {
+      const results = await lookup(host, { all: true, verbatim: true });
+      addresses = results.map((r) => r.address);
+    } catch {
+      throw new Error(`Failed to resolve host ${host}`);
+    }
+    if (addresses.length === 0) throw new Error(`Failed to resolve host ${host}`);
+  }
+  for (const addr of addresses) {
+    if (isAlwaysBlockedAddress(addr)) {
+      throw new Error(`Refusing to fetch ${rawUrl}: link-local/metadata address ${addr}`);
+    }
+    if (!ALLOW_PRIVATE_HOSTS && isPrivateAddress(addr)) {
+      throw new Error(`Refusing to fetch ${rawUrl}: private address ${addr}`);
+    }
+  }
+  return parsed;
+}
+
+const MAX_REDIRECTS = 5;
+
+/**
+ * `fetch` with per-hop SSRF validation. Native `redirect: 'follow'` would
+ * re-validate only the first URL, so a public URL that 302s to
+ * `http://169.254.169.254/…` would bypass the initial check.
+ */
+async function fetchWithSafety(rawUrl: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  let current = await assertUrlAllowed(rawUrl);
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    const res = await fetch(current.href, {
+      ...init,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get('location');
+    await res.body?.cancel().catch(() => undefined);
+    if (!location) return res;
+    current = await assertUrlAllowed(new URL(location, current).href);
+  }
+  throw new Error(`Too many redirects fetching ${rawUrl}`);
+}
+
 
 function robotsUrlFor(url: string): string {
   const u = new URL(url);
@@ -119,13 +263,16 @@ function canFetchRobots(robotsTxt: string, url: string, userAgent: string): bool
 
 async function checkRobots(url: string): Promise<void> {
   const robotsUrl = robotsUrlFor(url);
+  try {
+    await assertUrlAllowed(robotsUrl);
+  } catch (e) {
+    throw e instanceof Error ? e : new Error(String(e));
+  }
   let res: Response;
   try {
-    res = await fetch(robotsUrl, {
+    res = await fetchWithSafety(robotsUrl, {
       headers: { 'User-Agent': UA_AUTONOMOUS },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(15000),
-    });
+    }, 15000);
   } catch (e) {
     throw new Error(`Failed to fetch robots.txt ${robotsUrl} due to a connection issue`);
   }
@@ -245,11 +392,9 @@ function normalizeText(src: string): string {
 async function fetchUrl(url: string, forceRaw: boolean): Promise<{ content: string; prefix: string }> {
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await fetchWithSafety(url, {
       headers: { 'User-Agent': UA_AUTONOMOUS },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(30000),
-    });
+    }, 30000);
   } catch (e) {
     throw new Error(`Failed to fetch ${url}: ${String(e)}`);
   }

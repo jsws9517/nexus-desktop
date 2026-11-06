@@ -53,22 +53,22 @@ test('verifyManifestSignature rejects tampered manifest', async () => {
   });
 });
 
-test('verifyManifestSignature returns true when no public key is configured', async () => {
+test('verifyManifestSignature fails closed when no public key is configured', async () => {
   const orig = process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX;
   // Set to empty string so getPubKey() falls through to null (no bundled key in test env)
   process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX = '';
   try {
     const mod = await reimportDownload();
-    assert.equal(mod.verifyManifestSignature('any text', 'deadbeef'), true);
+    assert.equal(mod.verifyManifestSignature('any text', 'deadbeef'), false);
   } finally {
     if (orig !== undefined) process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX = orig;
     else delete process.env.NEXUS_CORE_SIGNING_PUBKEY_HEX;
   }
 });
 
-test('verifyManifestSignature returns true when no signature provided', async () => {
+test('verifyManifestSignature fails closed when no signature provided', async () => {
   await withPubKey(PUB_B64, async (mod) => {
-    assert.equal(mod.verifyManifestSignature('any text', ''), true);
+    assert.equal(mod.verifyManifestSignature('any text', ''), false);
   });
 });
 

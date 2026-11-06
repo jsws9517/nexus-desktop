@@ -99,6 +99,19 @@ export class SessionWorkers {
     return out;
   }
 
+  /**
+   * Absolute project dirs of every open tab. Used by IPC path containment:
+   * a renderer may only browse files under a project the user actually
+   * opened (plus the shared `~/.nexus` / temp roots in the IPC layer).
+   */
+  cwds(): string[] {
+    const out: string[] = [];
+    for (const b of this.map.values()) {
+      if (b.cwd) out.push(b.cwd);
+    }
+    return out;
+  }
+
   get (sessionId: string): OpenTabInfo | undefined {
     const b = this.map.get(sessionId);
     return b ? { sessionId: b.sessionId, provider: b.provider, model: b.model, busy: b.busy } : undefined;

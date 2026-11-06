@@ -8,7 +8,12 @@
  */
 
 export function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function escapeHtml(s: string): string {
@@ -24,7 +29,7 @@ export function renderInline(src: string): string {
   const safe = esc(src);
   // Images first (data:/blob: inline, local paths get a data-src for hydration).
   let out = safe.replace(IMG_RE, (m, alt, url) => {
-    if (/^(data:|blob:|https?:\/\/)/.test(url)) {
+    if (/^(data:image\/|blob:|https?:\/\/)/.test(url)) {
       return `<img alt="${alt}" src="${url}" loading="lazy" />`;
     }
     if (url.startsWith('local:')) {
@@ -35,7 +40,7 @@ export function renderInline(src: string): string {
   out = out
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(LINK_RE, '<a href="$2" target="_blank">$1</a>');
+    .replace(LINK_RE, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   return out;
 }
 

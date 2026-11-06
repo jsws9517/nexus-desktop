@@ -1,10 +1,13 @@
 import { app } from 'electron';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import updaterModule from 'electron-updater';
-import type { UpdateInfo } from 'electron-updater';
+import type { UpdateDownloadedEvent, UpdateInfo } from 'electron-updater';
 import {
   GITEE_REPO,
+  appAuthoritativeFeeds,
   appManifestFileName,
   appManifestFeeds,
   appVersionFeeds,
@@ -59,6 +62,12 @@ export interface DiscoveredUpdate {
    * URL when the feed (Gitee) pins the asset at a GitHub address. */
   fileUrl: string;
   fileSize: number;
+  /**
+   * Base64 SHA-512 of the selected installer as declared by the manifest.
+   * Cross-checked against the authoritative GitHub/Gitee manifest and then
+   * re-verified against the downloaded bytes.
+   */
+  sha512: string | null;
 }
 
 /** electron-updater's autoUpdater resolved lazily (see getAutoUpdater). */
@@ -99,6 +108,14 @@ export class Updater {
   private rankedFeeds: FeedSource[] = [];
   /** `files[0].size` of the discovered update, 0 when unknown. */
   private expectedFullSize = 0;
+  /**
+   * SHA-512 (base64) of the selected installer, taken from the AUTHORITATIVE
+   * manifest (GitHub/Gitee), never from the mirror that won the download race.
+   * Null when verification is impossible (dev-only NEXUS_UPDATE_MIRROR).
+   */
+  private trustedSha512: string | null = null;
+  /** Pending post-download integrity check for the current attempt. */
+  private verification: { promise: Promise<boolean>; resolve: (ok: boolean) => void } | null = null;
   /**
    * 'diff' when the old blockmap cache was verified (seeded), 'full' when
    * differential is disabled for this session, null before any download.
@@ -144,6 +161,9 @@ export class Updater {
     this.enabled = true;
     const autoUpdater = getAutoUpdater();
     autoUpdater.autoDownload = false;
+    // Never accept a manifest that advertises an older version: a hostile
+    // mirror could otherwise force a downgrade to a vulnerable build.
+    autoUpdater.allowDowngrade = false;
     //
     // Install-on-quit policy:
     //   - Windows NSIS and Linux AppImage: silent, no system prompt → allow.
@@ -193,11 +213,57 @@ export class Updater {
       });
     });
     autoUpdater.on('update-downloaded', (info) => {
-      this.setState({ status: 'downloaded', version: info.version });
+      // Hashing a large installer is async: keep the public state at
+      // 'downloading' until the bytes match the authoritative manifest, so
+      // the UI can never offer "Restart & Install" for an unverified file.
+      void this.handleDownloaded(info);
     });
     autoUpdater.on('error', (err) => {
       this.setState({ status: 'error', message: err?.message ?? String(err) });
     });
+  }
+
+  /**
+   * Verify the freshly downloaded installer against the authoritative
+   * SHA-512 before exposing the 'downloaded' state. Mirrors are untrusted
+   * transport, so this is the last line of defence after the manifest
+   * cross-check in {@link check}.
+   */
+  private async handleDownloaded(info: UpdateDownloadedEvent): Promise<void> {
+    let ok = true;
+    let message = '';
+    const expected = this.trustedSha512;
+    if (expected) {
+      if (!info.downloadedFile) {
+        ok = false;
+        message = 'Downloaded update is missing its file path';
+      } else {
+        try {
+          const actual = await sha512File(info.downloadedFile);
+          if (actual !== expected) {
+            ok = false;
+            message = 'Downloaded update failed integrity verification';
+            logger.error('update download: sha512 mismatch, discarding installer');
+          }
+        } catch (e) {
+          ok = false;
+          message = `Could not verify the downloaded update: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+    }
+    if (!ok) {
+      // Remove the tampered/corrupt installer so a later install-on-quit can
+      // never pick it up.
+      if (info.downloadedFile) {
+        await rm(info.downloadedFile, { force: true }).catch(() => undefined);
+      }
+      this.setState({ status: 'error', message });
+    } else {
+      this.setState({ status: 'downloaded', version: info.version });
+    }
+    const pending = this.verification;
+    this.verification = null;
+    pending?.resolve(ok);
   }
 
   getState(): UpdateState {
@@ -236,8 +302,48 @@ export class Updater {
         // date", which is why checks felt slow).
         this.source = latest.feed;
         this.rankedFeeds = [];
+        this.trustedSha512 = null;
         this.setState({ status: 'not-available', version: latest.version });
         return this.withSource();
+      }
+      // H1: a mirror may be the fastest (or only reachable) host, but it is
+      // untrusted transport. Cross-check the winning manifest against the
+      // official GitHub/Gitee release before downloading: the version and
+      // the installer SHA-512 must match exactly. Without this, a single
+      // compromised mirror could serve both a poisoned latest.yml and a
+      // matching installer.
+      if (process.env.NEXUS_UPDATE_MIRROR) {
+        // Explicit dev/test override: the mirror is the trust root by design.
+        logger.warn('update check: NEXUS_UPDATE_MIRROR set; skipping authoritative manifest cross-check');
+        this.trustedSha512 = latest.sha512;
+      } else {
+        const authoritative = await this.fetchAuthoritative(latest.version, this.manifestName());
+        if (!authoritative) {
+          this.source = latest.feed;
+          this.rankedFeeds = [];
+          this.trustedSha512 = null;
+          this.setState({
+            status: 'error',
+            message: 'Could not verify the update manifest against GitHub or Gitee',
+          });
+          return this.withSource();
+        }
+        if (
+          compareVersions(authoritative.version, latest.version) !== 0 ||
+          !latest.sha512 ||
+          !authoritative.sha512 ||
+          latest.sha512 !== authoritative.sha512
+        ) {
+          this.source = latest.feed;
+          this.rankedFeeds = [];
+          this.trustedSha512 = null;
+          this.setState({
+            status: 'error',
+            message: 'Update manifest does not match the authoritative GitHub/Gitee release',
+          });
+          return this.withSource();
+        }
+        this.trustedSha512 = authoritative.sha512;
       }
       const ranked = await this.raceFeeds(latest);
       this.rankedFeeds = ranked;
@@ -367,10 +473,16 @@ export class Updater {
           }
         }
         try {
+          this.startVerification();
           await autoUpdater.downloadUpdate();
-          return this.withSource();
+          // update-downloaded fired before downloadUpdate() resolved; wait for
+          // the async SHA-512 check before treating the attempt as a success.
+          if (await this.awaitVerification()) return this.withSource();
+          // Verification failed: the handler already deleted the bad file and
+          // set the error state. Fall through to the next-ranked mirror.
         } catch {
           // The 'error' event set the state; try the next-ranked source.
+          this.settleVerification(false);
         }
       }
       if ((this.getState() as UpdateState).status !== 'downloaded') {
@@ -389,6 +501,36 @@ export class Updater {
     // this is only reached for nsis/appimage/deb. Deb's pkexec/prompt is
     // surfaced via the 'error' event on failure.
     getAutoUpdater().quitAndInstall(false, true);
+  }
+
+  private startVerification(): void {
+    let resolve!: (ok: boolean) => void;
+    const promise = new Promise<boolean>((r) => {
+      resolve = r;
+    });
+    this.verification = { promise, resolve };
+  }
+
+  private settleVerification(ok: boolean): void {
+    const pending = this.verification;
+    this.verification = null;
+    pending?.resolve(ok);
+  }
+
+  private async awaitVerification(): Promise<boolean> {
+    const pending = this.verification;
+    if (!pending) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), 5 * 60_000);
+    });
+    const ok = await Promise.race([pending.promise, timeout]);
+    if (timer) clearTimeout(timer);
+    if (this.verification === pending) this.verification = null;
+    if (!ok && (this.state as UpdateState).status === 'downloading') {
+      this.setState({ status: 'error', message: 'Timed out verifying the downloaded update' });
+    }
+    return ok;
   }
 
   private currentVersion(): string {
@@ -463,12 +605,29 @@ export class Updater {
         version: parsed.version,
         fileUrl: picked.url,
         fileSize: picked.size ?? 0,
+        sha512: picked.sha512 ?? null,
       };
     } catch {
       return null;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Fetch the same manifest from the two authoritative release hosts
+   * (GitHub direct + Gitee). Mirrors are excluded on purpose: they are the
+   * untrusted party this check is meant to catch. Returns the first manifest
+   * that announces the expected version (preferring one that carries a
+   * SHA-512), or null when neither official host is reachable.
+   */
+  private async fetchAuthoritative(version: string, manifest: string): Promise<DiscoveredUpdate | null> {
+    const results = await Promise.allSettled(
+      appAuthoritativeFeeds(version).map((feed) => this.fetchManifest(feed.url, feed.label, manifest)),
+    );
+    const candidates = results.flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []));
+    const matching = candidates.filter((c) => compareVersions(c.version, version) === 0);
+    return matching.find((c) => c.sha512) ?? matching[0] ?? null;
   }
 
   /** The update-manifest file name for this platform. */
@@ -620,6 +779,17 @@ function parseTagVersion(tag: string): string | null {
   const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(tag);
   if (!m) return null;
   return `${m[1]}.${m[2]}.${m[3]}`;
+}
+
+/** Streaming SHA-512 as base64, matching electron-builder's `latest.yml`. */
+function sha512File(file: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const hash = createHash('sha512');
+    const stream = createReadStream(file);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk as Buffer));
+    stream.on('end', () => resolve(hash.digest('base64')));
+  });
 }
 
 // electron-updater v6 exposes `autoUpdater` as a lazy getter on the CJS

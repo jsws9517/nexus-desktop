@@ -57,6 +57,71 @@ const A = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 const E = <T extends string>(v: unknown, def: T, allowed: readonly T[]): T =>
   typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : def;
 
+// ── argument-injection guards ────────────────────────────────────────────────
+//
+// Commands run with an argv array (no shell), so the remaining risk is git
+// itself parsing a caller-controlled value as an option (`--upload-pack=…`,
+// `--output=…`, `-c …`). Git only treats an argument as an option when it
+// starts with `-`, so every ref/commit/remote value is validated with one of
+// the helpers below, and pathspecs are always passed after `--`.
+
+/** Conservative subset of `git check-ref-format` for branch/tag names. */
+const REF_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+function assertRefName(value: string, field = 'branch'): string {
+  const name = value.trim();
+  if (!name) throw new Error(`${field} is required`);
+  if (
+    !REF_NAME_RE.test(name) ||
+    name.includes('..') ||
+    name.includes('@{') ||
+    name.endsWith('/') ||
+    name.endsWith('.') ||
+    name.endsWith('.lock')
+  ) {
+    throw new Error(`Invalid ${field} "${value}"`);
+  }
+  return name;
+}
+
+/** A revision expression (commit hash, ref, `HEAD~2`, `origin/main`, …). */
+function assertCommitish(value: string, field = 'commit'): string {
+  const rev = value.trim();
+  if (!rev) throw new Error(`${field} is required`);
+  if (rev.startsWith('-')) throw new Error(`${field} must not start with "-"`);
+  if (/[\x00-\x20\x7f]/.test(rev)) throw new Error(`Invalid ${field} "${value}"`);
+  return rev;
+}
+
+function assertRemoteName(value: string): string {
+  const name = value.trim();
+  if (!name) throw new Error('remote is required');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error(`Invalid remote name "${value}"`);
+  return name;
+}
+
+/**
+ * Remote URLs. `ext::` / `fd::` (and any other `<transport>::`) let git run an
+ * arbitrary helper command, so they are refused; otherwise allow the ordinary
+ * network transports, scp-like `user@host:path`, and local paths.
+ */
+function assertRemoteUrl(value: string): string {
+  const url = value.trim();
+  if (!url) throw new Error('url is required');
+  if (url.startsWith('-')) throw new Error('url must not start with "-"');
+  if (/[\x00-\x20\x7f]/.test(url)) throw new Error('url must not contain whitespace');
+  if (/^[A-Za-z0-9+.-]+::/.test(url)) throw new Error('unsupported remote transport');
+  if (/^(https?:\/\/|ssh:\/\/|git:\/\/|file:\/\/)/i.test(url)) return url;
+  if (/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:.+$/.test(url)) return url;
+  if (/^(\.{0,2}[\\/]|[A-Za-z]:[\\/])/.test(url)) return url;
+  throw new Error('unsupported remote url');
+}
+
+/** Non-empty pathspecs; callers must place these after `--`. */
+function pathspecs(value: unknown): string[] {
+  return A(value).filter((f) => f.length > 0);
+}
+
 /** Exact tool names served by the built-in engine (36, mirrors git-mcp v1.0.0). */
 export const GIT_INTERNAL_TOOLS = new Set([
   'git_checkout',
@@ -486,7 +551,7 @@ class GitInternalEngine {
   }
 
   private async tCheckout(a: Args, repo: string): Promise<GitToolResult> {
-    const branch = S(a.branch);
+    const branch = assertCommitish(S(a.branch), 'branch');
     const command = `git checkout ${branch}`;
     const r = await this.run({ repo }, 'git_checkout', ['checkout', branch]);
     if (r.exitCode !== 0) return errJson(r.stderr, command);
@@ -494,8 +559,8 @@ class GitInternalEngine {
   }
 
   private async tCherryPick(a: Args, repo: string): Promise<GitToolResult> {
-    const commit = S(a.commit);
-    const endCommit = S(a.endCommit);
+    const commit = assertCommitish(S(a.commit));
+    const endCommit = a.endCommit ? assertCommitish(S(a.endCommit), 'endCommit') : '';
     const noCommit = B(a.noCommit);
     const argv = ['cherry-pick', ...(noCommit ? ['-n'] : [])];
     const command = endCommit
@@ -511,8 +576,8 @@ class GitInternalEngine {
   }
 
   private async tCreateBranch(a: Args, repo: string): Promise<GitToolResult> {
-    const name = S(a.name);
-    const fromRef = S(a.fromRef);
+    const name = assertRefName(S(a.name), 'name');
+    const fromRef = a.fromRef ? assertCommitish(S(a.fromRef), 'fromRef') : '';
     const checkout = B(a.checkout) || true;
     const argv = checkout ? ['checkout', '-b', name] : ['branch', name];
     if (fromRef) argv.push(fromRef);
@@ -524,7 +589,7 @@ class GitInternalEngine {
 
   private async tDeleteBranch(a: Args, repo: string): Promise<GitToolResult> {
     const forceFlag = B(a.force) ? '-D' : '-d';
-    const branch = S(a.branch);
+    const branch = assertRefName(S(a.branch));
     const command = `git branch ${forceFlag} ${branch}`;
     const r = await this.run({ repo }, 'git_delete_branch', ['branch', forceFlag, branch]);
     if (r.exitCode !== 0) return errJson(r.stderr, command);
@@ -560,7 +625,7 @@ class GitInternalEngine {
     const squash = B(a.squash);
     const noFastForward = B(a.noFastForward);
     const message = S(a.message);
-    const branch = S(a.branch);
+    const branch = assertCommitish(S(a.branch), 'branch');
     const argv = ['merge', ...(squash ? ['--squash'] : noFastForward ? ['--no-ff'] : []), ...(message ? ['-m', message] : []), branch];
     let command = 'git merge';
     if (squash) command += ' --squash';
@@ -576,7 +641,7 @@ class GitInternalEngine {
   }
 
   private async tMoveChanges(a: Args, repo: string): Promise<GitToolResult> {
-    const branch = S(a.branch);
+    const branch = assertRefName(S(a.branch));
     const command = `git stash && git checkout -b ${branch} && git stash pop`;
     const stashResult = await this.run({ repo }, 'git_move_changes', ['stash']);
     if (stashResult.exitCode !== 0 && !stashResult.stderr.includes('No local changes')) return errJson(stashResult.stderr, command);
@@ -605,8 +670,9 @@ class GitInternalEngine {
       argv = ['rebase', '--continue'];
       command = 'git rebase --continue';
     } else {
-      argv = ['rebase', S(a.target)];
-      command = `git rebase ${S(a.target)}`;
+      const target = assertCommitish(S(a.target), 'target');
+      argv = ['rebase', target];
+      command = `git rebase ${target}`;
     }
     const r = await this.run({ repo }, 'git_rebase', argv);
     if (r.exitCode !== 0) return errJson(r.stderr, command);
@@ -624,8 +690,8 @@ class GitInternalEngine {
   }
 
   private async tStage(a: Args, repo: string): Promise<GitToolResult> {
-    const files = A(a.files);
-    const argv = files.length > 0 ? ['add', ...files] : ['add', '-A'];
+    const files = pathspecs(a.files);
+    const argv = files.length > 0 ? ['add', '--', ...files] : ['add', '-A'];
     const command = files.length > 0 ? `git add ${files.join(' ')}` : 'git add -A';
     const r = await this.run({ repo }, 'git_stage', argv);
     if (r.exitCode !== 0) return errJson(r.stderr, command);
@@ -656,7 +722,7 @@ class GitInternalEngine {
     const file = S(a.file);
     const startLine = N(a.startLine, 0);
     const endLine = N(a.endLine, 0);
-    const argv = ['blame', '--line-porcelain', ...(startLine > 0 && endLine > 0 ? ['-L', `${startLine},${endLine}`] : []), file];
+    const argv = ['blame', '--line-porcelain', ...(startLine > 0 && endLine > 0 ? ['-L', `${startLine},${endLine}`] : []), '--', file];
     let command = 'git blame';
     if (startLine > 0 && endLine > 0) command += ` -L ${startLine},${endLine}`;
     command += ` "${file}"`;
@@ -687,8 +753,8 @@ class GitInternalEngine {
 
   private async tDiff(a: Args, repo: string): Promise<GitToolResult> {
     const staged = B(a.staged);
-    const commitA = S(a.commitA);
-    const commitB = S(a.commitB);
+    const commitA = a.commitA ? assertCommitish(S(a.commitA), 'commitA') : '';
+    const commitB = a.commitB ? assertCommitish(S(a.commitB), 'commitB') : '';
     const file = S(a.file);
     const stat = B(a.stat);
     const argv = ['diff', ...(staged ? ['--staged'] : []), ...(stat ? ['--stat'] : [])];
@@ -772,7 +838,7 @@ class GitInternalEngine {
   }
 
   private async tShow(a: Args, repo: string): Promise<GitToolResult> {
-    const commit = S(a.commit);
+    const commit = assertCommitish(S(a.commit));
     const stat = B(a.stat);
     const patch = a.patch !== false;
     const argv = ['show', commit, ...(stat ? ['--stat'] : []), ...(!patch ? ['--no-patch'] : [])];
@@ -811,7 +877,7 @@ class GitInternalEngine {
   }
 
   private async tRecoverBranch(a: Args, repo: string): Promise<GitToolResult> {
-    const branch = S(a.branch);
+    const branch = assertRefName(S(a.branch));
     const command = `git reflog | grep "${branch}"`;
     const reflog = await this.run({ repo }, 'git_recover_branch', ['reflog', '--format=%h %gs']);
     if (reflog.exitCode !== 0) return errJson(reflog.stderr, command);
@@ -850,8 +916,8 @@ class GitInternalEngine {
   }
 
   private async tRecoverCommit(a: Args, repo: string): Promise<GitToolResult> {
-    const commit = S(a.commit);
-    const createBranch = S(a.createBranch);
+    const commit = assertCommitish(S(a.commit));
+    const createBranch = a.createBranch ? assertRefName(S(a.createBranch), 'createBranch') : '';
     const cherryPick = B(a.cherryPick);
     let argv: string[];
     let command: string;
@@ -923,8 +989,8 @@ class GitInternalEngine {
 
   private async tPull(a: Args, repo: string): Promise<GitToolResult> {
     const rebase = B(a.rebase);
-    const remote = S(a.remote) || 'origin';
-    const branch = S(a.branch);
+    const remote = assertRemoteName(S(a.remote) || 'origin');
+    const branch = a.branch ? assertCommitish(S(a.branch), 'branch') : '';
     const argv = ['pull', ...(rebase ? ['--rebase'] : []), remote, ...(branch ? [branch] : [])];
     let command = `git pull${rebase ? ' --rebase' : ''} ${remote}`;
     if (branch) command += ` ${branch}`;
@@ -934,8 +1000,8 @@ class GitInternalEngine {
   }
 
   private async tPush(a: Args, repo: string): Promise<GitToolResult> {
-    const remote = S(a.remote) || 'origin';
-    const branch = S(a.branch);
+    const remote = assertRemoteName(S(a.remote) || 'origin');
+    const branch = a.branch ? assertCommitish(S(a.branch), 'branch') : '';
     const force = B(a.force);
     const forceWithLease = B(a.forceWithLease);
     const setUpstream = B(a.setUpstream);
@@ -974,18 +1040,21 @@ class GitInternalEngine {
         if (!name || !url) {
           return { content: JSON.stringify({ success: false, error: 'Name and URL are required for adding a remote' }, null, 2), isError: true };
         }
-        r = await this.run({ repo }, 'git_remote', ['remote', 'add', name, url]);
-        command = `git remote add ${name} ${url}`;
-        message = `Remote "${name}" added`;
+        const safeName = assertRemoteName(name);
+        const safeUrl = assertRemoteUrl(url);
+        r = await this.run({ repo }, 'git_remote', ['remote', 'add', safeName, safeUrl]);
+        command = `git remote add ${safeName} ${safeUrl}`;
+        message = `Remote "${safeName}" added`;
         break;
       }
       case 'remove': {
         if (!name) {
           return { content: JSON.stringify({ success: false, error: 'Name is required for removing a remote' }, null, 2), isError: true };
         }
-        r = await this.run({ repo }, 'git_remote', ['remote', 'remove', name]);
-        command = `git remote remove ${name}`;
-        message = `Remote "${name}" removed`;
+        const safeName = assertRemoteName(name);
+        r = await this.run({ repo }, 'git_remote', ['remote', 'remove', safeName]);
+        command = `git remote remove ${safeName}`;
+        message = `Remote "${safeName}" removed`;
         break;
       }
       default:
@@ -1029,12 +1098,13 @@ class GitInternalEngine {
 
   private async tUpdateBranch(a: Args, repo: string): Promise<GitToolResult> {
     const useRebase = a.useRebase !== false;
-    const provided = S(a.mainBranch);
+    const provided = a.mainBranch ? assertRefName(S(a.mainBranch), 'mainBranch') : '';
     let main = provided;
     if (!main) {
       const head = await this.run({ repo }, 'git_update_branch', ['symbolic-ref', 'refs/remotes/origin/HEAD', '--short']);
       main = head.exitCode === 0 && head.stdout.trim() ? head.stdout.trim().replace(/^origin\//, '') : 'main';
     }
+    main = assertRefName(main, 'mainBranch');
     const command = useRebase
       ? `git fetch origin ${main} && git rebase origin/${main}`
       : `git fetch origin ${main} && git merge origin/${main}`;
@@ -1065,7 +1135,7 @@ class GitInternalEngine {
   }
 
   private async tReset(a: Args, repo: string): Promise<GitToolResult> {
-    const commitRef = S(a.commitRef);
+    const commitRef = assertCommitish(S(a.commitRef), 'commitRef');
     const mode = E(a.mode as string, 'mixed' as const, ['soft', 'mixed', 'hard'] as const);
     const command = `git reset --${mode} ${commitRef}`;
     const r = await this.run({ repo }, 'git_reset', ['reset', `--${mode}`, commitRef]);
@@ -1075,7 +1145,7 @@ class GitInternalEngine {
   }
 
   private async tRevert(a: Args, repo: string): Promise<GitToolResult> {
-    const commitHash = S(a.commitHash);
+    const commitHash = a.commitHash ? assertCommitish(S(a.commitHash), 'commitHash') : '';
     const count = N(a.count, 0);
     const noCommit = B(a.noCommit);
     let argv: string[];
@@ -1111,7 +1181,7 @@ class GitInternalEngine {
 
   private async tUnstage(a: Args, repo: string): Promise<GitToolResult> {
     const file = S(a.file);
-    const argv = file ? ['reset', 'HEAD', file] : ['reset', 'HEAD'];
+    const argv = file ? ['reset', 'HEAD', '--', file] : ['reset', 'HEAD'];
     const command = file ? `git reset HEAD "${file}"` : 'git reset HEAD';
     const r = await this.run({ repo }, 'git_unstage', argv);
     if (r.exitCode !== 0) return errJson(r.stderr, command);

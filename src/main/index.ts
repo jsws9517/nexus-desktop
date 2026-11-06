@@ -768,6 +768,7 @@ if (gotLock) {
       openConfigWindow,
       configPort: () => configServer?.port,
       saveSavedCwd: desktopState.saveSavedCwd,
+      loadSavedCwd: desktopState.loadSavedCwd,
       applyResourceConfig: desktopState.applyResourceConfig,
       countOpenTabs,
       log: logf,

@@ -61,6 +61,32 @@ const statusIcons: Record<SubTaskStatus, string> = {
 
 const TERMINAL = new Set<SubTaskStatus>(['succeeded', 'failed', 'timeout', 'cancelled']);
 
+/**
+ * Escape a value for insertion into the card's HTML. Card fields (task id,
+ * description, output, error) ultimately come from LLM/sub-task output, so
+ * they are untrusted: without this, a poisoned sub-task result could inject
+ * markup that survives into the DOM (and, via the tooltip, into a second
+ * `innerHTML` sink).
+ */
+function esc(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Escape a fully-built HTML fragment for storage inside a `data-*`
+ * attribute. Entity ampersands must be escaped a second time so the parser
+ * hands `getAttribute()` back the intended escaped markup (rather than
+ * decoding `&lt;` into a real `<` before the tooltip's `innerHTML` sink).
+ */
+function attrEsc(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/\n/g, ' ');
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = Math.floor(ms / 1000);
@@ -82,20 +108,24 @@ function formatDuration(ms: number): string {
 export function TaskStatusCard({
   taskId, description, status, output, durationMs, error,
 }: TaskStatusCardProps): string {
-  const displayTitle = description || taskId;
+  const displayTitle = esc(description || taskId);
+  const safeId = esc(taskId);
+  const safeDescription = description ? esc(description) : '';
+  const safeOutput = output ? esc(output.substring(0, 500)) + (output.length > 500 ? '...' : '') : '';
+  const safeError = error ? esc(error) : '';
 
   const tooltipContent = `
-    <div class="tooltip-header"><strong>Task ID:</strong> ${taskId}</div>
-    ${description ? `<div class="tooltip-desc"><strong>Description:</strong> ${description}</div>` : ''}
+    <div class="tooltip-header"><strong>Task ID:</strong> ${safeId}</div>
+    ${safeDescription ? `<div class="tooltip-desc"><strong>Description:</strong> ${safeDescription}</div>` : ''}
     <div class="tooltip-status"><strong>Status:</strong> ${statusIcons[status]} ${status}</div>
     ${durationMs !== undefined ? `<div class="tooltip-duration"><strong>Duration:</strong> ${formatDuration(durationMs)}</div>` : ''}
-    ${output ? `<div class="tooltip-output"><strong>Output:</strong> <pre>${output.substring(0, 500)}${output.length > 500 ? '...' : ''}</pre></div>` : ''}
-    ${error ? `<div class="tooltip-error"><strong>Error:</strong> <pre>${error}</pre></div>` : ''}
+    ${safeOutput ? `<div class="tooltip-output"><strong>Output:</strong> <pre>${safeOutput}</pre></div>` : ''}
+    ${safeError ? `<div class="tooltip-error"><strong>Error:</strong> <pre>${safeError}</pre></div>` : ''}
   `;
 
   return `
     <div class="task-status-card status-${status}" 
-         data-tooltip="${tooltipContent.replace(/"/g, '&quot;').replace(/\n/g, ' ')}">
+         data-tooltip="${attrEsc(tooltipContent)}">
       <div class="ptc-head">
         <span class="ptc-title">${displayTitle}</span>
         <span class="ptc-status">${statusIcons[status]} ${status}</span>
@@ -105,7 +135,7 @@ export function TaskStatusCard({
       </div>
 
       ${description ? `
-        <div class="ptc-taskid">${taskId}</div>
+        <div class="ptc-taskid">${safeId}</div>
       ` : ''}
 
       ${status === 'running' ? `
@@ -113,11 +143,11 @@ export function TaskStatusCard({
       ` : ''}
 
       ${status === 'succeeded' && output ? `
-        <div class="ptc-output">${output}</div>
+        <div class="ptc-output">${safeOutput}</div>
       ` : ''}
 
       ${status === 'failed' && error ? `
-        <div class="ptc-error">❌ ${error}</div>
+        <div class="ptc-error">❌ ${safeError}</div>
       ` : ''}
     </div>
   `;

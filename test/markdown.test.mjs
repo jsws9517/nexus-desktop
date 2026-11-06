@@ -11,7 +11,7 @@ test('renderInline renders code, bold, links', () => {
   const out = renderInline('use `npm i` and **bold** and [link](https://a.com/x)');
   assert.match(out, /<code>npm i<\/code>/);
   assert.match(out, /<strong>bold<\/strong>/);
-  assert.match(out, /<a href="https:\/\/a\.com\/x" target="_blank">link<\/a>/);
+  assert.match(out, /<a href="https:\/\/a\.com\/x" target="_blank" rel="noopener noreferrer">link<\/a>/);
 });
 
 test('renderInline escapes html but keeps data-url images', () => {
@@ -55,9 +55,9 @@ test('renderBlocks keeps pipes inside inline code as cell content', () => {
     '| 现状 | 证据 |\n|---|---|\n' +
     '| 工具：`callGitTool(\'a\'|\'b\')` 存在 | ✅ 已核 |';
   const out = renderBlocks(src);
-  assert.match(out, /<td>工具：<code>callGitTool\('a'\|'b'\)<\/code> 存在<\/td>/);
+  assert.match(out, /<td>工具：<code>callGitTool\(&#39;a&#39;\|&#39;b&#39;\)<\/code> 存在<\/td>/);
   assert.match(out, /<td>✅ 已核<\/td>/);
-  assert.ok(!out.includes("'a'</td><td>'b'"), 'pipe inside code must not create a cell');
+  assert.ok(!out.includes('"a"</td><td>"b"'), 'pipe inside code must not create a cell');
 });
 
 test('renderBlocks handles escaped pipes in table cells', () => {
