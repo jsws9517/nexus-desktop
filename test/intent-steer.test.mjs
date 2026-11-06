@@ -77,6 +77,8 @@ function bareAgent({ messages = [], stored = [], busy = true } = {}) {
   agent.steerQueue = [];
   agent.toolErrorCount = new Map();
   agent.toolExactFailCount = new Map();
+  agent.toolClassStreak = new Map();
+  agent.lastStuckClassKey = undefined;
   agent.events = [];
   agent.onEvent = (e) => agent.events.push(e);
   agent.contextMessages = [...messages];
