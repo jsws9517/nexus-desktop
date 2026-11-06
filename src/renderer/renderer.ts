@@ -126,7 +126,16 @@ type AgentEvent =
   | { type: 'security_blocked'; toolName: string; rule: string; reason: string }
   | { type: 'file_ready'; path: string; mimeType: string; name: string }
   | { type: 'state_delta'; contextTokens: number; turn: number }
-  | { type: 'turn_end'; stopReason: string; usage?: { inputTokens: number; outputTokens: number } }
+  | {
+      type: 'turn_end';
+      stopReason: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      /** Present when the turn ended WITHOUT completing (all_failed /
+       * turns_exhausted / unverified / aborted / arg_storm). Human-readable
+       * "where it got stuck + what to do next" — must be surfaced, never
+       * dropped, or a broken session looks like the agent just stopped. */
+      notice?: string;
+    }
   // A mid-turn follow-up reached the running turn's context. `texts` is exactly
   // what was consumed, so the queue can drop those and keep anything else.
   | { type: 'steer_applied'; texts: string[] }
@@ -142,6 +151,12 @@ type AgentEvent =
   | { type: 'rollback_restored'; restored: number; backupPath: string }
   | { type: 'session_end' }
   | { type: 'thinking_stall'; reason: string; thinkingTokens: number; repeatCount: number; aborting?: boolean }
+  | {
+      type: 'repetition_stall';
+      kind: string;
+      repeatCount: number;
+      repr: string;
+    }
   | {
       type: 'task_graph';
       graphId: string;
@@ -2096,12 +2111,30 @@ function handleEvent(event: AgentEvent): void {
         const toggle = t2.content.parentElement?.querySelector('.thinking-toggle');
         if (toggle) toggle.textContent = t('thought');
       }
+      // A turn that ended WITHOUT completing carries a `notice` (all_failed /
+      // turns_exhausted / unverified / aborted / arg_storm). The core emits it
+      // on the event but writes no assistant message to the DB, so it lives
+      // ONLY here — dropping it makes the turn look like a silent strike.
+      // Surface it as a system line so every terminal path stays visible.
+      if (event.notice) addSystem(event.notice);
       // NOTE: Do NOT call setBusy(false) here.  The core's runLlmTurn loops
       // on tool calls — each intermediate turn emits turn_end, but busy stays
       // true until the outer finally block emits session_end.  Resetting busy
       // on turn_end causes a race where the renderer lets the user send a new
       // message while the core is still processing tool results.
       void refreshSessionStats();
+      break;
+    }
+    case 'repetition_stall': {
+      // The desktop repetition guard decided the model is spinning and aborted
+      // the turn. Without this line the user just sees the stream stop with
+      // no explanation — the same "silent strike" class of symptom.
+      addSystem(
+        (getUiLang() === 'zh-CN'
+          ? `⚠️ 检测到 ${event.kind} 重复 ${event.repeatCount} 次，已中止本轮以避免空转。`
+          : `⚠️ Detected ${event.kind} repetition ${event.repeatCount}× — aborted this turn to stop the spin.`) +
+          (event.repr ? ` (repr: ${event.repr})` : ''),
+      );
       break;
     }
     case 'steer_applied':
