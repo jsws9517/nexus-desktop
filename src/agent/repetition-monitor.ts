@@ -15,7 +15,7 @@ export interface RepetitionVerdict {
   /** True when the repetition threshold has been reached and the turn should be aborted. */
   stalled: boolean;
   /** Which repetition pattern was detected. */
-  kind: 'text' | 'tool_seq';
+  kind: 'text' | 'tool_seq' | 'fail_seq';
   /** How many consecutive identical samples have been observed. */
   repeatCount: number;
   /** Normalised representative of the repeated content (text snippet or tool-seq hash). */
@@ -29,12 +29,15 @@ export interface RepetitionMonitorOptions {
   maxToolSeqRepeat?: number;
   /** Max length (chars) to consider for text normalisation — longer chunks are truncated. */
   textTruncChars?: number;
+  /** Consecutive failures of the same tool+failure-class before a `fail_seq` stall is flagged. */
+  maxFailSeq?: number;
 }
 
 const DEFAULTS: Required<RepetitionMonitorOptions> = {
   maxTextRepeat: 6,
   maxToolSeqRepeat: 3,
   textTruncChars: 120,
+  maxFailSeq: 3,
 };
 
 function normText(s: string): string {
@@ -61,6 +64,12 @@ export class RepetitionMonitor {
   private textRepeatCount = 0;
   private lastToolSeq = '';
   private toolSeqRepeatCount = 0;
+  /**
+   * P2 fail_seq: consecutive failures of the same tool+failure-class key
+   * (e.g. "exec_command:exec-failed"). Resets when ANY tool call of that
+   * name succeeds.
+   */
+  private failSeqCount: Map<string, number> = new Map();
 
   constructor(opts: RepetitionMonitorOptions = {}) {
     this.opts = { ...DEFAULTS, ...opts };
@@ -72,6 +81,37 @@ export class RepetitionMonitor {
     this.textRepeatCount = 0;
     this.lastToolSeq = '';
     this.toolSeqRepeatCount = 0;
+    this.failSeqCount.clear();
+  }
+
+  /**
+   * P2: feed a tool failure (or success) with its classified failure key.
+   * A success of the same tool name resets the fail_seq counter for that name.
+   * Returns a verdict when the consecutive same-class failure threshold is hit.
+   */
+  noteToolOutcome(
+    toolName: string,
+    failed: boolean,
+    failureKey: string,
+  ): RepetitionVerdict | null {
+    if (!failed) {
+      // Success of this tool resets every fail-seq counter for it.
+      for (const key of [...this.failSeqCount.keys()]) {
+        if (key.startsWith(toolName + ':')) this.failSeqCount.delete(key);
+      }
+      return null;
+    }
+    const count = (this.failSeqCount.get(failureKey) || 0) + 1;
+    this.failSeqCount.set(failureKey, count);
+    if (count >= this.opts.maxFailSeq) {
+      return {
+        stalled: true,
+        kind: 'fail_seq',
+        repeatCount: count,
+        repr: failureKey,
+      };
+    }
+    return null;
   }
 
   /**

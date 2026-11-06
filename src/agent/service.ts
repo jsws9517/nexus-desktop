@@ -11,6 +11,7 @@
  */
 
 import { isWorkerPrompt, KEY_MASK, PROVIDER_CATEGORIES, stripProtocolXml } from '../shared/constants.js';
+import { classifyToolFailure } from 'nexus-coder/dist/src/hooks/debug-intent.js';
 import type { StoredRow } from '../session-db.js';
 import { deleteAllSessionMessages, getLastUserMessageId, setSessionBinding, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
@@ -452,6 +453,22 @@ export class AgentService {
    */
   private readonly toolRefreshQueue = new ToolRefreshQueue();
 
+  /**
+   * Alias -> owning MCP server, for external MCP tools whose `name` collides
+   * with an in-process tool (INTERNAL_TOOLS). The core's getAllTools/callTool
+   * dedupe by tool NAME, so an external server that advertises a builtin name
+   * (e.g. @abiswas97/postgres-mcp -> `query`, shadowed by the in-process SQLite
+   * `query`) is silently dropped: the model never sees it and every call to that
+   * name routes to the in-process tool.
+   *
+   * Instead we expose the colliding tool under a server-qualified alias
+   * (`postgres__query`) and keep this alias -> server map so `callTool` can
+   * route the alias back to the owning server with its original name. Rebuilt on
+   * every MCP tool-cache refresh so it always mirrors the current hub state.
+   * Value is `${alias}|${originalName}`; see `buildMcpToolAliases`.
+   */
+  private mcpToolAliases: Record<string, { server: string; originalName: string }> = {};
+
   /** Records a successful tool invocation as a relevance prior. */
   private noteToolUse(name: string): void {
     if (this.toolUseMemory.has(name)) return;
@@ -473,10 +490,17 @@ export class AgentService {
    * quickly with an error" and "was never called" look the same from outside.
    */
   private noteToolOutcome(name: string, args: unknown, result: unknown): void {
-    const failed = (result as { isError?: unknown } | null)?.isError === true;
+    const r = (result as { isError?: unknown; content?: unknown; kind?: unknown } | null) ?? null;
+    const failed = r?.isError === true;
     if (!failed && !DELEGATION_TOOLS.has(name)) return;
     const target = failed || name !== 'acp_route' ? '' : ` agent=${String((args as { agent?: unknown })?.agent ?? '(auto)')}`;
-    const line = `[tool-${failed ? 'error' : 'ok'}] ${name}${target} -> ${outcomeLine(result)}`;
+    // P2: include the failure class in the log line so operators can
+    // distinguish gate-blocked from exec-failed without reading the full
+    // error text in the worker log.
+    const failClass = failed
+      ? classifyToolFailure({ content: String(r?.content ?? ''), kind: r?.kind as 'ok' | 'exec_error' | 'tool_error' })
+      : 'ok';
+    const line = `[tool-${failed ? 'error' : 'ok'}] ${name}${target}${failed ? ` [${failClass}]` : ''} -> ${outcomeLine(result)}`;
     if (failed) logger.warn(line);
     else logger.info(line);
   }
@@ -501,6 +525,59 @@ export class AgentService {
   }
 
   /**
+   * Build the alias map for external MCP tools whose `name` collides with an
+   * in-process tool. Returns `alias -> { server, originalName }` where alias is
+   * `${server}__${originalName}`. Only colliding tools get aliases; everything
+   * else is exposed verbatim, so the model-facing surface changes only when a
+   * real name clash exists.
+   *
+   * Kept separate from `getAllTools` so it can be rebuilt whenever the cache
+   * refreshes without re-running the whole tool-list assembly.
+   */
+  private buildMcpToolAliases(cache: McpToolDef[]): Record<string, { server: string; originalName: string }> {
+    const out: Record<string, { server: string; originalName: string }> = {};
+    for (const t of cache) {
+      if (!t.server) continue;
+      if (INTERNAL_TOOLS.has(t.name)) {
+        out[`${t.server}__${t.name}`] = { server: t.server, originalName: t.name };
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Resolve pending `refresh_tools` intents into the candidate tool names they
+   * reference. An intent is a short free-text phrase ("查天气", "postgres
+   * query", "read a spreadsheet"); the selector's `force` set expects tool
+   * names, so a naive `new Set(intents)` never matched and widening was a no-op.
+   *
+   * A candidate is kept when the intent verbatim-contains its name, or any of
+   * its routing keywords, or (for MCP tools) its server-qualified alias. This
+   * is deliberately permissive: an explicit user intent to reach a capability
+   * should win over the scorer's thresholds, which is exactly the escape hatch
+   * `refresh_tools` exists to be.
+   */
+  private resolveRefreshIntents(intents: string[], candidates: ToolDef[]): string[] {
+    const wanted: string[] = [];
+    const seen = new Set<string>();
+    for (const intent of intents) {
+      const lower = intent.toLowerCase();
+      if (lower.length === 0) continue;
+      for (const c of candidates) {
+        if (seen.has(c.name)) continue;
+        const nameMatch = lower.includes(c.name.toLowerCase());
+        const keywordMatch = (c.keywords ?? []).some((k) => k.length > 0 && lower.includes(k.toLowerCase()));
+        const aliasMatch = c.server ? lower.includes(`${c.server}__${c.name}`.toLowerCase()) : false;
+        if (nameMatch || keywordMatch || aliasMatch) {
+          seen.add(c.name);
+          wanted.push(c.name);
+        }
+      }
+    }
+    return wanted;
+  }
+
+  /**
    * Route MCP tool discovery + execution through the shared hub while keeping
    * builtin tools (file/exec/skill) running locally on this worker. The core
    * only touches `agent.mcp.getAllTools` (per turn) and `agent.mcp.callTool`
@@ -517,13 +594,33 @@ export class AgentService {
     // local (fast, per-worker), forward only MCP tools to the hub.
     local.getAllTools = () => {
       const builtin = (originalGetAll() as McpToolDef[]).filter((t: McpToolDef) => !(t as McpToolDef).server);
-      // Shadow any external server that advertises the built-in tool names,
-      // then append the in-process defs (they must appear exactly once).
-      const cache = this.mcpToolCache.filter((t: McpToolDef) => !INTERNAL_TOOLS.has(t.name));
+      // External MCP tools: anything whose name does NOT collide with an
+      // in-process tool is exposed verbatim. A colliding tool (e.g. postgres
+      // `query` vs the built-in SQLite `query`) is exposed under a
+      // server-qualified alias so the model can actually reach it — see
+      // `buildMcpToolAliases`. In-process defs are appended last, once each.
+      this.mcpToolAliases = this.buildMcpToolAliases(this.mcpToolCache);
+      const cache = this.mcpToolCache.map((t: McpToolDef): McpToolDef => {
+        const alias = `${t.server}__${t.name}`;
+        const known = this.mcpToolAliases[alias];
+        if (INTERNAL_TOOLS.has(t.name) && known) {
+          // Collision: expose only under the alias, never under the bare name.
+          // `applyRouting` (which runs on candidates later) reads the POSTGRES_
+          // ROUTING entry keyed by this aliased name to attach the Chinese
+          // keywords that let the selector keep the tool on a CJK prompt.
+          return { ...t, name: alias };
+        }
+        return t;
+      });
       return [...builtin, ...cache, ...ALL_TOOL_DEFS];
     };
     local.callTool = async (name: string, args: unknown): Promise<unknown> => {
       let result: unknown;
+      // Alias resolution: a server-qualified MCP tool name (e.g.
+      // `postgres__query`) maps back to the owning server's original tool name.
+      // The hub's `callTool` routes by original name, so translate here.
+      const alias = this.mcpToolAliases[name];
+      const forwardedName = alias ? alias.originalName : name;
       if (INTERNAL_TOOLS.has(name)) {
         result = await callBuiltinTool(name, args, {
           getConfig: () => this.agent?.['config']?.get?.(),
@@ -569,7 +666,7 @@ export class AgentService {
               }
             }
           }
-          result = await this.mcpRequest('callTool', { name, args });
+          result = await this.mcpRequest('callTool', { name: forwardedName, args });
         }
       }
       // A non-error result means the tool actually ran, so it earns a relevance
@@ -623,7 +720,12 @@ export class AgentService {
         (patchedGetAllTools() as McpToolDef[]).filter((t) => !hidden.has(t.name)) as ToolDef[],
       );
 
-      const force = new Set(this.toolRefreshQueue.peek());
+      // `refresh_tools` widening requests are natural-language intents, not tool
+      // names. `selectTools` matches `force` against tool names, so an intent like
+      // "查天气" or "postgres query" would never match and the widening request was
+      // a silent no-op. Resolve each intent to the candidate tools it names before
+      // passing it to the selector.
+      const force = new Set(this.resolveRefreshIntents(this.toolRefreshQueue.peek(), candidates));
       const selected = selectTools(candidates, {
         input: input ?? '',
         used: this.toolUseMemory,
@@ -1253,6 +1355,29 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           name: event.name as string,
           args: (event.args ?? {}) as Record<string, unknown>,
         });
+      } else if (event.type === 'tool_result') {
+        // P2 fail_seq: feed the repetition monitor with the failure class so a
+        // same-class 3-consecutive-failure pattern aborts the turn even when
+        // the model keeps varying the exact args.
+        if (rep) {
+          const name = String(event.name ?? '');
+          const content = String(event.content ?? '');
+          const isError = event.isError === true;
+          const kind = String(event.kind ?? '');
+          const cls = classifyToolFailure({
+            content,
+            isError,
+            kind: kind as 'ok' | 'exec_error' | 'tool_error',
+          });
+          // The failure key mirrors the core's normalizeToolErrorKey shape:
+          // args-independent classes use `tool:cls`; others use `tool:args`.
+          const failureKey =
+            cls === 'exec-failed' || cls === 'gate-blocked' || cls === 'arg-invalid'
+              ? `${name}:${cls}`
+              : `${name}:${JSON.stringify(event.args ?? {}).slice(0, 80)}`;
+          const rv = rep.noteToolOutcome(name, isError, failureKey);
+          if (rv?.stalled) this.handleRepetitionGuard(rv);
+        }
       } else if (event.type === 'turn_start') {
         rep?.reset();
         this.toolCallsAcc = [];

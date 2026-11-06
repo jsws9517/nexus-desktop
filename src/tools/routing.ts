@@ -99,6 +99,33 @@ const SQLITE_ROUTING: Record<string, ToolRouting> = {
   transaction: { group: 'db', keywords: ['sql', 'sqlite', '数据库', '事务', 'transaction', '批量执行'] },
 };
 
+/**
+ * External PostgreSQL MCP tools. `@abiswas97/postgres-mcp` (and peers) expose
+ * underscore-names that collide with no in-process tool except `query` (shadowed
+ * by the built-in SQLite `query` and re-exposed as the `postgres__query` alias in
+ * src/agent/service.ts). Routing keywords here are what lets the relevance
+ * selector keep them alive on a Chinese prompt that only says
+ * "查一下 postgres 数据库" — without author keywords the bigram similarity to
+ * their English descriptions never clears SIMILARITY_KEEP.
+ *
+ * The alias `postgres__query` is annotated under its own key: `applyRouting`
+ * fills `keywords`/`group` per tool name, and the aliased def keeps that name
+ * through to `selectTools`.
+ */
+const POSTGRES_ROUTING: Record<string, ToolRouting> = {
+  query: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '查询数据库', '数据库查询', 'sql查询'] },
+  postgres__query: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '查询数据库', '数据库查询', 'sql查询', 'psql'] },
+  describe_table: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '表结构', '字段', '表结构', 'describe table'] },
+  list_objects: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '表', '有哪些表', 'list tables', 'list objects', '函数'] },
+  list_schemas: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', 'schema', '数据库', '模式'] },
+  list_indexes: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '索引', 'index', '索引'] },
+  explain_query: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '执行计划', 'explain', 'explain', '慢', '性能'] },
+  diagnose_database: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '诊断', '数据库状态', 'diagnose', '健康'] },
+  get_slow_queries: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '慢查询', 'slow query', '慢sql'] },
+  search_objects: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '查找表', '搜索表', 'search table', '对象'] },
+  get_connections: { group: 'db', readOnly: true, keywords: ['postgres', 'postgresql', 'pg', '连接', 'connections', '活跃连接'] },
+};
+
 const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   // filesystem
   read_media_file: { group: 'media', readOnly: true, keywords: ['image', '图片', '看图', '截图', 'png', 'jpg', 'photo', '图片预览'] },
@@ -161,6 +188,7 @@ export const TOOL_ROUTING: Record<string, ToolRouting> = {
   ...GIT_ROUTING,
   ...MEMORY_ROUTING,
   ...SQLITE_ROUTING,
+  ...POSTGRES_ROUTING,
   ...DESKTOP_ROUTING,
 };
 
