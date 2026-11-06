@@ -15,7 +15,7 @@ import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js
 import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
-import type { FileBrowserContext } from './components/FileBrowser.js';
+import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
 
 interface SessionInfo {
   id: string;
@@ -336,6 +336,8 @@ declare global {
       setMonitorEnabled(enabled: boolean): Promise<{ ok: boolean }>;
       getLazyWorker(): Promise<boolean>;
       setLazyWorker(enabled: boolean): Promise<{ ok: boolean }>;
+      getPanelIdleMs(): Promise<number>;
+      setPanelIdleMs(ms: number): Promise<{ ok: boolean }>;
       getResourceState(): Promise<ResourceStateInfo>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
@@ -490,8 +492,23 @@ function toggleSidebarTab(id: string): void {
  * after `SIDEBAR_AUTO_HIDE_MS` of inactivity — the strip alone never occupies
  * the panel's bottom space persistently.
  */
-const SIDEBAR_AUTO_HIDE_MS = 10_000;
+const SIDEBAR_AUTO_HIDE_DEFAULT_MS = 10_000;
+/** Configurable idle auto-collapse delay (sidebar + file browser), in ms.
+ *  Persisted via desktop.json (getPanelIdleMs/setPanelIdleMs); the default
+ *  matches the historical 10-second constant. */
+let SIDEBAR_AUTO_HIDE_MS = SIDEBAR_AUTO_HIDE_DEFAULT_MS;
 let sidebarAutoHideTimer: number | null = null;
+/** Live handle of the mounted right-panel file browser (set at startup). */
+let fileBrowserHandle: FileBrowserHandle | null = null;
+
+/** Apply a persisted idle-delay change to both panels immediately: re-arm
+ *  the sidebar auto-hide countdown and let the file browser pick up the new
+ *  delay on its next idle cycle. */
+function applyPanelIdleMs(ms: number): void {
+  SIDEBAR_AUTO_HIDE_MS = ms;
+  if (activeSidebarTabId !== null) armSidebarAutoHide();
+  fileBrowserHandle?.setIdleMs(ms);
+}
 
 /** Collapse the open sidebar page back to the icon strip (dispose + hide). */
 function hideSidebarPage(): void {
@@ -5407,6 +5424,19 @@ function buildResourceSection(container?: HTMLElement): void {
   buildToggle(t('lazyWorkerLabel'), t('lazyWorkerHint'), window.nexusDesktop.getLazyWorker(), (v) => {
     return window.nexusDesktop.setLazyWorker(v);
   }, target);
+
+  // Idle auto-collapse delay for the sidebar + file-browser panels (seconds).
+  target.appendChild(buildNumberRow(
+    t('panelIdleLabel'),
+    t('panelIdleHint'),
+    5,
+    300,
+    window.nexusDesktop.getPanelIdleMs().then((ms) => Math.round(ms / 1000)),
+    (v) => {
+      applyPanelIdleMs(v * 1000);
+      return window.nexusDesktop.setPanelIdleMs(v * 1000);
+    },
+  ));
 }
 
 /**
@@ -6767,10 +6797,13 @@ window.nexusDesktop.onTabsChanged((open) => {
     // its own lazy tree, extension/hidden filters, session re-binding and the
     // task/idle auto-collapse rules. Container never needs re-mounting.
     const fileBrowserEl = $('#file-browser');
-    if (fileBrowserEl) mountFileBrowser(fileBrowserEl, makeFileBrowserContext());
-    // Idle auto-hide (10s): any interaction inside the open page or on the tab
-    // strip — pointer activity, scrolling, typing — resets the close timer so
-    // the panel only collapses back to the icon strip once it goes quiet.
+    const panelIdleMs = await window.nexusDesktop.getPanelIdleMs().catch(() => SIDEBAR_AUTO_HIDE_DEFAULT_MS);
+    SIDEBAR_AUTO_HIDE_MS = panelIdleMs;
+    if (fileBrowserEl) fileBrowserHandle = mountFileBrowser(fileBrowserEl, makeFileBrowserContext(), { idleMs: panelIdleMs });
+    // Idle auto-hide (configurable, default 10s): any interaction inside the
+    // open page or on the tab strip — pointer activity, scrolling, typing —
+    // resets the close timer so the panel only collapses back to the icon
+    // strip once it goes quiet.
     sidebarPageEl.addEventListener('pointerdown', resetSidebarAutoHide, true);
     sidebarPageEl.addEventListener('pointermove', resetSidebarAutoHide, true);
     sidebarPageEl.addEventListener('wheel', resetSidebarAutoHide, { passive: true });

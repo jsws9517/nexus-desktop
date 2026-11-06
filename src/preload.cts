@@ -150,6 +150,8 @@ const api = {
   setMonitorEnabled: (enabled: boolean) => ipcRenderer.invoke('nexus:setMonitorEnabled', enabled),
   getLazyWorker: () => ipcRenderer.invoke('nexus:getLazyWorker'),
   setLazyWorker: (enabled: boolean) => ipcRenderer.invoke('nexus:setLazyWorker', enabled),
+  getPanelIdleMs: () => ipcRenderer.invoke('nexus:getPanelIdleMs'),
+  setPanelIdleMs: (ms: number) => ipcRenderer.invoke('nexus:setPanelIdleMs', ms),
   getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
   getRateLimitStatus: () => ipcRenderer.invoke('nexus:getRateLimitStatus'),
 

@@ -446,6 +446,12 @@ export function registerIpc(ctx: IpcContext): void {
     ctx.setLazyWorker(enabled);
     return { ok: true };
   });
+  ipcMain.handle(CHANNELS.getPanelIdleMs, (): number => ctx.getPanelIdleMs());
+  ipcMain.handle(CHANNELS.setPanelIdleMs, (_e, ms: unknown): { ok: boolean } => {
+    if (!isFiniteNumber(ms)) return { ok: false };
+    ctx.setPanelIdleMs(ms);
+    return { ok: true };
+  });
   ipcMain.handle(CHANNELS.getResourceState, (): ResourceState => resourceMon.getState());
 
   // ── Multi-tab: per-session worker lifecycle ──

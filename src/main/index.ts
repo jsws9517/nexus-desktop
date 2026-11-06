@@ -793,6 +793,8 @@ if (gotLock) {
       setMonitorEnabled: desktopState.setMonitorEnabled,
       getLazyWorker: desktopState.getLazyWorker,
       setLazyWorker: desktopState.setLazyWorker,
+      getPanelIdleMs: desktopState.getPanelIdleMs,
+      setPanelIdleMs: desktopState.setPanelIdleMs,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
        rateLimitRegistry,

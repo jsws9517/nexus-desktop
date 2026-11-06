@@ -33,6 +33,8 @@ interface DesktopStateData {
   inputRows?: number;
   restoreSessionOnLaunch?: boolean;
   lastOpenTabs?: string[];
+  // Idle auto-collapse delay for the sidebar/file-browser panels (ms).
+  panelIdleMs?: number;
   // Resource/session governance (desktop-only; the core schema strips unknowns).
   maxTabs?: number;
   memThresholdPct?: number;
@@ -46,6 +48,8 @@ interface DesktopStateData {
 export type WindowBounds = { x?: number; y?: number; width?: number; height?: number };
 
 const DEFAULT_MAX_TABS = 5;
+/** Default idle delay before the sidebar / file-browser panels auto-collapse. */
+const DEFAULT_PANEL_IDLE_MS = 10_000;
 
 /** Read/write surface the IPC layer depends on (kept narrow so registerIpc
  * never touches the store internals). */
@@ -72,6 +76,8 @@ export interface DesktopStateAccess {
   setMonitorEnabled(enabled: boolean): void;
   getLazyWorker(): boolean;
   setLazyWorker(enabled: boolean): void;
+  getPanelIdleMs(): number;
+  setPanelIdleMs(ms: number): void;
   /** Model capability blacklist (absorbed from model-blacklist.json). */
   getModelBlacklist(): Record<string, Record<string, string>>;
   setModelBlacklist(data: Record<string, Record<string, string>>): void;
@@ -194,6 +200,10 @@ export function createDesktopState(): DesktopStateStore {
     const v = read().lazyWorker;
     return typeof v === 'boolean' ? v : true;
   };
+  const getPanelIdleMs = (): number => {
+    const v = read().panelIdleMs;
+    return typeof v === 'number' && v >= 5_000 && v <= 300_000 ? Math.round(v) : DEFAULT_PANEL_IDLE_MS;
+  };
 
   return {
     getDeferMcp(): boolean {
@@ -255,6 +265,10 @@ export function createDesktopState(): DesktopStateStore {
     getLazyWorker,
     setLazyWorker(enabled: boolean): void {
       write({ lazyWorker: enabled });
+    },
+    getPanelIdleMs,
+    setPanelIdleMs(ms: number): void {
+      write({ panelIdleMs: Math.max(5_000, Math.min(300_000, Math.round(ms))) });
     },
     getModelBlacklist(): Record<string, Record<string, string>> {
       const bl = read().modelBlacklist;

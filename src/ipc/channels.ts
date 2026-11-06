@@ -102,6 +102,8 @@ export const CHANNELS = {
   setMonitorEnabled: 'nexus:setMonitorEnabled',
   getLazyWorker: 'nexus:getLazyWorker',
   setLazyWorker: 'nexus:setLazyWorker',
+  getPanelIdleMs: 'nexus:getPanelIdleMs',
+  setPanelIdleMs: 'nexus:setPanelIdleMs',
   getResourceState: 'nexus:getResourceState',
 
   // renderer → main: main-local (no worker round-trip) channels.

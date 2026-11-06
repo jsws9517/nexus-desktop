@@ -719,7 +719,7 @@ test('right-click menu adds a file to chat and opens it in an editor', async () 
 
 test('right-click menu closes on Escape / outside press and on dispose', async () => {
   const h = makeHarness({ entries: [{ name: 'a.ts', type: 'file', size: 10 }] });
-  const dispose = mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  const handle = mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
   await TICKS(); await TICKS();
   const menuEls = () => findEls(document.body, { cls: 'fb-context-menu' });
   const row = findEls(h.container, { cls: 'filebrowser-row', text: 'a.ts' })[0];
@@ -738,7 +738,7 @@ test('right-click menu closes on Escape / outside press and on dispose', async (
   assert.equal(menuEls().length, 0, 'outside press closes menu');
 
   assert.ok(await openMenu(), 'menu shown before dispose');
-  dispose();
+  handle.dispose();
   assert.equal(menuEls().length, 0, 'dispose removes menu');
 });
 
@@ -791,12 +791,12 @@ test('open-in-editor falls back to the OS default app on failure', async () => {
 
 test('dispose removes DOM and unsubscribes from the event bus', async () => {
   const h = makeHarness({ entries: PROJ });
-  const dispose = mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  const handle = mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
   await TICKS(); await TICKS();
   assert.ok(h.container.children.length > 0, 'DOM mounted');
   assert.ok(h.handler, 'subscribed');
 
-  dispose();
+  handle.dispose();
   assert.equal(h.container.children.length, 0, 'DOM removed on dispose');
   assert.equal(h.handler, null, 'unsubscribed on dispose');
 

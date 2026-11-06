@@ -91,6 +91,13 @@ export interface FileBrowserMountOptions {
   defaultCollapsed?: boolean;
 }
 
+/** Handle returned by `mountFileBrowser`: dispose the instance, optionally
+ *  live-update the idle-collapse delay (re-arms any running countdown). */
+export interface FileBrowserHandle {
+  dispose(): void;
+  setIdleMs(ms: number): void;
+}
+
 interface DirNode {
   path: string;
   expanded: boolean;
@@ -212,17 +219,18 @@ function matchesFilter(e: FileBrowserEntry, tokens: string[]): boolean {
 }
 
 /**
- * Mount the file browser into `container`. Returns a dispose function that
+ * Mount the file browser into `container`. Returns a handle whose `dispose()`
  * cancels timers, unsubscribes from the event bus and removes the DOM —
- * idempotent, guaranteed to run exactly once by the caller.
+ * idempotent, guaranteed to run exactly once by the caller. `setIdleMs`
+ * live-updates the idle-collapse delay without re-mounting.
  */
 export function mountFileBrowser(
   container: HTMLElement,
   ctx: FileBrowserContext,
   opts: FileBrowserMountOptions = {},
-): () => void {
+): FileBrowserHandle {
   const bridge: FileBrowserBridge = opts.bridge ?? (window as unknown as { nexusDesktop?: FileBrowserBridge }).nexusDesktop ?? { listDirectory: async () => ({ ok: false, error: 'bridge missing' }), openExternalFile: async () => ({ ok: false, error: 'bridge missing' }), openInEditor: async () => ({ ok: false, error: 'bridge missing' }), getGitStatus: async () => ({ ok: false, isRepo: false, error: 'bridge missing' }) };
-  const idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
+  let idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
   const getLang = () => ctx.getUiLang() || 'zh-CN';
 
   container.className = 'rside-section file-browser';
@@ -821,7 +829,7 @@ export function mountFileBrowser(
   resetUi();
   void refreshProjectDir();
 
-  return () => {
+  const disposeFn = (): void => {
     if (disposed) return;
     disposed = true;
     closeContextMenu();
@@ -842,6 +850,14 @@ export function mountFileBrowser(
     container.classList.remove('collapsed');
     container.replaceChildren();
   };
+
+  const handle: FileBrowserHandle & CallableFunction = (((ms: number) => {
+    idleMs = Math.max(1_000, Math.round(ms));
+    if (!collapsed) armIdle();
+  }) as unknown) as FileBrowserHandle & CallableFunction;
+  handle.dispose = disposeFn;
+  handle.setIdleMs = (ms: number) => { (handle as CallableFunction)(ms); };
+  return handle;
 }
 
 /** Normalize separators + trailing slashes so Windows roots compare/key

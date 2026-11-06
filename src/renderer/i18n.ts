@@ -343,6 +343,11 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   monitorEnabledHint: { 'zh-CN': '高内存/CPU 时提前干预，暂停新建会话以保护系统', en: 'Proactively pause new sessions when memory/CPU load is high' },
   lazyWorkerLabel: { 'zh-CN': '预热备用 Worker', en: 'Pre-warm spare worker' },
   lazyWorkerHint: { 'zh-CN': '开启后自动预留一个空闲 Worker 以加速新建标签；低配电脑可关闭', en: 'Keeps one idle worker ready for faster tab creation; disable on low-end machines' },
+  panelIdleLabel: { 'zh-CN': '面板自动折叠时间 (秒)', en: 'Panel auto-collapse delay (s)' },
+  panelIdleHint: {
+    'zh-CN': '侧边栏与文件浏览器在停止操作多久后自动折叠（5–300 秒，默认 10 秒）',
+    en: 'How long after inactivity the sidebar and file browser auto-collapse (5–300 s, default 10)',
+  },
 
   // Multi-tab (per-session worker) UI.
   tabsEmpty: { 'zh-CN': '无打开的会话标签', en: 'No open session tabs' },
