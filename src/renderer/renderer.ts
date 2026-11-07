@@ -17,6 +17,7 @@ import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
+import { hydrateIcons, iconEl } from './icons.js';
 
 interface SessionInfo {
   id: string;
@@ -2254,7 +2255,8 @@ function setFrozen(value: boolean): void {
   if (frozen === value) return;
   frozen = value;
   freezeBtn.classList.toggle('active', value);
-  freezeBtn.textContent = value ? t('unfreeze') : t('freeze');
+  const label = freezeBtn.querySelector<HTMLElement>('.btn-label');
+  if (label) label.textContent = value ? t('unfreeze') : t('freeze');
   if (!value) scrollToBottom();
 }
 
@@ -2628,6 +2630,7 @@ async function togglePin(id: string): Promise<void> {
 function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void {
   const li = document.createElement('li');
   li.classList.toggle('active', s.id === (activeId ?? currentSessionId));
+  li.classList.toggle('pinned', pinned);
   const name = document.createElement('span');
   name.className = 'session-name';
   name.textContent = s.name || s.id;
@@ -2638,15 +2641,19 @@ function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void
   const actions = document.createElement('div');
   actions.className = 'session-actions';
   const pinBtn = document.createElement('button');
-  pinBtn.className = pinned ? 'pin-btn active' : 'pin-btn';
-  pinBtn.textContent = '📌';
+  pinBtn.className = 'session-action sa-pin' + (pinned ? ' active' : '');
+  pinBtn.replaceChildren(iconEl('pin', 'icon icon-sm'));
   pinBtn.title = pinned ? t('unpin') : t('pin');
+  pinBtn.setAttribute('aria-label', pinBtn.title);
   pinBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     void togglePin(s.id);
   });
   const renameBtn = document.createElement('button');
-  renameBtn.textContent = t('rename');
+  renameBtn.className = 'session-action sa-rename';
+  renameBtn.replaceChildren(iconEl('pencil', 'icon icon-sm'));
+  renameBtn.title = t('rename');
+  renameBtn.setAttribute('aria-label', t('rename'));
   renameBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
     const newName = await promptDialog(t('renameSession'), s.name);
@@ -2656,8 +2663,10 @@ function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void
     }
   });
   const delBtn = document.createElement('button');
-  delBtn.textContent = t('delete');
-  delBtn.style.color = 'var(--danger)';
+  delBtn.className = 'session-action sa-delete';
+  delBtn.replaceChildren(iconEl('trash', 'icon icon-sm'));
+  delBtn.title = t('delete');
+  delBtn.setAttribute('aria-label', t('delete'));
   delBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
     const ok = await confirmDialog(t('deleteConfirm', { name: s.name }));
@@ -3293,8 +3302,9 @@ function tabName(sessionId: string): string {
 function tabAddButton(): HTMLElement {
   const btn = document.createElement('button');
   btn.className = 'tab-add';
-  btn.textContent = '＋';
+  btn.replaceChildren(iconEl('plus', 'icon icon-sm'));
   btn.title = t('tabsAddHint');
+  btn.setAttribute('aria-label', t('tabsAddHint'));
   btn.addEventListener('click', () => void openNewTab());
   return btn;
 }
@@ -3310,8 +3320,9 @@ function tabChip(tab: TabInfo): HTMLElement {
   name.textContent = tabName(tab.sessionId);
   const close = document.createElement('button');
   close.className = 'tab-close';
-  close.textContent = '✕';
+  close.replaceChildren(iconEl('x', 'icon icon-sm'));
   close.title = t('tabsCloseHint');
+  close.setAttribute('aria-label', t('tabsCloseHint'));
   close.addEventListener('click', (e) => {
     e.stopPropagation();
     void closeTabs([tab.sessionId]);
@@ -4680,7 +4691,8 @@ function mcpPopoverOpen(): boolean {
 }
 function setMcpPopover(open: boolean): void {
   mcpPopoverEl.classList.toggle('hidden', !open);
-  mcpServersBtn.textContent = open ? '▴' : '▾';
+  mcpServersBtn.classList.toggle('open', open);
+  mcpServersBtn.setAttribute('aria-expanded', String(open));
 }
 async function loadMcpServersList(): Promise<void> {
   try {
@@ -4847,6 +4859,7 @@ function enqueue(text: string, opts?: { rollback?: boolean }): void {
   if (!text) return;
   addUser(text);
   inputEl.value = '';
+  autoGrowInput();
   pendingQueue.push(text);
   maybeHandleIterativeIntent(text, opts?.rollback === true);
   updateSendButtonVisibility();
@@ -4995,6 +5008,7 @@ async function sendMessage(): Promise<void> {
   // tab ceiling is checked before anything is created (CLI /new is untouched).
   if (/^\/new\s*$/i.test(text)) {
     inputEl.value = '';
+    autoGrowInput();
     if (currentSessionId) clearDraft(currentSessionId);
     attachments = [];
     renderAttachments();
@@ -5092,6 +5106,7 @@ async function undoAt(wrap: HTMLElement, userIndex: number): Promise<void> {
     await syncMsgCache(currentSessionId);
     renderMessageWindow();
     inputEl.value = text;
+    autoGrowInput();
     inputEl.focus();
     await refreshSessions(currentSessionId);
     await refreshSessionStats();
@@ -5867,12 +5882,21 @@ function buildNumberRow(
   return row;
 }
 
+function autoGrowInput(): void {
+  const max = 168;
+  inputEl.style.height = 'auto';
+  const next = Math.min(inputEl.scrollHeight, max);
+  inputEl.style.height = `${next}px`;
+  inputEl.style.overflowY = inputEl.scrollHeight > max ? 'auto' : 'hidden';
+}
+
 function applyInputRows(rows: number): void {
   const clamped = Math.max(1, Math.min(20, Math.round(rows)));
   inputEl.rows = clamped;
   const lineHeight = 20;
   const padding = 22;
   inputEl.style.setProperty('--input-min-h', `${clamped * lineHeight + padding}px`);
+  requestAnimationFrame(autoGrowInput);
 }
 
 function buildAppearanceSection(container?: HTMLElement): void {
@@ -6756,12 +6780,11 @@ function saveSidebarState(collapsed: boolean): void {
 }
 collapseBtn.addEventListener('click', () => {
   const isCollapsed = sidebarEl.classList.toggle('collapsed');
+  leftSidebarAutoCollapsed = false;
   saveSidebarState(isCollapsed);
-  collapseBtn.textContent = isCollapsed ? '▶' : '◀';
   syncCollapseHints();
 });
 loadSidebarState();
-collapseBtn.textContent = sidebarEl.classList.contains('collapsed') ? '▶' : '◀';
 
 // ---------- right sidebar collapse/expand ----------
 const RIGHT_SIDEBAR_COLLAPSED_KEY = 'nexus.right-sidebar.collapsed';
@@ -6780,17 +6803,58 @@ function saveRightSidebarState(collapsed: boolean): void {
 }
 rightCollapseBtn.addEventListener('click', () => {
   const isCollapsed = rightSidebarEl.classList.toggle('collapsed');
+  rightSidebarAutoCollapsed = false;
   saveRightSidebarState(isCollapsed);
-  rightCollapseBtn.textContent = isCollapsed ? '◀' : '▶';
   syncCollapseHints();
 });
 loadRightSidebarState();
-rightCollapseBtn.textContent = rightSidebarEl.classList.contains('collapsed') ? '◀' : '▶';
+
+// Width-triggered auto-collapse keeps the chat column usable on smaller
+// windows without overwriting the user's saved preference. Manual toggles
+// clear the auto flag, so widening the window never fights a deliberate choice.
+const RIGHT_AUTO_COLLAPSE_BP = 1240;
+const LEFT_AUTO_COLLAPSE_BP = 1040;
+let rightSidebarAutoCollapsed = false;
+let leftSidebarAutoCollapsed = false;
+
+function syncResponsiveCollapse(): void {
+  const w = window.innerWidth;
+  if (w < RIGHT_AUTO_COLLAPSE_BP && !rightSidebarEl.classList.contains('collapsed')) {
+    rightSidebarEl.classList.add('collapsed');
+    rightSidebarAutoCollapsed = true;
+  } else if (w >= RIGHT_AUTO_COLLAPSE_BP && rightSidebarAutoCollapsed) {
+    rightSidebarEl.classList.remove('collapsed');
+    rightSidebarAutoCollapsed = false;
+  }
+  if (w < LEFT_AUTO_COLLAPSE_BP && !sidebarEl.classList.contains('collapsed')) {
+    sidebarEl.classList.add('collapsed');
+    leftSidebarAutoCollapsed = true;
+  } else if (w >= LEFT_AUTO_COLLAPSE_BP && leftSidebarAutoCollapsed) {
+    sidebarEl.classList.remove('collapsed');
+    leftSidebarAutoCollapsed = false;
+  }
+  syncCollapseHints();
+}
+
+let responsiveTimer: ReturnType<typeof setTimeout> | null = null;
+window.addEventListener('resize', () => {
+  if (responsiveTimer) clearTimeout(responsiveTimer);
+  responsiveTimer = setTimeout(syncResponsiveCollapse, 140);
+});
+syncResponsiveCollapse();
 
 // Hint = what a click does next: "unfold" while folded, "fold" while open.
 function syncCollapseHints(): void {
-  collapseBtn.title = t(sidebarEl.classList.contains('collapsed') ? 'expandSidebar' : 'collapseSidebar');
-  rightCollapseBtn.title = t(rightSidebarEl.classList.contains('collapsed') ? 'expandSidebar' : 'collapseSidebar');
+  const leftCollapsed = sidebarEl.classList.contains('collapsed');
+  const rightCollapsed = rightSidebarEl.classList.contains('collapsed');
+  const leftHint = t(leftCollapsed ? 'expandSidebar' : 'collapseSidebar');
+  const rightHint = t(rightCollapsed ? 'expandSidebar' : 'collapseSidebar');
+  collapseBtn.title = leftHint;
+  collapseBtn.setAttribute('aria-label', leftHint);
+  collapseBtn.setAttribute('aria-expanded', String(!leftCollapsed));
+  rightCollapseBtn.title = rightHint;
+  rightCollapseBtn.setAttribute('aria-label', rightHint);
+  rightCollapseBtn.setAttribute('aria-expanded', String(!rightCollapsed));
 }
 syncCollapseHints();
 onI18nApplied(syncCollapseHints);
@@ -6882,6 +6946,7 @@ function loadDraft(id: string): void {
   try {
     const d = localStorage.getItem(draftKey(id));
     inputEl.value = d ?? '';
+    autoGrowInput();
   } catch {}
 }
 function clearDraft(id: string): void {
@@ -6891,11 +6956,13 @@ function clearDraft(id: string): void {
 }
 let draftTimer: ReturnType<typeof setTimeout> | null = null;
 inputEl.addEventListener('input', () => {
+  autoGrowInput();
   updateSendButtonVisibility();
   updateRollbackButtonVisibility();
   if (draftTimer) clearTimeout(draftTimer);
   draftTimer = setTimeout(saveDraft, 400);
 });
+window.addEventListener('resize', autoGrowInput);
 
 // Arm (or disarm) the destructive path for the NEXT send: the button does not
 // roll back by itself, it marks the message being composed so sending it mid-turn
@@ -7098,6 +7165,7 @@ window.nexusDesktop.onTabsChanged((open) => {
 // ---------- boot ----------
 (async function boot(): Promise<void> {
   try {
+    hydrateIcons();
     loadTheme();
     initFx();
     addSkipLink();

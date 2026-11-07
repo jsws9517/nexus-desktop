@@ -21,24 +21,41 @@
   <div id="app" role="application" data-i18n-aria-label="appLabel" aria-label="Nexus Desktop">
     <header id="toolbar" role="toolbar" aria-label="主工具栏">
       <div class="toolbar-left">
-        <button id="btn-open-folder" class="btn ghost" title="Open project folder" data-i18n="openProject">📁 打开项目</button>
+        <button id="btn-open-folder" class="btn ghost icon-text" title="Open project folder" data-i18n-title="openProject" aria-label="Open project folder">
+          <span class="icon-slot" data-icon="folder-open"></span>
+          <span class="btn-label" data-i18n="openProject">打开项目</span>
+        </button>
+        <span class="toolbar-divider" aria-hidden="true"></span>
         <span id="cwd-label" class="cwd" title="Current project directory" aria-live="polite"></span>
       </div>
       <div class="toolbar-right">
-        <label class="field-label" data-i18n="themeLabel">主题</label>
-        <select id="theme-select">
-          <option value="system" data-i18n="themeSystem">跟随系统</option>
-          <option value="dark" data-i18n="themeDark">深色</option>
-          <option value="warm" data-i18n="themeWarm">暖色护眼</option>
-          <option value="light" data-i18n="themeLight">浅色</option>
-          <option value="cartoon" data-i18n="themeCartoon">卡通风格</option>
-          <option value="tech" data-i18n="themeTech">科技风格</option>
-        </select>
-        <label class="field-label">Provider</label>
-        <select id="provider-select"></select>
-        <label class="field-label" data-i18n="modelLabel">Model</label>
-        <select id="model-select"></select>
-        <button id="btn-settings" class="btn ghost" title="Settings" data-i18n="settings">⚙️ 设置</button>
+        <div class="toolbar-group">
+          <label class="field-label" for="theme-select" data-i18n="themeLabel">主题</label>
+          <span class="select-wrap">
+            <select id="theme-select">
+              <option value="system" data-i18n="themeSystem">跟随系统</option>
+              <option value="dark" data-i18n="themeDark">深色</option>
+              <option value="warm" data-i18n="themeWarm">暖色护眼</option>
+              <option value="light" data-i18n="themeLight">浅色</option>
+              <option value="cartoon" data-i18n="themeCartoon">卡通风格</option>
+              <option value="tech" data-i18n="themeTech">科技风格</option>
+            </select>
+          </span>
+        </div>
+        <span class="toolbar-sep" aria-hidden="true"></span>
+        <div class="toolbar-group">
+          <label class="field-label" for="provider-select">Provider</label>
+          <span class="select-wrap"><select id="provider-select"></select></span>
+        </div>
+        <div class="toolbar-group">
+          <label class="field-label" for="model-select" data-i18n="modelLabel">Model</label>
+          <span class="select-wrap"><select id="model-select"></select></span>
+        </div>
+        <span class="toolbar-sep" aria-hidden="true"></span>
+        <button id="btn-settings" class="btn ghost icon-text" title="Settings" data-i18n-title="settings" aria-label="Settings">
+          <span class="icon-slot" data-icon="sliders"></span>
+          <span class="btn-label" data-i18n="settings">设置</span>
+        </button>
         <span id="busy-indicator" class="busy hidden">●</span>
       </div>
     </header>
@@ -47,23 +64,37 @@
       <aside id="sidebar" role="complementary" aria-label="会话侧边栏">
         <div class="sidebar-head">
           <span class="sidebar-title" data-i18n="sessions">会话</span>
-          <button id="btn-new-session" class="btn primary small" title="New session" data-i18n="newSession">＋ 新建</button>
+          <button id="btn-new-session" class="btn primary small icon-text" title="New session" data-i18n-title="newSession">
+            <span class="icon-slot" data-icon="plus"></span>
+            <span class="btn-label" data-i18n="newSession">新建</span>
+          </button>
         </div>
         <input id="session-search" class="session-search" type="text" data-i18n-placeholder="searchSessions" placeholder="搜索会话…" autocomplete="off" aria-label="搜索会话" />
         <ul id="session-list" role="listbox" aria-label="会话列表"></ul>
         <div id="session-pager" class="session-pager hidden">
-          <button id="pager-prev" class="btn ghost small" data-i18n="pagerPrev">‹ 上一页</button>
+          <button id="pager-prev" class="btn ghost small icon-text" data-i18n-title="pagerPrev" title="上一页">
+            <span class="icon-slot" data-icon="chevron-left"></span>
+            <span class="btn-label" data-i18n="pagerPrev">上一页</span>
+          </button>
           <span id="pager-info"></span>
-          <button id="pager-next" class="btn ghost small" data-i18n="pagerNext">下一页 ›</button>
+          <button id="pager-next" class="btn ghost small icon-text" data-i18n-title="pagerNext" title="下一页">
+            <span class="btn-label" data-i18n="pagerNext">下一页</span>
+            <span class="icon-slot" data-icon="chevron-right"></span>
+          </button>
         </div>
         <nav id="sidebar-tabs" class="sidebar-tabs" role="tablist" aria-label="侧边栏扩展"></nav>
         <div id="sidebar-page" class="sidebar-page" role="tabpanel" hidden></div>
-        <button id="btn-collapse-sidebar" class="sidebar-toggle" title="折叠侧栏" data-i18n-title="collapseSidebar">◀</button>
+        <button id="btn-collapse-sidebar" class="sidebar-toggle" title="折叠侧栏" data-i18n-title="collapseSidebar" aria-label="折叠侧栏">
+          <span class="icon-slot" data-icon="chevron-left"></span>
+        </button>
       </aside>
 
       <main id="chat-panel" role="main" aria-label="聊天面板">
         <div id="tab-bar" class="tab-bar" role="tablist" aria-label="会话标签页"></div>
-        <button id="btn-freeze" class="freeze-btn hidden" data-i18n="freeze" title="Ctrl+.">❄ 冻结视图</button>
+        <button id="btn-freeze" class="freeze-btn hidden" data-i18n-title="freeze" title="Ctrl+.">
+          <span class="icon-slot" data-icon="snowflake"></span>
+          <span class="btn-label" data-i18n="freeze">冻结视图</span>
+        </button>
         <div id="chat-empty" class="chat-empty hidden" data-i18n="chatEmptyHint">点击「＋ 新建」或输入 /new 开始新会话，也可以直接输入第一条消息</div>
         <div id="messages" role="log" aria-label="消息历史" aria-live="polite"></div>
         <div id="input-area" role="region" aria-label="消息输入区域">
@@ -71,28 +102,45 @@
           <div id="rag-attachments" class="attachments hidden" aria-label="RAG 附件列表"></div>
           <div class="input-card">
             <div class="composer">
-              <textarea id="input" rows="4" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息，Enter 发送，Shift+Enter 换行…" aria-label="消息输入框"></textarea>
+              <textarea id="input" rows="1" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息，Enter 发送，Shift+Enter 换行…" aria-label="消息输入框"></textarea>
             </div>
             <div class="input-actions" role="toolbar" aria-label="输入操作">
               <div class="input-left">
-                <button id="btn-attach" class="btn icon" data-i18n-title="attachTitle" title="添加附件" aria-label="添加附件">＋</button>
-                <button id="btn-rag" class="btn icon" data-i18n-title="ragAttachTitle" title="添加 RAG 附件" aria-label="添加 RAG 附件">◈</button>
+                <button id="btn-attach" class="btn icon" data-i18n-title="attachTitle" title="添加附件" aria-label="添加附件">
+                  <span class="icon-slot" data-icon="paperclip"></span>
+                </button>
+                <button id="btn-rag" class="btn icon" data-i18n-title="ragAttachTitle" title="添加 RAG 附件" aria-label="添加 RAG 附件">
+                  <span class="icon-slot" data-icon="layers"></span>
+                </button>
                 <div id="mcp-box" class="mcp-box">
                   <label id="mcp-toggle" class="mcp-toggle" data-i18n-title="mcpMasterTitle">
                     <input type="checkbox" checked />
+                    <span class="mcp-dot" aria-hidden="true"></span>
                     <span id="mcp-status">MCP</span>
                   </label>
-                  <button id="mcp-servers-btn" class="mcp-caret" data-i18n-title="mcpPickTitle">▾</button>
+                  <button id="mcp-servers-btn" class="mcp-caret" data-i18n-title="mcpPickTitle" aria-label="选择 MCP 服务器工具">
+                    <span class="icon-slot" data-icon="chevron-down"></span>
+                  </button>
                   <div id="mcp-popover" class="mcp-popover hidden">
                     <div class="mcp-popover-title" data-i18n="mcpPopoverTitle">MCP 服务器工具（当前会话）</div>
                     <div id="mcp-servers"></div>
                   </div>
                 </div>
               </div>
-              <button id="btn-rollback" class="btn hidden" data-i18n="rollbackBtn" data-i18n-title="rollbackBtnTitle" title="丢弃上一条指令已产出的内容，并用这条消息重新开始">↺ 作废上一条并重发</button>
+              <span class="input-hint" data-i18n="composerHint" aria-hidden="true">Enter 发送 · Shift+Enter 换行</span>
+              <button id="btn-rollback" class="btn hidden" data-i18n-title="rollbackBtnTitle" title="丢弃上一条指令已产出的内容，并用这条消息重新开始">
+                <span class="icon-slot" data-icon="undo"></span>
+                <span class="btn-label" data-i18n="rollbackBtn">作废上一条并重发</span>
+              </button>
               <span id="input-status"></span>
-              <button id="btn-send" class="btn primary" data-i18n="send">发送</button>
-              <button id="btn-stop" class="btn danger hidden" data-i18n="stop" title="ESC">停止</button>
+              <button id="btn-send" class="btn primary" data-i18n-title="send" title="发送">
+                <span class="icon-slot" data-icon="arrow-up"></span>
+                <span class="btn-label" data-i18n="send">发送</span>
+              </button>
+              <button id="btn-stop" class="btn danger hidden" data-i18n-title="stop" title="ESC">
+                <span class="icon-slot" data-icon="square"></span>
+                <span class="btn-label" data-i18n="stop">停止</span>
+              </button>
             </div>
           </div>
         </div>
@@ -128,7 +176,9 @@
         </div>
         <div class="rside-divider"></div>
         <div id="file-browser" class="rside-section" role="complementary" aria-label="文件浏览器"></div>
-        <button id="btn-collapse-right-sidebar" class="rsidebar-toggle" title="折叠信息栏" data-i18n-title="collapseSidebar">▶</button>
+        <button id="btn-collapse-right-sidebar" class="rsidebar-toggle" title="折叠信息栏" data-i18n-title="collapseSidebar" aria-label="折叠信息栏">
+          <span class="icon-slot" data-icon="chevron-right"></span>
+        </button>
       </aside>
     </div>
   </div>
@@ -152,7 +202,9 @@
     <div class="modal settings">
       <div class="modal-head">
         <h3 id="settings-title" data-i18n="settings">设置</h3>
-        <button id="settings-close" class="btn ghost small" aria-label="关闭设置">✕</button>
+        <button id="settings-close" class="btn ghost small icon-only" aria-label="关闭设置">
+          <span class="icon-slot" data-icon="x"></span>
+        </button>
       </div>
       <div id="settings-body"></div>
       <div class="modal-actions">
