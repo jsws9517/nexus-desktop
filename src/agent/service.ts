@@ -222,6 +222,29 @@ function inferTaskKind(input: string): 'coding' | 'research' | 'ops' | 'chat' {
   return 'chat';
 }
 
+/** Return shape of the desktop completion gate (subset of core's TurnEndVerdict). */
+interface CompletionGateVerdict {
+  verdict: 'continue';
+  reason: string;
+  steer?: string;
+  gate?: string;
+}
+
+/**
+ * Stable key for a tool request, used to hand the sentinel verdict captured on
+ * `tool_call_start` to the core `preToolUse` hook without evaluating twice.
+ * Identical calls in one batch intentionally share a key (and a verdict).
+ */
+function sentinelDecisionKey(tool: string, args: Record<string, unknown>): string {
+  let body: string;
+  try {
+    body = JSON.stringify(args ?? {});
+  } catch {
+    body = String(args);
+  }
+  return `${tool}::${body}`;
+}
+
 /** Read-only tool heuristic for the L2 read-only policy. */
 const READ_ONLY_TOOL_RE =
   /(^|_)(read|list|glob|grep|search|status|get|show|view|inspect|outline|diagnostic|hover|diff|stat|health|info)(_|$)/i;
@@ -342,6 +365,16 @@ export class AgentService {
   private stepUntrusted = false;
   private touchedFiles = new Map<string, { mtimeMs: number; size: number }>();
   private turnTranscript: TranscriptEntry[] = [];
+  /** Input of the current turn (contract + anti-cheat context). */
+  private currentTurnInput = '';
+  /** Completion-gate rejections applied in this turn. */
+  private completionGateAttempts = 0;
+  /**
+   * Sentinel verdicts captured on `tool_call_start` (before the permission
+   * bridge) and consumed by the core `preToolUse` hook (before execution).
+   * Keyed by tool + serialized args; cleared at every turn boundary.
+   */
+  private sentinelDecisions = new Map<string, SentinelDecision>();
 
   /** JobWatcher attached to the lazily-created JobManager: stalled alerts,
    *  progress one-liners, and auto-continue "wake turns" for finished jobs. */
@@ -1016,6 +1049,24 @@ export class AgentService {
           // Prompt decoration must never break a turn.
         }
       },
+
+      /**
+       * Hard security gate, wired to the core's pre-execution hook.
+       *
+       * The sentinel itself runs on `tool_call_start` (before the permission
+       * bridge, where it can emit a probe event and stop the turn). This hook
+       * consumes that verdict at the execution boundary, so even a race that
+       * lets the batch continue cannot actually run the call.
+       */
+      preToolUse: async (ctx) => this.guardToolExecution(ctx.toolCall),
+
+      /**
+       * Completion gate: refuse a clean "done" when the deliverable contract
+       * is not satisfied. The core keeps the turn alive and injects the steer
+       * at the next safe point, so the model gets a chance to fix it instead
+       * of the harness only reporting the miss afterwards.
+       */
+      onTurnEnd: async (ctx) => this.evaluateCompletionGate(ctx.assistantText ?? ''),
     };
 
     // Route ALL permission prompts to the UI — both the MCP/tool prompt and the
@@ -1398,7 +1449,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         this.toolCallsAcc.push({ name: toolName, args: toolArgs });
         this.stepActions.push({ tool: toolName, args: toolArgs });
         // Security sentinel runs BEFORE the permission bridge: a fatal
-        // boundary probe must not turn into another Allow/Deny card.
+        // boundary probe must not turn into another Allow/Deny card. The
+        // verdict is cached so the core `preToolUse` hook can deny the call at
+        // the execution boundary without evaluating (and counting) it twice.
         const sentinel = this.activeSentinel;
         if (sentinel) {
           const decision = sentinel.evaluate({
@@ -1406,6 +1459,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
             args: toolArgs,
             hasUntrustedSource: this.stepUntrusted,
           });
+          this.sentinelDecisions.set(sentinelDecisionKey(toolName, toolArgs), decision);
           this.handleSentinelDecision(decision);
           if (decision.category === 'fs_write') {
             this.stepWriteTargets.push(...pathsIn(toolArgs));
@@ -1476,6 +1530,13 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         }
         this.toolCallsAcc = [];
         this.finishCorrectionStep();
+      } else if (event.type === 'completion_gate') {
+        // A rejected completion is a real step boundary even though no
+        // `turn_end` is emitted: the model claimed done and the contract said
+        // no. Classify the step so the ledger sees it, then start clean — the
+        // gate itself already produced the correction, so the controller does
+        // not need to inject a second one.
+        this.recordRejectedStepBoundary(event);
       } else if (event.type === 'cache_file_saved') {
         const filePath = event.filePath as string | undefined;
         const sessionId = event.sessionId as string | null;
@@ -1591,6 +1652,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.resetCorrectionStep();
     this.touchedFiles.clear();
     this.turnTranscript = [{ role: 'user', text: input }];
+    this.currentTurnInput = input;
+    this.completionGateAttempts = 0;
     this.lastCorrectionAction = null;
   }
 
@@ -1603,10 +1666,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.stepWriteTargets = [];
     this.stepUntrusted = false;
     this.touchedFiles.clear();
+    this.sentinelDecisions.clear();
   }
 
-  /** Classify the finished step and let the controller act on it. */
-  private finishCorrectionStep(): void {
+  /** Classify the finished step and (optionally) let the controller act on it. */
+  private finishCorrectionStep(mode: 'act' | 'classify' = 'act'): void {
     const ledger = this.activeLedger;
     const controller = this.activeCorrection;
     if (!ledger || !controller) return;
@@ -1628,16 +1692,22 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     });
 
     const signals: LedgerSignal[] = ledger.signals(step, thinking);
-    signals.push(...this.shortcutSignals(this.stepText, step.actions.length));
-
-    const action = controller.onStep(step, signals);
-    if (action) {
-      this.lastCorrectionAction = action;
-      this.onLog?.(
-        'warn',
-        `[correction] L${action.level} ${action.kind}: ${action.reason} ` +
-          `(step ${action.stepSeq}, evidence: ${action.evidence.slice(0, 2).join(' | ')})`,
-      );
+    if (mode === 'act') {
+      signals.push(...this.shortcutSignals(this.stepText, step.actions.length));
+      const action = controller.onStep(step, signals);
+      if (action) {
+        this.lastCorrectionAction = action;
+        this.onLog?.(
+          'warn',
+          `[correction] L${action.level} ${action.kind}: ${action.reason} ` +
+            `(step ${action.stepSeq}, evidence: ${action.evidence.slice(0, 2).join(' | ')})`,
+        );
+      }
+    } else {
+      // Still let the controller see the progress/neutral outcome so its
+      // de-escalation bookkeeping stays correct, but do not fire a second
+      // correction: the completion gate already injected one.
+      controller.onStep(step, []);
     }
 
     if (this.stepText.trim()) {
@@ -1648,6 +1718,90 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       });
     }
     this.resetCorrectionStep();
+  }
+
+  /**
+   * A completion-gate rejection is a step boundary without a `turn_end`. Feed
+   * it to the ledger (classify only) so a model that keeps claiming done while
+   * the deliverable is missing still shows up as no-progress, then reset.
+   */
+  private recordRejectedStepBoundary(event: AgentEvent): void {
+    this.onLog?.(
+      'warn',
+      `[completion-gate] completion rejected` +
+        (event.attempt !== undefined ? ` (attempt ${String(event.attempt)})` : '') +
+        `: ${String(event.reason ?? 'deliverable not satisfied')}`,
+    );
+    // `exhausted` means the core is about to end the turn anyway; the
+    // following turn_end will classify this step.
+    if (event.exhausted === true) return;
+    this.finishCorrectionStep('classify');
+  }
+
+  /**
+   * Completion gate fed to the core's `onTurnEnd` hook.
+   *
+   * It refuses a clean "done" when the deliverable contract is unsatisfied, so
+   * the core keeps the turn alive with a steer instead of the harness only
+   * reporting the miss after the fact.
+   *
+   * Deliberately conservative:
+   *  - only when the answer *claims* completion and the request parsed into at
+   *    least one acceptance item;
+   *  - only filesystem-checkable items (the verifier never runs a shell);
+   *  - only high-severity anti-cheat findings block the turn (medium ones are
+   *    still reported at turn end);
+   *  - capped by `thresholds.contract.maxAntiCheatRetries` per turn (the core
+   *    additionally caps total gate rejections per chat cycle).
+   */
+  private evaluateCompletionGate(assistantText: string): CompletionGateVerdict | undefined {
+    const contract = this.activeContract;
+    const cfg = this.correctionConfig;
+    if (!contract || contract.items.length === 0 || !cfg) return undefined;
+    if (!assistantText.trim() || !claimsCompletion(assistantText)) return undefined;
+    if (this.completionGateAttempts >= cfg.thresholds.contract.maxAntiCheatRetries) return undefined;
+
+    const root = this.getCwd();
+    let verdict: ContractVerdict | null = null;
+    try {
+      verdict = verifyContract(contract, {
+        exists: (p) => existsSync(resolve(root, p)),
+        size: (p) => {
+          try {
+            return statSync(resolve(root, p)).size;
+          } catch {
+            return 0;
+          }
+        },
+      });
+    } catch (err) {
+      this.onLog?.('warn', `[completion-gate] verification failed: ${(err as Error).message}`);
+      return undefined;
+    }
+
+    const findings = antiCheatChecks({
+      userRequest: this.currentTurnInput,
+      diff: { files: [] },
+      diffKnown: false,
+      transcript: [
+        ...this.turnTranscript,
+        { role: 'assistant', text: assistantText, toolCalls: this.stepActions.length },
+      ],
+    });
+    const blocking = findings.filter((f) => f.severity === 'high');
+    const failed = verdict?.failed ?? [];
+    if (failed.length === 0 && blocking.length === 0) return undefined;
+
+    this.completionGateAttempts += 1;
+    const steer = formatContractCorrection(verdict, blocking);
+    return {
+      verdict: 'continue',
+      reason:
+        `completion rejected: ${failed.length} acceptance item(s) unmet, ` +
+        `${blocking.length} high-severity anti-cheat finding(s)`,
+      steer: steer || undefined,
+      gate: 'deliverable_contract',
+    };
   }
 
   /**
@@ -1805,6 +1959,33 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     } else {
       this.agent?.abort?.();
     }
+  }
+
+  /**
+   * Hard gate used by the core's `preToolUse` hook. The sentinel verdict was
+   * captured on `tool_call_start` (before the permission bridge); this denies
+   * the call at the execution boundary without evaluating it a second time.
+   *
+   * Only *fatal* verdicts are enforced here. A non-fatal probe (write outside
+   * the root, egress to an unknown host) is deliberately still decided by the
+   * permission bridge — hard-denying it would make the user's Allow button a
+   * no-op. Probes escalate to fatal (frozen capability) on repetition, and
+   * that escalation is what this gate stops.
+   */
+  private guardToolExecution(
+    toolCall?: { name: string; arguments?: Record<string, unknown> },
+  ): 'allow' | { verdict: 'deny'; reason: string; blockedRule?: string } {
+    if (!toolCall) return 'allow';
+    const args = (toolCall.arguments ?? {}) as Record<string, unknown>;
+    const decision = this.sentinelDecisions.get(sentinelDecisionKey(toolCall.name, args));
+    if (decision && !decision.ok && decision.fatal) {
+      return {
+        verdict: 'deny',
+        reason: decision.reason ?? 'blocked by security sentinel',
+        blockedRule: `sentinel:${decision.probe ?? decision.category}`,
+      };
+    }
+    return 'allow';
   }
 
   /** Last correction action, for the UI/status surface. */

@@ -355,11 +355,13 @@ export function antiCheatChecks(input: AntiCheatInput): CheatFinding[] {
   }
 
   // 4. narration_without_action
-  if (lastAssistant && claims && (lastAssistant.toolCalls ?? 0) === 0) {
-    const laterTool = transcript
-      .slice(transcript.lastIndexOf(lastAssistant) + 1)
-      .some((t) => t.role === 'tool');
-    if (!laterTool) {
+  // The final answer is normally tool-call-free (the tools ran in earlier
+  // rounds), so "0 tool calls in the last message" proves nothing. The real
+  // shortcut is a turn that claims completion without ANY tool ever running.
+  if (lastAssistant && claims) {
+    const totalToolCalls = transcript.reduce((n, t) => n + (t.toolCalls ?? 0), 0);
+    const anyToolEntry = transcript.some((t) => t.role === 'tool');
+    if (totalToolCalls === 0 && !anyToolEntry) {
       findings.push({
         id: 'narration_without_action',
         severity: 'high',

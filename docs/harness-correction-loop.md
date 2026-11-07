@@ -367,9 +367,10 @@ export interface DeliverableContract {
 | 纠偏控制器 | `src/agent/correction-controller.ts` | L0..L4 策略表；预算；降级；steer 文本生成 |
 | 安全哨兵 | `src/agent/security-sentinel.ts` | 意图/污点/试探；不可变策略区 |
 | 产出契约 | `src/agent/deliverable-contract.ts` | 验收项解析/断言/反作弊 |
-| 挂钩 | `src/agent/service.ts:1264 handleAgentEvent` | onStepEnd / onToolEnd 喂 Ledger |
-| 挂钩 | `src/agent/service.ts:1401 runTurn` | onTurnEnd 触发验收与收尾 |
-| 执行器 | `agent.enqueueSteer`（已有） | L1/L2/L3 注入 |
+| 挂钩 | `src/agent/service.ts handleAgentEvent` | onStepEnd / onToolEnd 喂 Ledger；`tool_call_start` 上跑哨兵并缓存判决 |
+| 挂钩 | `src/agent/service.ts finishCorrectionStep` | step 结束时取信号并执行纠正 |
+| 挂钩 | `src/agent/service.ts earlyInit` | 注册 core `preToolUse`（执行前硬拦）与 `onTurnEnd`（完成闸门） |
+| 执行器 | `agent.enqueueSteer`（已有） | L1/L2/L3 注入 + 完成闸门 steer |
 | 执行器 | `agent.abort()`（已有） | 仅 L4 |
 | 工具收窄 | 在 `getToolsForContext` 处生效（core） | L2 |
 | 现有 monitor | `TurnMonitor` / `RepetitionMonitor` 保留 | 改为向 Ledger 供信号，不再各自 abort |
@@ -560,12 +561,23 @@ if (event.type === 'tool_result' && this.activeLedger) {
 | `test/deliverable-contract.test.mjs` | 契约解析、6 类验收校验、7 类反作弊、完成声明否定、提示格式化 |
 | `test/correction-controller.test.mjs` | L1–L4、预算、冷却、升级、降级、证据包、安全优先 |
 | `test/correction-e2e.test.mjs` | 真实 `AgentService.handleAgentEvent` 链路：L1 steer、升级、不可变区 fatal、污点 fatal |
+| `test/correction-gate.test.mjs` | core hook 注册、`preToolUse` 消费缓存的 sentinel 判决、完成闸门的拒绝/放行/不声明/预算耗尽 |
 
-### 11.5 尚未落地（P2 及以后）
+### 11.5 完成闸门（已落地）
+
+第一版只在 turn 结束后发 `contract_verdict`，属于“事后记账”。现在把闸门前移到 core 的 `end_turn` 之前：
+
+- core 侧 `Hooks.onTurnEnd` 的返回值从 `void` 扩展为 `TurnEndVerdict`：`void` / `'allow'` 保持旧行为，`{ verdict: 'continue', reason, steer?, gate? }` 表示拒绝完成。
+- 拒绝后 core **不发** `turn_end`，把 `steer` 通过 `enqueueSteer` 排进安全点通道，再跑一轮 LLM；同时发出 `completion_gate` 事件（`gate` / `reason` / `attempt` / `exhausted`）。
+- 拒绝次数由 `maxCompletionGates`（默认 3）按 chat 周期封顶，超限时发 `exhausted: true` 并放行，避免坏 hook 烧光 turn 预算。
+- 只拦“干净完成”：`unverified` / `arg_storm` / `tool_use` 路径不走闸门，它们本身已带终态结论。
+- desktop 侧 `evaluateCompletionGate()` 的保守条件：必须声明完成、请求解析出至少一个验收项、只校验文件系统可验证项（不跑 shell）、只有 high 严重度反作弊命中才拦、并受 `thresholds.contract.maxAntiCheatRetries` 约束。
+- 被拒绝的完成被视为一个 step 边界（无 `turn_end`），以 `classify` 模式喂给 ledger，使“反复声明完成但交付物缺失”在进度账本里表现为无进展。
+
+### 11.6 尚未落地（P2 及以后）
 
 1. **可信 git diff provider**：把 `diffKnown` 打开，启用全部反作弊检查。
-2. **UI 干预时间线**：把 `correction` / `security_probe` / `contract_verdict` 渲染成可展开、可接管、可回滚的卡片。
-3. **完成闸门（hard gate）**：在 core 的 end_turn 前拦截“声明完成但契约未满足”，而不只是事后发事件。
-4. **命令类验收的执行器**：在明确授权（单独配置开关 + 用户确认）后才允许 `verifyContract` 跑测试命令。
-5. **跨会话统计**：首次纠正成功率、误杀率、安全拦截/漏放率。
+2. **UI 干预时间线**：把 `correction` / `security_probe` / `contract_verdict` / `completion_gate` 渲染成可展开、可接管、可回滚的卡片。
+3. **命令类验收的执行器**：在明确授权（单独配置开关 + 用户确认）后才允许 `verifyContract` 跑测试命令。
+4. **跨会话统计**：首次纠正成功率、误杀率、安全拦截/漏放率。
 
