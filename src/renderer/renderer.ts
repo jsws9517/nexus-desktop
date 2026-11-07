@@ -914,6 +914,13 @@ function tabHoldsBusy(sessionId: string): boolean {
   return tabTurnLive.has(sessionId) || fanoutBatches.has(sessionId) || activeBgJobCount(sessionId) > 0;
 }
 
+/** Busy predicate used by bulk tab closes: a running worker must never be
+ *  hard-stopped by a sweep. The chip's mirrored flag is OR-ed in so a tab that
+ *  arrived pre-lit (restored session) is protected even before its first event. */
+function isTabBusy(sessionId: string): boolean {
+  return tabHoldsBusy(sessionId) || tabs.get(sessionId)?.busy === true;
+}
+
 /** Recompute a tab's chip from the holder predicate; re-render only when the
  *  boolean actually flips (job progress events are frequent). */
 function syncTabBusy(sessionId: string): void {
@@ -3307,10 +3314,14 @@ function tabChip(tab: TabInfo): HTMLElement {
   close.title = t('tabsCloseHint');
   close.addEventListener('click', (e) => {
     e.stopPropagation();
-    void closeTab(tab.sessionId);
+    void closeTabs([tab.sessionId]);
   });
   chip.append(busy, name, close);
   chip.addEventListener('click', () => void switchTab(tab.sessionId));
+  chip.addEventListener('contextmenu', (ev) => {
+    ev.preventDefault();
+    openTabContextMenu(tab.sessionId, ev);
+  });
   chip.title = tab.sessionId;
   return chip;
 }
@@ -3327,6 +3338,123 @@ function renderTabBar(): void {
   }
   for (const tab of tabs.values()) tabBarEl.appendChild(tabChip(tab));
   tabBarEl.appendChild(tabAddButton());
+}
+
+// ---------- tab right-click menu ----------
+// Same dismissal model as the file browser's row menu: listeners attach on the
+// next tick so the opening gesture can't immediately dismiss the menu.
+let tabMenuEl: HTMLDivElement | null = null;
+let tabMenuOff: (() => void) | null = null;
+
+function closeTabMenu(): void {
+  if (tabMenuOff) {
+    tabMenuOff();
+    tabMenuOff = null;
+  }
+  if (tabMenuEl) {
+    tabMenuEl.remove();
+    tabMenuEl = null;
+  }
+}
+
+function tabMenuItem(label: string, run: () => void): HTMLButtonElement {
+  const item = document.createElement('button');
+  item.type = 'button';
+  item.className = 'tab-menu-item';
+  item.setAttribute('role', 'menuitem');
+  item.textContent = label;
+  item.addEventListener('click', () => {
+    closeTabMenu();
+    run();
+  });
+  return item;
+}
+
+function tabMenuSeparator(): HTMLElement {
+  const sep = document.createElement('div');
+  sep.className = 'tab-menu-sep';
+  sep.setAttribute('role', 'separator');
+  return sep;
+}
+
+/** Right-click menu for a session tab. "Close current" is an explicit single
+ *  action and ignores the busy guard; the bulk items only ever touch idle tabs
+ *  so a running turn is never silently hard-stopped (the worker dies with the
+ *  tab and cannot be resumed). */
+function openTabContextMenu(sessionId: string, ev: MouseEvent): void {
+  closeTabMenu();
+  const order = [...tabs.keys()];
+  const at = order.indexOf(sessionId);
+  if (at < 0) return;
+  const menu = document.createElement('div');
+  menu.className = 'tab-menu';
+  menu.setAttribute('role', 'menu');
+
+  const runBulk = (ids: string[], keepId?: string): void => {
+    const targets = ids.filter((id) => !isTabBusy(id));
+    const skipped = ids.length - targets.length;
+    if (targets.length > 0) void closeTabs(targets, keepId);
+    if (skipped > 0) showToast(t('tabsCloseSkippedBusy', { n: skipped }), 'warning');
+  };
+  const addBulk = (label: string, ids: string[], keepId?: string): void => {
+    const item = tabMenuItem(label, () => runBulk(ids, keepId));
+    // An empty side is a structural no-op (e.g. leftmost tab has no left side);
+    // a side holding only busy tabs stays clickable so the toast can explain.
+    item.disabled = ids.length === 0;
+    menu.appendChild(item);
+  };
+
+  menu.appendChild(tabMenuItem(t('tabsMenuClose'), () => void closeTabs([sessionId])));
+  menu.appendChild(tabMenuSeparator());
+  // "Close others" always lands on the right-clicked tab (it is the only
+  // survivor by definition). Left/right sweeps keep whatever tab is active and
+  // only move focus when the active tab itself was swept away.
+  addBulk(t('tabsMenuCloseOthers'), [...order.slice(0, at), ...order.slice(at + 1)], sessionId);
+  addBulk(t('tabsMenuCloseLeft'), order.slice(0, at));
+  addBulk(t('tabsMenuCloseRight'), order.slice(at + 1));
+  menu.appendChild(tabMenuSeparator());
+  // "Close all" focuses nothing: when every tab goes the view falls back to the
+  // empty state (no session is auto-created). Busy tabs survive the sweep.
+  const all = tabMenuItem(t('tabsMenuCloseAll'), () => runBulk(order));
+  menu.appendChild(all);
+
+  (document.body ?? tabBarEl).appendChild(menu);
+  tabMenuEl = menu;
+  // Fixed-position menu, kept inside the viewport near the bottom/right edges.
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(0, Math.min(ev.clientX, window.innerWidth - rect.width - 4))}px`;
+  menu.style.top = `${Math.max(0, Math.min(ev.clientY, window.innerHeight - rect.height - 4))}px`;
+
+  const onPointerDown = (e: Event): void => {
+    if (menu.contains(e.target as Node)) return;
+    closeTabMenu();
+  };
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeTabMenu();
+    }
+  };
+  const onContextMenu = (e: Event): void => {
+    if (menu.contains(e.target as Node)) return;
+    closeTabMenu();
+  };
+  const onScrollOrResize = (): void => closeTabMenu();
+  tabMenuOff = () => {
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('contextmenu', onContextMenu, true);
+    document.removeEventListener('scroll', onScrollOrResize, true);
+    window.removeEventListener('resize', onScrollOrResize);
+  };
+  setTimeout(() => {
+    if (tabMenuEl !== menu) return;
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('contextmenu', onContextMenu, true);
+    document.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+  }, 0);
 }
 
 /** Create a fresh session and open it in its own tab/worker. */
@@ -3504,48 +3632,77 @@ async function switchTab(sessionId: string): Promise<void> {
   notifyActiveSessionChanged(sessionId);
 }
 
-/** Close a tab/worker and fall back to another tab or a fresh session. */
-async function closeTab(sessionId: string): Promise<void> {
-  if (!tabs.has(sessionId)) return;
-  tabs.delete(sessionId);
-  // A fully closed session is forgotten: reopening is a fresh "first restore",
-  // so its slash log is re-read from disk instead of a stale cache.
-  slashLogFetched.delete(sessionId);
-  slashLogCache.delete(sessionId);
-  // Closing the tab ends the explicitly-expanded history mode: reopening the
-  // session is a fresh restore that starts back at the bounded window.
-  fullyLoadedSessions.delete(sessionId);
-  try {
-    await window.nexusDesktop.closeSession(sessionId);
-  } catch {}
-  // A closed worker's background jobs, batch, and live turn will never emit
-  // release events, so drop its holders here — otherwise the running hold
-  // pins itself on a dead session forever.
-  tabTurnLive.delete(sessionId);
-  fanoutBatches.delete(sessionId);
-  for (const [jobId, sid] of activeBgJobSessions) if (sid === sessionId) activeBgJobSessions.delete(jobId);
-  if (activeTabId === sessionId) {
-    activeTabId = '';
-    if (tabs.size > 0) {
-      const next = [...tabs.keys()][tabs.size - 1];
-      await switchTab(next);
-    } else {
-      currentSessionId = '';
-      activeTurnLive = false;
-      drainHold = false;
-      notifyActiveSessionChanged('');
-      messagesEl.innerHTML = '';
-      toolCards.clear();
-      tasks.clear();
-      renderTasks();
-      curAssistant = null;
-      curThinking = null;
-      showChatEmpty();
-      settleBusy();
-    }
-  } else {
-    renderTabBar();
+/** Close one or more tabs/workers in one batch. Callers filter busy tabs for
+ *  bulk actions; a single explicit close passes through and hard-stops the
+ *  worker. `keepId` forces the focus back onto a surviving tab (used by the
+ *  bulk menu items, which always keep the right-clicked tab). */
+async function closeTabs(sessionIds: string[], keepId?: string): Promise<void> {
+  const order = [...tabs.keys()];
+  const closing = sessionIds.filter((id) => tabs.has(id));
+  if (closing.length === 0) return;
+  const activeClosed = !!activeTabId && closing.includes(activeTabId);
+
+  for (const sessionId of closing) {
+    tabs.delete(sessionId);
+    // A fully closed session is forgotten: reopening is a fresh "first restore",
+    // so its slash log is re-read from disk instead of a stale cache.
+    slashLogFetched.delete(sessionId);
+    slashLogCache.delete(sessionId);
+    // Closing the tab ends the explicitly-expanded history mode: reopening the
+    // session is a fresh restore that starts back at the bounded window.
+    fullyLoadedSessions.delete(sessionId);
+    // A closed worker's background jobs, batch, and live turn will never emit
+    // release events, so drop its holders here — otherwise the running hold
+    // pins itself on a dead session forever.
+    tabTurnLive.delete(sessionId);
+    fanoutBatches.delete(sessionId);
+    for (const [jobId, sid] of activeBgJobSessions) if (sid === sessionId) activeBgJobSessions.delete(jobId);
   }
+  renderTabBar();
+
+  // One IPC per worker, in parallel: closing several tabs must not serialize on
+  // process teardown (each stop can take a beat).
+  await Promise.all(closing.map((id) => window.nexusDesktop.closeSession(id).catch(() => {})));
+
+  // Focus: the caller's keep tab wins; otherwise keep whatever is active; when
+  // the active tab was closed, fall back to the nearest survivor on the right,
+  // then the left. Nothing left = the empty view (no session is auto-created).
+  let focus = '';
+  if (keepId && tabs.has(keepId)) focus = keepId;
+  else if (activeTabId && tabs.has(activeTabId)) focus = activeTabId;
+  else if (activeClosed) {
+    const at = order.indexOf(activeTabId);
+    for (let i = at + 1; i < order.length; i++) {
+      if (tabs.has(order[i])) { focus = order[i]; break; }
+    }
+    if (!focus) {
+      for (let i = at - 1; i >= 0; i--) {
+        if (tabs.has(order[i])) { focus = order[i]; break; }
+      }
+    }
+  }
+  if (!focus && tabs.size > 0) focus = [...tabs.keys()][0];
+
+  if (focus) {
+    if (focus === activeTabId) renderTabBar();
+    else await switchTab(focus);
+    return;
+  }
+
+  activeTabId = '';
+  currentSessionId = '';
+  activeTurnLive = false;
+  drainHold = false;
+  notifyActiveSessionChanged('');
+  messagesEl.innerHTML = '';
+  toolCards.clear();
+  tasks.clear();
+  renderTasks();
+  curAssistant = null;
+  curThinking = null;
+  showChatEmpty();
+  settleBusy();
+  renderTabBar();
 }
 
 /** Keep the tab's busy indicator + status in sync from worker events. */

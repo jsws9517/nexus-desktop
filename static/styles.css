@@ -672,6 +672,41 @@ body {
 .tab-add:hover { color: var(--accent); border-color: var(--accent); }
 .tab-bar-empty { color: var(--text-dim); font-size: 12px; padding: 0 4px; }
 
+/* tab right-click menu — same visual language as the file browser's row menu */
+.tab-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 160px;
+  padding: 4px;
+  background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+}
+.tab-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab-menu-item:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.tab-menu-item:disabled { color: var(--text-dim); cursor: default; }
+.tab-menu-item:disabled:hover { background: transparent; }
+.tab-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+}
+
 .chat-empty {
   position: absolute;
   inset: 96px 24px auto;
