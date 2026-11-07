@@ -28,7 +28,7 @@ import type { EmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/types.j
 import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.js';
 import type { Session } from 'nexus-coder/dist/src/session/types.js';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
   INTERNAL_TOOLS,
@@ -65,6 +65,25 @@ import {
   type TurnUsage,
 } from './turn-monitor.js';
 import { RepetitionMonitor } from './repetition-monitor.js';
+import { ProgressLedger, type LedgerSignal, type ToolOutcome } from './progress-ledger.js';
+import { CorrectionController, type CorrectionAction, type ToolPolicy } from './correction-controller.js';
+import {
+  SecuritySentinel,
+  pathsIn,
+  type SentinelDecision,
+} from './security-sentinel.js';
+import {
+  antiCheatChecks,
+  claimsCompletion,
+  formatContractCorrection,
+  parseContract,
+  verifyContract,
+  type CheatFinding,
+  type ContractVerdict,
+  type DeliverableContract,
+  type TranscriptEntry,
+} from './deliverable-contract.js';
+import { configForTaskKind, loadCorrectionConfig, type CorrectionConfig } from './correction-config.js';
 import { redactConfig } from './config-read.js';
 import {
   ingestAttachments as ragIngest,
@@ -171,6 +190,46 @@ function isSuccessfulResult(res: unknown): boolean {
   return typeof r.content === 'string' || typeof r.content === 'object';
 }
 
+/**
+ * Coerce a tool result body to text for the ledger / transcript. Never throws:
+ * results can be strings, objects, or undefined.
+ */
+function stringifyToolContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (content === null || content === undefined) return '';
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
+  }
+}
+
+/**
+ * Coarse task-kind classification used to pick correction thresholds.
+ * Coding is the default because it has the strongest "progress" definition.
+ */
+function inferTaskKind(input: string): 'coding' | 'research' | 'ops' | 'chat' {
+  const text = input || '';
+  if (/(研究|调研|分析|对比|综述|report|research|survey|compare|analy[sz]e)/i.test(text)) {
+    return 'research';
+  }
+  if (/(部署|发布|运维|服务器|k8s|docker|systemd|deploy|release|ops|infra)/i.test(text)) {
+    return 'ops';
+  }
+  if (/(代码|实现|修复|重构|函数|模块|文件|测试|bug|code|implement|fix|refactor|function|module|test)/i.test(text)) {
+    return 'coding';
+  }
+  return 'chat';
+}
+
+/** Read-only tool heuristic for the L2 read-only policy. */
+const READ_ONLY_TOOL_RE =
+  /(^|_)(read|list|glob|grep|search|status|get|show|view|inspect|outline|diagnostic|hover|diff|stat|health|info)(_|$)/i;
+
+function isReadOnlyTool(name: string): boolean {
+  return READ_ONLY_TOOL_RE.test(name);
+}
+
 function capToolResult<T>(res: T): T {
   if (!res || typeof res !== 'object') return res;
   const r = res as { content?: unknown; isError?: boolean; kind?: string };
@@ -255,6 +314,34 @@ export class AgentService {
   private activeRepMonitor: RepetitionMonitor | null = null;
   /** Accumulates tool calls within the current LLM turn for cross-turn repetition detection. */
   private toolCallsAcc: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+  // -------------------------------------------------------------------------
+  // Correction loop (see docs/harness-correction-loop.md)
+  //
+  // The monitors above detect; these fields turn detection into correction.
+  // A ledger classifies every model step as progress / neutral / regress, a
+  // security sentinel runs before the permission bridge, and a controller maps
+  // signals onto the L1..L4 ladder. All of them are non-null only while a turn
+  // is in flight.
+  // -------------------------------------------------------------------------
+  private activeLedger: ProgressLedger | null = null;
+  private activeCorrection: CorrectionController | null = null;
+  private activeSentinel: SecuritySentinel | null = null;
+  private activeContract: DeliverableContract | null = null;
+  private correctionConfig: CorrectionConfig | null = null;
+  private toolPolicy: ToolPolicy | null = null;
+  private lastCorrectionAction: CorrectionAction | null = null;
+
+  /** Per-step accumulators fed by handleAgentEvent, consumed at turn_end. */
+  private stepThinking = '';
+  private stepText = '';
+  private stepActions: Array<{ tool: string; args: Record<string, unknown> }> = [];
+  private stepOutcomes: ToolOutcome[] = [];
+  private stepResultTexts: string[] = [];
+  private stepWriteTargets: string[] = [];
+  private stepUntrusted = false;
+  private touchedFiles = new Map<string, { mtimeMs: number; size: number }>();
+  private turnTranscript: TranscriptEntry[] = [];
 
   /** JobWatcher attached to the lazily-created JobManager: stalled alerts,
    *  progress one-liners, and auto-continue "wake turns" for finished jobs. */
@@ -702,13 +789,29 @@ export class AgentService {
       // Consume the widening requests: they have now been applied once.
       this.toolRefreshQueue.clear();
 
+      // L2 correction: narrow the action space for the rest of the turn. Fail
+      // open if the policy would leave nothing callable — a correction must
+      // never brick the turn it is trying to rescue.
+      const policy = this.toolPolicy;
+      let policySelected = finalSelected;
+      if (policy?.active) {
+        const filtered = finalSelected.filter((t) => {
+          if (policy.readOnly && !isReadOnlyTool(t.name)) return false;
+          if (policy.denyTools?.includes(t.name)) return false;
+          return true;
+        });
+        if (filtered.length > 0) policySelected = filtered;
+        else logger.warn(`[correction] L2 policy would leave 0 tools — failing open`);
+      }
+
       const coreCount = coreTools.length;
       logger.info(
-        `[tool-select] ${finalSelected.length} tools for "${(input ?? '').slice(0, 40)}" ` +
+        `[tool-select] ${policySelected.length} tools for "${(input ?? '').slice(0, 40)}" ` +
           `(core=${coreCount}, candidates=${candidates.length}, hidden-skills=${hidden.size}, ` +
-          `used=${this.toolUseMemory.size}${hideVault ? ', vault-withheld' : ''})`,
+          `used=${this.toolUseMemory.size}${hideVault ? ', vault-withheld' : ''}` +
+          `${policy?.active ? `, policy=${policy.readOnly ? 'read-only' : 'narrowed'}` : ''})`,
       );
-      return finalSelected;
+      return policySelected;
     };
     // Kick off the first prefetch so MCP tools are available (not just builtin)
     // on the first turn without blocking synchronous tool-list assembly.
@@ -1275,6 +1378,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       if (event.type === 'thinking' && typeof event.thinking === 'string') {
         if (mon.isNoise(event.thinking)) return; // drop noise — never counted/rendered
         mon.noteThinking(event.thinking);
+        this.stepThinking += event.thinking;
         const stall = mon.checkStall();
         if (stall.stalled) {
           mon.markStallHandled();
@@ -1282,24 +1386,70 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         }
       } else if (event.type === 'text' && typeof event.text === 'string') {
         mon.noteText(event.text);
+        this.stepText += event.text;
         if (rep) {
           const rv = rep.noteText(event.text);
           if (rv?.stalled) this.handleRepetitionGuard(rv);
         }
       } else if (event.type === 'tool_call_start') {
         mon.noteProgress();
-        this.toolCallsAcc.push({
-          name: event.name as string,
-          args: (event.args ?? {}) as Record<string, unknown>,
-        });
+        const toolName = event.name as string;
+        const toolArgs = (event.args ?? {}) as Record<string, unknown>;
+        this.toolCallsAcc.push({ name: toolName, args: toolArgs });
+        this.stepActions.push({ tool: toolName, args: toolArgs });
+        // Security sentinel runs BEFORE the permission bridge: a fatal
+        // boundary probe must not turn into another Allow/Deny card.
+        const sentinel = this.activeSentinel;
+        if (sentinel) {
+          const decision = sentinel.evaluate({
+            tool: toolName,
+            args: toolArgs,
+            hasUntrustedSource: this.stepUntrusted,
+          });
+          this.handleSentinelDecision(decision);
+          if (decision.category === 'fs_write') {
+            this.stepWriteTargets.push(...pathsIn(toolArgs));
+          }
+        }
       } else if (event.type === 'tool_result') {
         // P2 fail_seq: feed the repetition monitor with the failure class so a
         // same-class 3-consecutive-failure pattern aborts the turn even when
         // the model keeps varying the exact args.
+        const resultName = String(event.name ?? '');
+        const resultContent = stringifyToolContent(event.content);
+        const resultIsError = event.isError === true;
+        this.stepOutcomes.push({ tool: resultName, ok: !resultIsError });
+        if (resultContent) {
+          this.stepResultTexts.push(resultContent);
+          this.turnTranscript.push({ role: 'tool', text: resultContent.slice(0, 200) });
+        }
+        // Mark the step tainted when it consumed a network / external MCP
+        // result. A privileged action after that is treated as fatal.
+        if (this.activeSentinel) {
+          const category = this.activeSentinel.classify(
+            resultName,
+            (event.args ?? {}) as Record<string, unknown>,
+          );
+          if (category === 'network' || resultName.includes('__')) this.stepUntrusted = true;
+          if (!resultIsError) this.activeSentinel.notifyAllowed(category);
+        }
+        // Capture the post-write file state for the progress fingerprint.
+        for (const target of this.stepWriteTargets) {
+          const abs = resolve(this.getCwd(), target);
+          try {
+            const st = statSync(abs);
+            this.touchedFiles.set(target, { mtimeMs: st.mtimeMs, size: st.size });
+          } catch {
+            // Deleted / never created: record the attempt so a failing write
+            // is not mistaken for progress.
+            this.touchedFiles.set(target, { mtimeMs: 0, size: 0 });
+          }
+        }
+        this.stepWriteTargets = [];
         if (rep) {
-          const name = String(event.name ?? '');
-          const content = String(event.content ?? '');
-          const isError = event.isError === true;
+          const name = resultName;
+          const content = resultContent;
+          const isError = resultIsError;
           const kind = String(event.kind ?? '');
           const cls = classifyToolFailure({
             content,
@@ -1318,12 +1468,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       } else if (event.type === 'turn_start') {
         rep?.reset();
         this.toolCallsAcc = [];
+        this.resetCorrectionStep();
       } else if (event.type === 'turn_end') {
         if (rep && this.toolCallsAcc.length > 0) {
           const rv = rep.noteToolSeq(this.toolCallsAcc);
           if (rv?.stalled) this.handleRepetitionGuard(rv);
         }
         this.toolCallsAcc = [];
+        this.finishCorrectionStep();
       } else if (event.type === 'cache_file_saved') {
         const filePath = event.filePath as string | undefined;
         const sessionId = event.sessionId as string | null;
@@ -1392,6 +1544,274 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.agent?.abort?.();
   }
 
+  // -------------------------------------------------------------------------
+  // Correction loop lifecycle
+  // -------------------------------------------------------------------------
+
+  /** Set up the ledger / sentinel / controller / contract for one user turn. */
+  private beginCorrectionTurn(input: string): void {
+    const taskKind = inferTaskKind(input);
+    const base = loadCorrectionConfig();
+    const cfg = configForTaskKind(base, taskKind);
+    this.correctionConfig = cfg;
+
+    this.activeLedger = new ProgressLedger({
+      taskKind,
+      frozenSteps: cfg.thresholds.loop.frozenSteps,
+      minThinkingTokens: cfg.thresholds.dilution.minThinkingTokens,
+      minNewInfoRate: cfg.thresholds.dilution.newInfoRate,
+      lowEntropyRatio: cfg.thresholds.dilution.zlibRatio,
+    });
+
+    this.activeContract = parseContract(input);
+    this.activeSentinel = new SecuritySentinel({
+      root: this.getCwd(),
+      immutablePaths: cfg.immutablePaths,
+      networkAllowlist: cfg.networkAllowlist,
+      probeCountToFreeze: cfg.thresholds.safety.probeCountToFreeze,
+    });
+
+    this.activeCorrection = new CorrectionController({
+      config: cfg,
+      executors: {
+        steer: (text, opts) => {
+          const ok = this.agent?.enqueueSteer?.(text, opts) ?? false;
+          if (!ok) this.onLog?.('warn', '[correction] steer dropped — no live turn');
+          return ok;
+        },
+        setToolPolicy: (policy) => {
+          this.toolPolicy = policy;
+        },
+        abort: () => this.agent?.abort?.(),
+        emit: (event) => this.onEvent?.(event as AgentEvent),
+      },
+    });
+    this.activeCorrection.resetTurn();
+
+    this.resetCorrectionStep();
+    this.touchedFiles.clear();
+    this.turnTranscript = [{ role: 'user', text: input }];
+    this.lastCorrectionAction = null;
+  }
+
+  private resetCorrectionStep(): void {
+    this.stepThinking = '';
+    this.stepText = '';
+    this.stepActions = [];
+    this.stepOutcomes = [];
+    this.stepResultTexts = [];
+    this.stepWriteTargets = [];
+    this.stepUntrusted = false;
+    this.touchedFiles.clear();
+  }
+
+  /** Classify the finished step and let the controller act on it. */
+  private finishCorrectionStep(): void {
+    const ledger = this.activeLedger;
+    const controller = this.activeCorrection;
+    if (!ledger || !controller) return;
+
+    const thinking = this.stepThinking;
+    const touched = [...this.touchedFiles.entries()].map(([path, v]) => ({ path, ...v }));
+    // A failed write records {mtimeMs:0,size:0}: it must not count as progress.
+    const diffNonEmpty = touched.some((f) => f.mtimeMs > 0 || f.size > 0);
+    const step = ledger.recordStep({
+      model: this.getActiveModel(),
+      actions: this.stepActions,
+      toolOutcomes: this.stepOutcomes,
+      thinking,
+      text: this.stepText,
+      touchedFiles: touched,
+      toolResultTexts: this.stepResultTexts,
+      diffNonEmpty,
+      openTodoItems: [],
+    });
+
+    const signals: LedgerSignal[] = ledger.signals(step, thinking);
+    signals.push(...this.shortcutSignals(this.stepText, step.actions.length));
+
+    const action = controller.onStep(step, signals);
+    if (action) {
+      this.lastCorrectionAction = action;
+      this.onLog?.(
+        'warn',
+        `[correction] L${action.level} ${action.kind}: ${action.reason} ` +
+          `(step ${action.stepSeq}, evidence: ${action.evidence.slice(0, 2).join(' | ')})`,
+      );
+    }
+
+    if (this.stepText.trim()) {
+      this.turnTranscript.push({
+        role: 'assistant',
+        text: this.stepText.trim(),
+        toolCalls: this.stepActions.length,
+      });
+    }
+    this.resetCorrectionStep();
+  }
+
+  /**
+   * Cheap in-turn shortcut signals. Full contract verification runs at turn
+   * end (it may touch the filesystem); this only covers the two patterns that
+   * can be judged from the step itself.
+   */
+  private shortcutSignals(text: string, actionCount: number): LedgerSignal[] {
+    const out: LedgerSignal[] = [];
+    if (!text.trim() || !claimsCompletion(text)) return out;
+
+    if (actionCount === 0) {
+      out.push({
+        kind: 'shortcut_suspect',
+        severity: 0.8,
+        confidence: 'high',
+        evidence: ['completion claimed in a step with zero tool calls', `claim: "${text.trim().slice(0, 120)}"`],
+      });
+    }
+
+    const missing = this.missingContractFiles();
+    if (missing.length > 0) {
+      out.push({
+        kind: 'shortcut_suspect',
+        severity: 0.75,
+        confidence: 'high',
+        evidence: [`completion claimed but required file(s) missing: ${missing.slice(0, 4).join(', ')}`],
+      });
+    }
+    return out;
+  }
+
+  private missingContractFiles(): string[] {
+    const contract = this.activeContract;
+    if (!contract) return [];
+    const root = this.getCwd();
+    const missing: string[] = [];
+    for (const item of contract.items) {
+      if (item.kind !== 'file_exists' && item.kind !== 'artifact') continue;
+      const abs = resolve(root, item.path);
+      let ok = existsSync(abs);
+      if (ok && item.kind === 'file_exists' && item.nonEmpty) {
+        try {
+          ok = statSync(abs).size > 0;
+        } catch {
+          ok = false;
+        }
+      }
+      if (!ok) missing.push(item.path);
+    }
+    return missing;
+  }
+
+  /** Verify the deliverable contract and run anti-cheat at turn end. */
+  private finalizeCorrectionTurn(input: string): void {
+    const contract = this.activeContract;
+    if (!contract) return;
+
+    let verdict: ContractVerdict | null = null;
+    try {
+      const root = this.getCwd();
+      verdict = verifyContract(contract, {
+        exists: (p) => existsSync(resolve(root, p)),
+        size: (p) => {
+          try {
+            return statSync(resolve(root, p)).size;
+          } catch {
+            return 0;
+          }
+        },
+        read: (p) => {
+          try {
+            return readFileSync(resolve(root, p), 'utf8');
+          } catch {
+            return null;
+          }
+        },
+        // Command execution is deliberately not wired here: the correction
+        // loop must never run a shell on its own. Tests are executed by the
+        // agent (and observed as tool results), not by the verifier.
+      });
+    } catch (err) {
+      this.onLog?.('warn', `[correction] contract verification failed: ${(err as Error).message}`);
+    }
+
+    // No trustworthy workspace diff is available in the worker, so diff-derived
+    // anti-cheat checks are skipped rather than guessed. The transcript checks
+    // (narration / pushback) still run.
+    const findings: CheatFinding[] = antiCheatChecks({
+      userRequest: input,
+      diff: { files: [] },
+      diffKnown: false,
+      transcript: this.turnTranscript,
+    });
+
+    const passed = (verdict?.passed ?? true) && findings.length === 0;
+    if (verdict) {
+      this.onEvent?.({
+        type: 'contract_verdict',
+        passed,
+        checked: verdict.checked,
+        failed: verdict.failed.map((f) => ({ item: f.item, why: f.why })),
+        skipped: verdict.skipped.map((s) => ({ item: s.item, why: s.why })),
+        findings,
+        source: contract.source,
+      });
+    }
+
+    if (!passed) {
+      const hint = formatContractCorrection(verdict, findings);
+      this.onLog?.(
+        'warn',
+        `[correction] deliverable contract not met for this turn ` +
+          `(${verdict?.failed.length ?? 0} acceptance, ${findings.length} anti-cheat)`,
+      );
+      // Best effort: if the agent is still busy (fan-out / follow-up round),
+      // this lands at the next safe point. If the turn already ended it is
+      // dropped and only the event/log remain — never a silent success.
+      if (hint) this.agent?.enqueueSteer?.(hint);
+    }
+  }
+
+  /** Map a sentinel verdict onto the correction + permission pipeline. */
+  private handleSentinelDecision(decision: SentinelDecision): void {
+    if (decision.ok) {
+      this.activeSentinel?.notifyAllowed(decision.category);
+      return;
+    }
+
+    this.onEvent?.({
+      type: 'security_probe',
+      category: decision.category,
+      probe: decision.probe,
+      reason: decision.reason,
+      fatal: decision.fatal,
+      evidence: decision.evidence,
+    });
+
+    if (!decision.fatal) {
+      // Non-fatal probes are already counted by the sentinel; the existing
+      // permission bridge still decides the call. No second counter bump here.
+      this.onLog?.('warn', `[security-sentinel] ${decision.reason ?? 'boundary probe'}`);
+      return;
+    }
+
+    this.onLog?.('warn', `[security-sentinel] FATAL: ${decision.reason ?? 'security boundary crossed'}`);
+    this.toolPolicy = { active: true, readOnly: true };
+    // forceTerminate applies the L4 action, which calls the abort executor.
+    if (this.activeCorrection) {
+      this.activeCorrection.forceTerminate(
+        'safety_probe',
+        decision.reason ?? 'security boundary crossed',
+        decision.evidence,
+      );
+    } else {
+      this.agent?.abort?.();
+    }
+  }
+
+  /** Last correction action, for the UI/status surface. */
+  getLastCorrectionAction(): CorrectionAction | null {
+    return this.lastCorrectionAction;
+  }
+
   /**
    * Run one raw agent turn under the turn monitor and report estimated usage.
    * This is the single choke point every agent.chat() in this service flows
@@ -1405,6 +1825,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     monitor.setPromptBaseline(agent.context?.getTokenCount?.() ?? 0);
     this.activeMonitor = monitor;
     this.activeRepMonitor = new RepetitionMonitor();
+    this.beginCorrectionTurn(input);
 
     // Rate-limit the main chat path (distinct from callLlm which handles
     // sub-agent decomposition). Acquire before every turn; report after so
@@ -1418,9 +1839,16 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     try {
       await agent.chat(input);
     } finally {
+      this.finalizeCorrectionTurn(input);
       this.activeMonitor = null;
       this.activeRepMonitor = null;
       this.toolCallsAcc = [];
+      this.activeLedger = null;
+      this.activeCorrection = null;
+      this.activeSentinel = null;
+      this.activeContract = null;
+      this.toolPolicy = null;
+      this.resetCorrectionStep();
       const status = this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
       if (status && this.onRateLimitReport) this.onRateLimitReport(status);
     }
