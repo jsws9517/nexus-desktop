@@ -1372,8 +1372,10 @@ body {
 #perm-question { white-space: pre-wrap; font-family: inherit; font-size: 13px; color: var(--text); background: var(--code-bg); border-radius: 8px; padding: 12px; max-height: 220px; overflow-y: auto; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }
-.modal.settings { width: 660px; max-width: 92vw; max-height: 86vh; }
-#settings-body { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
+/* Fixed height keeps the dialog from resizing as the active tab changes;
+   the body fills the remaining space and scrolls internally instead. */
+.modal.settings { width: 660px; max-width: 92vw; height: min(86vh, 760px); max-height: 86vh; }
+#settings-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
 .settings-section-title {
   font-size: 12px;
   font-weight: 700;
