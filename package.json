@@ -1,7 +1,7 @@
 {
   "name": "nexus-desktop",
   "version": "0.3.4",
-  "nexusCoreVersion": "1.2.1",
+  "nexusCoreVersion": "1.2.2",
   "nexusDesktopProtocol": 1,
   "description": "Nexus — where every agent finds home.",
   "type": "module",
