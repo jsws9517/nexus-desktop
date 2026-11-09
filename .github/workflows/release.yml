@@ -203,7 +203,10 @@ jobs:
         run: npm run prepare:electron-native
 
       - name: Build installer
-        run: npx electron-builder --win nsis --publish never
+        # electron-builder downloads toolchains (nsis, 7zip, …); a flaky 504
+        # from the runner used to sink the whole job. Retry transient failures.
+        run: node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npx electron-builder --win nsis --publish never"
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -319,7 +322,8 @@ jobs:
         # AppImage does not carry a `package-type` marker. If the order
         # regressed, electron-updater would treat the AppImage as a deb
         # install and pick DebUpdater (broken self-update).
-        run: npx electron-builder --linux AppImage deb --publish never
+        run: node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npx electron-builder --linux AppImage deb --publish never"
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
