@@ -301,33 +301,127 @@ export function parseUpdateYml(text: string): ParsedUpdateYml | null {
 
 // ── Version comparison ────────────────────────────────────────────────────────
 
-/** Parse `0.3.1`, `v0.3.1` or `1.1.26-3` → [major, minor, patch, preRelease]. */
-function parseVersion(v: string): [number, number, number, number | null] {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-(\d+))?/.exec(v.trim());
-  if (!m) return [0, 0, 0, null];
-  return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] !== undefined ? Number(m[4]) : null];
+/**
+ * Parse a dotted version into comparable fields.
+ *
+ * Recognizes:
+ *   - `0.3.1` / `v0.3.1`        → [0, 3, 1, '']
+ *   - `1.1.26-3` (numeric)      → [1, 1, 26, '3']
+ *   - `0.3.4-beta.2` (named)    → [0, 3, 4, 'beta.2']
+ *
+ * The prerelease id is kept as the raw string so named suffixes (`-beta`,
+ * `-alpha`) and numeric ones (`-3`) both round-trip. `''` means release.
+ */
+function parseVersion(v: string): [number, number, number, string] {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-(\S+))?/.exec(v.trim());
+  if (!m) return [0, 0, 0, ''];
+  return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] ?? ''];
 }
 
 /**
- * Compare dotted versions with an optional numeric prerelease suffix.
- * Semver-like: a release outranks its own prerelease (`1.1.26` > `1.1.26-3`),
- * prereleases compare numerically (`1.1.26-10` > `1.1.26-9`).
+ * Extract the numeric tail of a prerelease id for ordering.
+ * `beta.10` → 10, `beta.2` → 2, `3` → 3, `alpha` → null.
+ * This makes `beta.10 > beta.9` compare as 10 > 9 (numeric, not lexicographic).
  */
-export function compareVersions(a: string, b: string): number {
-  const pa = parseVersion(a);
-  const pb = parseVersion(b);
-  if (pa[0] !== pb[0]) return pa[0] - pb[0];
-  if (pa[1] !== pb[1]) return pa[1] - pb[1];
-  if (pa[2] !== pb[2]) return pa[2] - pb[2];
-  if (pa[3] === pb[3]) return 0;
-  if (pa[3] === null) return 1; // release > prerelease
-  if (pb[3] === null) return -1;
-  return pa[3] - pb[3];
+function prereleaseNum(pre: string): number | null {
+  const m = /(\d+)$/.exec(pre);
+  return m ? Number(m[1]) : null;
 }
 
-/** True when `candidate` is strictly newer than `current`. */
-export function isNewer(candidate: string, current: string): boolean {
-  return compareVersions(candidate, current) > 0;
+/**
+ * Compare two prerelease ids (both non-empty, both different).
+ * Returns a negative / zero / positive int like compareVersions.
+ *
+ * Ordering rules (semver-aligned):
+ *   1. numeric id (`3`) < named id (`beta.2`) — semver ranks a bare number
+ *      below an alphanumeric identifier.
+ *   2. same family (both numeric, or both `beta.*` / same named prefix):
+ *      compare the numeric tail numerically (`beta.10` > `beta.9`).
+ *   3. same family with no numeric tail: lexicographic.
+ *   4. different named prefixes: lexicographic (`alpha` < `beta`).
+ */
+function comparePrereleaseIds(a: string, b: string): number {
+  const aNum = /^\d+$/.test(a);
+  const bNum = /^\d+$/.test(b);
+  if (aNum && bNum) return Number(a) - Number(b);
+  if (aNum) return -1; // numeric < named
+  if (bNum) return 1;
+  // Both named: same family? (prefix before the last dot, or the whole id)
+  const aPrefix = a.includes('.') ? a.slice(0, a.lastIndexOf('.')) : a;
+  const bPrefix = b.includes('.') ? b.slice(0, b.lastIndexOf('.')) : b;
+  if (aPrefix !== bPrefix) {
+    return aPrefix < bPrefix ? -1 : aPrefix > bPrefix ? 1 : 0;
+  }
+  // Same family: compare the numeric tail if both have one, else lexicographic.
+  const aTail = prereleaseNum(a);
+  const bTail = prereleaseNum(b);
+  if (aTail !== null && bTail !== null) return aTail - bTail;
+  if (aTail !== null) return 1;
+  if (bTail !== null) return -1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Compare dotted versions with an optional prerelease suffix.
+ * Semver-like ordering:
+ *   - `1.1.26` > `1.1.26-3` (a release outranks its own prerelease)
+ *   - `1.1.26-10` > `1.1.26-9` (numeric prereleases compare numerically)
+ *   - `1.1.26-beta.2` < `1.1.26` (named prereleases rank below the release)
+ *   - `0.3.4-beta.10` > `0.3.4-beta.9` (numeric tail of named pre compared numerically)
+ */
+export function compareVersions(a: string, b: string): number {
+  const [majA, minA, patA, preA] = parseVersion(a);
+  const [majB, minB, patB, preB] = parseVersion(b);
+  if (majA !== majB) return majA - majB;
+  if (minA !== minB) return minA - minB;
+  if (patA !== patB) return patA - patB;
+  if (preA === preB) return 0;
+  if (preA === '') return 1; // release > prerelease
+  if (preB === '') return -1;
+  return comparePrereleaseIds(preA, preB);
+}
+
+/**
+ * True when `candidate` should be offered to a user currently on `current`.
+ *
+ * Normal case: strictly newer under {@link compareVersions}.
+ * Beta-channel case (`allowBeta=true`): a prerelease of the SAME baseline is
+ * also offered — this is the cross-class move the beta channel exists to
+ * enable:
+ *   - `0.3.4-beta.2` when running `0.3.4` (stable → beta)
+ *   - `0.3.4-beta.2` when running `0.3.4-beta.1` (beta → newer beta)
+ *   - `0.3.5` when running `0.3.4-beta.2` (beta → newer stable)
+ * Without `allowBeta` a stable install never sees same-baseline prereleases.
+ */
+export function isNewer(candidate: string, current: string, allowBeta: boolean = false): boolean {
+  const c = compareVersions(candidate, current);
+  if (c > 0) {
+    // Strictly newer under normal semver ranking. Exception: when the
+    // candidate is a RELEASE and the current is a PRERELEASE of the same
+    // [major, minor, patch] (e.g. 0.3.4 vs 0.3.4-beta.1), that is a
+    // downgrade to the user's own stable baseline — never offered.
+    const [cmaj, cmin, cpat, cPre] = parseVersion(candidate);
+    const [umaj, umin, upat, uPre] = parseVersion(current);
+    if (
+      cPre === '' && uPre !== '' &&
+      cmaj === umaj && cmin === umin && cpat === upat
+    ) {
+      return false; // same-baseline release vs own beta → downgrade, no offer
+    }
+    return true;
+  }
+  if (!allowBeta) return false; // c <= 0 and no beta channel → not offered
+  // c <= 0 with allowBeta: legitimate beta-channel offers only when
+  // candidate and current share the same [major, minor, patch] baseline.
+  const [cmaj, cmin, cpat] = parseVersion(candidate);
+  const [umaj, umin, upat] = parseVersion(current);
+  if (cmaj !== umaj || cmin !== umin || cpat !== upat) return false;
+  const cPre = parseVersion(candidate)[3];
+  const uPre = parseVersion(current)[3];
+  if (cPre === uPre) return false; // identical prerelease id → same version
+  if (uPre === '' && cPre !== '') return true; // stable → beta (same baseline)
+  if (cPre !== '' && uPre !== '') return true;  // newer same-baseline beta
+  return false; // candidate is release, current is beta → downgrade
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────────

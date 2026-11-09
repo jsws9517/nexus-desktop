@@ -815,6 +815,8 @@ if (gotLock) {
       setPanelIdleMs: desktopState.setPanelIdleMs,
       getLinuxClipboard: desktopState.getLinuxClipboard,
       setLinuxClipboard: desktopState.setLinuxClipboard,
+      getAllowBetaUpdates: desktopState.getAllowBetaUpdates,
+      setAllowBetaUpdates: desktopState.setAllowBetaUpdates,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
        rateLimitRegistry,

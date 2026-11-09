@@ -2,17 +2,21 @@ import { app } from 'electron';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import updaterModule from 'electron-updater';
 import type { UpdateDownloadedEvent, UpdateInfo } from 'electron-updater';
 import {
   GITEE_REPO,
+  GITHUB_REPO,
   appAuthoritativeFeeds,
   appManifestFileName,
   appManifestFeeds,
   appVersionFeeds,
   compareVersions,
   giteeReleaseBase,
+  githubReleaseBase,
+  isNewer,
   parseUpdateYml,
   pickUpdateFile,
   type AppPackageKind,
@@ -296,7 +300,8 @@ export class Updater {
         return this.withSource();
       }
       const latest = discovered;
-      if (compareVersions(latest.version, current) <= 0) {
+      const allowBeta = this.allowBetaUpdates();
+      if (compareVersions(latest.version, current) <= 0 && !isNewer(latest.version, current, allowBeta)) {
         // No new version: report it without touching electron-updater at all
         // (the old flow paid for a full check round-trip just to say "up to
         // date", which is why checks felt slow).
@@ -580,10 +585,103 @@ export class Updater {
       // unreachable from the user's network.
       const gitee = await this.fetchGiteeManifest(manifest);
       if (gitee) found.push(gitee);
+      // Beta channel: when enabled (opt-out, default ON), additionally probe
+      // the newest GitHub prerelease so a stable install can move to a
+      // same-baseline beta build (e.g. 0.3.4 → 0.3.5-beta.1).
+      if (this.allowBetaUpdates()) {
+        const beta = await this.fetchLatestPrerelease(manifest);
+        if (beta) found.push(beta);
+      }
     }
     if (found.length === 0) return null;
+    // Rank newest-first. compareVersions treats a release as newer than its
+    // own prerelease (0.3.4 > 0.3.4-beta.2), so without a re-rank the stable
+    // feed would always win and the beta would never surface. When the user
+    // opted into the beta channel, a same-baseline prerelease must beat the
+    // stable baseline: it is the update the channel exists to offer.
     found.sort((a, b) => compareVersions(b.version, a.version));
+    if (this.allowBetaUpdates() && !override && found.length > 1) {
+      const top = found[0];
+      const current = this.currentVersion();
+      // The top candidate is "the same as what we already run" (stable feed
+      // answered 0.3.4 for a 0.3.4 install): look for a same-baseline beta
+      // and promote it instead.
+      if (compareVersions(top.version, current) === 0) {
+        const betaCandidate = found.find((f) =>
+          isNewer(f.version, top.version, true) &&
+          compareVersions(f.version, top.version) === -1, // pre of same baseline
+        );
+        if (betaCandidate) return betaCandidate;
+      }
+    }
     return found[0];
+  }
+
+  /**
+   * Beta-channel opt-out reader. desktop.json's `allowBetaUpdates` is absent
+   * by default (opt-out ⇒ channel ON); only an explicit `false` disables it.
+   * Read lazily per check so a settings toggle takes effect on the next
+   * check without a restart.
+   */
+  private allowBetaUpdates(): boolean {
+    try {
+      const dir = process.env.NEXUS_CONFIG_DIR || join(homedir(), '.nexus');
+      const p = join(dir, 'desktop.json');
+      if (!existsSync(p)) return true;
+      const data = JSON.parse(readFileSync(p, 'utf8')) as { allowBetaUpdates?: boolean };
+      return data.allowBetaUpdates !== false;
+    } catch {
+      return true; // unreadable → channel stays ON (opt-out default)
+    }
+  }
+
+  /**
+   * Beta-channel discovery: enumerate GitHub releases via the public API,
+   * pick the newest PRERELEASE (tags carrying a version), and read that
+   * tag's update manifest. The `releases/latest/download` alias used by the
+   * stable feed resolves to the newest stable only — the beta must come from
+   * a tag-pinned URL, which is why this goes through the releases API.
+   * Returns null when no prerelease exists, the API is unreachable, or the
+   * manifest is missing.
+   */
+  private async fetchLatestPrerelease(manifest: string): Promise<DiscoveredUpdate | null> {
+    let releases: Array<{ tag_name?: string; prerelease?: boolean }> = [];
+    {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), MANIFEST_TIMEOUT_MS);
+      try {
+        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=30`, {
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        });
+        if (res.ok) {
+          releases = (await res.json()) as Array<{ tag_name?: string; prerelease?: boolean }>;
+        }
+      } catch {
+        return null; // GitHub API unreachable: beta channel silently unavailable
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    const prereleases = releases
+      .filter((r) => r.prerelease === true)
+      .map((r) => ({
+        tag: r.tag_name ?? '',
+        version: parseTagVersion(r.tag_name ?? ''),
+      }))
+      .filter((r): r is { tag: string; version: string } => r.version !== null && r.tag !== '');
+    if (prereleases.length === 0) return null;
+    prereleases.sort((a, b) => compareVersions(b.version, a.version));
+    const base = githubReleaseBase(prereleases[0].tag);
+    const found = await this.fetchManifest(base, 'GitHub (beta)', manifest);
+    if (!found) return null;
+    // Keep only beta candidates: the tag-pinned manifest must actually
+    // announce a prerelease (guards against a tag being republished as a
+    // stable release with the same name).
+    const current = this.currentVersion();
+    return isNewer(found.version, current, true) || compareVersions(found.version, current) === 0
+      ? found
+      : null;
   }
 
   private async fetchManifest(feedBase: string, label: string, manifest: string): Promise<DiscoveredUpdate | null> {
@@ -774,11 +872,14 @@ export class Updater {
   }
 }
 
-/** Parse a release tag into its dotted version, or null. */
+/**
+ * Parse a release tag into its full version string (including prerelease
+ * suffix), or null. `v0.3.5-beta.1` → `0.3.5-beta.1`; `v0.3.4` → `0.3.4`.
+ */
 function parseTagVersion(tag: string): string | null {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(tag);
+  const m = /^v?(\d+\.\d+\.\d+(?:-\S+)?)$/.exec(tag.trim());
   if (!m) return null;
-  return `${m[1]}.${m[2]}.${m[3]}`;
+  return m[1];
 }
 
 /** Streaming SHA-512 as base64, matching electron-builder's `latest.yml`. */

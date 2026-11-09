@@ -550,6 +550,16 @@ export function registerIpc(ctx: IpcContext): void {
     return resetGlobalRules();
   });
 
+  // Beta update channel: when true, the app's update discovery also probes the
+  // newest GitHub prerelease so stable installs can move to a same-baseline
+  // beta build in-app (Settings → App Updates toggle, persisted in desktop.json).
+  ipcMain.handle(CHANNELS.getAllowBetaUpdates, (): boolean => ctx.getAllowBetaUpdates());
+  ipcMain.handle(CHANNELS.setAllowBetaUpdates, (_e, enabled: unknown): { ok: boolean } => {
+    if (!isBoolean(enabled)) return { ok: false };
+    ctx.setAllowBetaUpdates(enabled);
+    return { ok: true };
+  });
+
   // Resource / session governance (desktop.json + live resource watchdog).
   ipcMain.handle(CHANNELS.getMaxTabs, (): number => ctx.getMaxTabs());
   ipcMain.handle(CHANNELS.setMaxTabs, (_e, n: unknown): { ok: boolean } => {

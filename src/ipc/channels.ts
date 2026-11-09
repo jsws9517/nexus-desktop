@@ -106,6 +106,8 @@ export const CHANNELS = {
   setPanelIdleMs: 'nexus:setPanelIdleMs',
   getLinuxClipboard: 'nexus:getLinuxClipboard',
   setLinuxClipboard: 'nexus:setLinuxClipboard',
+  getAllowBetaUpdates: 'nexus:getAllowBetaUpdates',
+  setAllowBetaUpdates: 'nexus:setAllowBetaUpdates',
   getResourceState: 'nexus:getResourceState',
 
   // renderer → main: main-local (no worker round-trip) channels.

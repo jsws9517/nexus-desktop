@@ -361,6 +361,8 @@ declare global {
       setPanelIdleMs(ms: number): Promise<{ ok: boolean }>;
       getLinuxClipboard(): Promise<boolean>;
       setLinuxClipboard(enabled: boolean): Promise<{ ok: boolean }>;
+      getAllowBetaUpdates(): Promise<boolean>;
+      setAllowBetaUpdates(enabled: boolean): Promise<{ ok: boolean }>;
       getResourceState(): Promise<ResourceStateInfo>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
@@ -6066,6 +6068,16 @@ function buildUpdateSection(container?: HTMLElement): void {
   wrap.appendChild(info);
   wrap.appendChild(btn);
   target.appendChild(wrap);
+  // Beta-channel toggle: when on, update discovery also probes the newest
+  // GitHub prerelease so stable installs can move to a same-baseline beta
+  // build. Persisted to ~/.nexus/desktop.json; default ON (opt-out).
+  buildToggle(
+    t('updateBetaLabel'),
+    t('updateBetaHint'),
+    window.nexusDesktop.getAllowBetaUpdates(),
+    (v) => window.nexusDesktop.setAllowBetaUpdates(v),
+    target,
+  );
   // Dedicated slot so the status line always lands inside the active tab
   // panel, right below the version row.
   const slot = document.createElement('div');

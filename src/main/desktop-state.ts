@@ -44,6 +44,10 @@ interface DesktopStateData {
   cpuThresholdPct?: number;
   monitorEnabled?: boolean;
   lazyWorker?: boolean;
+  // Opt-in beta channel: when true, update discovery also probes the newest
+  // GitHub prerelease (e.g. 0.3.5-beta.1), so stable builds can surface a
+  // beta update in-app. Persisted to ~/.nexus/desktop.json.
+  allowBetaUpdates?: boolean;
   // Namespaced sections absorbed from former top-level files.
   modelBlacklist?: Record<string, Record<string, string>>;
 }
@@ -81,6 +85,11 @@ export interface DesktopStateAccess {
   setLazyWorker(enabled: boolean): void;
   getPanelIdleMs(): number;
   setPanelIdleMs(ms: number): void;
+  /** Beta update channel: when true, discovery also probes the newest GitHub
+   *  prerelease so stable installs can move to a same-baseline beta build.
+   *  Absent means ON (opt-out); a deliberate `false` disables the channel. */
+  getAllowBetaUpdates(): boolean;
+  setAllowBetaUpdates(enabled: boolean): void;
   /** Linux-style clipboard affordances; defaults to enabled. */
   getLinuxClipboard(): boolean;
   setLinuxClipboard(enabled: boolean): void;
@@ -215,6 +224,11 @@ export function createDesktopState(): DesktopStateStore {
     const v = read().linuxClipboard;
     return typeof v === 'boolean' ? v : true;
   };
+  /** Beta channel is opt-out: absent means enabled (betas surface in update checks). */
+  const getAllowBetaUpdates = (): boolean => {
+    const v = read().allowBetaUpdates;
+    return v !== false;
+  };
 
   return {
     getDeferMcp(): boolean {
@@ -284,6 +298,10 @@ export function createDesktopState(): DesktopStateStore {
     getLinuxClipboard,
     setLinuxClipboard(enabled: boolean): void {
       write({ linuxClipboard: enabled });
+    },
+    getAllowBetaUpdates,
+    setAllowBetaUpdates(enabled: boolean): void {
+      write({ allowBetaUpdates: enabled });
     },
     getModelBlacklist(): Record<string, Record<string, string>> {
       const bl = read().modelBlacklist;

@@ -159,6 +159,9 @@ const api = {
   getLinuxClipboard: () => ipcRenderer.invoke('nexus:getLinuxClipboard') as Promise<boolean>,
   setLinuxClipboard: (enabled: boolean) =>
     ipcRenderer.invoke('nexus:setLinuxClipboard', enabled) as Promise<{ ok: boolean }>,
+  getAllowBetaUpdates: () => ipcRenderer.invoke('nexus:getAllowBetaUpdates') as Promise<boolean>,
+  setAllowBetaUpdates: (enabled: boolean) =>
+    ipcRenderer.invoke('nexus:setAllowBetaUpdates', enabled) as Promise<{ ok: boolean }>,
   getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
   getRateLimitStatus: () => ipcRenderer.invoke('nexus:getRateLimitStatus'),
 
