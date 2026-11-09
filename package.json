@@ -28,6 +28,7 @@
     "icon": "electron scripts/make-icon.cjs && electron scripts/export-preview.cjs",
     "test:chat": "node scripts/chat-test.mjs",
     "test:work": "node scripts/work-mode-test.mjs",
+    "verify:restart": "node scripts/verify-core-restart.mjs",
     "pack:npm": "node scripts/pack-npm.mjs",
     "pack": "npm run build && npm pack",
     "prepare:electron-native": "node scripts/prepare-electron-native.mjs",

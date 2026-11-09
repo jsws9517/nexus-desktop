@@ -98,6 +98,14 @@ export class WorkerHost {
   }
 
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+    // A stopped/exited host can never answer: registering a pending entry here
+    // would leave the promise unsettled FOREVER (failAllPending already ran, and
+    // no second exit event is coming). This is the other half of the "app looks
+    // frozen after a core restart" bug — IPC sent to a host that died between the
+    // caller's liveness check and the request.
+    if (!this.alive) {
+      return Promise.reject(new Error(this.stopping ? 'Worker stopped' : 'Worker exited'));
+    }
     const id = this.nextId++;
     const payload = { id, method, ...(params ? { params } : {}) };
     diag(`request id=${id} method=${method}`);
@@ -122,6 +130,7 @@ export class WorkerHost {
 
   /** Send a raw message to the worker (used to reply to a worker->main request). */
   post(msg: Record<string, unknown>): void {
+    if (!this.alive) return;
     if (app.isPackaged) {
       (this.handle as UtilityProcess)?.postMessage(msg);
     } else {
@@ -183,6 +192,17 @@ export class WorkerHost {
     });
     this.handle = child;
 
+    // A write to stdin after the child dies errors EPIPE ASYNCROUSLY (inside
+    // the stream's write callback). The alive guard in request() covers the
+    // common case, but a child that exits between the guard and the write
+    // still delivers that error — and an error event with no listener on the
+    // stream becomes an uncaught exception in the MAIN process (the freeze
+    // dialog the user saw). Swallowing it here: "writing to a dead worker"
+    // is expected, not a fault.
+    child.stdin?.on('error', (err: unknown) => {
+      this.onLog?.('debug', `worker stdin error (ignored): ${err instanceof Error ? err.message : String(err)}`);
+    });
+
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk: string) => {
       for (const line of chunk.split('\n')) {
@@ -223,6 +243,14 @@ export class WorkerHost {
     });
     this.handle = child;
     diag(`utilityProcess forked pid=${(child as unknown as { pid?: number }).pid}`);
+
+    // Same stdin EPIPE rule as the child-process path: writes racing the
+    // worker's exit error asynchronously; without a listener that error is an
+    // uncaught exception in the main process.
+    (child as unknown as { stdin?: { on(event: string, cb: (err: unknown) => void): void } })
+      .stdin?.on('error', (err) => {
+        this.onLog?.('debug', `utility worker stdin error (ignored): ${err instanceof Error ? err.message : String(err)}`);
+      });
 
     child.stderr?.on('data', (chunk: string) => {
       for (const line of chunk.toString().split('\n')) {

@@ -99,6 +99,9 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
   'bg_job',
   // media
   'analyze_image', 'ocr_extract', 'transcribe_audio', 'synthesize_speech',
+  // media generation (core 1.2.3: generate_image / generate_video / media_task
+  // are in the core's essentialTools, so they must be pinned here too)
+  'generate_image', 'generate_video', 'media_task',
   // memory + recall
   'remember', 'recall', 'remember_project',
   // memory graph (knowledge-graph) tools — the core exposes these as

@@ -3585,6 +3585,20 @@ async function syncCwdLabel(): Promise<void> {
   cwdLabel.title = dir || '';
 }
 
+/** Bound one renderer→main RPC so a wedged worker cannot freeze a pane forever. */
+function withRpcTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/** History restore deadline: a dead worker must show an error, not a blank pane. */
+const HISTORY_LOAD_TIMEOUT_MS = 15_000;
+
 /** Activate `sessionId`, rendering its transcript as the visible conversation. */
 async function switchTab(sessionId: string): Promise<void> {
   activeTabId = sessionId;
@@ -3596,16 +3610,25 @@ async function switchTab(sessionId: string): Promise<void> {
   void refreshRagAttachments();
   hideChatEmpty();
   resetViewState();
+  let historyError: unknown = null;
   try {
     // Keep an explicitly expanded session expanded when its worker tab is
     // reactivated; first restores (and sessions never expanded) stay windowed.
-    const fresh = fullyLoadedSessions.has(sessionId)
-      ? await fetchAllHistory(sessionId)
-      : await window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
+    const load = fullyLoadedSessions.has(sessionId)
+      ? fetchAllHistory(sessionId)
+      : window.nexusDesktop.getMessages(sessionId, { last: MSG_WINDOW });
+    const fresh = await withRpcTimeout(load, HISTORY_LOAD_TIMEOUT_MS, 'getMessages');
     applyMsgWindow(fresh);
     renderMessageWindow();
     saveMsgCache(sessionId, fresh);
-  } catch {}
+  } catch (err) {
+    // Previously swallowed: a hung/dead worker left the pane blank with no
+    // indication anything failed, which read as the app freezing.
+    historyError = err;
+  }
+  if (historyError) {
+    addSystem(`${t('historyLoadFailed')}${errText(historyError)}`);
+  }
   await refreshSlashLog(sessionId);
   // Restore fan-out execution state from session metadata
   await restoreFanoutState(sessionId);
@@ -7136,14 +7159,42 @@ window.nexusDesktop.onConfigWindowClosed(async () => {
   refreshModelSelect();
 });
 
-// The core worker crashed and auto-restarted: refresh state and re-attach the
-// current session so the UI is usable again without a manual app restart.
+// The core worker restarted (crash recovery or a core-overlay upgrade): the
+// global worker AND every per-tab worker were replaced, so every renderer-side
+// turn/busy holder now points at a process that no longer exists. Rebuild the
+// view from disk and keep the tab the user was looking at.
 window.nexusDesktop.onWorkerRestarted(async () => {
+  // Stale holders made the restored tab paint "running" forever (Stop reachable,
+  // send disabled) even though no turn was alive — the "still frozen" symptom
+  // after an upgrade restart.
+  const keepId = currentSessionId && tabs.has(currentSessionId) ? currentSessionId : '';
+  tabTurnLive.clear();
+  fanoutBatches.clear();
+  running = false;
+  drainHold = false;
+  activeTurnLive = false;
+  stopRequested = false;
+  // Queued follow-ups belonged to the dead turn: put the text back in the
+  // composer instead of auto-sending it (the core may have already consumed
+  // one) or dropping it.
+  if (pendingQueue.length > 0) {
+    const leftover = pendingQueue.splice(0).join('\n\n');
+    const draft = inputEl.value.trim();
+    inputEl.value = draft ? `${leftover}\n\n${draft}` : leftover;
+    autoGrowInput();
+  }
+  if (keepId && tabs.has(keepId)) {
+    await switchTab(keepId);
+  } else {
+    currentSessionId = '';
+    notifyActiveSessionChanged('');
+    msgItems = [];
+    setBusy(false);
+    await startOrResumeLatestSession();
+  }
+  // Announce AFTER the restore: switchTab()/resetViewState() clears the pane,
+  // so a notice added before it was immediately wiped.
   addSystem(t('workerRestarted'));
-  currentSessionId = '';
-  notifyActiveSessionChanged('');
-  msgItems = [];
-  await startOrResumeLatestSession();
   await refreshSessions();
   await refreshSidebarSession();
 });

@@ -26,12 +26,11 @@ function hideTooltip(): void {
   tooltip.style.display = 'none';
 }
 
-function showTooltip(e: MouseEvent, content: string): void {
+function showTooltip(card: HTMLElement, content: string): void {
   const tooltip = getTooltipElement();
   tooltip.innerHTML = content;
   tooltip.style.display = 'block';
-  
-  const card = (e.target as HTMLElement).closest('.task-status-card') as HTMLElement;
+
   const rect = card.getBoundingClientRect();
   const tooltipRect = tooltip.getBoundingClientRect();
   
@@ -157,18 +156,22 @@ export function initTaskStatusCardTooltips(): void {
   let currentCard: HTMLElement | null = null;
 
   document.addEventListener('mouseenter', (e) => {
-    const card = (e.target as HTMLElement).closest('.task-status-card') as HTMLElement | null;
+    // The event target can be the document/text node itself (not an Element),
+    // which used to throw "e.target.closest is not a function" in the console.
+    if (!(e.target instanceof Element)) return;
+    const card = e.target.closest('.task-status-card') as HTMLElement | null;
     if (card && card !== currentCard) {
       currentCard = card;
       const tooltipContent = card.getAttribute('data-tooltip');
       if (tooltipContent) {
-        showTooltip(e, tooltipContent);
+        showTooltip(card, tooltipContent);
       }
     }
   }, true);
 
   document.addEventListener('mouseleave', (e) => {
-    const card = (e.target as HTMLElement).closest('.task-status-card') as HTMLElement | null;
+    if (!(e.target instanceof Element)) return;
+    const card = e.target.closest('.task-status-card') as HTMLElement | null;
     if (card && card === currentCard) {
       const relatedTarget = e.relatedTarget as HTMLElement;
       if (!relatedTarget || !card.contains(relatedTarget)) {

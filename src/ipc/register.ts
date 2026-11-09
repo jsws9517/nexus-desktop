@@ -178,15 +178,53 @@ function normalizeListSessionsParams(params?: Record<string, unknown>): {
 }
 
 export function registerIpc(ctx: IpcContext): void {
-  const { worker, sessionWorkers, resourceMon, updater, coreUpdater, log, rateLimitRegistry } = ctx;
+  const { sessionWorkers, resourceMon, updater, coreUpdater, log, rateLimitRegistry } = ctx;
+  /** How long a call may wait for a replacement core process to come up. */
+  const WORKER_WAIT_MS = 12_000;
+  /** Reads are safe to retry on the replacement; mutations are not (a chat that
+   *  reached the dying process must not be sent twice). */
+  const retryableOnRestart = (method: string): boolean => method.startsWith('get');
+  const diedError = (err: unknown): boolean =>
+    /worker (exited|stopped)|not running|worker is not running/i.test(
+      err instanceof Error ? err.message : String(err),
+    );
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
   const call = (method: string) => async (_e: unknown, params?: Record<string, unknown>) => {
     if (method === 'resolvePermission') log(`invoke resolvePermission params=${JSON.stringify(params)}`);
-    await (ctx.earlyMethods.has(method) ? ctx.earlyReady() : ctx.fullReady());
-    try {
-      return await worker!.request(method, params);
-    } catch (err) {
-      log(`invoke ${method} error: ${err instanceof Error ? err.message : String(err)}`);
-      throw err;
+    // Read ctx.worker at call time, never destructure it: restartWorker()
+    // replaces the host object, and a captured reference would route every
+    // post-restart IPC to the stopped process (the tab pane then hangs blank).
+    //
+    // A core hot-restart also leaves a short window where `ctx.worker` still
+    // points at the dying host (restartWorker runs on the supervisor's tick)
+    // or at null. Instead of failing the call (which aborted the renderer boot
+    // on its very first `getStatus`), wait for the replacement to become live.
+    const deadline = Date.now() + WORKER_WAIT_MS;
+    for (;;) {
+      await (ctx.earlyMethods.has(method) ? ctx.earlyReady() : ctx.fullReady());
+      const host = ctx.worker;
+      if (host && host.alive) {
+        try {
+          return await host.request(method, params);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // The host died while this call was in flight (crash / overlay swap).
+          // Retry reads once the replacement is up; surface anything else.
+          if (diedError(err) && retryableOnRestart(method) && Date.now() < deadline) {
+            log(`invoke ${method} retry: worker replaced mid-call (${msg})`);
+            await sleep(300);
+            continue;
+          }
+          log(`invoke ${method} error: ${msg}`);
+          throw err;
+        }
+      }
+      if (Date.now() >= deadline) {
+        log(`invoke ${method} error: core worker is not running`);
+        throw new Error('core worker is not running');
+      }
+      await sleep(200);
     }
   };
   // Session-scoped variant: route to the tab's own worker when that session has
@@ -194,11 +232,20 @@ export function registerIpc(ctx: IpcContext): void {
   const callForSession = (method: string, sessionParam = 'sessionId') =>
     async (_e: unknown, params?: Record<string, unknown>) => {
       const sid = params && typeof params[sessionParam] === 'string' ? params[sessionParam] : '';
-      if (sid && sessionWorkers.has(sid)) {
+      // isLive (not has): a tab row whose process died in a failed core restart
+      // must fall back to the global worker rather than hang on a dead host.
+      if (sid && sessionWorkers.isLive(sid)) {
         try {
           return await sessionWorkers.request(sid, method, params);
         } catch (err) {
-          log(`session invoke ${method} error: ${err instanceof Error ? err.message : String(err)}`);
+          const msg = err instanceof Error ? err.message : String(err);
+          // Session worker died mid-call (core restart, failed re-bind): reads
+          // fall back to the global worker, which serves the same session store.
+          if (diedError(err) && retryableOnRestart(method)) {
+            log(`session invoke ${method} fallback to global: ${msg}`);
+            return call(method)(_e, params);
+          }
+          log(`session invoke ${method} error: ${msg}`);
           throw err;
         }
       }
@@ -288,7 +335,7 @@ export function registerIpc(ctx: IpcContext): void {
     // specific session if told which one, else abort all session workers + the
     // global worker (idempotent).
     const sid = params && typeof params.sessionId === 'string' ? params.sessionId : '';
-    if (sid && sessionWorkers.has(sid)) {
+    if (sid && sessionWorkers.isLive(sid)) {
       await sessionWorkers.request(sid, 'abort', params);
       await sessionWorkers.refreshState(sid);
       return;
@@ -563,7 +610,7 @@ export function registerIpc(ctx: IpcContext): void {
     async (_e, params: { sessionId?: unknown; cwd?: unknown }): Promise<{ ok: boolean; tab?: OpenTabInfo; reason?: string }> => {
       const sessionId = typeof params?.sessionId === 'string' ? params.sessionId : '';
       if (!sessionId) return { ok: false, reason: 'invalid session' };
-      if (sessionWorkers.has(sessionId)) {
+      if (sessionWorkers.isLive(sessionId)) {
         return { ok: true, tab: sessionWorkers.get(sessionId) };
       }
       if (ctx.countOpenTabs() >= ctx.getMaxTabs()) {

@@ -7,6 +7,22 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
+/** Bound a worker RPC so one wedged process cannot pin a restart forever. */
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Deadline for each step of a session-worker re-bind after a core restart. */
+const RESTART_RPC_TIMEOUT_MS = 20_000;
+
 /**
  * session-db is loaded lazily: it pulls in native better-sqlite3, and the main
  * process must keep booting even when that binding is unusable (the sidebar's
@@ -67,6 +83,13 @@ export class SessionWorkers {
   canWarm?: () => boolean;
   private spare: WorkerHost | null = null;
   private warming = false;
+  /**
+   * Set while a core hot-restart is swapping every worker. `open()` awaits it
+   * instead of spawning a second worker for a session the restart is already
+   * bringing back (the duplicate used to win the registry map and orphan the
+   * worker the renderer had just been handed).
+   */
+  private restarting: Promise<void> | null = null;
 
   /** True while a pre-warmed (session-unbound) spare process exists. */
   get hasSpare(): boolean {
@@ -89,6 +112,14 @@ export class SessionWorkers {
 
   has(sessionId: string): boolean {
     return this.map.has(sessionId);
+  }
+
+  /** True when the tab is registered AND its process is still usable. A row
+   *  left behind by a failed core restart is registered but dead: IPC must not
+   *  route to it (the request would never settle). */
+  isLive(sessionId: string): boolean {
+    const b = this.map.get(sessionId);
+    return !!b && b.worker.alive;
   }
 
   tabs(): OpenTabInfo[] {
@@ -277,9 +308,21 @@ export class SessionWorkers {
 
   /** Spawn + bind a worker to `sessionId`. Resolves once the session is loaded. */
   async open(sessionId: string, opts?: { cwd?: string }): Promise<OpenTabInfo> {
+    // A core hot-restart is rebinding every live tab right now. Wait for it to
+    // settle before deciding whether this session still needs a fresh worker;
+    // otherwise an open() racing the restart spawns a duplicate process and the
+    // two overwrite each other in the registry.
+    if (this.restarting) await this.restarting;
     const existing = this.map.get(sessionId);
     if (existing) {
-      return { sessionId, provider: existing.provider, model: existing.model, busy: existing.busy };
+      // A restart that failed to re-bind leaves the dead host in the map. Treat
+      // it as absent so the tab is re-spawned instead of handing the renderer a
+      // process that can never answer getMessages.
+      if (existing.worker.alive) {
+        return { sessionId, provider: existing.provider, model: existing.model, busy: existing.busy };
+      }
+      this.map.delete(sessionId);
+      try { existing.worker.stop(); } catch {}
     }
     // Take the pre-warmed spare when available (skips spawn + Agent construction);
     // a fresh spawn otherwise.
@@ -459,6 +502,7 @@ export class SessionWorkers {
   request<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>): Promise<T> {
     const b = this.map.get(sessionId);
     if (!b) throw new Error(`No open session worker for ${sessionId}`);
+    if (!b.worker.alive) throw new Error(`Open session worker for ${sessionId} is not running`);
     return b.worker.request<T>(method, params);
   }
 
@@ -488,15 +532,31 @@ export class SessionWorkers {
    * the active overlay on its next spawn, matching what a full app restart does.
    */
   async restartAll(): Promise<void> {
-    for (const [sessionId, bound] of [...this.map.entries()]) {
+    // Coalesce concurrent calls (overlay activation + a crash restart can both
+    // fire): two overlapping runs would spawn two workers per session.
+    if (this.restarting) return this.restarting;
+    const run = this.restartWorkers();
+    this.restarting = run;
+    try {
+      await run;
+    } finally {
+      if (this.restarting === run) this.restarting = null;
+    }
+  }
+
+  private async restartWorkers(): Promise<void> {
+    const entries = [...this.map.entries()];
+    // Empty the registry before the first swap: while the loop runs, IPC for a
+    // not-yet-processed session must fall back to the already-restarted global
+    // worker instead of racing a process that is about to be stopped.
+    this.map.clear();
+    const failed = new Map<string, BoundWorker>();
+    for (const [sessionId, bound] of entries) {
       const launch = this.launch ?? { env: {} };
       const provider = bound.provider;
       const model = bound.model;
       const fanout = bound.fanout;
       const old = bound.worker;
-      // Drop the old host from the registry before spawning so its exit event
-      // (3s graceful shutdown) can't race the new binding.
-      this.map.delete(sessionId);
       try {
         old.stop();
       } catch {}
@@ -508,38 +568,44 @@ export class SessionWorkers {
         w.start();
         w.onMcpRequest = (op, params) => mcpHub.handle(op, params);
         // Fresh spawn: run earlyInit first (matching open()) so the Agent
-        // constructor picks up the new overlay, then re-bind.
-        await w.request('earlyInit', bound.cwd ? { cwd: bound.cwd } : undefined);
-        await w.request('initAcp');
+        // constructor picks up the new overlay, then re-bind. Every RPC is
+        // bounded: a wedged worker must not pin the whole restart forever.
+        await withTimeout(
+          w.request('earlyInit', bound.cwd ? { cwd: bound.cwd } : undefined),
+          RESTART_RPC_TIMEOUT_MS,
+          'earlyInit',
+        );
+        await withTimeout(w.request('initAcp'), RESTART_RPC_TIMEOUT_MS, 'initAcp');
       } catch (err) {
         this.onLog?.('warn', `session worker restart init failed (sessionId=${sessionId}): ${err instanceof Error ? err.message : String(err)}`);
-        // Restore the row with the OLD (now dying) host so the tab is not
-        // silently lost; the next switch/refresh re-spawns it cleanly.
-        this.map.set(sessionId, b);
+        try { worker?.stop(); } catch {}
+        failed.set(sessionId, b);
         continue;
       }
       const w = worker!;
       b.worker = w;
       this.wire(b);
       try {
-        await w.request('setCwd', { cwd: bound.cwd ?? undefined });
-        await w.request('startSession', { sessionId });
-        const status = (await w.request('getStatus')) as {
+        await withTimeout(w.request('setCwd', { cwd: bound.cwd ?? undefined }), RESTART_RPC_TIMEOUT_MS, 'setCwd');
+        await withTimeout(w.request('startSession', { sessionId }), RESTART_RPC_TIMEOUT_MS, 'startSession');
+        const status = (await withTimeout(w.request('getStatus'), RESTART_RPC_TIMEOUT_MS, 'getStatus')) as {
           provider?: string; model?: string; busy?: boolean;
         };
         b.provider = typeof status.provider === 'string' && status.provider ? status.provider : provider;
         b.model = typeof status.model === 'string' && status.model ? status.model : model;
         b.busy = !!status.busy;
-        await this.applySessionBinding(b);
+        await withTimeout(this.applySessionBinding(b), RESTART_RPC_TIMEOUT_MS, 'applySessionBinding');
         this.map.set(b.sessionId, b);
-        this.onChange?.(this.tabs());
       } catch (err) {
         this.onLog?.('warn', `session worker restart re-bind failed (sessionId=${sessionId}): ${err instanceof Error ? err.message : String(err)}`);
         try { w.stop(); } catch {}
-        this.map.delete(sessionId);
-        this.onChange?.(this.tabs());
+        failed.set(sessionId, b);
       }
     }
+    // A session whose re-bind failed keeps its row (with the dead host) so the
+    // tab is not silently closed under the user. `open()` sees the dead host and
+    // respawns, and IPC falls back to the global worker meanwhile.
+    for (const [sid, b] of failed) this.map.set(sid, b);
     // The pre-warmed spare was built against the old launch env — discard it
     // so the next open() spawns fresh with the new overlay.
     if (this.spare) {
@@ -548,6 +614,9 @@ export class SessionWorkers {
       try { s.stop(); } catch {}
       this.onLog?.('info', 'Spare worker discarded (core overlay restart)');
     }
+    // One notify at the end: per-session emits during the swap made the tab bar
+    // flicker through half-restarted states.
+    this.onChange?.(this.tabs());
   }
 
   close(sessionId: string): void {

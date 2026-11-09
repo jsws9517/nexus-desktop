@@ -136,7 +136,9 @@ async function restartWorker(): Promise<void> {
     // Hot-restart every open session worker so each tab re-binds on the new
     // core overlay (the main worker above switched, but tab processes still
     // hold the old module set and the old per-launch encrypt key).
-    void sessionWorkers.restartAll();
+    void sessionWorkers.restartAll().catch((err: unknown) => {
+      logger.error(`session worker restart failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   } else {
     // init failed: back off with the exponential schedule. If the overlay has
     // been permanently disabled by settleOverlay, attempts stay high so the
@@ -353,7 +355,15 @@ function wireSessionWorkers(): void {
   sessionWorkers.onPermission = (sessionId, req) => {
     send(CHANNELS.permission, { ...req, sessionId });
   };
-  sessionWorkers.onLog = (level, message) => send(CHANNELS.log, { level, message });
+  sessionWorkers.onLog = (level, message) => {
+    // Mirror to disk like the global worker: a session re-bind failure during a
+    // core hot-restart used to reach only the renderer, so the on-disk log
+    // showed a clean restart even when a tab never came back.
+    if (level === 'error' || level === 'stderr') logger.error(`[session] ${message}`);
+    else if (level === 'warn') logger.warn(`[session] ${message}`);
+    else logf(`[session] ${message}`);
+    send(CHANNELS.log, { level, message });
+  };
   sessionWorkers.onChange = () => {
     // Any tab open/close/hot-swap re-evaluates whether the tab ceiling is hit.
     resourceMon.setAtMax(countOpenTabs() >= desktopState.getMaxTabs());
@@ -757,7 +767,14 @@ if (gotLock) {
     resourceMon.start();
     void sessionWorkers.warmSpare();
     registerIpc({
-      worker,
+      // Getter, not a snapshot: `worker` is reassigned by restartWorker() on a
+      // core hot-update / crash restart. Passing the value here pinned every
+      // IPC handler to the ORIGINAL (by then stopped) WorkerHost, so getMessages
+      // and chat after an overlay activation awaited a dead process forever and
+      // the restored tabs rendered blank until a full app restart.
+      get worker() {
+        return worker;
+      },
       sessionWorkers,
       resourceMon,
       updater,
