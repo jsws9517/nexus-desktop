@@ -312,9 +312,9 @@ jobs:
         # electron does offscreen SVG rasterization (capturePage); on a
         # headless CI runner it needs an X display, so wrap in xvfb.
         # `ELECTRON_DISABLE_SANDBOX=1` guards against a runner without the
-        # SUID sandbox helper. Retried: this step (and the electron postinstall
-        # behind it) downloads binaries that have hit 504s from the runner.
-        run: xvfb-run -a node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npm run icon"
+        # SUID sandbox helper. Retried: the electron binary download + icon
+        # step download toolchains that can 504 from the runner.
+        run: xvfb-run -a node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npx node node_modules/electron/install.js; npm run icon"
         shell: bash
         env:
           ELECTRON_DISABLE_SANDBOX: "1"
