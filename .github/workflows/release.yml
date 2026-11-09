@@ -308,8 +308,10 @@ jobs:
         # electron does offscreen SVG rasterization (capturePage); on a
         # headless CI runner it needs an X display, so wrap in xvfb.
         # `ELECTRON_DISABLE_SANDBOX=1` guards against a runner without the
-        # SUID sandbox helper.
-        run: xvfb-run -a npm run icon
+        # SUID sandbox helper. Retried: this step (and the electron postinstall
+        # behind it) downloads binaries that have hit 504s from the runner.
+        run: xvfb-run -a node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npm run icon"
+        shell: bash
         env:
           ELECTRON_DISABLE_SANDBOX: "1"
 
@@ -428,8 +430,10 @@ jobs:
       - name: Generate icons (.icns)
         # electron does offscreen SVG rasterization; on a macOS runner this
         # works without an X display. `iconutil -c icns` produces
-        # build/icon.icns.
-        run: npm run icon
+        # build/icon.icns. Retried: electron binary / icns toolchain downloads
+        # can hit transient gateway errors.
+        run: node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npm run icon"
+        shell: bash
 
       # Compile better-sqlite3 for the Electron ABI (arm64).
       #
@@ -449,7 +453,9 @@ jobs:
         # use for Mac auto-update; building it now keeps latest-mac.yml
         # complete). --publish never keeps the upload step in this workflow
         # the single source of truth for what lands in the Release.
-        run: npx electron-builder --mac dmg zip --arm64 --publish never
+        # Retried: electron-builder downloads toolchains that 504 sometimes.
+        run: node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npx electron-builder --mac dmg zip --arm64 --publish never"
+        shell: bash
         env:
           # Ad-hoc identity is set via mac.identity: "-" in package.json;
           # disable cert discovery so a stray Developer ID on the runner can
