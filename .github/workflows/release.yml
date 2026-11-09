@@ -197,7 +197,11 @@ jobs:
         run: npm run build
 
       - name: Generate icons
-        run: npm run icon
+        # Retried: electron's lazy binary download (via @electron/get on first
+        # CLI use) has hit 504s from the runner. Pre-fetch with retries so the
+        # offscreen SVG rasterization below has a working electron binary.
+        run: node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npx node node_modules/electron/install.js; npm run icon"
+        shell: bash
 
       - name: Prepare Electron native
         run: npm run prepare:electron-native
@@ -430,8 +434,7 @@ jobs:
       - name: Generate icons (.icns)
         # electron does offscreen SVG rasterization; on a macOS runner this
         # works without an X display. `iconutil -c icns` produces
-        # build/icon.icns. Retried: electron binary / icns toolchain downloads
-        # can hit transient gateway errors.
+        # build/icon.icns. Retried: electron's lazy binary download can 504.
         run: node scripts/retry.mjs --attempts 3 --delay 15 -- sh -c "npm run icon"
         shell: bash
 
