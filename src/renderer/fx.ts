@@ -3,8 +3,8 @@
  *
  * Zero dependencies: everything is drawn on the local #fx-canvas, so the CSP
  * in static/index.html (`script-src 'self'`) stays valid. The palette follows
- * `document.documentElement.dataset.theme` (dark | warm | light | cartoon | tech)
- * automatically.
+ * `document.documentElement.dataset.theme` (dark | warm | light | cartoon | tech |
+ * hearth | matcha | cream) automatically.
  */
 
 interface FxNode {
@@ -27,6 +27,9 @@ const WARM: FxPalette = { node: '#e8c98a', linkRgb: '224, 164, 88', span: 150 };
 const LIGHT: FxPalette = { node: '#6cb4ee', linkRgb: '108, 180, 238', span: 120 };
 const CARTOON: FxPalette = { node: '#ff9f43', linkRgb: '255, 159, 67', span: 180 };
 const TECH: FxPalette = { node: '#00f5ff', linkRgb: '0, 245, 255', span: 200 };
+const HEARTH: FxPalette = { node: '#e2703a', linkRgb: '226, 112, 58', span: 145 };
+const MATCHA: FxPalette = { node: '#5d8a44', linkRgb: '78, 130, 55', span: 118 };
+const CREAM: FxPalette = { node: '#b98a5e', linkRgb: '185, 138, 94', span: 118 };
 
 let canvas: HTMLCanvasElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
@@ -45,6 +48,9 @@ function updatePalette(): void {
     theme === 'light' ? LIGHT :
     theme === 'cartoon' ? CARTOON :
     theme === 'tech' ? TECH :
+    theme === 'hearth' ? HEARTH :
+    theme === 'matcha' ? MATCHA :
+    theme === 'cream' ? CREAM :
     DARK;
 }
 

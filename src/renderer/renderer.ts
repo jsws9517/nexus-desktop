@@ -1450,12 +1450,36 @@ function showOnboarding(): void {
 
 // ---------- theme ----------
 const THEME_KEY = 'nexus.theme';
-type ThemeName = 'system' | 'dark' | 'warm' | 'light' | 'cartoon' | 'tech';
+type ThemeName =
+  | 'system'
+  | 'dark'
+  | 'warm'
+  | 'hearth'
+  | 'matcha'
+  | 'cream'
+  | 'light'
+  | 'cartoon'
+  | 'tech';
 
-const VALID_THEMES: ThemeName[] = ['system', 'dark', 'warm', 'light', 'cartoon', 'tech'];
+const VALID_THEMES: ThemeName[] = [
+  'system',
+  'dark',
+  'warm',
+  'hearth',
+  'matcha',
+  'cream',
+  'light',
+  'cartoon',
+  'tech',
+];
+
+/** Retired theme ids that should land on their replacement, not on the default. */
+const LEGACY_THEMES: Record<string, ThemeName> = { daybreak: 'hearth' };
 
 /** Resolve the effective CSS theme name from a saved preference. */
-function resolveTheme(preference: ThemeName): 'dark' | 'warm' | 'light' | 'cartoon' | 'tech' {
+function resolveTheme(
+  preference: ThemeName,
+): 'dark' | 'warm' | 'hearth' | 'matcha' | 'cream' | 'light' | 'cartoon' | 'tech' {
   if (preference !== 'system') return preference;
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
@@ -1476,6 +1500,8 @@ function loadTheme(): ThemeName {
     const saved = localStorage.getItem(THEME_KEY);
     if (saved && VALID_THEMES.includes(saved as ThemeName)) {
       theme = saved as ThemeName;
+    } else if (saved && LEGACY_THEMES[saved]) {
+      theme = LEGACY_THEMES[saved];
     }
   } catch {}
   applyTheme(theme);

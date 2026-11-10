@@ -392,6 +392,67 @@ html[data-theme='tech'] {
   --bubble-assist: #111827;
 }
 
+/* Cream theme — clean high-key paper: near-white panels, crisp hairline
+   borders, caramel ink. Reads as "bright paper", not "beige". */
+html[data-theme='cream'] {
+  --bg: #fbf8f2;
+  --bg-panel: #ffffff;
+  --bg-sidebar: #f4efe6;
+  --bg-input: #ece5d9;
+  --border: #e0d7c7;
+  --text: #322e28;
+  --text-dim: #766c5e;
+  --accent: #8b5e3c;
+  --accent-dim: #6b452a;
+  --ok: #4f8a5b;
+  --danger: #c0433a;
+  --warn: #c8862a;
+  --code-bg: #f6f2ea;
+  --bubble-user: #f0e2d2;
+  --bubble-assist: #ffffff;
+}
+
+/* Hearth theme — near-black charcoal with a red undertone, ember orange-red
+   accent, firelight from below. Sits well below Warm on the luminance axis so
+   the two never read as one theme. */
+html[data-theme='hearth'] {
+  --bg: #17100c;
+  --bg-panel: #1f1712;
+  --bg-sidebar: #241b15;
+  --bg-input: #2b211a;
+  --border: #3d2f26;
+  --text: #f3e7dd;
+  --text-dim: #b9a08f;
+  --accent: #e2703a;
+  --accent-dim: #a04a20;
+  --ok: #7fae63;
+  --danger: #e05a6a;
+  --warn: #dca63c;
+  --code-bg: #100b08;
+  --bubble-user: #332017;
+  --bubble-assist: #1f1712;
+}
+
+/* Matcha theme — sage paper with a clearly green cast (mid-light axis), so it
+   never reads as "Cream with a tint". Deeper sage surfaces + leaf-green ink. */
+html[data-theme='matcha'] {
+  --bg: #e1ead0;
+  --bg-panel: #f4f8ea;
+  --bg-sidebar: #d5dfc0;
+  --bg-input: #cfdbb8;
+  --border: #b9c79f;
+  --text: #26301f;
+  --text-dim: #55634a;
+  --accent: #3f6b2c;
+  --accent-dim: #335a22;
+  --ok: #3a8049;
+  --danger: #ad4a38;
+  --warn: #a6781a;
+  --code-bg: #dbe6c9;
+  --bubble-user: #c9dbab;
+  --bubble-assist: #f8fbf1;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body { height: 100%; }
@@ -1809,6 +1870,21 @@ html[data-theme='tech'] #fx-vignette {
     radial-gradient(85% 60% at 50% 0%, color-mix(in srgb, var(--accent) 14%, transparent) 0%, transparent 62%),
     linear-gradient(180deg, rgba(0, 245, 255, 0.06), rgba(0, 0, 0, 0) 26%, rgba(0, 0, 0, 0) 72%, rgba(0, 245, 255, 0.08));
 }
+html[data-theme='cream'] #fx-vignette {
+  background:
+    radial-gradient(85% 60% at 50% 0%, color-mix(in srgb, var(--accent) 7%, transparent) 0%, transparent 62%),
+    linear-gradient(180deg, rgba(90, 60, 30, 0.05), rgba(90, 60, 30, 0) 26%, rgba(90, 60, 30, 0) 72%, rgba(90, 60, 30, 0.07));
+}
+html[data-theme='hearth'] #fx-vignette {
+  background:
+    radial-gradient(110% 62% at 50% 112%, color-mix(in srgb, var(--accent) 20%, transparent) 0%, transparent 62%),
+    linear-gradient(180deg, rgba(10, 4, 2, 0.42), rgba(10, 4, 2, 0) 26%, rgba(10, 4, 2, 0) 60%, rgba(10, 4, 2, 0.30));
+}
+html[data-theme='matcha'] #fx-vignette {
+  background:
+    radial-gradient(85% 60% at 50% 0%, color-mix(in srgb, var(--accent) 9%, transparent) 0%, transparent 62%),
+    linear-gradient(180deg, rgba(40, 62, 26, 0.07), rgba(40, 62, 26, 0) 26%, rgba(40, 62, 26, 0) 72%, rgba(40, 62, 26, 0.09));
+}
 
 /* ---- glass panels: let the FX layer glow through ---- */
 #sidebar, #right-sidebar {
@@ -2223,6 +2299,148 @@ html[data-theme='tech'] .nexus-toast {
 html[data-theme='tech'] .stream-text.streaming::after {
   color: var(--accent);
   text-shadow: 0 0 8px var(--accent);
+}
+
+/* =========================================================
+   Warm theme overrides — split by luminance, not just hue.
+   · Hearth = dark axis: near-black charcoal + ember light from
+              below, 8px corners, red-orange glow.
+   · Cream / Matcha = light axis: soft corners, airy padding,
+              tinted-paper chips, no glow.
+   ========================================================= */
+
+/* ---- Hearth: ember-lit dark — 8px corners, firelight from below ---- */
+html[data-theme='hearth'] .msg .bubble {
+  border-radius: 8px;
+  border-bottom-right-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent) 13%, var(--border));
+  box-shadow: 0 2px 10px -6px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+html[data-theme='hearth'] .msg.user .bubble {
+  border-bottom-left-radius: 8px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, var(--bubble-user)), var(--bubble-user));
+}
+html[data-theme='hearth'] .msg.assistant .bubble { border-bottom-left-radius: 3px; }
+html[data-theme='hearth'] .btn.primary {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 55%, var(--accent-dim)), var(--accent-dim));
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  color: #fff4ec;
+  text-shadow: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent),
+    0 4px 16px -6px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+html[data-theme='hearth'] .btn.primary:hover {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 6px 22px -6px color-mix(in srgb, var(--accent) 90%, transparent);
+}
+html[data-theme='hearth'] .tool-card {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow: inset 0 -18px 26px -22px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+html[data-theme='hearth'] .input-card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent),
+    0 8px 28px -14px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+html[data-theme='hearth'] .bubble pre {
+  border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--border));
+}
+html[data-theme='hearth'] #session-list li.active {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 16%, var(--bg-sidebar)), var(--bg-sidebar));
+  color: var(--text);
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+html[data-theme='hearth'] .stream-text.streaming::after { color: var(--accent); }
+html[data-theme='hearth'] .busy {
+  text-shadow: 0 0 12px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+/* ---- Cream: crisp paper — 10px corners, hairline accents ---- */
+html[data-theme='cream'] .msg .bubble {
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 7%, var(--border));
+  box-shadow: 0 1px 2px rgba(60, 45, 25, 0.04);
+}
+html[data-theme='cream'] .msg.user .bubble { border-bottom-right-radius: 3px; }
+html[data-theme='cream'] .msg.assistant .bubble { border-bottom-left-radius: 3px; }
+html[data-theme='cream'] .tool-card {
+  border-left: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 8px;
+}
+html[data-theme='cream'] #session-list li.active {
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-sidebar));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* ---- Matcha: soft botanical — 14px corners, leaf band + sage wash ---- */
+html[data-theme='matcha'] .msg .bubble {
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+  box-shadow: 0 1px 4px rgba(45, 70, 30, 0.07);
+}
+html[data-theme='matcha'] .msg.user .bubble { border-bottom-right-radius: 5px; }
+html[data-theme='matcha'] .msg.assistant .bubble { border-bottom-left-radius: 5px; }
+html[data-theme='matcha'] .tool-card {
+  border-left: 4px solid color-mix(in srgb, var(--accent) 60%, var(--border));
+  border-radius: 14px;
+}
+html[data-theme='matcha'] #session-list li.active {
+  background: color-mix(in srgb, var(--accent) 20%, var(--bg-sidebar));
+  color: var(--text);
+  box-shadow: inset 3px 0 0 0 color-mix(in srgb, var(--accent) 75%, transparent);
+}
+
+html[data-theme='cream'] .btn.primary,
+html[data-theme='matcha'] .btn.primary {
+  color: #fbfdf6;
+  text-shadow: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent),
+    0 2px 8px -3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+html[data-theme='cream'] .btn.primary:hover,
+html[data-theme='matcha'] .btn.primary:hover {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent),
+    0 4px 14px -4px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+html[data-theme='cream'] .input-card:focus-within,
+html[data-theme='matcha'] .input-card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+html[data-theme='cream'] .bubble pre,
+html[data-theme='matcha'] .bubble pre {
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
+}
+html[data-theme='cream'] .stream-text.streaming::after,
+html[data-theme='matcha'] .stream-text.streaming::after {
+  color: var(--accent);
+}
+
+/* The hard-coded dark-maroon danger chip reads like a hole on a light
+   surface; use a soft tinted chip instead. */
+html[data-theme='cream'] .btn.danger,
+html[data-theme='cream'] #input-area .btn.danger,
+html[data-theme='matcha'] .btn.danger,
+html[data-theme='matcha'] #input-area .btn.danger {
+  background: color-mix(in srgb, var(--danger) 9%, var(--bg-panel));
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger);
+  box-shadow: none;
+}
+html[data-theme='cream'] .btn.danger:hover,
+html[data-theme='cream'] #input-area .btn.danger:hover,
+html[data-theme='matcha'] .btn.danger:hover,
+html[data-theme='matcha'] #input-area .btn.danger:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  box-shadow: 0 2px 10px -4px color-mix(in srgb, var(--danger) 55%, transparent);
 }
 
 
