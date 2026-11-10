@@ -78,8 +78,10 @@ and the `SUPERSEDED` design docs still describe it as live-but-broken; **none of
 
 The core assembles each round's tool list and then applies a **binary keyword filter**: a tool survives
 only if a token derived from the user message appears verbatim in its `name + description`
-(`nexus-coder/src/agent.ts getToolsForContext`). Two properties of that filter are corrected on the
-desktop side, in `AgentService.applyMcpProxy` (`src/agent/service.ts:363`, patch at `:459`).
+(`nexus-coder/src/agent.ts getToolsForContext`). The desktop replaces that selection in
+`AgentService.applyMcpProxy` (`src/agent/service.ts:658`, `getToolsForContext` override at `:776`):
+it completes the candidate pool (the core's agent-layer defs — see the merge row below) and swaps the
+filter's two failure modes for scoring.
 
 **False negatives.** Descriptions are English; keywords taken from a Chinese prompt are CJK bigrams, which
 can never substring-match them. The tool silently vanishes with no log line. This is the same defect that
@@ -91,25 +93,31 @@ installed skill rode along each round.
 
 | Piece | Location | Role |
 |---|---|---|
-| Routing table | `src/tools/routing.ts:156` `TOOL_ROUTING`, applied by `:168 applyRouting` | Maps every tool name — the desktop `ALL_TOOL_DEFS`, the 48 injected git/memory/fetch/time tools, and whatever MCP servers advertise — to a `group`, `readOnly`, and author-supplied `keywords`. Each entry carries **Chinese** trigger words: an author term is the only signal that can match a prompt in its own script. |
-| Scored selector | `src/tools/tool-relevance.ts:186 selectTools` | Replaces match-with-scoring. Similarity is character-bigram Jaccard (language-agnostic, lifted from the core's `acp/bridge/intent.ts`). Applied per round, since the core re-enters `runLlmTurn` after every batch of tool results. |
-| Relevance floor | `tool-relevance.ts:86 ESSENTIAL_TOOLS` | Mirrors the core's `essentialTools` bypass list. `test/tool-relevance.test.mjs` parses `essentialTools` out of the shipped core and asserts full coverage — the two lists must not drift. |
-| Thresholds | `tool-relevance.ts:66 SIMILARITY_KEEP`, `:73 MIN_KEPT`, `:79 MAX_KEPT` | Each signal is thresholded **separately**. An aggregate `score > 0` rule was tried and rejected: it kept 96 of 102 tools for a code-fix prompt, because a weighted negligible similarity is still positive and Jaccard leaks at the low end on short mixed CJK/ASCII strings. |
-| Skills progressive disclosure | `src/tools/skills-disclosure.ts:158`, registry at `src/tools/index.ts:49` | `skills_index` / `skills_search` / `skills_load` replace the flat per-skill tools with three constant-size stubs. `skills_load` delegates to the core's `callTool` so the `<skill-instructions>` prompt-injection boundary is not forked. Flat skill tools are hidden via `skillToolNames` (`:77`) — safe, because the core runs `skills.callTool` ahead of every other dispatcher and matches on skill name, so a direct call still executes. |
-| Model-widenable | `src/tools/refresh-tools.ts:55 ToolRefreshQueue`, registry at `src/tools/index.ts:50` | `refresh_tools` lets the model re-select its own toolset. Bounded queue; applied to the next round, then cleared (`service.ts:486`). |
-| Usage memory | `service.ts:326`, recorded at `:329 noteToolUse` | Names already invoked this session score as a prior, so a tool that worked stays reachable after the user's focus moves on. Per-session and in-memory — **there is no cross-session learning**. |
+| Routing table | `src/tools/routing.ts:231` `TOOL_ROUTING`, applied by `:245 applyRouting` | Maps every tool name — the desktop `ALL_TOOL_DEFS`, the 48 injected git/memory/fetch/time tools, the core's agent-layer defs (merged in below), and whatever MCP servers advertise — to a `group`, `readOnly`, and author-supplied `keywords`. Each entry carries **Chinese** trigger words: an author term is the only signal that can match a prompt in its own script. |
+| Scored selector | `src/tools/tool-relevance.ts:221 selectTools` | Replaces match-with-scoring. Similarity is character-bigram Jaccard (language-agnostic, lifted from the core's `acp/bridge/intent.ts`). Applied per round, since the core re-enters `runLlmTurn` after every batch of tool results. |
+| Relevance floor | `tool-relevance.ts:98 ESSENTIAL_TOOLS` | Mirrors the core's `essentialTools` bypass list. `test/tool-relevance.test.mjs` parses `essentialTools` out of the shipped core and asserts full coverage — the two lists must not drift. |
+| Agent-layer merge | `service.ts:804` (`mergeCoreAgentTools`, helper at `tool-relevance.ts:302`) | The core adds ~21 defs statically in its own `getToolsForContext` — media generation (`generate_image` / `generate_video` / `media_task`), `remember/recall/remember_project`, `bg_job`, the `spawn_*`/task family, image/audio analysis, session history. They never appear in `agent.mcp.getAllTools()`, so the pool never carried them and their `ESSENTIAL_TOOLS` pins were **name-only no-ops**: the model was never offered `generate_video` even though the core can dispatch it, `refresh_tools` intents could not resolve to it, and media quota billing never ran. The patch merges the name-diff from the core's own selection result back into the candidates; desktop defs win on a clash (INTERNAL_TOOLS shadowing and MCP aliases stay authoritative) and `skillToolNames` stays hidden, so progressive disclosure is not undone. |
+| Thresholds | `tool-relevance.ts:66 SIMILARITY_KEEP`, `:73 MIN_KEPT`, `:79 MAX_KEPT`, `:91 MAX_TAIL` | Each signal is thresholded **separately**. An aggregate `score > 0` rule was tried and rejected: it kept 96 of 102 tools for a code-fix prompt, because a weighted negligible similarity is still positive and Jaccard leaks at the low end on short mixed CJK/ASCII strings. The tail budget is `max(MAX_TAIL, MAX_KEPT - kept.length)`: the agent-layer merge pushes the pinned floor past `MAX_KEPT`, and the old budget went negative — zeroing the tail and dropping every keyword-matched non-pinned tool (`sheet.read`, `postgres__query`) each round. |
+| Skills progressive disclosure | `src/tools/skills-disclosure.ts:158 SKILLS_DISCLOSURE_TOOL_DEFS`, registry at `src/tools/index.ts:52` | `skills_index` / `skills_search` / `skills_load` replace the flat per-skill tools with three constant-size stubs. `skills_load` delegates to the core's `callTool` so the `<skill-instructions>` prompt-injection boundary is not forked. Flat skill tools are hidden via `skillToolNames` (`:77`) — safe, because the core runs `skills.callTool` ahead of every other dispatcher and matches on skill name, so a direct call still executes. |
+| Model-widenable | `src/tools/refresh-tools.ts:55 ToolRefreshQueue`, registry at `src/tools/index.ts:53` | `refresh_tools` lets the model re-select its own toolset. Bounded queue; applied to the next round, then cleared (`service.ts:836`). |
+| Usage memory | `service.ts:516`, recorded at `:545 noteToolUse` | Names already invoked this session score as a prior, so a tool that worked stays reachable after the user's focus moves on. Per-session and in-memory — **there is no cross-session learning**. |
 
-Measured on 22 installed skills: ~2.9k tokens of tool schemas per round → ~700–1030, with the
-intent-matching tool ranked first.
+Measured before the agent-layer merge, on 22 installed skills: ~2.9k tokens of tool schemas per round
+→ ~700–1030, with the intent-matching tool ranked first. After the merge the pinned floor alone is
+~54 tools per round — every agent-layer name is pinned by the parity test, so it is always selected —
+which is the structural price of making every core capability actually reachable. A round below that
+floor no longer exists, but nothing is *added* beyond it without a matching signal.
+
+Plan mode and role-scoped sub-agent allowlists short-circuit the selector — those are deliberate
+restrictions, not oversights. The agent-layer merge still runs there, but only the names the core's own
+plan-mode allowlist keeps (`remember` / `recall` / `decompose_task` / `query_tasks`), so nothing
+write-capable is introduced.
 
 **Removed:** the `[Work Mode: Skill Enforcement]` block, which regex-matched the user message for
 `/\.(csv|xlsx?|tsv)\b/i` or `/分析|统计|图表|chart|analyze|data|visualiz/i` and force-injected a
 "you MUST call `sheet.read` / NEVER narrate" system block. `sheet.*` / `bi.chart` are now surfaced by
 routing keywords, and the behavioural half of the rule moved into those tools' own descriptions rather
 than a hardcoded prompt. `test/tool-relevance.test.mjs` asserts both halves.
-
-Plan mode and role-scoped sub-agent allowlists short-circuit to the core's list untouched — those are
-deliberate restrictions, not oversights.
 
 ---
 
@@ -136,7 +144,7 @@ the run sweep and `mirrorCoreRun`.
 | Bridge | Location | What crosses it |
 |---|---|---|
 | DAG bridge | `src/agent/service.ts:1703 handleDagCommand` → `runPlanWithLoop` (`:2038`) | desktop `/go` input → core `executePlan*` |
-| Tool dispatch | `src/agent/service.ts:363 applyMcpProxy` | desktop `ALL_TOOL_DEFS` into `mcp.getAllTools`; hub MCP calls back out; `getToolsForContext` overridden for selection (§4) |
+| Tool dispatch | `src/agent/service.ts:658 applyMcpProxy` | desktop `ALL_TOOL_DEFS` into `mcp.getAllTools`; hub MCP calls back out; `getToolsForContext` overridden for selection (§4) |
 | Event stream | core `Agent.onEvent` → `AgentService` → worker → `SessionWorkers.onEvent` → `forwardTabEvent` → renderer (`applyTabEvent`, `src/renderer/renderer.ts:3061`) | `task_*`, `subagent_status`, `bg_job_event` |
 | Run mirroring | `mirrorCoreRun` (`src/renderer/renderer.ts:3543`) | core runs → `subAgentRuns` so the Sub-Agents panel sees them |
 | Direct DB reads | `src/session-db.ts` (sessions/messages + `task_graphs`) and `listSessions` served from main (`src/ipc/register.ts:210`) | read-only, no event |

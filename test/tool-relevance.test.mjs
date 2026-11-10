@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = join(__dirname, '..', 'dist');
 
-const { selectTools, ESSENTIAL_TOOLS } = await import(
+const { selectTools, ESSENTIAL_TOOLS, mergeCoreAgentTools } = await import(
   pathToFileURL(join(dist, 'tools', 'tool-relevance.js'))
 );
 const { TOOL_ROUTING, applyRouting } = await import(pathToFileURL(join(dist, 'tools', 'routing.js')));
@@ -581,4 +581,120 @@ test('a non-delegation prompt does not drag acp_route in', () => {
   const pool = applyRouting([...BUILTIN_TOOLS, ...ALL_TOOL_DEFS, ...mcpStand]);
   const out = selectTools(pool, { input: 'git 提交一下', used: new Set(), respectNarrowing: false });
   assert.equal(out.some((t) => t.name === 'acp_route'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Agent-layer merge: core-only defs must reach the candidate pool
+// ---------------------------------------------------------------------------
+
+test('agent-layer core tools merge into the pool so their pins stop being no-ops', () => {
+  // The real bug: generate_video / media_task / remember (and ~18 peers) exist
+  // only in the core's own getToolsForContext — `agent.mcp.getAllTools()` never
+  // carries them. The desktop pool therefore never contained them, so their
+  // ESSENTIAL_TOOLS pins were name-only no-ops: the model was never offered
+  // video generation even though the core can dispatch it.
+  const pool = [def('read_text_file'), def('query')];
+  const coreTools = [
+    def('read_text_file'), // already in the pool
+    def('generate_video'), // agent-layer, must be added
+    def('media_task'),
+    def('remember'),
+  ];
+  const merged = mergeCoreAgentTools(pool, coreTools);
+  const n = names(merged);
+  assert.ok(n.includes('generate_video'), 'generate_video must reach the candidate pool');
+  assert.ok(n.includes('media_task'), 'media_task must reach the candidate pool');
+  assert.ok(n.includes('remember'), 'remember must reach the candidate pool');
+  assert.equal(n.filter((x) => x === 'read_text_file').length, 1, 'no duplicate schema ships');
+});
+
+test('a merged core def never overrides the desktop def on a name clash', () => {
+  // Desktop defs carry routing metadata and may shadow an MCP server; the core's
+  // copy has neither. Keeping the pool def is what preserves INTERNAL_TOOLS
+  // shadowing and the server-qualified MCP aliases.
+  const desktop = def('read_text_file', { keywords: ['file', '文件'] });
+  const core = def('read_text_file', { description: 'core english-only copy' });
+  const merged = mergeCoreAgentTools([desktop], [core]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0], desktop, 'the desktop def must win');
+});
+
+test('merging respects the skills progressive-disclosure hidden set', () => {
+  const merged = mergeCoreAgentTools(
+    [def('read_text_file')],
+    [def('email-worker'), def('generate_video')],
+    new Set(['email-worker']),
+  );
+  const n = names(merged);
+  assert.ok(n.includes('generate_video'));
+  assert.ok(!n.includes('email-worker'), 'flat skill tools stay hidden behind skills_index/search/load');
+});
+
+test('merged agent-layer tools survive selection on an unrelated prompt', () => {
+  const pool = [def('read_text_file'), ...deadFiller(30)];
+  const merged = mergeCoreAgentTools(pool, [def('generate_video'), def('remember')]);
+  const out = names(selectTools(merged, { input: '完全不相关的提示', used: new Set() }));
+  assert.ok(out.includes('generate_video'), 'an ESSENTIAL-pinned agent-layer tool must survive');
+  assert.ok(out.includes('remember'));
+});
+
+// ---------------------------------------------------------------------------
+// MAX_KEPT: the pinned floor must not starve the matched tail
+// ---------------------------------------------------------------------------
+
+test('a pinned floor above MAX_KEPT still leaves room for keyword-matched tools', () => {
+  // Regression: the tail budget used to be `MAX_KEPT - kept.length`. Once the
+  // agent-layer merge pushed the pinned floor past 48, that budget went
+  // negative and zeroed the tail — silently dropping sheet.read / postgres__query
+  // on exactly the prompts their keywords matched.
+  const pinned = [...ESSENTIAL_TOOLS].map((n) => def(n));
+  assert.ok(pinned.length > 48, `fixture needs a pinned floor above MAX_KEPT, got ${pinned.length}`);
+  const matched = [
+    def('sheet_reader_x', { keywords: ['销售额'] }),
+    def('db_query_x', { keywords: ['销售额'] }),
+  ];
+  const out = names(
+    selectTools([...pinned, ...matched, ...deadFiller(40)], {
+      input: '分析一下 data.csv 的销售额',
+      used: new Set(),
+    }),
+  );
+  assert.ok(out.includes('sheet_reader_x'), 'keyword-matched non-pinned tool must not be starved');
+  assert.ok(out.includes('db_query_x'), 'keyword-matched non-pinned tool must not be starved');
+});
+
+test('the cap still trims the tail when the pinned floor is small', () => {
+  // MAX_TAIL is a floor on the *budget*, not a replacement for the cap: with a
+  // small pinned set the tail is still bounded by MAX_KEPT - kept.length.
+  const pinned = [def('read_text_file'), def('file_write')];
+  const matched = filler(60, '销售额'); // every filler matches
+  const out = selectTools([...pinned, ...matched], { input: '销售额', used: new Set() });
+  assert.equal(out.length, 48, 'total must not exceed MAX_KEPT while pins are under it');
+});
+
+// ---------------------------------------------------------------------------
+// Routing: agent-layer media tools resolve from Chinese refresh_tools intents
+// ---------------------------------------------------------------------------
+
+test('a Chinese widening intent resolves to the agent-layer media tools', () => {
+  // resolveRefreshIntents (src/agent/service.ts) matches an intent against
+  // candidate names or their author keywords — never descriptions. Without
+  // AGENT_LAYER_ROUTING entries "生成视频" could not resolve to generate_video
+  // and the widening request was a silent no-op.
+  const pool = applyRouting([
+    def('generate_image'),
+    def('generate_video'),
+    def('media_task'),
+    def('read_text_file'),
+  ]);
+  for (const [intent, expected] of [
+    ['生成视频', 'generate_video'],
+    ['帮我画一张图片', 'generate_image'],
+  ]) {
+    const matched = pool.filter((t) => (t.keywords ?? []).some((k) => intent.includes(k)));
+    assert.ok(
+      matched.some((t) => t.name === expected),
+      `"${intent}" must resolve to ${expected} via routing keywords`,
+    );
+  }
 });

@@ -33,7 +33,7 @@ export { CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } from '../skills/chart.js'
 export { ATTACHMENT_RAG_TOOLS, ATTACHMENT_RAG_TOOL_DEFS, callAttachmentRagTool } from './attachment-rag.js';
 export { skillHostFromAgent, skillToolNames } from './skills-disclosure.js';
 export { ToolRefreshQueue, refreshToolsResult } from './refresh-tools.js';
-export { selectTools, ESSENTIAL_TOOLS } from './tool-relevance.js';
+export { selectTools, ESSENTIAL_TOOLS, mergeCoreAgentTools } from './tool-relevance.js';
 export { TOOL_ROUTING, applyRouting } from './routing.js';
 
 /**

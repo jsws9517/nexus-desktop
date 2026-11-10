@@ -183,6 +183,50 @@ const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   inline_search: { group: 'fs', keywords: ['inline', '搜索', '查找', 'search'] },
 };
 
+/**
+ * Core agent-layer tools (nexus-coder/src/agent.ts getToolsForContext).
+ *
+ * These defs never reach the desktop through `agent.mcp.getAllTools()` — the
+ * core adds them statically — so src/agent/service.ts merges them into the
+ * candidate pool from the core's own selection result. They ship with
+ * English-only descriptions and are pinned in ESSENTIAL_TOOLS, so keywords
+ * here only affect ranking and `refresh_tools` intent resolution: a widening
+ * request like "生成视频" must match `generate_video` by keyword, because
+ * resolveRefreshIntents compares the intent against name or keywords, never
+ * descriptions.
+ */
+const AGENT_LAYER_ROUTING: Record<string, ToolRouting> = {
+  // media generation
+  generate_image: { group: 'media', keywords: ['image', '图片', '生成图片', '画图', '画一张', '画个', 'draw', 'logo', 'icon', '海报', 'poster'] },
+  generate_video: { group: 'media', keywords: ['video', '视频', '生成视频', '动画', '短片', 'clip', '影片', 'mv'] },
+  media_task: { group: 'media', readOnly: true, keywords: ['video', '视频', 'image', '图片', '媒体', '媒体任务', '任务状态', '生成进度'] },
+
+  // memory
+  remember: { group: 'memory', keywords: ['remember', '记住', '记下', '记忆', '保存记忆'] },
+  recall: { group: 'memory', readOnly: true, keywords: ['recall', '回忆', '我的信息', '我之前', '记住过', '个人信息'] },
+  remember_project: { group: 'memory', keywords: ['project', '项目', '记住项目', '项目信息', '项目知识'] },
+
+  // sub-agents / task graph
+  decompose_task: { group: 'task', keywords: ['plan', 'decompose', '分解', '拆解', '计划', '拆任务', '任务规划'] },
+  spawn_subagent: { group: 'task', keywords: ['subagent', '子代理', '子agent', '委派', 'spawn', 'delegate', '派给'] },
+  spawn_tester: { group: 'task', keywords: ['test', '测试', '验证', 'lint', '跑测试'] },
+  spawn_committer: { group: 'task', keywords: ['commit', '提交', '提交代码', 'git commit'] },
+  spawn_skill_fixer: { group: 'task', keywords: ['skill', '技能', '修复技能', '修技能', '自动修复'] },
+  query_tasks: { group: 'task', readOnly: true, keywords: ['task', '任务状态', '任务进度', '进度'] },
+  bg_job: { group: 'exec', keywords: ['background', '后台', 'job', '后台任务', '异步任务'] },
+
+  // media analysis
+  analyze_image: { group: 'media', readOnly: true, keywords: ['image', '图片', '看图', '分析图', '这张图', '截图'] },
+  ocr_extract: { group: 'media', readOnly: true, keywords: ['ocr', '文字识别', '提取文字', '识别文字', '图片文字'] },
+  transcribe_audio: { group: 'media', readOnly: true, keywords: ['transcribe', '转录', '语音转文字', '音频', '转写'] },
+  synthesize_speech: { group: 'media', keywords: ['speech', '语音', 'tts', '朗读', '合成语音', '配音'] },
+
+  // session history
+  last_session: { group: 'meta', readOnly: true, keywords: ['上次会话', '之前的会话', '上次对话', 'previous session'] },
+  search_sessions: { group: 'meta', readOnly: true, keywords: ['搜索会话', '历史会话', '查找会话', 'session search'] },
+  set_project_location: { group: 'meta', keywords: ['项目位置', '项目目录', 'project location', '仓库路径'] },
+};
+
 /** Every annotation, merged. Later maps do not override earlier ones. */
 export const TOOL_ROUTING: Record<string, ToolRouting> = {
   ...GIT_ROUTING,
@@ -190,6 +234,7 @@ export const TOOL_ROUTING: Record<string, ToolRouting> = {
   ...SQLITE_ROUTING,
   ...POSTGRES_ROUTING,
   ...DESKTOP_ROUTING,
+  ...AGENT_LAYER_ROUTING,
 };
 
 /**

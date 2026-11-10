@@ -34,6 +34,7 @@ import {
   INTERNAL_TOOLS,
   ALL_TOOL_DEFS,
   callBuiltinTool,
+  mergeCoreAgentTools,
   selectTools,
   skillHostFromAgent,
   skillToolNames,
@@ -768,10 +769,10 @@ export class AgentService {
     // those are deliberate restrictions and must not be widened here.
     const patchedGetAllTools = local.getAllTools.bind(local);
     const originalGetTools = (agent as unknown as {
-      getToolsForContext: (input?: string) => Promise<Array<{ name: string }>>;
+      getToolsForContext: (input?: string) => Promise<ToolDef[]>;
     }).getToolsForContext.bind(agent);
     (agent as unknown as {
-      getToolsForContext: (input?: string) => Promise<Array<{ name: string }>>;
+      getToolsForContext: (input?: string) => Promise<ToolDef[]>;
     }).getToolsForContext = async (input?: string) => {
       const coreTools = await originalGetTools(input);
       const respectNarrowing = agent.planMode || (agent.toolAllowlist?.size ?? 0) > 0;
@@ -787,9 +788,21 @@ export class AgentService {
       // hub's MCP cache (already de-duplicated against our names inside
       // getAllTools), and our own ALL_TOOL_DEFS. Only the flat skill tools are
       // removed, and only outside plan mode / role scoping.
-      const candidates = applyRouting(
-        (patchedGetAllTools() as McpToolDef[]).filter((t) => !hidden.has(t.name)) as ToolDef[],
-      );
+      const pool = (patchedGetAllTools() as McpToolDef[]).filter(
+        (t) => !hidden.has(t.name),
+      ) as ToolDef[];
+      // The core's agent-layer tools (media generation, remember/recall, bg_job,
+      // the task/spawn family, media analysis, session history — ~21 defs) are
+      // added statically in its own getToolsForContext; `agent.mcp.getAllTools()`
+      // never carries them, and the desktop replaced that method, so the pool
+      // above was missing every one of them. Their ESSENTIAL_TOOLS pins were
+      // therefore no-ops: the model was never offered `generate_video` even
+      // though the core can dispatch it, refresh_tools intents could not resolve
+      // to it, and quota billing never ran. Merge the name-diff back in; desktop
+      // defs win on a clash, so INTERNAL_TOOLS shadowing and MCP aliases stay
+      // authoritative.
+      const agentLayer = mergeCoreAgentTools(pool, coreTools, hidden);
+      const candidates = applyRouting(agentLayer);
 
       // `refresh_tools` widening requests are natural-language intents, not tool
       // names. `selectTools` matches `force` against tool names, so an intent like
@@ -838,10 +851,12 @@ export class AgentService {
       }
 
       const coreCount = coreTools.length;
+      const mergedCount = agentLayer.length - pool.length;
       logger.info(
         `[tool-select] ${policySelected.length} tools for "${(input ?? '').slice(0, 40)}" ` +
-          `(core=${coreCount}, candidates=${candidates.length}, hidden-skills=${hidden.size}, ` +
-          `used=${this.toolUseMemory.size}${hideVault ? ', vault-withheld' : ''}` +
+          `(core=${coreCount}, candidates=${candidates.length}, agent-layer=${mergedCount}, ` +
+          `hidden-skills=${hidden.size}, used=${this.toolUseMemory.size}` +
+          `${hideVault ? ', vault-withheld' : ''}` +
           `${policy?.active ? `, policy=${policy.readOnly ? 'read-only' : 'narrowed'}` : ''})`,
       );
       return policySelected;
@@ -936,14 +951,16 @@ export class AgentService {
             ctx.prependToSystem(
               `\n\n${FIX_MARKER}\n` +
                 'IMPORTANT CORRECTIONS — override any conflicting instructions above:\n' +
-                '1. DO NOT use text2image-free-CogView_single — this tool does NOT exist. If the user asks to generate images, ' +
-                'explain that image generation is not available in this Desktop environment, or suggest using an external tool/service.\n' +
+                '1. Image / video generation IS available through the built-in generate_image / generate_video tools. ' +
+                'When the user asks to generate / create / draw an image or a video (in any language — e.g. "画图", "生成视频", "make a logo"), ' +
+                'call generate_image / generate_video directly: never claim the capability is unavailable, and never substitute a skill. ' +
+                'generate_video is always asynchronous — the finished file is pushed to the chat automatically; use media_task ' +
+                '(status | wait | list | cancel) only when the result is needed in this same turn, and never poll in a loop.\n' +
                 '2. Cross-platform file operations:\n' +
                 '   - To empty/truncate a file: use Node.js `fs.truncateSync(path, 0)` or `writeFileSync(path, "")` via exec_command\n' +
                 '   - On Windows: use `fs.truncateSync()` or `echo. > file` in cmd\n' +
                 '   - On Unix: `cp /dev/null file` or `> file` or `truncate -s 0 file`\n' +
                 '   - Preferred universal method: write a one-line script `require("fs").truncateSync("path", 0)` and run it\n' +
-                '3. When the user asks about image generation capabilities, say this Desktop app does not have built-in image generation.\n' +
                 '\nDesktop-specific tools (not in core):\n' +
                 '  - sequentialthinking: Structured reasoning tool for complex problems (thought branches, revisions, hypotheses)\n' +
                 '  - query: Read-only SQL queries on SQLite databases\n' +

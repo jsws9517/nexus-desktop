@@ -79,6 +79,18 @@ const MIN_KEPT = 24;
 const MAX_KEPT = 48;
 
 /**
+ * Minimum slots reserved for the *unpinned* tail once the pinned floor alone
+ * exceeds MAX_KEPT. `agent.mcp.getAllTools()` never carries the core's
+ * agent-layer defs, so `service.ts` merges them in from the core's own
+ * selection result; every one of those names is pinned (parity test), which
+ * pushes the floor past MAX_KEPT. Without this floor the old tail budget
+ * (`MAX_KEPT - kept.length`) collapses to zero and silently drops every
+ * keyword-matched non-pinned tool — the data/DB families the routing table
+ * exists to surface.
+ */
+const MAX_TAIL = 12;
+
+/**
  * Always-available floor. Mirrors the core's own `essentialTools` allowlist
  * (nexus-coder/src/agent.ts) plus the desktop's own load-bearing tools, so the
  * selector never fights the core's plan-mode / role-allowlist narrowing.
@@ -252,11 +264,53 @@ export function selectTools<T extends ToolDef>(candidates: T[], opts: ScoreOptio
     // low-scoring essential (e.g. attachments_search on a prompt that never
     // repeats its keywords) get truncated away, which is exactly the case the
     // pin exists to protect.
+    //
+    // The tail budget is floored at MAX_TAIL: the pinned floor now exceeds
+    // MAX_KEPT (the agent-layer merge added ~21 pinned tools), and the old
+    // `MAX_KEPT - kept.length` budget went negative — zeroing the tail and
+    // cutting every matched non-pinned tool from the round.
     const pinned = (d: T) =>
       ESSENTIAL_TOOLS.has(d.name) || opts.used.has(d.name) || opts.force?.has(d.name) === true;
     const kept = out.filter((d) => pinned(d));
     const tail = out.filter((d) => !pinned(d));
-    out = [...kept, ...tail.slice(0, Math.max(0, MAX_KEPT - kept.length))];
+    const budget = Math.max(MAX_TAIL, MAX_KEPT - kept.length);
+    out = [...kept, ...tail.slice(0, budget)];
   }
   return out;
+}
+
+/**
+ * Merge the core's own agent-layer tool definitions into the desktop candidate
+ * pool.
+ *
+ * The core assembles ~21 tools that never appear in `agent.mcp.getAllTools()`
+ * — media generation (`generate_image` / `generate_video` / `media_task`),
+ * `remember` / `recall` / `remember_project`, `bg_job`, the task/spawn family,
+ * image/audio analysis and session history — and adds them statically in its
+ * own `getToolsForContext` (nexus-coder/src/agent.ts). The desktop replaced
+ * that method, so its candidate pool never contained them: every
+ * ESSENTIAL_TOOLS pin for those names (all of them are pinned, and must be per
+ * the parity test) was a silent no-op. The model was never offered
+ * `generate_video` even though the core can dispatch it, `refresh_tools`
+ * intents could not resolve to it, and quota billing never ran.
+ *
+ * Desktop defs win on a name clash — `have` is seeded from the pool, so
+ * INTERNAL_TOOLS shadowing and MCP server-qualified aliases stay authoritative
+ * and a duplicate schema never ships. `hidden` keeps skill progressive
+ * disclosure intact for merged skill tools.
+ */
+export function mergeCoreAgentTools<T extends ToolDef>(
+  pool: T[],
+  coreTools: ReadonlyArray<T>,
+  hidden?: ReadonlySet<string>,
+): T[] {
+  const have = new Set(pool.map((t) => t.name));
+  const merged = [...pool];
+  for (const def of coreTools) {
+    if (have.has(def.name)) continue;
+    if (hidden?.has(def.name)) continue;
+    have.add(def.name);
+    merged.push(def);
+  }
+  return merged;
 }
