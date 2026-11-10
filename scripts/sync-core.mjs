@@ -10,7 +10,13 @@
  * Usage:
  *   node scripts/sync-core.mjs                 one-shot copy (no build)
  *   node scripts/sync-core.mjs --build         build the core first, then copy
+ *   node scripts/sync-core.mjs --force         copy even when the source dist is unchanged
  *   node scripts/sync-core.mjs --watch         copy + watch for changes & resync
+ *
+ * Fast path: the source `dist/` is fingerprinted (relative path + size + mtime
+ * of every file, hashed). The hash is stored in `.nexus-sync-stamp.json` under
+ * the installed core package, so a repeat sync with an untouched `dist/` skips
+ * the rm + copy entirely (`--force` overrides).
  *
  * Env: NEXUS_CODER_SRC overrides the core source root (default: ../nexus-coder).
  *       NEXUS_SKIP_CORE_BUILD=1 skips the --build step (core stays as-is).
@@ -24,6 +30,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, rmSync, cpSync, watch, readdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,24 +44,65 @@ const dstDist = join(dstRoot, 'dist');
 const WATCH_DEBOUNCE_MS = 300;
 const WATCH_FILTER = /\.(?:js|d\.ts|map)$|(?:^|[\\/])package\.json$/;
 
+/** Stamp recording the fingerprint of the src dist that was last copied. */
+const STAMP_FILE = join(dstRoot, '.nexus-sync-stamp.json');
+const STAMP_VERSION = 1;
+
 let watchTimer = null;
 
 function srcOk() {
   return existsSync(join(srcDist, 'src', 'index.js'));
 }
 
-function fileCount(dir) {
-  if (!existsSync(dir)) return 0;
-  let n = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) n += fileCount(full);
-    else n += 1;
-  }
-  return n;
+/**
+ * Order-independent, cheap fingerprint of a dist tree: relative path + size +
+ * mtime for every file, plus directory names (so empty dirs count too).
+ * Rewriting a file always changes this hash; a pure byte-identical rebuild
+ * that keeps mtimes is treated as unchanged too (that is the desired no-op).
+ */
+function fingerprint(dir) {
+  const hash = createHash('sha256');
+  let files = 0;
+  const walk = (current, rel) => {
+    const entries = readdirSync(current, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const full = join(current, entry.name);
+      const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        hash.update(`d ${relPath}\n`);
+        walk(full, relPath);
+      } else if (entry.isFile()) {
+        const st = statSync(full);
+        files += 1;
+        hash.update(`f ${relPath} ${st.size} ${Math.floor(st.mtimeMs)}\n`);
+      }
+    }
+  };
+  walk(dir, '');
+  return { hash: hash.digest('hex'), files };
 }
 
-function syncOnce({ quiet = false } = {}) {
+function readStamp() {
+  try {
+    const stamp = JSON.parse(readFileSync(STAMP_FILE, 'utf8'));
+    if (stamp && stamp.version === STAMP_VERSION && typeof stamp.hash === 'string') return stamp;
+  } catch {
+    /* missing or corrupt stamp -> full sync */
+  }
+  return null;
+}
+
+function writeStamp(fp) {
+  try {
+    const stamp = { version: STAMP_VERSION, hash: fp.hash, files: fp.files, src: srcDist, at: new Date().toISOString() };
+    writeFileSync(STAMP_FILE, `${JSON.stringify(stamp, null, 2)}\n`);
+  } catch (err) {
+    // A read-only node_modules only costs us the fast path, never the sync.
+    console.warn(`[sync-core] could not write ${STAMP_FILE}: ${err.message}`);
+  }
+}
+
+function syncOnce({ quiet = false, force = false } = {}) {
   if (!existsSync(srcRoot)) {
     if (!quiet) console.log(`[sync-core] core source not found at ${srcRoot} — skipping (registry copy stays as-is).`);
     return false;
@@ -70,14 +118,31 @@ function syncOnce({ quiet = false } = {}) {
     return false;
   }
 
+  const fp = fingerprint(srcDist);
+
+  // Fast path: same source dist as last time and the copy still exists.
+  // The version field is still reconciled because it can drift independently
+  // (e.g. a hand-edited package.json).
+  if (!force && existsSync(dstDist)) {
+    const stamp = readStamp();
+    if (stamp && stamp.hash === fp.hash) {
+      syncCoreVersionField();
+      if (!quiet) {
+        console.log(`[sync-core] up to date — ${fp.files} files unchanged (hash ${fp.hash.slice(0, 12)}), skipping copy`);
+      }
+      return false;
+    }
+  }
+
   rmSync(dstDist, { recursive: true, force: true });
   cpSync(srcDist, dstDist, { recursive: true });
 
   syncCoreVersionField();
+  writeStamp(fp);
 
   if (!quiet) {
     const srcMtime = statSync(join(srcDist, 'src', 'index.js')).mtime.toISOString();
-    console.log(`[sync-core] synced ${fileCount(srcDist)} files from ${srcDist} -> ${dstDist} (core src mtime ${srcMtime})`);
+    console.log(`[sync-core] synced ${fp.files} files from ${srcDist} -> ${dstDist} (core src mtime ${srcMtime})`);
   }
   return true;
 }
@@ -126,13 +191,13 @@ function buildCore() {
   return true;
 }
 
-function startWatch() {
+function startWatch({ force = false } = {}) {
   if (!existsSync(srcDist)) {
     console.error(`[sync-core] ${srcDist} missing. Run \`npm run build\` in ${srcRoot} first (or start with --build).`);
     process.exitCode = 1;
     return;
   }
-  syncOnce({ quiet: true });
+  syncOnce({ quiet: true, force });
   console.log(`[sync-core] watching ${srcDist} for changes (Ctrl+C to stop)...`);
 
   let initialScan = true;
@@ -198,6 +263,7 @@ function startWatch() {
 const args = process.argv.slice(2);
 const wantBuild = args.includes('--build');
 const wantWatch = args.includes('--watch');
+const wantForce = args.includes('--force');
 
 if (wantBuild) {
   try {
@@ -212,7 +278,7 @@ if (wantBuild) {
 }
 
 if (wantWatch) {
-  startWatch();
+  startWatch({ force: wantForce });
 } else {
-  syncOnce();
+  syncOnce({ force: wantForce });
 }

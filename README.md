@@ -201,6 +201,10 @@ npm start            # rebuild the sibling nexus-coder core (if present), build 
 > so local core fixes are picked up on every launch. A missing core source is
 > skipped silently (registry copy stays as-is); a failing core build aborts
 > the start. Skip the rebuild with `NEXUS_SKIP_CORE_BUILD=1 npm start`.
+>
+> The copy is fingerprint-hashed (`node_modules/nexus-coder/.nexus-sync-stamp.json`),
+> so an unchanged core `dist/` makes the sync a no-op instead of re-copying
+> ~800 files. Pass `npm run sync:core -- --force` to copy unconditionally.
 
 ## Scripts
 

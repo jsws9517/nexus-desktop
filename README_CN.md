@@ -149,6 +149,11 @@ npm start            # 先重建同级 nexus-coder 核心（若存在），再�
 > `node_modules/nexus-coder`，因此每次启动都能拿到本地最新核心。核心源码目录
 > 不存在时会静默跳过（继续用 registry 版本）；核心构建失败会中止启动。
 > 可用 `NEXUS_SKIP_CORE_BUILD=1 npm start` 跳过核心重建。
+>
+> 同步前会先对核心 `dist/` 做指纹哈希（记录在
+> `node_modules/nexus-coder/.nexus-sync-stamp.json`），源 `dist/` 未变化时直接
+> 跳过拷贝，不再重复复制约 800 个文件；需要强制重拷时用
+> `npm run sync:core -- --force`。
 
 ## 脚本
 
