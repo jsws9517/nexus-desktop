@@ -59,6 +59,7 @@ import type { AgentEvent, PermissionRequest, ProviderInfo, RateLimitStatus } fro
 import { RateLimiter, inferProviderFamily } from './rate-limiter.js';
 import type { SubTask } from './types.js';
 import { extractTopic } from './topic.js';
+import { planFanoutClauses, shouldUseFanout } from './fanout.js';
 import {
   EMPTY_USAGE,
   TurnMonitor,
@@ -1358,76 +1359,6 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
-   * Determine if fan-out execution is appropriate.
-   */
-  private shouldUseFanout(prompt: string): boolean {
-    // Declarative statements (conjunctions without action verbs) must not
-    // enter the fan-out path at all — they belong in a single runTurn.
-    if (this.isDeclarativePrompt(prompt)) return false;
-
-    // Universal: 1+ conjunction → likely a multi-task list
-    const conjunctionRegex = /(?:和|与|以及|，|,|、|＆|&|and|et|y|и|أو)/gi;
-    const conjunctionCount = (prompt.match(conjunctionRegex) || []).length;
-    if (conjunctionCount >= 1) return true;
-
-    // Per-language patterns (synced across all 6 UN languages)
-    const patterns = [
-      // === Chinese (中文) - 中国、新加坡 ===
-      /分析.*和.*(?:和|与|以及)/i,
-      /比较.*(?:与|和).*(?:与|和)/i,
-      /并行/,
-      /同时.*(?:处理|执行|分析|完成)/i,
-      /分别.*(?:处理|执行|分析|完成)/i,
-      /请.*(?:处理|执行|分析).*(?:和|与|以及)/i,
-      
-      // === English - US, UK, Canada, Australia ===
-      /\bparallel\b/i,
-      /\bconcurrent(ly)?\b/i,
-      /\bsimultaneous(ly)?\b/i,
-      /\banalyze.*and.*and/i,
-      /\bcompare.*with.*and/i,
-      /\bprocess.*and.*and/i,
-      /\bdo.*and.*and/i,
-      
-      // === French (Français) - France, Canada, Belgium, Switzerland ===
-      /\bparallèlement\b/i,
-      /\bsimultanément\b/i,
-      /\banalyser.*et.*et/i,
-      /\bcomparer.*et.*et/i,
-      /\btraiter.*et.*et/i,
-      /\bfaire.*et.*et/i,
-      
-      // === Russian (Русский) - Russia, Belarus, Kyrgyzstan ===
-      /\bпараллельно\b/i,
-      /\bодновременно\b/i,
-      /\bанализировать.*и.*и/i,
-      /\bсравнить.*и.*и/i,
-      /\bобработать.*и.*и/i,
-      /\bсделать.*и.*и/i,
-      
-      // === Spanish (Español) - Spain, Mexico, Argentina, Colombia ===
-      /\bparalelamente\b/i,
-      /\bsimultáneamente\b/i,
-      /\banalizar.*y.*y/i,
-      /\bcomparar.*y.*y/i,
-      /\bprocesar.*y.*y/i,
-      /\brealizar.*y.*y/i,
-      
-      // === Arabic (العربية) - Saudi, Egypt, UAE, Iraq ===
-      /\bبالتوازي\b/,
-      /\bفي نفس الوقت\b/,
-      /\bتحليل.*و.*و/,
-      /\bمقارنة.*و.*و/,
-      /\bمعالجة.*و.*و/,
-      
-      // === Task list patterns (universal) ===
-      /(?:任务|task|tâche|tarea|задача|مهمة)\s*[1-9]\s*[,.]?\s*(?:任务|task|tâche|tarea|задача|مهمة)\s*[2-9]/i,
-    ];
-    
-    return patterns.some(p => p.test(prompt));
-  }
-
-  /**
    * Event bridge used as `agent.onEvent`. Feeds the active turn monitor: drops
    * noise thinking deltas, counts real streamed chars, and fires the thinking
    * stall guard. The raw event is then forwarded to the UI unchanged.
@@ -2177,7 +2108,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     }
 
     // Check if fan-out execution should be used
-    if (this.shouldUseFanout(input)) {
+    if (shouldUseFanout(input)) {
       await this.chatFanout(input);
       return;
     }
@@ -2292,9 +2223,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    * Fan-out execution mode.
    *
    * One prompt in, N sub-tasks out. Since the worker process cannot create
-   * WorkerHost instances (Electron-only), we use fallback decomposition and
-   * execute the sub-tasks SEQUENTIALLY in the current worker — this is a
-   * fan-out, not a parallel run. The UI still renders a card per sub-task.
+   * WorkerHost instances (Electron-only), the sub-tasks run SEQUENTIALLY in the
+   * current worker — this is a fan-out, not a parallel run. Entered only when
+   * ./fanout.ts sees an explicit signal (per-line task list or parallel
+   * directive); the UI renders a card per sub-task.
    */
   private async chatFanout(prompt: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
@@ -2302,12 +2234,13 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     
     const sessionId = this.agent.getCurrentSessionId?.() ?? 'unknown';
     
-    // Decompose the prompt into sub-tasks (fallback: split by conjunctions)
+    // Decompose only along explicit task boundaries; an atomic request or
+    // implicit prose collapses to one part and runs as a normal turn below.
     const subTasks = await this.fallbackDecompose(prompt);
 
-    if (subTasks.length <= 1 || this.isDeclarativePrompt(prompt)) {
-      // Declarative statement or single coherent task — skip the fan-out UI,
-      // run a normal single turn so sequentialthinking handles the reasoning.
+    if (subTasks.length <= 1) {
+      // Single coherent task — skip the fan-out UI and run a normal single
+      // turn so the agent (and its own planning tools) handles it directly.
       await this.runTurn(prompt);
       return;
     }
@@ -2557,25 +2490,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
-   * Detect purely declarative prompts — statement-like expressions with
-   * no action verb (no 分析/读取/生成/查找 etc.) that merely describe or
-   * compare concepts. These should not spawn sub-tasks; just run a
-   * normal single-turn reasoning pass via sequentialthinking.
-   */
-  private isDeclarativePrompt(prompt: string): boolean {
-    const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释|解决|修复|实现|开发|写|画|设计';
-    // Has conjunctions but NO action verb anywhere → declarative.
-    // Note: \b does NOT match around CJK characters in JavaScript, so we use
-    // a plain substring check (the verb list is specific enough to avoid false positives).
-    const hasConjunction = /(?:和|与|以及|、|&|and)/i.test(prompt);
-    const hasVerb = new RegExp(actionVerbs, 'i').test(prompt);
-    return hasConjunction && !hasVerb;
-  }
-
-  /**
-   * Fallback decomposition: split prompt by conjunctions and generate meaningful descriptions.
-   * Only splits when the prompt contains multiple independent clause patterns
-   * (e.g. "分析A和生成B"), not when conjunctions connect paired nouns (e.g. "A和B").
+   * Fallback decomposition: cut the prompt along explicit task boundaries.
+   *
+   * The rule (and every guard) lives in ./fanout.ts. `planFanoutClauses`
+   * returns [] whenever the prompt must stay one turn — no explicit signal, an
+   * atomic artifact request, a single instruction, or a flood of fragments.
    */
   private async fallbackDecompose(prompt: string): Promise<Array<{
     id: string;
@@ -2584,43 +2503,15 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }>> {
     // Detect language for bilingual-aware description generation.
     const { detectLanguage } = await import('../shared/lang-detect.js');
-    const lang = detectLanguage(prompt);
-    const isZh = lang === 'zh-CN';
-    // Detect if prompt has multiple independent action clauses.
-    // Note: \b does NOT work around CJK characters in JavaScript, so we use
-    // a plain substring match instead — the verb list is specific enough that
-    // false positives are negligible.
-    const actionVerbs = '分析|对比|比较|读取|生成|处理|查找|查询|提取|创建|编辑|删除|修改|总结|翻译|解释';
-    const hasMultiClause = new RegExp(
-      `(${actionVerbs}).*?(?:和|与|以及|&|and).*?(${actionVerbs})`,
-      'i',
-    ).test(prompt);
+    const isZh = detectLanguage(prompt) === 'zh-CN';
+    const single = [{
+      id: 'task_1',
+      description: isZh ? '完成用户请求' : 'Complete user request',
+      prompt: prompt,
+    }];
 
-    if (!hasMultiClause) {
-      // Single coherent task — do NOT split on noun conjunctions
-      return [{
-        id: 'task_1',
-        description: isZh ? '完成用户请求' : 'Complete user request',
-        prompt: prompt,
-      }];
-    }
-
-    // Split on clause boundaries: sentence terminators or inter-clause
-    // conjunctions. Note: we intentionally do NOT split on `.` — file paths
-    // like `README.md` would be fragmented otherwise. Conjunctions are the
-    // reliable delimiter for multi-task prompts.
-    const parts = prompt
-      .split(/(?:[。；；]|(?:和|与|以及|&|and))/gi)
-      .map(p => p.trim())
-      .filter(p => p.length > 8);
-
-    if (parts.length <= 1) {
-      return [{
-        id: 'task_1',
-        description: isZh ? '完成用户请求' : 'Complete user request',
-        prompt: prompt,
-      }];
-    }
+    const parts = planFanoutClauses(prompt);
+    if (parts.length === 0) return single;
 
     return Promise.all(parts.map(async (part, index) => ({
       id: `task_${index + 1}`,
