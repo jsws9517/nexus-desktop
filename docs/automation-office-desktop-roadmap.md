@@ -50,19 +50,24 @@
 > 3. 不动系统：让我给 `office.detect` 加 `preferEngine: 'office'` —— 直接起 `WINWORD.EXE`，
 >    再用 UIA 驱动（绕开 COM ProgID）。这条要多写一条引擎路径，工作量约半天。
 - [x] 连开 50 次 Word 后无残留 `WINWORD.EXE` / `wps.exe` 进程
-      （实测：`gate: no orphan Office process after 50 open/close cycles` 通过，368–479 s，
-      一次 `tasklist /NH /FO CSV` 全量快照 + JS 过滤，断言"结束后没有新增 PID"；
-      旧的 `/FI` 叠加写法是空跑，已修）
+      （实测：`gate: no orphan Office process after 50 open/close cycles` 通过，218 s；
+      夹具是真 RTF，50 轮 `office.open` → `office.close`（每 5 轮强制重建宿主），
+      PID 快照走一次 PowerShell 里的 `Process::GetProcessesByName()`（`tasklist` 在满负载机器上
+      连 60 s 都跑不完，只留作后备），断言"结束后没有新增 PID"；
+      旧的 `/FI` 叠加写法是空跑，且原来的 `office.detect` 每轮起 3 个 COM 服务器要 368 s）
 - [x] 中文文件名、中文单元格内容、路径带空格/中文，全部无乱码
-      （实测：`gate: CJK file names open without mojibake` 通过，5.1–9.8 s；
+      （实测：`gate: CJK file names open without mojibake` 通过，4.7–9.8 s；
       夹具是真 RTF → `Documents.Open` → `SaveAs2` 存成中文名+空格 docx，
       断言路径字节级回传一致、产物 >1000 字节且以 ZIP `PK` 开头）
 - [ ] `AutomationSecurity = 3` 生效：带宏的 docx 打开时宏不执行（测试夹具）
 - [ ] 弹窗被 `DisplayAlerts=0` 吞掉：故意制造"文件已存在"场景，宿主不挂死
 - [x] 冷启动 ≤1.2s（实测当前 ~803ms，留 50% 余量）
 - [x] UIA 裁剪：顶层 7 个窗口枚举 ≤2s；`Excel.Application` 全树（depth=2, limit=200）≤3s
-- [x] UIA 句柄 LRU：200 条 ref 后最旧的被驱逐，`stale_ref` 错误码返回正确
-      （`gate: UIA ref LRU evicts stale refs and returns stale_ref`）
+      （`gate: UIA full-tree walk stays bounded` 实测 0.5–3.6 s）
+- [x] UIA 句柄 LRU：超过 500 条的 cap 后最旧的被驱逐，`stale_ref` 错误码返回正确
+      （`gate: UIA ref LRU evicts stale refs and returns stale_ref`，8.0 s；
+      用 depth=2/limit=200 的遍历填到 >500 条 ref，先用只读的 `uia.tree {ref}`
+      证明已驱逐，再断言 `uia.invoke → stale_ref` 且元素仍活着）
 - [x] 无宿主运行时 `Get-Process powershell` 中无我们 spawn 的实例
       （spike 的 idle 门禁按 PID 精确判断 + `50 cold starts` 门禁按镜像名统计，均通过）
 
