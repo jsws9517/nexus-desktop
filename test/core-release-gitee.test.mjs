@@ -40,6 +40,24 @@ async function fetchText(url, { timeoutMs = 15_000 } = {}) {
   }
 }
 
+/**
+ * Fetch a (possibly large) binary asset with a hard deadline.
+ *
+ * The tarball download used to call `fetch()` with no timeout at all: on a
+ * slow or blocked Gitee connection the promise never settled, and because
+ * `node --test` runs with `--test-timeout=0` the whole `npm run test:unit`
+ * hung indefinitely. Always pass a deadline here.
+ */
+async function fetchBinary(url, { timeoutMs = 90_000 } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The newest non-prerelease release on Gitee, or `null` when unreachable. */
 async function latestGiteeTag() {
   // Gitee has no GitHub-style `/releases/latest` JSON alias, so ask the API.
@@ -76,15 +94,19 @@ async function giteeAssetUrls(tag, names) {
 const DIST = path.resolve('dist');
 const { verifyManifestSignature } = await import(pathToFileURL(path.join(DIST, 'core-overlay', 'download.js')).href);
 
+/** Opt-in network test: `npm run test:unit` must stay offline-safe and deterministic. */
 function isProbablyOffline() {
-  // Heuristic: the test is run in CI with no outbound network, or by a user
-  // behind a GFW with no proxy. Either way, skip rather than fail.
-  return false;
+  // This test talks to gitee.com. Even with per-request deadlines the global
+  // undici keep-alive pool can hold the child process open after the test body
+  // finishes, so `node --test` (--test-timeout=0, process isolation) waits
+  // forever on a slow link. Per the file header this check is opt-in: only run
+  // it when NEXUS_GITEE_E2E=1, otherwise skip with a clear reason.
+  return process.env.NEXUS_GITEE_E2E !== '1';
 }
 
 test('Gitee-published release keeps the core overlay feed signed and reachable', {
-  skip: isProbablyOffline() ? 'no Gitee network access (offline run)' : false,
-}, async () => {
+  skip: isProbablyOffline() ? 'opt-in network test (set NEXUS_GITEE_E2E=1 to run)' : false,
+}, async (t) => {
   let tag = process.env.NEXUS_GITEE_TAG || null;
   if (!tag) {
     try {
@@ -144,7 +166,16 @@ test('Gitee-published release keeps the core overlay feed signed and reachable',
       return;
     }
     if (name === tarName) {
-      const res2 = await fetch(tarballUrl);
+      let res2;
+      try {
+        res2 = await fetchBinary(tarballUrl);
+      } catch (err) {
+        // Gitee was too slow / unreachable: remember it so the test can skip
+        // instead of failing on a network condition it does not control.
+        tarballError = String(err?.message ?? err);
+        res.writeHead(504).end('upstream timeout');
+        return;
+      }
       const buf = Buffer.from(await res2.arrayBuffer());
       res.writeHead(res2.status, { 'content-type': 'application/octet-stream' }).end(buf);
       return;
@@ -152,6 +183,7 @@ test('Gitee-published release keeps the core overlay feed signed and reachable',
     res.writeHead(404).end('not found');
   });
   let serverPort = 0;
+  let tarballError = '';
   await new Promise((r) => server.listen(0, '127.0.0.1', () => {
     serverPort = server.address().port;
     r();
@@ -163,6 +195,13 @@ test('Gitee-published release keeps the core overlay feed signed and reachable',
   const checked = await mgr.check(localRoot);
   assert.equal(checked.available, true, 'Gitee mirror should offer the published core');
   const dl = await mgr.download(localRoot);
+  if (dl.status !== 'downloaded' && tarballError) {
+    try { server.closeAllConnections?.(); } catch {}
+    server.close();
+    try { fs.rmSync(localRoot, { recursive: true, force: true }); } catch {}
+    t.skip(`Gitee tarball fetch failed: ${tarballError}`);
+    return;
+  }
   assert.equal(dl.status, 'downloaded', dl.error ?? '');
   const act = await mgr.activate(localRoot);
   assert.equal(act.status, 'idle', act.error ?? '');
