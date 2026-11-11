@@ -314,6 +314,82 @@
 .sidechat-input { flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; }
 .sidechat-send { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--accent); color: #fff; font-size: 12px; cursor: pointer; }
 
+/* ---- Automations page (T6 desktop automation control plane) ---- */
+.automation-page { padding: 10px; }
+.automation-root { display: flex; flex-direction: column; gap: 10px; }
+.automation-header { display: flex; flex-direction: column; gap: 2px; }
+.automation-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.automation-list { display: flex; flex-direction: column; gap: 8px; }
+.automation-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+}
+.automation-empty.hidden { display: none; }
+.automation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.automation-card.disabled { opacity: 0.6; }
+.automation-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.automation-schedule {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.automation-prompt {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+.automation-run-status {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.automation-run-status.status-running { color: var(--accent); }
+.automation-run-status.status-succeeded { color: var(--ok, #7fb069); }
+.automation-run-status.status-failed,
+.automation-run-status.status-timeout { color: var(--danger, #e5484d); }
+.automation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.automation-action-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.automation-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.automation-action-remove:hover {
+  border-color: var(--danger, #e5484d);
+  color: var(--danger, #e5484d);
+}
+
 
 /* Warm low-blue theme (eye comfort). Activates when the app sets
    <html data-theme="warm">. */

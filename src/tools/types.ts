@@ -26,6 +26,8 @@ export type ToolGroup =
   | 'task'
   | 'agents'
   | 'acp'
+  | 'vault'
+  | 'automation'
   | 'meta';
 
 /** MCP-style behavioural hints. Only `sequentialthinking` declared these so far. */

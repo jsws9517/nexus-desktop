@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 
 /** Must match `package.json` → `nexusDesktopProtocol` (test-enforced). */
-export const DESKTOP_PROTOCOL_FALLBACK = 1;
+export const DESKTOP_PROTOCOL_FALLBACK = 2;
 
 /** The protocol the running desktop speaks. Env override is for tests. */
 export function desktopProtocol(): number {

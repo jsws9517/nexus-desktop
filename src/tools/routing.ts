@@ -225,6 +225,45 @@ const AGENT_LAYER_ROUTING: Record<string, ToolRouting> = {
   last_session: { group: 'meta', readOnly: true, keywords: ['上次会话', '之前的会话', '上次对话', 'previous session'] },
   search_sessions: { group: 'meta', readOnly: true, keywords: ['搜索会话', '历史会话', '查找会话', 'session search'] },
   set_project_location: { group: 'meta', keywords: ['项目位置', '项目目录', 'project location', '仓库路径'] },
+
+  // T6 scheduled automations (core builtin-tools family, main-process store)
+  automation_create: {
+    group: 'automation',
+    keywords: [
+      'automation', 'automations', '定时', '定时任务', '周期任务',
+      '计划任务', 'scheduled', 'cron', 'interval',
+      '每周', '每天', '每小时', '自动运行', '定时运行', '自动执行',
+    ],
+  },
+  automation_list: {
+    group: 'automation',
+    readOnly: true,
+    keywords: ['automation', '定时任务', '周期任务', '计划任务', 'scheduled', '列出自动化', '自动化列表', 'automation list'],
+  },
+  automation_update: {
+    group: 'automation',
+    keywords: ['automation', '定时任务', '周期任务', '计划任务', 'scheduled', '修改自动化', '更新自动化', 'automation update'],
+  },
+  automation_delete: {
+    group: 'automation',
+    keywords: ['automation', '删除自动化', '移除自动化', 'automation delete', '定时任务', '计划任务'],
+  },
+  automation_run_now: {
+    group: 'automation',
+    keywords: ['automation', '立即运行', '马上跑', '手动触发', 'run now', '立即执行', '定时任务', '计划任务'],
+  },
+  automation_runs: {
+    group: 'automation',
+    readOnly: true,
+    keywords: ['automation', '运行历史', '执行记录', '自动化日志', 'automation runs', '定时任务', '计划任务'],
+  },
+
+  // vault index docs (read-only search into indexed vault content)
+  vault_index_docs: {
+    group: 'vault',
+    readOnly: true,
+    keywords: ['vault', 'index', '索引', '文档索引', 'vault_index_docs'],
+  },
 };
 
 /** Every annotation, merged. Later maps do not override earlier ones. */

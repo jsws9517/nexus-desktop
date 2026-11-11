@@ -21,9 +21,16 @@ import type { ResourceMonitor, ResourceState } from '../main/resource-monitor.js
 import { Updater } from '../main/updater.js';
 import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { getRepoGitStatus, type RepoStatusResult } from '../main/git-internal.js';
+import {
+  automationDelete,
+  automationList,
+  automationRunNow,
+  automationRuns,
+  automationUpsert,
+} from '../main/automation-runner.js';
 import { globalRulesPath, ensureGlobalRules, resetGlobalRules } from '../tools/agents.js';
 import { recentLogLines } from '../shared/logger.js';
-import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateWorkerParams } from '../shared/ipc-validation.js';
+import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateWorkerParams } from '../shared/ipc-validation.js';
 import { CHANNELS } from './channels.js';
 import type { DesktopStateAccess } from '../main/desktop-state.js';
 
@@ -1025,4 +1032,65 @@ export function registerIpc(ctx: IpcContext): void {
   ipcMain.handle(CHANNELS.coreBgKill, callForSession('coreBgKill'));
   ipcMain.handle(CHANNELS.coreBgTail, callForSession('coreBgTail'));
   ipcMain.handle(CHANNELS.coreBgRemove, callForSession('coreBgRemove'));
+
+  // ── T6 automation control plane (main-process-owned; no worker round-trip).
+  // Field validation via the single-source spec map; negative tests target
+  // validateAutomationParams directly.
+  const autoValidate = (method: string, params?: Record<string, unknown>): void => {
+    const err = validateAutomationParams(method, params);
+    if (err) throw new Error(`invalid request: ${err}`);
+  };
+  ipcMain.handle(CHANNELS.automationList, async (): Promise<{ ok: boolean; automations?: unknown[]; error?: string }> => {
+    autoValidate('automationList');
+    const automations = await automationList();
+    return { ok: true, automations };
+  });
+  ipcMain.handle(CHANNELS.automationUpsert, async (
+    _e,
+    params?: Record<string, unknown>,
+  ): Promise<{ ok: boolean; id?: string; error?: string }> => {
+    autoValidate('automationUpsert', params);
+    return automationUpsert(
+      (params ?? {}) as {
+        id?: string;
+        name?: string;
+        enabled?: boolean;
+        schedule?: unknown;
+        prompt?: string;
+        cwd?: string;
+        profile?: string;
+        provider?: string;
+        model?: string;
+        missPolicy?: string;
+      },
+    );
+  });
+  ipcMain.handle(CHANNELS.automationDelete, async (
+    _e,
+    params?: Record<string, unknown>,
+  ): Promise<{ ok: boolean; error?: string }> => {
+    autoValidate('automationDelete', params);
+    const id = typeof params?.id === 'string' ? params.id : '';
+    return automationDelete(id);
+  });
+  ipcMain.handle(CHANNELS.automationRunNow, async (
+    _e,
+    params?: Record<string, unknown>,
+  ): Promise<{ ok: boolean; runId?: string; reason?: string; error?: string }> => {
+    autoValidate('automationRunNow', params);
+    const id = typeof params?.id === 'string' ? params.id : '';
+    return automationRunNow(id);
+  });
+  ipcMain.handle(CHANNELS.automationRuns, async (
+    _e,
+    params?: Record<string, unknown>,
+  ): Promise<{ ok: boolean; runs?: unknown[]; error?: string }> => {
+    autoValidate('automationRuns', params);
+    const result = await automationRuns(
+      params && Object.keys(params).length > 0
+        ? (params as { id?: string; limit?: number })
+        : undefined,
+    );
+    return result;
+  });
 }

@@ -13,6 +13,7 @@ import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration, SubAgentRunKind } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
 import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
+import { AutomationPage, mountAutomationPage } from './sidebar/pages/automations.js';
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
@@ -212,6 +213,9 @@ type AgentEvent =
   // source of truth, not this event.
   | { type: 'subagent_task_progress'; taskId: string; status: string; description?: string; error?: string }
   | { type: 'session_changed'; sessionId: string }
+  // T6 automation control plane: tray-notification click → jump to the run's
+  // session (emitted from the main process, not from the worker).
+  | { type: 'open_session_request'; sessionId: string }
   | { type: 'language_changed' }
   // Core bg_ shell-job lifecycle (worker-local JobManager).
   | { type: 'bg_job_event'; kind: 'completed' | 'status' | 'stalled' | 'progress'; job: CoreBgJobView; idleMs?: number; elapsedMs?: number; logDeltaBytes?: number; buffered?: boolean };
@@ -385,6 +389,23 @@ declare global {
       onRateLimitUpdate(cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }) => void): void;
       blacklistRead(): Promise<Record<string, Record<string, string>>>;
       blacklistWrite(data: Record<string, Record<string, string>>): Promise<void>;
+      // T6 automation control plane (main-process owned).
+      automationList(): Promise<{ ok: boolean; automations?: unknown[]; error?: string }>;
+      automationUpsert(params: {
+        id?: string;
+        name?: string;
+        enabled?: boolean;
+        schedule?: unknown;
+        prompt?: string;
+        cwd?: string;
+        profile?: string;
+        provider?: string;
+        model?: string;
+        missPolicy?: string;
+      }): Promise<{ ok: boolean; id?: string; error?: string }>;
+      automationDelete(id: string): Promise<{ ok: boolean; error?: string }>;
+      automationRunNow(id: string): Promise<{ ok: boolean; runId?: string; reason?: string; error?: string }>;
+      automationRuns(params?: { id?: string; limit?: number }): Promise<{ ok: boolean; runs?: unknown[]; error?: string }>;
       // Core overlay updates (phase 2).
       getCoreUpdateState(): Promise<Record<string, unknown>>;
       checkCoreUpdate(): Promise<Record<string, unknown>>;
@@ -1906,6 +1927,12 @@ function handleEvent(event: AgentEvent): void {
       trackBgJobForStatusLine(event);
       if (event.kind === 'stalled') {
         toastBgJobTerminal(event.job?.label || event.job?.id || 'bg', event.job?.status || 'running', undefined, 'stalled');
+      }
+      break;
+    case 'open_session_request':
+      // T6 tray-notification click → jump to the automation's run session.
+      if (event.sessionId) {
+        void openTab(String(event.sessionId));
       }
       break;
     case 'text':
@@ -7328,6 +7355,13 @@ window.nexusDesktop.onTabsChanged((open) => {
       titleKey: SideChatPage.titleKey,
       icon: SideChatPage.icon,
       mount: mountSideChatPage,
+    });
+    sidebarRegistry.register({
+      id: AutomationPage.id,
+      title: AutomationPage.title,
+      titleKey: AutomationPage.titleKey,
+      icon: AutomationPage.icon,
+      mount: mountAutomationPage,
     });
     renderSidebarTabs();
     // Right-panel file browser: mounted once for the app lifetime; it handles

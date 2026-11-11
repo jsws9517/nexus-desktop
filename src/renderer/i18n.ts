@@ -463,6 +463,25 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   sideChatFailed: { 'zh-CN': '❌ 请求失败，请重试', en: '❌ request failed, try again' },
   sideChatEmptyReply: { 'zh-CN': '（空回复）', en: '(empty reply)' },
 
+  // T6 automation control plane — sidebar Automations page.
+  sidebarAutomations: { 'zh-CN': '自动化', en: 'Automations' },
+  automationsPanel: { 'zh-CN': '⏰ 自动化面板', en: '⏰ Automations' },
+  automationsEmpty: {
+    'zh-CN': '暂无自动化任务 —— 使用 /automation create 或在会话中创建，任务会显示在这里。',
+    en: 'No automations yet — use /automation create or create one in a session.',
+  },
+  automationsRunNow: { 'zh-CN': '立即运行', en: 'Run now' },
+  automationsEnable: { 'zh-CN': '启用', en: 'Enable' },
+  automationsDisable: { 'zh-CN': '禁用', en: 'Disable' },
+  automationsDelete: { 'zh-CN': '删除', en: 'Delete' },
+  automationsDeleteConfirm: {
+    'zh-CN': '确定删除自动化「{name}」？',
+    en: 'Delete automation "{name}"?',
+  },
+  automationsBusy: { 'zh-CN': '自动化正在运行中', en: 'Automation is busy' },
+  automationsFailed: { 'zh-CN': '自动化运行失败', en: 'Automation run failed' },
+  automationsCompleted: { 'zh-CN': '自动化运行完成', en: 'Automation run completed' },
+
   // P2 WorkBuddy artifact previews.
   artifactExportCsv: { 'zh-CN': '导出 CSV', en: 'Export CSV' },
   artifactExportPng: { 'zh-CN': '导出 PNG', en: 'Export PNG' },

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, nativeImage, nativeTheme, Tray } from 'electron';
+import { app, BrowserWindow, Menu, nativeImage, nativeTheme, Notification, Tray } from 'electron';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
@@ -15,6 +15,12 @@ import { ResourceMonitor } from './resource-monitor.js';
 import { SessionWorkers } from './session-workers.js';
 import { RateLimitRegistry } from './rate-limit-registry.js';
 import { mcpHub } from './mcp-hub.js';
+import {
+  startAutomationRunner,
+  stopAutomationRunner,
+  onAutomationRunCompleted,
+  hasEnabledAutomations,
+} from './automation-runner.js';
 import { createDesktopState } from './desktop-state.js';
 import type { AgentEvent } from '../agent-service.js';
 import { logger } from '../shared/logger.js';
@@ -50,12 +56,16 @@ function logf(msg: string): void {
 
 // Single-instance lock: regenerate() truncates the session DB directly, so two
 // windows on the same data dir must never run concurrently (context + DB would
-// desync). A second launch focuses the existing window instead.
+// desync). A second launch focuses the existing window instead. It MUST NOT
+// start the automation runner — only the primary instance owns it, so the
+// lock also guarantees automations are not double-triggered.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    // Focus the window; do NOT call startAutomationRunner() here — the primary
+    // instance already owns the runner (single-process invariant).
     showMainWindow();
   });
 }
@@ -751,6 +761,45 @@ if (gotLock) {
     createTray();
     startWorker();
     wireSessionWorkers();
+    // T6 automation control plane: start the in-process runner (tick timer
+    // unref'd → zero-resident invariant). Tray notification + click-to-jump.
+    void startAutomationRunner().then((host) => {
+      if (!host) return;
+      onAutomationRunCompleted((run, aut) => {
+        // Fire a system notification; clicking it opens the run's session.
+        if (!run.sessionId) return;
+        try {
+          const n = new Notification({
+            title: `Automation: ${aut.name}`,
+            body:
+              run.status === 'succeeded'
+                ? run.summary ?? 'completed'
+                : `${run.status}: ${run.error ?? ''}`.trim(),
+          });
+          n.on('click', () => {
+            showMainWindow();
+            send(
+              CHANNELS.event,
+              { type: 'open_session_request', sessionId: run.sessionId } as AgentEvent,
+            );
+          });
+          n.show();
+        } catch (err) {
+          logger.warn(`automation notification failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      });
+      // Tray contract: when an enabled automation exists, default close-to-tray
+      // is ON so the app survives a window-close while runs are scheduled.
+      void hasEnabledAutomations().then((has) => {
+        if (has && !desktopState.getMinimizeToTray()) {
+          desktopState.setMinimizeToTray(true);
+          send(CHANNELS.log, {
+            level: 'info',
+            message: 'close-to-tray enabled automatically: active automations detected',
+          });
+        }
+      });
+    });
     // Kick the shared MCP hub (single owner of all MCP server processes).
     void mcpHub.ensureConnected().catch(() => {});
     desktopState.applyResourceConfig(resourceMon);
@@ -863,6 +912,13 @@ app.on('before-quit', () => {
   resourceMon.stop();
   desktopState.setLastOpenTabs(sessionWorkers.tabs().map((t) => t.sessionId));
   sessionWorkers.closeAll();
+  // T6: interrupt any in-flight automation run (mark it 'interrupted', kill its
+  // headless worker) and stop the tick loop + close the store before exit.
+  // stopAutomationRunner() subsumes interruptRunningRuns() but also releases the
+  // DB handle, so a relaunch within the same process gets a fresh connection.
+  void stopAutomationRunner().then((_) => {
+    logger.info('automation runner stopped on quit');
+  });
   try {
     if (worker) restartSupervisor.markStopped(worker);
     worker?.stop();

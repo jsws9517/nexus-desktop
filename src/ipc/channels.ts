@@ -73,6 +73,13 @@ export const CHANNELS = {
   coreBgKill: 'nexus:coreBgKill',
   coreBgTail: 'nexus:coreBgTail',
   coreBgRemove: 'nexus:coreBgRemove',
+  // T6 automation control plane (runner-side; main-process owned, no worker
+  // round-trip — the store lives in automation.db next to the session store).
+  automationList: 'nexus:automationList',
+  automationUpsert: 'nexus:automationUpsert',
+  automationDelete: 'nexus:automationDelete',
+  automationRunNow: 'nexus:automationRunNow',
+  automationRuns: 'nexus:automationRuns',
   shutdown: 'nexus:shutdown',
 
   // renderer → main: desktop-only (desktop.json state) channels.

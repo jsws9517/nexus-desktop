@@ -35,6 +35,41 @@ export const PERMISSION_ANSWERS = ['y', 'a', 'n'] as const;
 export const MAX_CHAT_INPUT = 65536;
 const MAX_SIDE_CHAT_MESSAGES = 50;
 
+/**
+ * T6 automation control-plane specs. Main-process-owned channels (no worker
+ * round-trip — the store lives in the main process, see
+ * src/main/automation-runner.ts). Kept OUT of WORKER_METHODS on purpose:
+ * that map derives the `WorkerMethod` union, which agent-worker.ts's dispatch
+ * table must fully cover. These are validated with `validateAutomationParams`
+ * in the main-process handlers, and the negative-test surface uses the same
+ * spec map.
+ */
+const AUTOMATION_METHODS: Record<string, MethodSpec> = {
+  automationList: { fields: {} },
+  automationUpsert: {
+    fields: {
+      // Omit `id` to create; provide it to update the matching row.
+      id: S.str(64),
+      name: S.str(200),
+      enabled: S.bool(),
+      schedule: S.obj(),
+      prompt: S.str(65536),
+      cwd: S.str(4096),
+      profile: S.en(['default', 'office']),
+      provider: S.str(200),
+      model: S.str(500),
+      missPolicy: S.en(['skip', 'catchup']),
+    },
+    optional: ['id', 'enabled', 'cwd', 'profile', 'provider', 'model', 'missPolicy'],
+  },
+  automationDelete: { fields: { id: S.str(64) } },
+  automationRunNow: { fields: { id: S.str(64) } },
+  automationRuns: {
+    fields: { id: S.str(64), limit: S.num() },
+    optional: ['id', 'limit'],
+  },
+};
+
 export const WORKER_METHODS = {
   earlyInit: { fields: { cwd: S.str() }, optional: ['cwd'] },
   init: { fields: { cwd: S.str(), deferMcp: S.bool() }, optional: ['cwd', 'deferMcp'] },
@@ -170,6 +205,27 @@ function checkField(value: unknown, spec: FieldSpec, path: string): string | nul
 export function validateWorkerParams(method: string, params?: Record<string, unknown>): string | null {
   const spec = (WORKER_METHODS as Record<string, MethodSpec>)[method];
   if (!spec) return `unknown method: ${method}`;
+  return validateParamsAgainst(spec, params);
+}
+
+/**
+ * Validate a T6 automation control-plane request's params (main-process-owned
+ * channels; see `AUTOMATION_METHODS` above). Same error-shape contract as
+ * `validateWorkerParams` so the handlers and negative tests share one pattern.
+ */
+export function validateAutomationParams(
+  method: string,
+  params?: Record<string, unknown>,
+): string | null {
+  const spec = AUTOMATION_METHODS[method];
+  if (!spec) return `unknown automation method: ${method}`;
+  return validateParamsAgainst(spec, params);
+}
+
+function validateParamsAgainst(
+  spec: MethodSpec,
+  params?: Record<string, unknown>,
+): string | null {
   if (!params) return null;
   for (const [key, fieldSpec] of Object.entries(spec.fields)) {
     const value = params[key];

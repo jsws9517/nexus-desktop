@@ -143,6 +143,30 @@ const api = {
   coreBgRemove: (jobId: string, sessionId?: string) =>
     ipcRenderer.invoke('nexus:coreBgRemove', { jobId, sessionId }) as Promise<{ ok: boolean; text?: string; error?: string }>,
 
+  // T6 automation control plane (main-process owned; store lives in the
+  // automation DB, no worker round-trip).
+  automationList: () =>
+    ipcRenderer.invoke('nexus:automationList') as Promise<{ ok: boolean; automations?: unknown[]; error?: string }>,
+  automationUpsert: (params: {
+    id?: string;
+    name?: string;
+    enabled?: boolean;
+    schedule?: unknown;
+    prompt?: string;
+    cwd?: string;
+    profile?: string;
+    provider?: string;
+    model?: string;
+    missPolicy?: string;
+  }) =>
+    ipcRenderer.invoke('nexus:automationUpsert', params) as Promise<{ ok: boolean; id?: string; error?: string }>,
+  automationDelete: (id: string) =>
+    ipcRenderer.invoke('nexus:automationDelete', { id }) as Promise<{ ok: boolean; error?: string }>,
+  automationRunNow: (id: string) =>
+    ipcRenderer.invoke('nexus:automationRunNow', { id }) as Promise<{ ok: boolean; runId?: string; reason?: string; error?: string }>,
+  automationRuns: (params?: { id?: string; limit?: number }) =>
+    ipcRenderer.invoke('nexus:automationRuns', params ?? {}) as Promise<{ ok: boolean; runs?: unknown[]; error?: string }>,
+
   // Resource / session governance (desktop.json + live watchdog).
   getMaxTabs: () => ipcRenderer.invoke('nexus:getMaxTabs'),
   setMaxTabs: (n: number) => ipcRenderer.invoke('nexus:setMaxTabs', n),
