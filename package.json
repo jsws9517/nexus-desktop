@@ -81,7 +81,8 @@
     "asar": true,
     "asarUnpack": [
       "**/*.node",
-      "node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/nexus-coder/dist/src/desktop/*.ps1"
     ],
     "npmRebuild": false,
     "compression": "maximum",
