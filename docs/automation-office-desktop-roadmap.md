@@ -26,20 +26,20 @@
 **产物**：`nexus-coder/src/desktop/`（暂不注册工具，只验证宿主）
 
 **交付**
-- [ ] `office-host.ps1` / `desktop-host.ps1` 骨架：JSON-lines stdin/stdout 协议
-- [ ] UTF-8 硬化：`[Console]::OutputEncoding/InputEncoding = [Text.Encoding]::UTF8`，core 侧走 `decodeCommandOutput`
-- [ ] STA + 僵尸回收：spawn 前记录 PID 集合，超时杀宿主 + 差集杀 Office 进程
-- [ ] Office 探测：MS Office / WPS 各一套 ProgID 探测（`Word.Application` / `KWps.Application` 等）
+- [x] `office-host.ps1` / `desktop-host.ps1` 骨架：JSON-lines stdin/stdout 协议
+- [x] UTF-8 硬化：`[Console]::OutputEncoding/InputEncoding = [Text.Encoding]::UTF8`，core 侧走 `decodeCommandOutput`
+- [x] STA + 僵尸回收：spawn 前记录 PID 集合，超时杀宿主 + 差集杀 Office 进程
+- [x] Office 探测：MS Office / WPS 各一套 ProgID 探测（`Word.Application` / `KWps.Application` 等）
 
 **验收（门禁，不过就砍 P4/P6 整个 COM 路线）**
-- [ ] 连开 50 次 Word 后无残留 `WINWORD.EXE` / `wps.exe` 进程
-- [ ] 中文文件名、中文单元格内容、路径带空格/中文，全部无乱码
-- [ ] `AutomationSecurity = 3` 生效：带宏的 docx 打开时宏不执行（测试夹具）
-- [ ] 弹窗被 `DisplayAlerts=0` 吞掉：故意制造"文件已存在"场景，宿主不挂死
-- [ ] 冷启动 ≤1.2s（实测当前 ~803ms，留 50% 余量）
-- [ ] UIA 裁剪：顶层 7 个窗口枚举 ≤2s；`Excel.Application` 全树（depth=2, limit=200）≤3s
-- [ ] UIA 句柄 LRU：200 条 ref 后最旧的被驱逐，`stale_ref` 错误码返回正确
-- [ ] 无宿主运行时 `Get-Process powershell` 中无我们 spawn 的实例
+- [x] 连开 50 次 Word 后无残留 `WINWORD.EXE` / `wps.exe` 进程
+- [x] 中文文件名、中文单元格内容、路径带空格/中文，全部无乱码
+- [x] `AutomationSecurity = 3` 生效：带宏的 docx 打开时宏不执行（测试夹具）
+- [x] 弹窗被 `DisplayAlerts=0` 吞掉：故意制造"文件已存在"场景，宿主不挂死
+- [x] 冷启动 ≤1.2s（实测当前 ~803ms，留 50% 余量）
+- [x] UIA 裁剪：顶层 7 个窗口枚举 ≤2s；`Excel.Application` 全树（depth=2, limit=200）≤3s
+- [x] UIA 句柄 LRU：200 条 ref 后最旧的被驱逐，`stale_ref` 错误码返回正确
+- [x] 无宿主运行时 `Get-Process powershell` 中无我们 spawn 的实例
 
 ---
 
@@ -48,19 +48,19 @@
 **产物**：`nexus-coder/src/vault/` 内新增表 + `walkDocuments`
 
 **交付**
-- [ ] `vault_documents` / `vault_doc_chunks` / `vault_docs_fts` 三张新表（schema 纯追加）
-- [ ] `walkDocuments(root, ignores, exts)`，按 ext 分派到 doc-extract
-- [ ] 分块：`chunkChars=1000`，页边界优先；CJK 走 `splitCjkForFts`
-- [ ] 护栏：`maxFileMb=50` / `maxFiles=5000` / `error` 留痕不重试
-- [ ] 配置块 `knowledge.docs.*`，默认 `enabled:false`
+- [x] `vault_documents` / `vault_doc_chunks` / `vault_docs_fts` 三张新表（schema 纯追加）
+- [x] `walkDocuments(root, ignores, exts)`，按 ext 分派到 doc-extract
+- [x] 分块：`chunkChars=1000`，页边界优先；CJK 走 `splitCjkForFts`
+- [x] 护栏：`maxFileMb=50` / `maxFiles=5000` / `error` 留痕不重试
+- [x] 配置块 `knowledge.docs.*`，默认 `enabled:false`
 
 **验收**
-- [ ] `vault_notes` / `vault_fts` 行数与内容不变
-- [ ] 中文关键词能命中 PDF 里的内容，返回正确 `page`
-- [ ] 坏文件（0 字节 / 损坏 pdf / 密码保护 docx）连续检索 10 次，抽取调用 = 1
-- [ ] 5000 文档库里 `vault_search` P95 < 300ms
-- [ ] Obsidian 打开同一 vault 不出现幽灵条目
-- [ ] 增量：改一个 pdf → 只重抽该文件；mtime 不变 → 零调用
+- [x] `vault_notes` / `vault_fts` 行数与内容不变
+- [x] 中文关键词能命中 PDF 里的内容，返回正确 `page`
+- [x] 坏文件（0 字节 / 损坏 pdf / 密码保护 docx）连续检索 10 次，抽取调用 = 1
+- [x] 5000 文档库里 `vault_search` P95 < 300ms
+- [x] Obsidian 打开同一 vault 不出现幽灵条目
+- [x] 增量：改一个 pdf → 只重抽该文件；mtime 不变 → 零调用
 
 ---
 
@@ -104,24 +104,24 @@
 **产物**：`nexus-coder/src/automation/`
 
 **交付**
-- [ ] `store.ts`：`~/.nexus/native/data/automation.db`
+- [x] `store.ts`：`~/.nexus/native/data/automation.db`
   - `automations(id, name, enabled, schedule, prompt, cwd, profile, provider, model, created_at, updated_at)`
   - `runs(id, automation_id, session_id, status, started_at, ended_at, summary, error, cost)`
   - status 词表：`pending/running/succeeded/failed/timeout/killed/interrupted/missed`
-- [ ] `triggers/cron.ts`：5 段 cron + 时区 + 错过策略（`skip` | `catchup`，默认 skip + 写 `missed`）
-- [ ] `triggers/interval.ts`
-- [ ] `runner.ts`：`serve(agentFactory)` 库形态，宿主注入
-- [ ] `profile.ts`：自动化专用工具白名单（默认禁 `exec`、禁 cwd 外写、禁 `acp_router`）
-- [ ] `tools.ts`：`automation_create/list/update/delete/run_now/runs`
-- [ ] 通知复用 `jobs/notify-delivery`
+- [x] `triggers/cron.ts`：5 段 cron + 时区 + 错过策略（`skip` | `catchup`，默认 skip + 写 `missed`）
+- [x] `triggers/interval.ts`
+- [x] `runner.ts`：`serve(agentFactory)` 库形态，宿主注入
+- [x] `profile.ts`：自动化专用工具白名单（默认禁 `exec`、禁 cwd 外写、禁 `acp_router`）
+- [x] `tools.ts`：`automation_create/list/update/delete/run_now/runs`
+- [x] 通知复用 `jobs/notify-delivery`
 
 **验收**
-- [ ] CLI：`nexus automation create "每周一 9:00 生成周报"` 落到 `automation.db`
-- [ ] 应用关闭期间错过的 → 写 `missed`，不补跑；唤醒后 <10min 宽限窗内补跑一次
-- [ ] `profile` 生效：automation run 里调 `exec_command` 被拒并记 `security/block-log`
-- [ ] 通知：飞书 / Telegram 各发通一条
-- [ ] 并发：两个 `automation_run_now` 同时触发 → 串行化，第二个等第一个结束或报 busy
-- [ ] 成本上限：单次 run 超 token 预算 → 状态 `timeout`，run 记录带 `cost`
+- [x] CLI：`nexus automation create "每周一 9:00 生成周报"` 落到 `automation.db`
+- [x] 应用关闭期间错过的 → 写 `missed`，不补跑；唤醒后 <10min 宽限窗内补跑一次
+- [x] `profile` 生效：automation run 里调 `exec_command` 被拒并记 `security/block-log`
+- [x] 通知：飞书 / Telegram 各发通一条
+- [x] 并发：两个 `automation_run_now` 同时触发 → 串行化，第二个等第一个结束或报 busy
+- [x] 成本上限：单次 run 超 token 预算 → 状态 `timeout`，run 记录带 `cost`
 
 ---
 
@@ -130,18 +130,18 @@
 **产物**：`nexus-desktop/src/main/automation-*.ts` + 侧边页
 
 **交付**
-- [ ] `automation-runner.ts` + `automation-worker.ts`（headless，不进 tab 表、不占 `getMaxTabs`）
-- [ ] IPC：`automationList/Upsert/Delete/RunNow/Runs`（`channels.ts` + `ipc-validation.ts` + `preload.cts` 三处同源）
-- [ ] 侧边页 `src/renderer/sidebar/pages/automations.ts`（第四个 section）
-- [ ] tray 通知 + 点击跳转会话
-- [ ] 退出守卫：`before-quit` 检测到 running run → 中止 + 标 `interrupted` + 杀宿主
-- [ ] 托盘契约：存在启用自动化时，关窗默认进托盘 + 首次提示
+- [x] `automation-runner.ts` + `automation-worker.ts`（headless，不进 tab 表、不占 `getMaxTabs`）
+- [x] IPC：`automationList/Upsert/Delete/RunNow/Runs`（`channels.ts` + `ipc-validation.ts` + `preload.cts` 三处同源）
+- [x] 侧边页 `src/renderer/sidebar/pages/automations.ts`（第四个 section）
+- [x] tray 通知 + 点击跳转会话
+- [x] 退出守卫：`before-quit` 检测到 running run → 中止 + 标 `interrupted` + 杀宿主
+- [x] 托盘契约：存在启用自动化时，关窗默认进托盘 + 首次提示
 
 **验收**
 - [ ] UI 建一条 cron → 关窗进托盘 → 仍跑 → 通知点开会话
-- [ ] 退出时 running run 状态 = `interrupted`，不是 `failed`
+- [x] 退出时 running run 状态 = `interrupted`，不是 `failed`
 - [ ] 双实例防护：`requestSingleInstanceLock` 已有，补测试确认第二实例不触发
-- [ ] 5 个 IPC 全部通过 `ipc-validation` 的字段校验（负向测试）
+- [x] 5 个 IPC 全部通过 `ipc-validation` 的字段校验（负向测试）
 
 ---
 

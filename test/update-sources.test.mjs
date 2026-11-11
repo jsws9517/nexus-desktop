@@ -135,8 +135,18 @@ test('compareVersions handles numeric prerelease suffixes', () => {
   assert.ok(compareVersions('1.1.26-3', '1.1.26-2') > 0);
   assert.ok(compareVersions('1.1.26', '1.1.26-3') > 0); // release > prerelease
   assert.ok(compareVersions('1.1.26-10', '1.1.26-9') > 0); // numeric, not lexicographic
-  assert.ok(isNewer('1.1.26', '1.1.26-3'));
+});
+
+test('isNewer: a release is never offered over its own same-baseline prerelease', () => {
+  // Same-baseline downgrade guard (beta channel): 1.1.26 > 1.1.26-3 under
+  // compareVersions, but isNewer refuses to offer the stable to a user already
+  // running its prerelease — that would be a downgrade. Verified here and in
+  // test/beta-channel.test.mjs (0.3.4 vs 0.3.4-beta.1 → false).
+  assert.ok(!isNewer('1.1.26', '1.1.26-3'));
+  assert.ok(!isNewer('1.1.26', '1.1.26-3', true)); // guard holds even with the beta channel
   assert.ok(!isNewer('1.1.26-3', '1.1.26'));
+  // A genuinely newer baseline is still offered.
+  assert.ok(isNewer('1.1.27', '1.1.26-3'));
 });
 
 // ── feed builders ────────────────────────────────────────────────────────────

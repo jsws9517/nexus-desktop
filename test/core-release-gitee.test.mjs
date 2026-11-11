@@ -168,5 +168,15 @@ test('Gitee-published release keeps the core overlay feed signed and reachable',
   assert.equal(act.status, 'idle', act.error ?? '');
   const state = JSON.parse(fs.readFileSync(path.join(localRoot, 'state.json'), 'utf8'));
   assert.equal(state.activeCore, checked.latest.version);
+
+  // ── Cleanup: release every live handle so the test process can exit ─────
+  // `server.closeAllConnections()` + `close()` drains the undici keep-alive
+  // sockets the local mirror held for its fetch-based downloads. The global
+  // undici fetch pool may ALSO be alive from the Gitee API / manifest calls
+  // above; `client.shutdown()` (undici internal) is not public, but
+  // `server.closeAllConnections` handles the local side which is what the
+  // `node --test` harness actually waits on.
+  try { server.closeAllConnections?.(); } catch {}
   server.close();
+  try { fs.rmSync(localRoot, { recursive: true, force: true }); } catch {}
 });
