@@ -17,7 +17,8 @@
  */
 
 import { readFile, stat } from 'node:fs/promises';
-import { isAbsolute, normalize, resolve as resolvePath } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { isAbsolute, normalize, resolve as resolvePath, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
 import type { ToolDef, ToolResult, ToolContext } from '../tools/types.js';
@@ -341,6 +342,25 @@ const SHEET_ANALYZE_SCHEMA = {
   },
 } as const;
 
+const SHEET_WRITE_SCHEMA = {
+  type: 'object',
+  properties: {
+    path: { type: 'string', description: 'Output .xlsx file path (absolute or cwd-relative)' },
+    data: {
+      type: 'object',
+      description: 'Inline table data: { columns: string[], rows: unknown[][] }',
+      properties: {
+        columns: { type: 'array', items: { type: 'string' } },
+        rows: { type: 'array', items: { type: 'array' } },
+      },
+      required: ['columns', 'rows'],
+    },
+    sheet: { type: 'string', description: 'Worksheet name (default: "Sheet1")' },
+    overwrite: { type: 'boolean', description: 'Overwrite the file if it exists (default false; error if exists)' },
+  },
+  required: ['path', 'data'],
+} as const;
+
 export const SHEET_TOOL_DEFS: ToolDef[] = [
   {
     name: 'sheet.read',
@@ -359,6 +379,16 @@ export const SHEET_TOOL_DEFS: ToolDef[] = [
       'non-empty count, unique count, numeric min/max/sum/avg and top values. Deterministic. ' +
       'Use this for any sum/mean/min/max/count over tabular data instead of computing it yourself.',
     inputSchema: SHEET_ANALYZE_SCHEMA,
+    server: 'sheet-internal',
+  },
+  {
+    name: 'sheet.write',
+    description:
+      'Write an inline table (columns + rows) to a new .xlsx file using exceljs. ' +
+      'The output path must be authorized by the permissions system. ' +
+      'Returns a sheet artifact with the written file path so the user can preview or open it. ' +
+      'Use this to export analysis results or create spreadsheet files.',
+    inputSchema: SHEET_WRITE_SCHEMA,
     server: 'sheet-internal',
   },
 ];
@@ -398,6 +428,54 @@ export async function callSheetTool(name: string, args: unknown, _ctx?: ToolCont
       });
     } catch (e) {
       return failed('sheet.analyze', 'sheet.analyze', e instanceof Error ? e.message : String(e));
+    }
+  }
+  if (name === 'sheet.write') {
+    const raw = typeof a.path === 'string' ? a.path.trim() : '';
+    if (!raw) return failed('sheet.write', 'sheet.write', 'Provide an output `path` for the .xlsx file.');
+    const data = a.data as { columns?: unknown; rows?: unknown } | undefined;
+    if (!data || !Array.isArray(data.columns) || !Array.isArray(data.rows)) {
+      return failed('sheet.write', 'sheet.write', 'Provide `data.columns` (string[]) and `data.rows` (unknown[][]).');
+    }
+    try {
+      const columns = data.columns.map((c) => String(c));
+      const rows = (data.rows as unknown[][]).slice(0, MAX_ROWS).map((r) => r.map(coerceCell));
+      const overwrite = a.overwrite === true;
+      const p = await guardPath(raw);
+      if (!p) return failed('sheet.write', 'sheet.write', `Access denied by permissions system: ${raw}`);
+      if (existsSync(p) && !overwrite) {
+        return failed('sheet.write', 'sheet.write', `File already exists: ${raw} (use overwrite=true to replace)`);
+      }
+      const ExcelJS = await loadExcelJS();
+      const wb = new ExcelJS.Workbook();
+      const sheetName = typeof a.sheet === 'string' && a.sheet.trim() ? a.sheet.trim() : 'Sheet1';
+      const ws = wb.addWorksheet(sheetName);
+      ws.columns = columns.map((c, ci) => ({ header: c, key: `col${ci}` }));
+      for (const r of rows) {
+        ws.addRow(r);
+      }
+      // Ensure the output directory exists
+      mkdirSync(dirname(p), { recursive: true });
+      await wb.xlsx.writeFile(p);
+      return artifactToResult({
+        id: `sheet-${randomUUID().slice(0, 8)}`,
+        type: 'sheet',
+        title: 'Sheet written',
+        version: 1,
+        status: 'done',
+        meta: { sessionId: '', skill: 'sheet.write', origin: 'main' },
+        body: {
+          columns,
+          rows: rows.slice(0, SAMPLE_ROWS),
+          rowCount: rows.length,
+          colCount: columns.length,
+          outputPath: p,
+          sheetName,
+        },
+        refs: [{ kind: 'file', path: p }],
+      });
+    } catch (e) {
+      return failed('sheet.write', 'sheet.write', e instanceof Error ? e.message : String(e));
     }
   }
   return failed('sheet.read', 'sheet', `Unknown sheet skill "${name}"`);

@@ -18,6 +18,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate tag name
+        shell: bash
+        run: |
+          # GitHub's `tags:` filter only supports globs, so it cannot reject
+          # legacy auto-increment tags such as v1.1.5-3. Fail fast instead of
+          # publishing a release under a malformed version.
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "::error::Invalid tag ${GITHUB_REF_NAME}: expected vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N"
+            exit 1
+          fi
+
       - name: Verify core signing key
         shell: bash
         env:

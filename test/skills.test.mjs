@@ -55,6 +55,7 @@ after(() => {
 test('sheet tools are registered', () => {
   assert.ok(SHEET_TOOLS.has('sheet.read'));
   assert.ok(SHEET_TOOLS.has('sheet.analyze'));
+  assert.ok(SHEET_TOOLS.has('sheet.write'));
   assert.ok(CHART_TOOLS.has('bi.chart'));
 });
 
@@ -167,4 +168,70 @@ test('bi.chart validates the final spec with vega-lite compile', async () => {
   assert.ok(!res.isError, res.content);
   const art = parseArtifactContent(res.content);
   assert.equal(art?.body.spec?.marks?.[0]?.type, 'line');
+});
+
+// ── T7 sheet.write ────────────────────────────────────────────────────────────
+
+test('T7: sheet.write writes an .xlsx file to an authorized path', async () => {
+  const outPath = join(workDir, 't7-written.xlsx');
+  const res = await callSheetTool(
+    'sheet.write',
+    {
+      path: outPath,
+      data: {
+        columns: ['name', 'score'],
+        rows: [['alice', 90], ['bob', 80]],
+      },
+      sheet: 'T7Sheet',
+    },
+    ctx,
+  );
+  assert.ok(!res.isError, res.content);
+  const art = parseArtifactContent(res.content);
+  assert.equal(art?.type, 'sheet');
+  assert.equal(art?.body.outputPath, outPath);
+  assert.equal(art?.body.sheetName, 'T7Sheet');
+  assert.equal(art?.body.rowCount, 2);
+  // Verify the file actually exists
+  const { existsSync } = await import('node:fs');
+  assert.ok(existsSync(outPath), 'xlsx file must exist on disk');
+  // Clean up
+  const { rmSync } = await import('node:fs');
+  rmSync(outPath, { force: true });
+});
+
+test('T7: sheet.write rejects without data', async () => {
+  const res = await callSheetTool('sheet.write', { path: join(workDir, 'x.xlsx') }, ctx);
+  assert.ok(res.isError, 'must fail when data is missing');
+});
+
+test('T7: sheet.write refuses to overwrite an existing file without overwrite=true', async () => {
+  const outPath = join(workDir, 'no-overwrite.xlsx');
+  const { writeFileSync: wf } = await import('node:fs');
+  wf(outPath, 'existing', 'utf-8');
+  const res = await callSheetTool(
+    'sheet.write',
+    {
+      path: outPath,
+      data: { columns: ['a'], rows: [[1]] },
+    },
+    ctx,
+  );
+  assert.ok(res.isError, 'must fail when file exists and overwrite is not set');
+  assert.ok(String(res.content).includes('already exists'), res.content);
+  const { rmSync } = await import('node:fs');
+  rmSync(outPath, { force: true });
+});
+
+test('T7: office-write tools return needs_package when package is not installed', async () => {
+  const { callOfficeWriteTool } = await import(
+    pathToFileURL(join(dist, 'skills', 'office-write.js'))
+  );
+  for (const tool of ['docx.write', 'pptx.write', 'pdf.write']) {
+    const res = await callOfficeWriteTool(tool, { path: join(workDir, 'out') });
+    assert.ok(res.isError, `${tool} must error when package is missing`);
+    const parsed = JSON.parse(res.content);
+    assert.equal(parsed.code, 'needs_package', `${tool}: expected needs_package code`);
+    assert.equal(parsed.install, 'office-write');
+  }
 });

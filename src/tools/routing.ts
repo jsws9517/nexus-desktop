@@ -171,7 +171,13 @@ const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   // data artifacts
   'sheet.read': { group: 'data', readOnly: true, keywords: ['excel', 'xlsx', 'csv', '表格', '电子表格', 'sheet', 'spreadsheet', '数据表'] },
   'sheet.analyze': { group: 'data', readOnly: true, keywords: ['excel', 'xlsx', 'csv', '表格', '分析', '统计', 'analyze', '统计表格'] },
+  'sheet.write': { group: 'data', keywords: ['写excel', '写表格', '生成excel', '导出excel', '生成表格', '导出表格', '保存为excel', 'xlsx', '写sheet'] },
   'bi.chart': { group: 'data', readOnly: true, keywords: ['chart', '图表', '画图', '可视化', 'visualization', 'plot', '柱状图', '饼图'] },
+
+  // T7 office write family
+  'docx.write': { group: 'data', keywords: ['写word', '生成word', '写文档', '导出文档', 'word文档', 'docx', '写报告', '生成报告', 'office.write'] },
+  'pptx.write': { group: 'data', keywords: ['写ppt', '生成ppt', '写演示文稿', '导出ppt', 'powerpoint', 'pptx', '幻灯片', '生成幻灯片', 'office.write'] },
+  'pdf.write': { group: 'data', keywords: ['写pdf', '生成pdf', '导出pdf', 'pdf文档', 'pdf写入', 'office.write'] },
 
   // one-time attachment RAG (per-session store, desktop)
   attachments_search: { group: 'fs', readOnly: true, keywords: ['attachment', 'attachments', 'rag', '附件', '附件检索', '文档检索', '检索附件', '搜索附件', '知识库附件'] },
@@ -256,6 +262,42 @@ const AGENT_LAYER_ROUTING: Record<string, ToolRouting> = {
     group: 'automation',
     readOnly: true,
     keywords: ['automation', '运行历史', '执行记录', '自动化日志', 'automation runs', '定时任务', '计划任务'],
+  },
+
+  // T8 desktop perception tools (core builtin-tools, wrap PowerShell host)
+  desktop_windows: {
+    group: 'media',
+    readOnly: true,
+    keywords: ['windows', '窗口', '列表窗口', '桌面窗口', 'window list', 'win.list', '所有窗口', '打开的窗口'],
+  },
+  desktop_uia_find: {
+    group: 'media',
+    readOnly: true,
+    keywords: ['uia', '查找控件', '找按钮', '找菜单', 'ui find', '控件查找', '保存按钮', 'find element', 'ui automation', '界面元素'],
+  },
+  desktop_uia_tree: {
+    group: 'media',
+    readOnly: true,
+    keywords: ['uia tree', '控件树', '界面树', 'walk tree', '层次结构', 'ui tree', 'widget hierarchy', '界面层次'],
+  },
+  desktop_uia_invoke: {
+    group: 'media',
+    keywords: ['uia invoke', '点击控件', '触发菜单', 'invoke', 'ui click', 'select control', 'toggle', 'setValue', '操作控件', '触发按钮'],
+  },
+  desktop_input: {
+    group: 'media',
+    keywords: ['input', '鼠标', '键盘', 'click', '点击', '打字', '输入', '键盘操作', 'mouse', 'send input', '输入文字', '屏幕点击'],
+  },
+  desktop_capture: {
+    group: 'media',
+    readOnly: true,
+    keywords: ['capture', '截图', '截屏', 'screenshot', '抓屏', '屏幕截图', 'window capture', '画面截取', '窗口截图'],
+  },
+
+  // T9 office mail send
+  office_mail_send: {
+    group: 'media',
+    keywords: ['邮件', '发邮件', 'email', 'send mail', 'outlook', 'smtp', '发送邮件', '发邮件', 'office.mail_send', 'mail send', '收件人'],
   },
 
   // vault index docs (read-only search into indexed vault content)

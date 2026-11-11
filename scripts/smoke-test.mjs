@@ -220,7 +220,7 @@ const { parseArtifactContent } = await import(pathToFileURL(join(__dirname, '..'
 const { SHEET_TOOLS, SHEET_TOOL_DEFS, callSheetTool, CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } =
   await import(pathToFileURL(join(__dirname, '..', 'dist', 'tools', 'index.js')));
 await expect(
-  SHEET_TOOLS.size === 2 && SHEET_TOOL_DEFS.every((d) => d.server === 'sheet-internal'),
+  SHEET_TOOLS.size === 3 && SHEET_TOOL_DEFS.every((d) => d.server === 'sheet-internal'),
   'sheet-internal tool set',
 );
 await expect(CHART_TOOLS.has('bi.chart') && CHART_TOOL_DEFS[0].server === 'chart-internal', 'chart-internal tool set');

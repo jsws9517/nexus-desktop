@@ -148,6 +148,15 @@ git push origin main
 git push origin v0.1.1
 ```
 
+Tag naming is enforced by the workflow (`Validate tag name` step) — only these
+two shapes are accepted:
+
+- stable: `vX.Y.Z` (e.g. `v0.3.5`)
+- pre-release: `vX.Y.Z-beta.N` (e.g. `v0.3.5-beta.2`; `alpha`/`rc` also allowed)
+
+Legacy auto-increment names such as `v1.1.5-3` are rejected and must never be
+reintroduced (the old `v1.*` tags were purged from GitHub and Gitee in Nov 2026).
+
 Pushing the `v*` tag triggers the Release workflow: it builds the installer,
 creates the GitHub Release, mirrors the tag to Gitee, and publishes a matching
 Gitee Release on `cict_1_0/nexus-desktop` (body from the same changelog, via

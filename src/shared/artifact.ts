@@ -16,6 +16,7 @@ export const ARTIFACT_TYPES = [
   'chart',
   'ppt',
   'docx',
+  'pdf',
   'markdown',
   'html',
   'image',

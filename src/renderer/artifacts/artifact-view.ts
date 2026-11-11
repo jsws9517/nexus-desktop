@@ -10,12 +10,16 @@ import { parseArtifactContent, type Artifact } from '../../shared/artifact.js';
 import { t } from '../i18n.js';
 import { buildSheetTable, csvFromSheet } from './table-view.js';
 import { mountChart, type ChartMenu } from './chart-view.js';
+import { mountDocxView } from './docx-view.js';
+import { mountPptxView } from './pptx-view.js';
+import { mountPdfView } from './pdf-view.js';
 
 const TYPE_ICON: Record<string, string> = {
   sheet: '📊',
   chart: '📈',
   ppt: '🎞️',
   docx: '📄',
+  pdf: '📄',
   markdown: '📝',
   html: '🌐',
   image: '🖼️',
@@ -89,6 +93,12 @@ function mountBody(container: HTMLElement, artifact: Artifact): ChartMenu | null
   }
   if (artifact.type === 'sheet' || artifact.type === 'csv' || artifact.type === 'dataframe') {
     buildSheetTable(container, artifact);
+  } else if (artifact.type === 'docx') {
+    mountDocxView(container, artifact.body as Record<string, unknown>);
+  } else if (artifact.type === 'ppt') {
+    mountPptxView(container, artifact.body as Record<string, unknown>);
+  } else if (artifact.type === 'pdf') {
+    mountPdfView(container, artifact.body as Record<string, unknown>);
   } else {
     const pre = document.createElement('pre');
     pre.className = 'artifact-json';
