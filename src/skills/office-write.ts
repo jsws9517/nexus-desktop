@@ -5,8 +5,8 @@
  * package is not installed, each tool returns a `needs_package` error code
  * with actionable install instructions instead of silently failing.
  *
- * The native package lives at `~/.nexus/native/office-write/` and is
- * registered in `nexus-coder/src/config/native.ts` CATALOG.
+ * The native package lives at `~/.nexus/native/extractors/office-write/`
+ * (entry `index.mjs`) and is registered in `nexus-coder/src/config/native.ts` CATALOG.
  *
  * Zero new npm dependencies: all office formats go through the native
  * package (which bundles PptxGenJS / docx / pdfkit as its own deps,
