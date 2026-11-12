@@ -1,0 +1,12 @@
+<!--
+  Tray / menu-bar glyph for LIGHT backgrounds.
+
+  Same geometry as tray-dark.svg. Pure black + alpha on purpose: macOS menu-bar
+  icons are template images and the OS uses only the alpha channel, recolouring
+  them per menubar appearance — so this file doubles as that template.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <path d="M 13 54 L 13 10 L 51 54 L 51 10"
+        fill="none" stroke="#000000" stroke-width="8"
+        stroke-linecap="round" stroke-linejoin="bevel"/>
+</svg>

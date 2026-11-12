@@ -32,18 +32,30 @@ electron scripts/render-icon-drafts.cjs
 Renders `../icon.svg` (A) plus the two alternates into `preview/`, then captures
 `preview/compare.png` — 深色 / 浅色 / 中性灰三种底色 × 16→128px 真实缩放。
 
-## Windows tray icon
+## Tray / menu-bar icon
 
-The packaged app ships only `dist/`, so the tray cannot read `build/` at runtime —
-`src/main/index.ts` embeds a 32×32 data URL instead. `npm run icon` writes
-`build/tray-icon.dataurl.txt` containing the exact constant; re-paste that line
-whenever the mark changes.
+The tray is a different surface from the app icon, so it has its own glyphs
+(`tray-dark.svg`, `tray-light.svg`): no squircle tile (at 16px the tile is a
+~13px near-black square that disappears into a dark taskbar) and a 2px-equivalent
+stroke instead of the mark's 1.3px hairline. Same N route, `stroke-linejoin="bevel"`.
+
+`npm run icon` renders both at 256px, emits 16/24/32px PNGs to `build/tray/` for
+inspection, and writes `build/tray-icon.dataurl.txt` with the two constants that
+`src/main/index.ts` embeds (the packaged app ships only `dist/`, so the tray cannot
+read `build/` at runtime). Re-paste that file whenever the glyph changes.
+
+Tinting: Windows/Linux get the variant matching the taskbar (Windows uses
+`shouldUseDarkColorsForSystemIntegratedUI`, since the taskbar follows the *system*
+theme while apps can be set independently); macOS gets `tray-light.svg` as a
+template image, so the OS recolours the alpha channel per menu-bar appearance.
 
 ## Files
 
 - `B-hub.svg`, `C-lettermark.svg` — the two rejected directions, kept for
   reference. Palette and safe area are shared with the chosen design, so they can
   be re-evaluated by swapping `../icon.svg`.
+- `tray-dark.svg`, `tray-light.svg` — tray/menu-bar glyphs (see above); not app
+  icons, do not swap them into `../icon.svg`.
 - `archive/icon-legacy-512.svg` — the old 512px text-based icon.
 - `compare.html` — generator output for the sheet; edit `scripts/render-icon-drafts.cjs`
   to change layout.

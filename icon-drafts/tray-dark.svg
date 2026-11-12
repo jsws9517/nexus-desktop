@@ -1,0 +1,16 @@
+<!--
+  Tray / menu-bar glyph for DARK backgrounds.
+
+  Deliberately not the app icon: at 16px the app tile collapses to a ~13px
+  near-black square that disappears into a Windows dark taskbar, and the 84-unit
+  mark stroke becomes a 1.3px hairline. This file drops the tile, thins nothing,
+  and draws the N at 2px equivalent so it survives the tray slot.
+
+  Canvas is 64 so the 2px target is a round 8 units; rendered at 256 and
+  downscaled by scripts/make-icon.cjs.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <path d="M 13 54 L 13 10 L 51 54 L 51 10"
+        fill="none" stroke="#f2f7ff" stroke-width="8"
+        stroke-linecap="round" stroke-linejoin="bevel"/>
+</svg>

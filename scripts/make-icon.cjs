@@ -36,33 +36,56 @@ const LINUX_SIZES = [16, 24, 32, 48, 64, 128, 256, 512];
 // be a true 1x/2x pair, i.e. 16/32, 32/64, 128/256, 256/512, 512/1024.
 const ICONSET_BASES = [16, 32, 128, 256, 512];
 
+// Tray/menu-bar glyphs live in icon-drafts/: they are a different surface (no
+// tile, 2px-equivalent stroke at 16px, theme-tinted) and must not be confused
+// with the app icon. Rendered at 256 and downscaled so the tray slots get real
+// antialiasing instead of an OS-side resample of a 64px canvas.
+const TRAY_SRC = {
+  dark: path.join(__dirname, '..', 'icon-drafts', 'tray-dark.svg'),
+  light: path.join(__dirname, '..', 'icon-drafts', 'tray-light.svg'),
+};
+const TRAY_RENDER = 256;
+const TRAY_SIZES = [16, 24, 32];
+
+const FIT_CSS =
+  'html,body{margin:0;background:transparent;overflow:hidden}svg{display:block;width:100vw;height:100vh}';
+
+/** Render one SVG document into a square nativeImage of exactly `size`. */
+let shotWin = null;
+async function renderSvg(file, size) {
+  // Reuse one offscreen window: this Electron build fails to load a new
+  // BrowserWindow right after the previous one is destroyed (ERR_FAILED -2).
+  if (!shotWin) {
+    shotWin = new BrowserWindow({
+      width: size,
+      height: size,
+      show: false,
+      frame: false,
+      useContentSize: true,
+      backgroundColor: '#00000000',
+      webPreferences: { offscreen: true, backgroundThrottling: false },
+    });
+  }
+  shotWin.setContentSize(size, size);
+  await shotWin.loadFile(file);
+  // Scale whatever canvas size the SVG declares into the capture window, so the
+  // source can change dimensions without silently cropping the artwork.
+  await shotWin.webContents.insertCSS(FIT_CSS);
+  // Give Chromium time to rasterize filters before capture.
+  await new Promise((r) => setTimeout(r, 400));
+  const img = await shotWin.webContents.capturePage();
+  const captured = img.getSize();
+  if (captured.width !== size || captured.height !== size) {
+    throw new Error(`expected a ${size}x${size} capture, got ${captured.width}x${captured.height}`);
+  }
+  return img;
+}
+
 async function run() {
   await app.whenReady();
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  const win = new BrowserWindow({
-    width: RENDER,
-    height: RENDER,
-    show: false,
-    frame: false,
-    useContentSize: true,
-    backgroundColor: '#00000000',
-    webPreferences: { offscreen: true, backgroundThrottling: false },
-  });
-  await win.loadFile(SRC);
-  // Scale whatever canvas size icon.svg declares into the capture window, so the
-  // source can change dimensions without silently cropping the artwork.
-  await win.webContents.insertCSS(
-    'html,body{margin:0;background:transparent;overflow:hidden}svg{display:block;width:100vw;height:100vh}'
-  );
-  // Give Chromium time to rasterize filters before capture.
-  await new Promise((r) => setTimeout(r, 800));
-
-  const img = await win.webContents.capturePage();
-  const captured = img.getSize();
-  if (captured.width !== RENDER || captured.height !== RENDER) {
-    throw new Error(`expected a ${RENDER}x${RENDER} capture, got ${captured.width}x${captured.height}`);
-  }
+  const img = await renderSvg(SRC, RENDER);
 
   // Windows .ico source buffers (PNG-compressed entries).
   const pngs = [];
@@ -87,16 +110,28 @@ async function run() {
   fs.writeFileSync(path.join(OUT_DIR, 'icon.png'), master);
   console.log('wrote', pngIconDir, sizes.length, 'png files (master', RENDER + 'px capture)');
 
-  // System tray icon. The packaged app ships only dist/ + package.json, so the
-  // tray cannot read build/ at runtime — it embeds a data URL in src/main/index.ts.
-  // Emit that exact line here so keeping it in sync is a copy-paste, not a guess.
-  const trayPng = img.resize({ width: 32, height: 32, quality: 'best' }).toPNG();
-  fs.writeFileSync(path.join(OUT_DIR, 'tray-icon.png'), trayPng);
+  // Tray / menu-bar images. The packaged app ships only dist/ + package.json, so
+  // the tray cannot read build/ at runtime — the PNGs are embedded as data URLs
+  // in src/main/index.ts. Emit the exact constants so syncing is a paste.
+  const trayDir = path.join(OUT_DIR, 'tray');
+  fs.mkdirSync(trayDir, { recursive: true });
+  const trayConstants = [];
+  for (const theme of ['dark', 'light']) {
+    const rendered = await renderSvg(TRAY_SRC[theme], TRAY_RENDER);
+    for (const s of TRAY_SIZES) {
+      const png = rendered.resize({ width: s, height: s, quality: 'best' }).toPNG();
+      fs.writeFileSync(path.join(trayDir, `${theme}-${s}.png`), png);
+    }
+    const png32 = rendered.resize({ width: 32, height: 32, quality: 'best' }).toPNG();
+    trayConstants.push(
+      `const TRAY_ICON_${theme.toUpperCase()}_URL =\n  'data:image/png;base64,${png32.toString('base64')}';`
+    );
+  }
   fs.writeFileSync(
     path.join(OUT_DIR, 'tray-icon.dataurl.txt'),
-    "const TRAY_ICON_DATA_URL =\n  'data:image/png;base64," + trayPng.toString('base64') + "';\n"
+    trayConstants.join('\n\n') + '\n'
   );
-  console.log('wrote', path.join(OUT_DIR, 'tray-icon.dataurl.txt'));
+  console.log('wrote', trayDir, 'and build/tray-icon.dataurl.txt');
 
   // macOS .icns: assemble a .iconset from the 1024px master and run iconutil.
   // iconutil is a macOS built-in; on Windows/Linux this step is skipped and the

@@ -212,13 +212,37 @@ function workerPath(): string {
   return join(__dirname, '..', 'agent-worker.js');
 }
 
-// ---- E3: system tray (embedded 32×32 icon, no file dependency) ----
-// Generated from icon.svg: `npm run icon` writes build/tray-icon.dataurl.txt with
-// the exact constant below. The packaged app ships only dist/, so the tray cannot
-// load build/ at runtime — re-paste that line whenever the mark changes.
+// ---- E3: system tray (embedded 32x32 glyphs, no file dependency) ----
+// The tray is its own surface: the app tile collapses to a ~13px near-black
+// square at 16px, so these are tile-free glyphs drawn for the tray slot
+// (icon-drafts/tray-*.svg) and tinted for the current taskbar theme. `npm run
+// icon` writes both constants below to build/tray-icon.dataurl.txt - re-paste
+// them when the mark changes. The packaged app ships only dist/, so reading
+// build/ at runtime is not an option.
 let tray: Tray | null = null;
-const TRAY_ICON_DATA_URL =
-  'data:image/png;base64,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';
+const TRAY_ICON_DARK_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEU0lEQVR4nLxXTWhcVRT+7nvzP5nRJB1oQairSgXXgogkK1eWohC6sCKoFNyoAXEhYsRuRIi6LIoLq1RGKpKVdZPgQnBdsIhdKAgNTdM08z9v5r3T78y8l3mZzrx5maQ9kLx599x7z3e/e8937rPwCExEzDifFTEOKysS6Y8bnCbjQJgxg2w+PB2IIzDOV+Bc1VG+kStkZ1eDV9tymoNzmC6ouX1bZmptudJx8U+1KVfYlh9m4gEAu7sy13Tk9Xpbfk3auF5z8IO2l8s9VmJZmQzqArJFvJpP4Vy7g2MzGZzbbeO8tpdlMFcihFgHuVYKb2eS+LTLtmYbbiGNs9WWfFnImHeDPpMAlIKtFZzgf5f72OIzY/rvA3+YgU8GjTbRuO0WmpzA1NrozKTxzk5D3tPgIpOZ2NLQfVOwlunHsfz3sH8A4OlBI8MaS/rsWCKw6210SeHqdlVeiQOitP9wm6EnShsjGCjt76h/zJ8+KI+QOl24M1lcvtOQZ30QcVLUjHxfGDRETWI8DyaV6vWxCYA7g2w+iV9u7ciTBOEdhU4kxjm4dEmQaMfBDb4+ZdswPM3dfBbHizmsbW/L8/PzphIIDaa0qBW4uZTuAy4RzftMJ0u3pNFCh+3PpPMo+wwYHMKsCAcXp6cQjxdzZrXWQrmQQVJ9VYLIp/Hi8ge4pFsRJzMODED8lXl8Ks2b/+M1ZsPvAQhNT/5+815TPtRDub4uCUxhkYNMn1zPLyZOtYqXWxb+yKZxilvRrTvoFDO4eLcp/81lzfdxhSpsB0mlZLFotrkVZ7ou7qaSsF0XpunAZWZ8u1WVBQ2ukh0WmkkWm7afeCh18lLR/L1DQcpl8RuzxCIYsSwkKFRXtyrynPrJBI8vYjERO49VqJaW+io4WzAb3II3sinYTE9xOnAJZo4g1ioVmWf3jj9sIhMHFpLgwM3OmMvVBj5ieibJgLBwdVjETrGY/XzzJlJ+2VUpP1oAaouLpqtMPJY3F5mS37BYhdPzheNP4DtfnHrhTQQTU0tpUA9WP8MFpue1sEZwK5YqDVn2DO5pJnkRYnVYLZeVFeO161hqOLieIwhSbpierCL4nBxcYLua/VAAKM0qx1oTKg2cYcHaTCeRYHoq5RYL2WlmiS7/oTEAZUC34sSs+bfewVlS3kz2k9tlIfP0gCLWGdjY+zXcWYb8D1hQD47lzJ+1Js4TgG35dwndEvj3i2CukTeirYV9gWXoOewfBaKnEfMFc5VqucxsSJANFSOeRXSJxPOB4C9E34h63wTSO7y9P3vIPxHEbM58wWL1VS89yUQ6gyydOk9PHT8OLWxPigNaXA+bftCMPknlrbA/DgiVbL1F8zZ9MpXASzwL17oGP8LBWtBnr394sKoXA+VzDr5O2Vh0XKw3dvFWqYT6NLce/ajhd8XJQtrcGAs4YvDYz6kpgPRkeVSptsYN0OBRX7VxTXVC2Rt3T4hi4FCXzbh2HwAA///ENLf2AAAABklEQVQDAPYSFjbZ73VFAAAAAElFTkSuQmCC';
+
+const TRAY_ICON_LIGHT_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAACuUlEQVR4nLyXPawNQRTH/2sf8XxFUHiFUJFXqHVC9RoRIRGFJxJEovGR6KjoJD5KISREiISIioqIRq0QNDqvIULkiXf3rv8x52Rn1+zu7P1wkl/m3jM7M/85M3N2NsX/saSuYhGara0+dvAcNSLqBki1QR/Dmwy+UstoAZk2mCbLMJjJBFaQ++SjlstRiURIwBpymDwjb8k99aeIN3lWJnCQHCDrtJxVfxoSYM4T5DaZ0f97yFW4qMSKsFlOabtfWk5V6ksCEk9Ij8yrb4GcJKc7iLD1znQMI6vUlwTkXimDTGi9CbpM9kWKSAK/Q75gBBIURyf3fDLwXbINxczaLGn539iJCbEoiE2SJ2QT3BEdOk80dWCzf6eDiRhZivXkKVnl+cciwDbMdXJWnxVRsim3kofqG5sAi8BquA0oAy5Wn4iYUXEShS45IlpAdVMeIq8qIo6Sc3DRmsCIBZjJDCUav8le8kFFWI64AJfxZH90jkSXoySDfiG7yVcULyyZ/S2yA0WOyBFpXY6Rdf4eLiH1UOQLCf8jsgXdUnYnAYnX+UtyBMVsxS8vMTmea+GWBoiIxCCJxDacZMXzcEtjx3MzeUyWoEhiIxcgZhvuIrmJ8snYTu6gnMprIzHQ0VGz98FxsgEuLywo+8kb8k2fTcYhQMxmKQO+hsuQEh05upfgNqxY7aYc9mWSax/f4Y7nHNykzD+tzw18K44xeyt+grs9zas/Q5HE8i4C8pb/dSIkzLLusygno9D9ovFGBIR3b5sQyxGSkM7ALYVFoae//7kd1d0J+x5ptVGEiCvkGoocMekJKk3GPwXmnNNOlmr5udooUsQpuJvTLvKcPIDLlPbMXwvd2eTj4QbZSV6QY+RnBwG+yUfNRrhbVdCawiqfUz8wGrO0nIUq6hrkXjmMycD9JmVoETFW+wMAAP//aGfWUgAAAAZJREFUAwCNeKmL9hxhaAAAAABJRU5ErkJggg==';
+
+/** Tray image for the current taskbar/menu-bar appearance. */
+function trayImage() {
+  if (process.platform === 'darwin') {
+    // macOS menu-bar icons are template images: the OS recolours them from the
+    // alpha channel, so the pure-black glyph is the right source in both modes.
+    const img = nativeImage.createFromDataURL(TRAY_ICON_LIGHT_URL);
+    img.setTemplateImage(true);
+    return img;
+  }
+  // The taskbar colour on Windows follows the *system* theme, which the user can
+  // set independently of the app theme that `shouldUseDarkColors` tracks.
+  const darkTaskbar =
+    process.platform === 'linux'
+      ? nativeTheme.shouldUseDarkColors
+      : nativeTheme.shouldUseDarkColorsForSystemIntegratedUI;
+  return nativeImage.createFromDataURL(darkTaskbar ? TRAY_ICON_DARK_URL : TRAY_ICON_LIGHT_URL);
+}
 
 function showMainWindow(): void {
   if (win && !win.isDestroyed()) {
@@ -233,7 +257,7 @@ function showMainWindow(): void {
 function createTray(): void {
   if (tray) return;
   try {
-    tray = new Tray(nativeImage.createFromDataURL(TRAY_ICON_DATA_URL));
+    tray = new Tray(trayImage());
     tray.setToolTip('Nexus Desktop');
     tray.setContextMenu(
       Menu.buildFromTemplate([
@@ -249,6 +273,11 @@ function createTray(): void {
       ]),
     );
     tray.on('click', () => showMainWindow());
+    // A dark glyph on a light taskbar is invisible, so follow the OS theme. One
+    // listener for the process lifetime: createTray() runs at most once.
+    nativeTheme.on('updated', () => {
+      if (tray && !tray.isDestroyed()) tray.setImage(trayImage());
+    });
   } catch (err) {
     logf(`tray init failed: ${err instanceof Error ? err.message : String(err)}`);
   }
