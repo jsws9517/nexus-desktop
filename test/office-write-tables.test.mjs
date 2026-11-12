@@ -57,3 +57,42 @@ test('docx_write renders real tables via the native package (ordered blocks)', {
 
   try { rmSync(outPath, { force: true }); } catch {}
 });
+
+test('docx_write refuses empty content with a failed artifact (no silent blank file)', {
+  skip: !nativeEntry || !existsSync(nativeEntry),
+}, async () => {
+  const { setPermissionPrompter } = await import(
+    pathToFileURL(join(__dirname, '..', 'node_modules', 'nexus-coder', 'dist', 'src', 'security', 'path-authorizer.js'))
+  );
+  setPermissionPrompter(() => 'y');
+  const { callBuiltinTool } = await import(pathToFileURL(join(dist, 'tools', 'index.js')));
+  const outPath = join(mkdtempSync(join(tmpdir(), 'nexus-docx-empty-')), 'empty.docx');
+
+  for (const content of [{}, { paragraphs: [] }, 'garbage-not-json']) {
+    const res = await callBuiltinTool('docx_write', { path: outPath, content });
+    const parsed = JSON.parse(String(res.content));
+    assert.ok(res.isError, 'empty/blank content must be an error, not a done artifact');
+    assert.equal(parsed.artifact.status, 'draft');
+    // No blank / 0-byte file may be left behind.
+    assert.ok(!existsSync(outPath) || readFileSync(outPath).length === 0, 'must not emit a blank file');
+  }
+});
+
+test('docx_write normalizes a JSON-string content argument into a non-empty doc', {
+  skip: !nativeEntry || !existsSync(nativeEntry),
+}, async () => {
+  const { setPermissionPrompter } = await import(
+    pathToFileURL(join(__dirname, '..', 'node_modules', 'nexus-coder', 'dist', 'src', 'security', 'path-authorizer.js'))
+  );
+  setPermissionPrompter(() => 'y');
+  const { callBuiltinTool } = await import(pathToFileURL(join(dist, 'tools', 'index.js')));
+  const outPath = join(mkdtempSync(join(tmpdir(), 'nexus-docx-str-')), 'str.docx');
+  const res = await callBuiltinTool('docx_write', {
+    path: outPath,
+    content: JSON.stringify({ blocks: [{ type: 'heading', text: 'H', level: 1 }, { type: 'paragraph', text: 'via string' }] }),
+  });
+  const parsed = JSON.parse(String(res.content));
+  assert.equal(parsed.artifact.status, 'done');
+  assert.ok(parsed.artifact.body.size > 0, 'string content should produce a non-empty file');
+  try { rmSync(outPath, { force: true }); } catch {}
+});

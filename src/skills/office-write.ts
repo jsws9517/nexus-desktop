@@ -12,7 +12,7 @@
  * package (which bundles PptxGenJS / docx / pdfkit as its own deps,
  * not the desktop's).
  */
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -278,17 +278,38 @@ export async function callOfficeWriteTool(
   try {
     const mod = await loadOfficeWrite();
     if (name === 'docx.write') {
-      await mod.writeDocx(a.content, output);
-      return officeArtifact('docx', 'Document written', 'docx.write', { path: output, content: a.content }, output);
+      // Bounded retry guards the intermittent 0-byte / empty-output case
+      // (transient Packer or write hiccup). Deterministic content/permission
+      // errors are surfaced immediately without burning retries.
+      const deterministic = /no document content|not valid JSON|Access denied|entry not found|symlink/i;
+      let lastErr: unknown;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await mod.writeDocx(a.content, output);
+          const size = statSync(output).size;
+          if (size === 0) throw new Error('docx.write produced a 0-byte file');
+          return officeArtifact('docx', 'Document written', 'docx.write', { path: output, content: a.content, size }, output);
+        } catch (e) {
+          lastErr = e;
+          const msg = e instanceof Error ? e.message : String(e);
+          if (deterministic.test(msg)) break; // content/permission errors won't fix on retry
+        }
+      }
+      const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      return officeArtifact('docx', 'Office write failed', 'docx.write', { error: `docx.write failed: ${msg}`, path: output });
     }
     if (name === 'pptx.write') {
       const slides = Array.isArray(a.slides) ? a.slides : [];
       await mod.writePptx(slides, output);
-      return officeArtifact('ppt', 'Presentation written', 'pptx.write', { path: output, slideCount: slides.length, slides }, output);
+      const pptSize = statSync(output).size;
+      if (pptSize === 0) throw new Error('pptx.write produced a 0-byte file');
+      return officeArtifact('ppt', 'Presentation written', 'pptx.write', { path: output, slideCount: slides.length, size: pptSize }, output);
     }
     if (name === 'pdf.write') {
       await mod.writePdf(a.content, output);
-      return officeArtifact('pdf', 'PDF written', 'pdf.write', { path: output, content: a.content }, output);
+      const pdfSize = statSync(output).size;
+      if (pdfSize === 0) throw new Error('pdf.write produced a 0-byte file');
+      return officeArtifact('pdf', 'PDF written', 'pdf.write', { path: output, size: pdfSize }, output);
     }
     return officeArtifact('docx', 'Unknown tool', name, { error: `Unknown office-write tool "${name}"` });
   } catch (e) {

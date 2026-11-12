@@ -22,7 +22,9 @@ writeFileSync(
   join(entryDir, 'index.mjs'),
   [
     'export default {',
-    '  writeDocx: async (content, outPath) => { globalThis.__officeDocx = { content, outPath }; },',
+    // Simulate a real successful write (non-empty file) so the handler\'s',
+    '    // post-write size verification passes.',
+    '  writeDocx: async (content, outPath) => { const fs = await import("node:fs"); fs.writeFileSync(outPath, "fake-docx-bytes"); globalThis.__officeDocx = { content, outPath }; },',
     '  writePptx: async () => {},',
     '  writePdf: () => {},',
     '};',
