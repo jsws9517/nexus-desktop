@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,11 +33,22 @@ writeFileSync(
 );
 
 // Force every out-of-sandbox path prompt to deny, so the test is
-// deterministic under `node --test` (the worker cwd stays auto-authorized).
-const { setPermissionPrompter } = await import(
+// deterministic under `node --test`. The write target is explicitly authorized
+// below — never the implicit cwd grant, which would be the repo root here.
+const { setPermissionPrompter, preAuthorizeRoot } = await import(
   pathToFileURL(join(__dirname, '..', 'node_modules', 'nexus-coder', 'dist', 'src', 'security', 'path-authorizer.js'))
 );
 setPermissionPrompter(() => 'n');
+
+// Write the probe inside this test's own temp dir instead of process.cwd(): the
+// authorizer auto-allows cwd, and under `npm run test:unit` that is the repo
+// root, which left an untracked office-native-probe.docx behind. The grant uses
+// the canonical path because grants are prefix-matched against realpath() — on
+// macOS `tmpdir()` lives under /var, a symlink to /private/var.
+const workDir = join(tmp, 'work');
+mkdirSync(workDir, { recursive: true });
+const workDirReal = realpathSync(workDir);
+preAuthorizeRoot(workDirReal);
 
 const { callBuiltinTool } = await import(pathToFileURL(join(dist, 'tools', 'index.js')));
 
@@ -47,7 +58,7 @@ after(() => {
 
 test('docx_write dispatches into the native package via a Windows-safe file URL', async () => {
   delete globalThis.__officeDocx;
-  const outPath = join(process.cwd(), 'office-native-probe.docx');
+  const outPath = join(workDirReal, 'office-native-probe.docx');
   const res = await callBuiltinTool('docx_write', {
     path: outPath,
     content: { title: 't', paragraphs: ['p'] },
