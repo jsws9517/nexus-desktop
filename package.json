@@ -1,6 +1,6 @@
 {
   "name": "nexus-desktop",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "nexusCoreVersion": "1.2.5",
   "nexusDesktopProtocol": 3,
   "description": "Nexus — where every agent finds home.",
