@@ -27,6 +27,7 @@
  */
 
 import type { AgentEvent } from '../../agent/types.js';
+import { classify } from '../../shared/preview.js';
 import { STR } from '../i18n.js';
 
 export interface FileBrowserEntry {
@@ -108,6 +109,9 @@ export interface FileBrowserMountOptions {
 export interface FileBrowserHandle {
   dispose(): void;
   setIdleMs(ms: number): void;
+  /** PR2: gate the idle countdown on the host panel being visible (文件 tab
+   *  active). false pauses any running countdown; true re-arms it. */
+  setIdleArmed(armed: boolean): void;
 }
 
 interface DirNode {
@@ -243,6 +247,9 @@ export function mountFileBrowser(
 ): FileBrowserHandle {
   const bridge: FileBrowserBridge = opts.bridge ?? (window as unknown as { nexusDesktop?: FileBrowserBridge }).nexusDesktop ?? { listDirectory: async () => ({ ok: false, error: 'bridge missing' }), openExternalFile: async () => ({ ok: false, error: 'bridge missing' }), openInEditor: async () => ({ ok: false, error: 'bridge missing' }), getGitStatus: async () => ({ ok: false, isRepo: false, error: 'bridge missing' }) };
   let idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
+  // PR2: the idle countdown only runs while the host 文件 panel is active;
+  // the renderer gates this via handle.setIdleArmed(panelVisible).
+  let idleArmed = true;
   const getLang = () => ctx.getUiLang() || 'zh-CN';
 
   container.className = 'rside-section file-browser';
@@ -366,6 +373,8 @@ export function mountFileBrowser(
 
   function armIdle(): void {
     cancelIdle();
+    // Host panel not visible (PR2 文件 tab gating) → no countdown at all.
+    if (!idleArmed) return;
     // Pointer/focus inside the panel (or an open menu) suspends the countdown.
     if (disposed || collapsed || interacting || contextMenu) return;
     idleTimer = setTimeout(() => {
@@ -499,6 +508,15 @@ export function mountFileBrowser(
           const fileState = gitStateOf(row);
           if (fileState) renderGitBadge(el, fileState, true);
           el.appendChild(size);
+          // PR2: hover 👁 badge marks previewable files — single-click opens
+          // them in the 文件 tab's document strip (html → 浏览器 tab).
+          if (classify(row.path) !== 'unsupported') {
+            const badge = document.createElement('span');
+            badge.className = 'fb-preview-badge';
+            badge.textContent = '👁';
+            badge.title = str('previewOpenLabel', getLang());
+            el.appendChild(badge);
+          }
           el.addEventListener('click', () => {
             void onClickFile(row.path);
           });
@@ -904,6 +922,11 @@ export function mountFileBrowser(
   }) as unknown) as FileBrowserHandle & CallableFunction;
   handle.dispose = disposeFn;
   handle.setIdleMs = (ms: number) => { (handle as CallableFunction)(ms); };
+  handle.setIdleArmed = (armed: boolean) => {
+    idleArmed = armed;
+    if (armed) armIdle(); // re-arm on return to the 文件 tab
+    else cancelIdle();     // pause on panel switch
+  };
   return handle;
 }
 

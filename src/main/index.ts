@@ -31,6 +31,7 @@ import { CHANNELS } from '../ipc/channels.js';
 // Preview protocol must be registered before app.whenReady() so Chromium accepts
 // our custom scheme; ctxObj reads the live `win` ref at request time.
 import { setPreviewCtx, setPreviewCwd, registerPreviewProtocol, installPreviewHandlers, destroyPreviewContext } from '../main/preview-protocol.js';
+import { installWebviewHandlers, destroyAllWebviews } from '../main/webview-manager.js';
 
 // Windows UTF-8 child stdio contract (same as nexus-core's
 // bootstrapProcessEncoding in src/utils/child-env.ts): on Chinese Windows a
@@ -276,6 +277,7 @@ function createWindow(): void {
     logf(`renderer[${event.level}]: ${event.message}`);
   });
   win.on('closed', () => {
+    destroyAllWebviews();
     win = null;
   });
 
@@ -907,6 +909,13 @@ if (gotLock) {
       // Register AFTER app.whenReady() — Electron rejects scheme registration before ready.
       void registerPreviewProtocol();
       installPreviewHandlers();
+      // PR2 browser tab: WebContentsView manager for external URLs in the
+      // 浏览器 panel. Events (progress/title/fallback) push over the
+      // webviewEvent channel; bounds follow the renderer-synced panel rect.
+      installWebviewHandlers({
+        getWin: () => win,
+        pushEvent: (payload) => { send(CHANNELS.webviewEvent, payload); },
+      });
       createWindow();
 
     // Silent startup check for a newer core overlay. Only surfaces availability
@@ -936,6 +945,7 @@ app.on('window-all-closed', () => {
   // Minimize-to-tray: keep the app alive when the last window closes.
   if (desktopState.getMinimizeToTray() && !isQuitting) return;
   destroyPreviewContext();
+  destroyAllWebviews();
   if (process.platform !== 'darwin') app.quit();
 });
 

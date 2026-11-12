@@ -155,6 +155,23 @@ const api = {
       ok: boolean; text?: string; truncated?: boolean; error?: string;
     }>,
 
+  // PR2 browser tab — WebContentsView manager (main-process owned, isolated
+  // session partition; local files bypass this via the nexus-preview iframe).
+  webviewOpen: (url: string, bounds: { x: number; y: number; width: number; height: number }, viewId?: string, hidden?: boolean) =>
+    ipcRenderer.invoke('nexus:webviewOpen', { url, bounds, viewId, hidden }) as Promise<{
+      ok: boolean; viewId?: string; error?: string;
+    }>,
+  webviewBack: (viewId: string) =>
+    ipcRenderer.invoke('nexus:webviewBack', { viewId }) as Promise<{ ok: boolean; error?: string }>,
+  webviewForward: (viewId: string) =>
+    ipcRenderer.invoke('nexus:webviewForward', { viewId }) as Promise<{ ok: boolean; error?: string }>,
+  webviewReload: (viewId: string) =>
+    ipcRenderer.invoke('nexus:webviewReload', { viewId }) as Promise<{ ok: boolean; error?: string }>,
+  webviewClose: (viewId: string) =>
+    ipcRenderer.invoke('nexus:webviewClose', { viewId }) as Promise<{ ok: boolean; error?: string }>,
+  webviewBounds: (bounds: { x: number; y: number; width: number; height: number }, hidden?: boolean) =>
+    ipcRenderer.invoke('nexus:webviewBounds', { bounds, hidden }) as Promise<{ ok: boolean }>,
+
   // T6 automation control plane (main-process owned; store lives in the
   // automation DB, no worker round-trip).
   automationList: () =>
@@ -266,6 +283,19 @@ const api = {
   },
   onUpdateState: (cb: (state: Record<string, unknown>) => void) => {
     ipcRenderer.on('nexus:updateState', (_e, state) => cb(state));
+  },
+  onWebviewEvent: (
+    cb: (ev: {
+      viewId: string;
+      type: 'loading' | 'loaded' | 'navigated' | 'title' | 'fallback';
+      url?: string;
+      title?: string;
+      canGoBack?: boolean;
+      canGoForward?: boolean;
+      error?: string;
+    }) => void,
+  ) => {
+    ipcRenderer.on('nexus:webviewEvent', (_e, ev) => cb(ev));
   },
   blacklistRead: () => ipcRenderer.invoke('nexus:blacklistRead'),
   blacklistWrite: (data: Record<string, Record<string, string>>) => ipcRenderer.invoke('nexus:blacklistWrite', data),

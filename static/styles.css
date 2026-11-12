@@ -1608,9 +1608,13 @@ body {
 }
 .rules-actions { flex-direction: row; align-items: center; gap: 8px; }
 
-/* ---- Right sidebar: session info + task progress ---- */
+/* ---- Right sidebar: PR2 tab system (信息 / 文件 / 浏览器 / 侧边对话) ---- */
 #right-sidebar {
-  width: 274px;
+  /* PR2 E1: width is a variable so the drag handle + responsive rules share
+     one source; the 浏览器/侧边对话 panels need a minimum working width. */
+  --rside-w: 274px;
+  --rside-min-w: 0px;
+  width: max(var(--rside-w), var(--rside-min-w));
   background: var(--bg-sidebar);
   border-left: 1px solid var(--border);
   display: flex;
@@ -1619,12 +1623,34 @@ body {
   overflow: hidden;
   position: relative;
   padding: 12px;
-  gap: 12px;
-  transition: width 0.2s ease;
+  gap: 8px;
+  transition: width 0.2s ease, opacity 0.2s ease;
 }
+/* PR2 E1/E2: .collapsing = the 300ms collapse/expand transition; .dragging =
+   width-drag in flight (transitions off so the panel tracks the pointer). */
+#right-sidebar.collapsing { transition: width 0.3s ease, opacity 0.3s ease; }
+#right-sidebar.dragging { transition: none; }
 #right-sidebar.collapsed { width: 48px; }
+#right-sidebar.collapsed .rside-tabs { display: none; }
+#right-sidebar.collapsed .rside-panels { display: none; }
 #right-sidebar.collapsed .rside-section { display: none; }
 #right-sidebar.collapsed .rside-divider { display: none; }
+/* Width drag handle (PR2 E2): thin strip on the inner edge, 274~720px. */
+.rsidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 30;
+  background: transparent;
+  transition: background 0.15s;
+}
+.rsidebar-resize:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+/* PR2: the 侧边对话 panel needs more room — the host enforces a 380px floor
+   on the variable while that panel is active. */
+#right-sidebar[data-active-panel="sidechat"] { --rside-min-w: 380px; }
 .rsidebar-toggle {
   position: absolute;
   top: 50%;
@@ -1654,6 +1680,241 @@ body {
 .rside-section { display: flex; flex-direction: column; gap: 8px; }
 .rside-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
 .rside-divider { border: 0; border-top: 1px solid var(--border); margin: 2px 0; }
+
+/* PR2: right-sidebar tab strip (信息 / 文件 / 浏览器 / 侧边对话). */
+.rside-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 0 4px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.rside-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 8px;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s, background 0.15s;
+  outline: none;
+}
+.rside-tab:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.rside-tab.active { color: var(--accent); }
+.rside-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -5px;
+  border-bottom: 2px solid var(--accent);
+}
+.rside-panels {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Panels keep their DOM while hidden (state preservation); the incoming
+   panel fades in over 200ms — no remount, no scroll/zoom loss. */
+.rside-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.rside-tab-panel[hidden] { display: none; }
+.rside-tab-panel[data-panel="info"] { gap: 12px; }
+.rside-tab-panel.panel-in { animation: rsidePanelIn 0.2s ease-out; }
+@keyframes rsidePanelIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* PR2 文件 panel: document tab strip + persistent viewer stage/stash. */
+.doc-tab-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  padding: 0 0 4px;
+  scrollbar-width: thin;
+}
+.doc-tab-strip.hidden { display: none; }
+.doc-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 150px;
+  min-width: 72px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.doc-tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-input));
+}
+.doc-tab.loading .doc-tab-name { opacity: 0.6; }
+.doc-tab-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.doc-tab-kind { font-size: 10px; opacity: 0.8; flex-shrink: 0; }
+.doc-tab-close {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 10px;
+  padding: 0 2px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.doc-tab-close:hover { color: var(--text); background: rgba(0, 0, 0, 0.2); }
+.doc-tab-stage {
+  flex: 1 1 0;
+  min-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.doc-tab-stage.hidden { display: none; flex: 0 0 auto; }
+/* Inactive viewers park here — off-screen but alive, so zoom / scroll /
+   playback position survive tab switches. */
+.doc-tab-stash { display: none; }
+
+/* PR2 浏览器 panel (local iframe + main-side WebContentsView over the stage). */
+.browser-tab-root {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.browser-tab-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+}
+.browser-tab-strip.hidden { display: none; }
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+  min-width: 64px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.browser-tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-input));
+}
+.browser-tab-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.browser-tab-kind { font-size: 10px; flex-shrink: 0; }
+.browser-tab-close {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 10px;
+  padding: 0 2px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.browser-tab-close:hover { color: var(--text); background: rgba(0, 0, 0, 0.2); }
+.browser-toolbar { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.browser-toolbar-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+.browser-toolbar-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.browser-toolbar-btn:disabled { opacity: 0.35; cursor: default; }
+.browser-address {
+  flex: 1;
+  min-width: 60px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  outline: none;
+}
+.browser-address:focus { border-color: var(--accent); }
+.browser-progress {
+  position: relative;
+  height: 2px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.browser-progress.hidden { display: none; }
+.browser-progress:not(.hidden)::after {
+  content: '';
+  position: absolute;
+  left: -40%;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: var(--accent);
+  animation: browserProgressSlide 1s linear infinite;
+}
+@keyframes browserProgressSlide { from { left: -40%; } to { left: 100%; } }
+.browser-tab-stage {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.browser-tab-stash { display: none; }
+.browser-local-frame { display: block; width: 100%; height: 100%; border: none; background: #fff; }
+.browser-external-holder { position: absolute; inset: 0; }
+
+/* PR2 侧边对话 panel: give the transcript room (the left-sidebar sizing had
+   a 300px cap that is too small for a full panel). */
+.sidechat-panel { flex: 1; min-height: 0; }
+.sidechat-panel .sidechat-history { max-height: none; }
+
+/* PR2: hover 👁 badge on previewable file rows (hidden until row hover). */
+.fb-preview-badge { display: none; font-size: 10px; opacity: 0.7; margin-left: 6px; flex-shrink: 0; }
+.filebrowser-row:hover .fb-preview-badge { display: inline-block; }
 
 /* Live memory/CPU readout (right sidebar + settings). Labels stay dim-neutral
    with the values tinted by channel; status shifts to warn/danger under load. */
@@ -3181,7 +3442,12 @@ textarea:focus-visible,
 
 /* ---- responsive ---- */
 @media (max-width: 1440px) {
-  #sidebar, #right-sidebar { width: 250px; }
+  #sidebar { width: 250px; }
+  /* PR2 E1: the right sidebar's width is driven by the --rside-w variable
+     (drag handle + localStorage); on narrower screens the responsive cap is
+     the variable value itself — the JS resize handler keeps any inline value
+     in sync with these caps. */
+  #right-sidebar { --rside-w: 250px; }
 }
 
 @media (max-width: 1320px) {
@@ -3197,7 +3463,7 @@ textarea:focus-visible,
     right: 0;
     top: 0;
     bottom: 0;
-    width: 300px;
+    --rside-w: 300px;
     z-index: 45;
     background: var(--bg-sidebar);
     box-shadow: -20px 0 44px -26px rgba(0, 0, 0, 0.5);
@@ -3243,15 +3509,10 @@ textarea:focus-visible,
 }
 
 /* P0 Preview Panel */
-#preview-section { display: flex; flex-direction: column; gap: 6px; }
-#preview-section.hidden { display: none; }
-.preview-panel-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
-.preview-toolbar { display: flex; align-items: center; gap: 3px; padding: 4px 2px; }
-.preview-toolbar.hidden { display: none; }
-.preview-name { flex: 1; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.preview-meta-badge { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+/* PR2: the legacy #preview-section accordion / .preview-host / .preview-toolbar
+   were retired with the right-sidebar tab rework. The fullscreen overlay kept
+   its `.preview-toolbar-btn` button class for the overlay bar. */
 .preview-toolbar-btn { width: 22px; height: 22px; padding: 0; display: flex; align-items: center; justify-content: center; }
-.preview-host { min-height: 80px; max-height: 320px; overflow: hidden; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; }
 .preview-viewer { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
 .preview-image-viewer img { max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.1s ease; cursor: zoom-in; }
 .preview-media-viewer video, .preview-media-viewer audio { width: 100%; max-width: 100%; }
@@ -3280,16 +3541,20 @@ textarea:focus-visible,
 .preview-markdown th { background: var(--bg-input); font-weight: 600; }
 .preview-markdown img { max-width: 100%; border-radius: 4px; }
 
-/* Preview overlay (fullscreen mode) */
-.preview-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
-.preview-overlay.visible { pointer-events: all; }
+/* Preview overlay (fullscreen mode, PR2 E3: fade + scale 0.96 → 1.0) */
+.preview-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; opacity: 0; }
+.preview-overlay.visible { pointer-events: all; opacity: 1; animation: previewOverlayIn 0.2s ease-out; }
 .preview-overlay .preview-viewer { width: 90vw; height: 80vh; max-width: 1200px; }
 .preview-overlay .preview-image-viewer img { max-width: 90vw; max-height: 80vh; }
 .preview-overlay .preview-media-viewer video { max-width: 90vw; max-height: 75vh; }
 .preview-overlay .preview-pdf-viewer iframe, .preview-overlay .preview-html-viewer iframe { width: 90vw; height: 80vh; max-width: 1200px; }
+.preview-overlay-title { font-size: 13px; color: rgba(255, 255, 255, 0.9); margin-bottom: 10px; max-width: 80vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-overlay-bar { display: flex; gap: 6px; margin-top: 10px; }
+.preview-overlay-stage { width: 90vw; height: 80vh; max-width: 1200px; overflow: auto; display: flex; align-items: center; justify-content: center; }
 
+@keyframes previewOverlayIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+/* Inline cards keep the plain fade (no scale). */
 @keyframes previewFadeIn { from { opacity: 0; } to { opacity: 1; } }
-.preview-overlay.visible { animation: previewFadeIn 0.15s ease-out; }
 
 /* ── Inline preview card (chat stream) ─────────────────────────────── */
 /* Appended below a triggering message/tool-card/chip in the chat flow. */
@@ -3476,8 +3741,4 @@ textarea:focus-visible,
 /* tool card preview strip */
 .tool-preview-strip {
   /* anchor element inside tool-card; the inline card is inserted after it */
-}
-
-@media (max-width: 900px) {
-  #preview-section { display: none !important; }
 }

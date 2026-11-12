@@ -13,12 +13,15 @@ import type { SubTaskResult, SubTaskStatus } from '../agent/types.js';
 import { SidebarRegistryImpl } from './sidebar/registry.js';
 import type { SidebarContext, SidebarTabRegistration, SubAgentRunKind } from './sidebar/types.js';
 import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js';
-import { SideChatPage, mountSideChatPage } from './sidebar/pages/side-chat.js';
+import { mountSideChatPage } from './sidebar/pages/side-chat.js';
 import { AutomationPage, mountAutomationPage } from './sidebar/pages/automations.js';
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
-import { openPath as previewOpenPath, close as previewClose, updateToolbarButton as updatePreviewBtn, getState as getPreviewState, toggleFullscreen, wirePreviewToolbar, getLiveHandle } from './preview/open.js';
+import { openPath as previewOpenPath, close as previewClose, getState as getPreviewState, toggleFullscreen, getLiveHandle, bindDock } from './preview/open.js';
+import { mountDocDock } from './preview/dock.js';
+import { mountBrowserTabs, type BrowserTabs } from './browser-tab.js';
+import { mountRsideTabs, type RsideTabsHandle } from './rside-tabs.js';
 import { createInlinePreviewCard } from './preview/inline.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 import { hydrateIcons, iconEl } from './icons.js';
@@ -334,6 +337,32 @@ declare global {
       previewRead(token: string, maxBytes?: number): Promise<{
         ok: boolean; text?: string; truncated?: boolean; error?: string;
       }>;
+      // PR2 browser tab — WebContentsView manager (main-process owned).
+      webviewOpen(
+        url: string,
+        bounds: { x: number; y: number; width: number; height: number },
+        viewId?: string,
+        hidden?: boolean,
+      ): Promise<{ ok: boolean; viewId?: string; error?: string }>;
+      webviewBack(viewId: string): Promise<{ ok: boolean; error?: string }>;
+      webviewForward(viewId: string): Promise<{ ok: boolean; error?: string }>;
+      webviewReload(viewId: string): Promise<{ ok: boolean; error?: string }>;
+      webviewClose(viewId: string): Promise<{ ok: boolean; error?: string }>;
+      webviewBounds(
+        bounds: { x: number; y: number; width: number; height: number },
+        hidden?: boolean,
+      ): Promise<{ ok: boolean }>;
+      onWebviewEvent(
+        cb: (ev: {
+          viewId: string;
+          type: 'loading' | 'loaded' | 'navigated' | 'title' | 'fallback';
+          url?: string;
+          title?: string;
+          canGoBack?: boolean;
+          canGoForward?: boolean;
+          error?: string;
+        }) => void,
+      ): void;
       withdraw(sessionId: string, userIndex: number): Promise<string>;
       respondPermission(id: string, answer: string, sessionId?: string): Promise<unknown>;
       setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
@@ -4004,10 +4033,10 @@ function makeFileBrowserContext(): FileBrowserContext {
       void attachFiles([path]);
     },
     previewPath: async (path: string) => {
-      // `openPath` now reports real success (false when the type is
-      // unpreviewable / outside roots / over the cap), so FileBrowser's
-      // external-open fallback is actually reachable.
-      return previewOpenPath(path);
+      // PR2 routing: html → 浏览器 tab iframe; other previewable kinds →
+      // document dock (文件 tab). Both return the real success flag, so the
+      // external-open fallback is reachable on failure / unsupported types.
+      return openPreviewPath(path);
     },
   };
 }
@@ -6571,20 +6600,33 @@ $('#btn-settings').addEventListener('click', () => void openSettings());
 // P0 preview button — toggles fullscreen when a file is currently being previewed.
 const btnPreview = document.getElementById('btn-preview');
 if (btnPreview) {
-  btnPreview.addEventListener('click', async () => {
+  btnPreview.addEventListener('click', () => {
     const state = getPreviewState();
-    if (state) await toggleFullscreen();
+    if (state) toggleFullscreen();
   });
 }
-// Zoom / fit / fullscreen / close toolbar controls (drives the live viewer).
-wirePreviewToolbar();
 
 /** Global keyboard shortcuts for preview. */
 document.addEventListener('keydown', (e) => {
+  // Ctrl/Cmd+W closes the active doc / browser tab of the 右栏 panel the
+  // user is looking at (menu accelerators are disabled in this app).
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'w' || e.key === 'W')) {
+    e.preventDefault();
+    if (rsideTabs?.is('files')) previewClose();
+    else if (rsideTabs?.is('browser')) browserTabs?.closeActive();
+    return;
+  }
   // Don't hijack typing in inputs / textareas.
   const tag = (e.target as HTMLElement | null)?.tagName;
   const typing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement | null)?.isContentEditable;
   if (e.key === 'Escape') {
+    // Fullscreen overlay Esc is consumed by the dock's overlay handler
+    // (stopPropagation) — reaching this line means the overlay is closed.
+    if (rsideTabs?.is('browser')) {
+      // 浏览器 panel active: Esc closes the active browser tab.
+      browserTabs?.closeActive();
+      return;
+    }
     void previewClose();
     return;
   }
@@ -6595,7 +6637,7 @@ document.addEventListener('keydown', (e) => {
     case 'f':
     case 'F':
       e.preventDefault();
-      void toggleFullscreen();
+      toggleFullscreen();
       break;
     case '+':
     case '=':
@@ -7036,8 +7078,185 @@ rightCollapseBtn.addEventListener('click', () => {
   rightSidebarAutoCollapsed = false;
   saveRightSidebarState(isCollapsed);
   syncCollapseHints();
+  // PR2 E1: collapse/expand animates over 300ms (.collapsing).
+  rightSidebarEl.classList.add('collapsing');
+  window.setTimeout(() => rightSidebarEl.classList.remove('collapsing'), 320);
+  // PR2: collapse hides the active panel — pause the browser's main-side
+  // views and the FileBrowser idle countdown; re-arm on expand.
+  syncRsideVisibilityForCollapse();
 });
 loadRightSidebarState();
+
+// ---------- PR2: right-sidebar tab strip + document dock + browser panel ----------
+//
+// The legacy #preview-section accordion was retired: document previews now
+// live in the 文件 tab's document strip (≤8 tabs, LRU), html routes to the
+// 浏览器 tab, and side-chat moved into its own 侧边对话 panel.
+let rsideTabs: RsideTabsHandle | null = null;
+let browserTabs: BrowserTabs | null = null;
+
+/** Route a preview request by kind: html → 浏览器 tab iframe, everything else
+ *  previewable → document dock. Returns true when in-app preview mounted, so
+ *  the caller's external-app fallback is only reachable on real failure. */
+async function openPreviewPath(path: string): Promise<boolean> {
+  const kind = classify(path);
+  if (kind === 'html' && browserTabs) {
+    const ok = await browserTabs.openLocalFile(path);
+    if (ok) rsideTabs?.set('browser');
+    return ok;
+  }
+  // dock.open() rejects unsupported kinds (false) and keeps the caller's
+  // external-open fallback reachable for 403 / cap / missing-file cases.
+  return previewOpenPath(path);
+}
+
+// Document dock: up to 8 live doc tabs on the 文件 panel (LRU eviction,
+// persistent viewer nodes — zoom/scroll/playback survive tab switches).
+{
+  const strip = $('#doc-tabs') as HTMLElement | null;
+  const stage = $('#doc-tab-stage') as HTMLElement | null;
+  const stashEl = $('#doc-tab-stash') as HTMLElement | null;
+  const overlay = $('#preview-overlay-root') as HTMLElement | null;
+  if (strip && stage && stashEl && overlay) {
+    bindDock(mountDocDock({
+      strip,
+      stage,
+      stash: stashEl,
+      overlay,
+      getLang: getUiLang,
+      // Inline cards ("在侧栏打开") and chat-attachment clicks ask the dock to
+      // surface a document — that needs the 文件 panel visible.
+      onNeedPanel: () => { rsideTabs?.set('files'); },
+    }));
+  }
+}
+
+// Browser panel: ≤4 tabs (LRU). Local files stream through the
+// nexus-preview:// token protocol into a sandboxed iframe (no
+// allow-same-origin); external URLs render in a main-process
+// WebContentsView on an isolated session partition.
+{
+  const rootEl = $('#browser-tab-root') as HTMLElement | null;
+  if (rootEl) {
+    browserTabs = mountBrowserTabs({
+      root: rootEl,
+      getLang: getUiLang,
+      notify: (msg) => showToast(msg),
+      onActiveChanged: () => { browserTabs?.syncBounds(); },
+    });
+  }
+}
+
+// Side chat moved from the left #sidebar-tabs into the right 侧边对话 panel
+// (WP-C). Mounted once; the panel keeps its DOM while hidden, so the
+// transcript survives panel switches. sideChat IPC isolation is unchanged.
+{
+  const sidechatPanelEl = $('#sidechat-panel') as HTMLElement | null;
+  if (sidechatPanelEl) {
+    mountSideChatPage(sidechatPanelEl, makeSidebarContext(currentSessionId));
+  }
+}
+
+// Right-sidebar tabs: cross-fade switch between 信息/文件/浏览器/侧边对话,
+// persisted choice, activation hooks re-arm the timers/visibility that
+// were paused while the panel was off screen.
+{
+  const navEl = $('#rside-tabs') as HTMLElement | null;
+  const panelsEl = $('#rside-panels') as HTMLElement | null;
+  if (navEl && panelsEl) {
+    rsideTabs = mountRsideTabs(navEl, panelsEl, {
+      onActivate: (panel) => {
+        // CSS floor: the 侧边对话 panel forces a 380px minimum width while
+        // active (driven by the [data-active-panel] attribute selector).
+        rightSidebarEl.dataset.activePanel = panel;
+        // The FileBrowser idle countdown runs only while the 文件 panel is
+        // on screen (paused on switch, re-armed on return).
+        fileBrowserHandle?.setIdleArmed(panel === 'files');
+        // Hide the main-side WebContentsViews unless the browser panel is
+        // active AND the right sidebar is expanded.
+        const visible = panel === 'browser' && !rightSidebarEl.classList.contains('collapsed');
+        browserTabs?.setPanelVisible(visible);
+        browserTabs?.syncBounds();
+      },
+    });
+    // Initial idle-armed sync happens where FileBrowser mounts (it starts
+    // unmounted in the IIFE below).
+  }
+}
+
+// ── PR2 E1/E2: right-sidebar width drag (274~720px, 380px floor on 侧边对话) ──
+// The width lives in the --rside-w CSS variable (shared by the responsive
+// media caps and the persistent preference); a drag on the inner edge updates
+// it live, `.dragging` suspends the width transition so the panel tracks the
+// pointer, and the value persists to localStorage across restarts.
+const RSIDE_W_KEY = 'nexus.right-sidebar.width';
+const RSIDE_W_MIN = 274;
+const RSIDE_W_MAX = 720;
+const RSIDE_W_SIDECHAT_MIN = 380;
+
+/** Responsive cap on --rside-w, mirroring the CSS media rules: ≤1239 → 300
+ *  (floating overlay), ≤1440 → 250, otherwise the drag ceiling. The stored
+ *  preference is clamped down to it while the window stays narrow and
+ *  restored when it widens again. */
+function applyRsideWidth(): void {
+  let stored = RSIDE_W_MIN;
+  try {
+    const s = parseInt(localStorage.getItem(RSIDE_W_KEY) ?? '', 10);
+    if (Number.isFinite(s) && s > 0) stored = s;
+  } catch { /* storage unavailable */ }
+  const cap = window.innerWidth <= 1239 ? 300 : window.innerWidth <= 1440 ? 250 : RSIDE_W_MAX;
+  rightSidebarEl.style.setProperty('--rside-w', `${Math.min(Math.max(stored, RSIDE_W_MIN), cap)}px`);
+}
+applyRsideWidth();
+window.addEventListener('resize', applyRsideWidth);
+
+{
+  const handle = rightSidebarEl.querySelector<HTMLElement>('.rsidebar-resize');
+  if (handle) {
+    handle.addEventListener('pointerdown', (e: PointerEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = rightSidebarEl.getBoundingClientRect().width;
+      rightSidebarEl.classList.add('dragging');
+      const onMove = (ev: PointerEvent) => {
+        const floor = (rsideTabs?.get() === 'sidechat') ? RSIDE_W_SIDECHAT_MIN : RSIDE_W_MIN;
+        const w = Math.min(RSIDE_W_MAX, Math.max(floor, startW + (startX - ev.clientX)));
+        rightSidebarEl.style.setProperty('--rside-w', `${Math.round(w)}px`);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        rightSidebarEl.classList.remove('dragging');
+        try {
+          const w = parseInt(rightSidebarEl.style.getPropertyValue('--rside-w'), 10);
+          if (Number.isFinite(w)) localStorage.setItem(RSIDE_W_KEY, String(w));
+        } catch { /* storage unavailable */ }
+        // The panel rect just moved — re-sync the main-side WebContentsViews.
+        browserTabs?.syncBounds();
+        applyRsideWidth(); // re-clamp to the responsive cap (no-op when wide)
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    });
+  }
+}
+
+// Inline preview cards dispatch this when the user picks "在侧栏打开".
+window.addEventListener('nexus:open-preview-sidebar', (e) => {
+  const path = (e as CustomEvent<{ path?: string }>).detail?.path;
+  if (path) void openPreviewPath(path);
+});
+
+// Sync the visibility-dependent subsystems (browser WebContentsViews + the
+// FileBrowser idle timer) with the right sidebar's collapsed state. Called
+// from the collapse toggle and the responsive auto-collapse.
+function syncRsideVisibilityForCollapse(): void {
+  const collapsed = rightSidebarEl.classList.contains('collapsed');
+  const panel = rsideTabs?.get() ?? 'info';
+  fileBrowserHandle?.setIdleArmed(!collapsed && panel === 'files');
+  browserTabs?.setPanelVisible(!collapsed && panel === 'browser');
+  browserTabs?.syncBounds();
+}
 
 // Width-triggered auto-collapse keeps the chat column usable on smaller
 // windows without overwriting the user's saved preference. Manual toggles
@@ -7052,9 +7271,14 @@ function syncResponsiveCollapse(): void {
   if (w < RIGHT_AUTO_COLLAPSE_BP && !rightSidebarEl.classList.contains('collapsed')) {
     rightSidebarEl.classList.add('collapsed');
     rightSidebarAutoCollapsed = true;
+    rightSidebarEl.classList.add('collapsing'); // PR2 E1: 300ms auto-collapse
   } else if (w >= RIGHT_AUTO_COLLAPSE_BP && rightSidebarAutoCollapsed) {
     rightSidebarEl.classList.remove('collapsed');
     rightSidebarAutoCollapsed = false;
+    rightSidebarEl.classList.add('collapsing');
+  }
+  if (rightSidebarEl.classList.contains('collapsing')) {
+    window.setTimeout(() => rightSidebarEl.classList.remove('collapsing'), 320);
   }
   if (w < LEFT_AUTO_COLLAPSE_BP && !sidebarEl.classList.contains('collapsed')) {
     sidebarEl.classList.add('collapsed');
@@ -7063,6 +7287,9 @@ function syncResponsiveCollapse(): void {
     sidebarEl.classList.remove('collapsed');
     leftSidebarAutoCollapsed = false;
   }
+  // PR2: the browser panel's main-side views + the FileBrowser idle timer
+  // follow the right-sidebar collapsed state.
+  syncRsideVisibilityForCollapse();
   syncCollapseHints();
 }
 
@@ -7474,9 +7701,10 @@ window.nexusDesktop.onTabsChanged((open) => {
     await refreshSessions();
     await refreshSidebarSession();
     await syncOpenTabs();
-    // P1: register built-in sidebar tabs (Sub-Agents + Side Chat) and render
-    // the tab bar. The registry is the single extension surface; third-party
-    // tabs attach the same way.
+    // P1: register built-in sidebar tabs (Sub-Agents + Jobs + Automation).
+    // Side chat moved to the right 侧边对话 panel in PR2 (mountSideChatPage
+    // into #sidechat-panel, see the PR2 block above) — the left strip keeps
+    // only the session-scoped pages. The registry stays the extension surface.
     sidebarRegistry.register({
       id: SubAgentsPage.id,
       title: SubAgentsPage.title,
@@ -7490,13 +7718,6 @@ window.nexusDesktop.onTabsChanged((open) => {
       titleKey: JobsPage.titleKey,
       icon: JobsPage.icon,
       mount: mountJobsPage,
-    });
-    sidebarRegistry.register({
-      id: SideChatPage.id,
-      title: SideChatPage.title,
-      titleKey: SideChatPage.titleKey,
-      icon: SideChatPage.icon,
-      mount: mountSideChatPage,
     });
     sidebarRegistry.register({
       id: AutomationPage.id,
@@ -7513,6 +7734,9 @@ window.nexusDesktop.onTabsChanged((open) => {
     const panelIdleMs = await window.nexusDesktop.getPanelIdleMs().catch(() => SIDEBAR_AUTO_HIDE_DEFAULT_MS);
     SIDEBAR_AUTO_HIDE_MS = panelIdleMs;
     if (fileBrowserEl) fileBrowserHandle = mountFileBrowser(fileBrowserEl, makeFileBrowserContext(), { idleMs: panelIdleMs });
+    // PR2: the idle countdown runs only while the 文件 panel is actually on
+    // screen — sync the armed state with the current rside tab + collapse.
+    fileBrowserHandle?.setIdleArmed(rsideTabs ? rsideTabs.is('files') && !rightSidebarEl.classList.contains('collapsed') : true);
     // Idle auto-hide (configurable, default 10s): any interaction inside the
     // open page or on the tab strip — pointer activity, scrolling, typing —
     // resets the close timer so the panel only collapses back to the icon
