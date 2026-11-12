@@ -976,7 +976,7 @@ export class AgentService {
                 '  - list-tables / describe-table / create-table / drop-table: SQLite schema management\n' +
                 '  - insert-record / update-record / delete-record: SQLite row operations\n' +
                 '  - list_directory_with_sizes: Directory listing with recursive size info\n' +
-                '  - read_media_file: Read images/media as inline Markdown data-URIs\n' +
+                '  - read_media_file: Read an IMAGE file as inline Markdown data-URI (images only). For video/audio, do NOT call it — write the file\'s absolute path into your reply and the app previews it automatically\n' +
                 '  - get_current_time / convert_time: Timezone-aware time utilities\n' +
                 '  - fetch: HTTP requests with content extraction\n' +
                 '  - 36 git_* tools: Full git operations (commit, branch, merge, etc.)\n',

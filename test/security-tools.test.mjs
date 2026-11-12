@@ -175,6 +175,28 @@ test('fs: read_media_file respects the size cap', async () => {
   assert.equal(r.isError, true, 'oversize media rejected');
 });
 
+test('fs: read_media_file on a video gives recoverable guidance, not a hard error', async () => {
+  // Regression for "resending an .mp4 link ❌'d Unsupported media type": the
+  // model only had read_media_file in the media group, so a video dead-ended.
+  // Now a video/audio extension returns non-error guidance: write the path
+  // into the reply and the app auto-renders a playable inline preview card.
+  const vid = join(fsDir, 'clip.mp4');
+  writeFileSync(vid, Buffer.alloc(64, 0));
+  const r = await callFsTool('read_media_file', { path: vid });
+  assert.notEqual(r.isError, true, 'video must not hard-error');
+  assert.ok(/video\/audio/.test(r.content), 'identifies it as video/audio');
+  assert.ok(r.content.includes(vid), 'quotes the path back so the model can forward it');
+  assert.ok(/reply/i.test(r.content), 'tells the model to put the path in its reply');
+});
+
+test('fs: read_media_file still hard-errors on unknown (non-media) extensions', async () => {
+  const bin = join(fsDir, 'blob.exe');
+  writeFileSync(bin, Buffer.alloc(16, 0));
+  const r = await callFsTool('read_media_file', { path: bin });
+  assert.equal(r.isError, true, 'unknown extension still errors');
+  assert.match(r.content, /Unsupported media type \(\.exe\)/);
+});
+
 test('fs: out-of-root directory access is denied', async () => {
   const r = await callFsTool('list_directory_with_sizes', { path: outsideDir });
   assert.equal(r.isError, true, 'out-of-root denied');

@@ -34,6 +34,20 @@ const MIME_BY_EXT: Record<string, string> = {
   svg: 'image/svg+xml',
 };
 
+/**
+ * Video/audio extensions the desktop app can preview inline (mirrors
+ * shared/preview.ts). The model cannot "see" these, so embedding them as
+ * data-URIs is pointless — but hard-erroring dead-ends the conversation.
+ * For these, `read_media_file` returns non-error guidance instead: write the
+ * path into the reply and the app renders a playable inline preview card.
+ */
+const MEDIA_PREVIEW_EXTS = new Set([
+  // video
+  'mp4', 'webm', 'ogg', 'mov', 'avi', 'wmv', 'mkv', 'm4v', 'flv',
+  // audio
+  'mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'wma',
+]);
+
 const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 const MAX_LIST_ENTRIES = 5000;
 const MAX_DEPTH = 3;
@@ -89,6 +103,20 @@ async function readMediaFile(args: Record<string, unknown>): Promise<ToolResult>
   const ext = p.split('.').pop()?.toLowerCase() ?? '';
   const mime = MIME_BY_EXT[ext];
   if (!mime) {
+    if (MEDIA_PREVIEW_EXTS.has(ext)) {
+      // Video/audio: not embeddable, but the app CAN preview it. Recoverable
+      // (non-error) guidance so the model writes the path into its reply —
+      // the renderer auto-renders a playable inline card for it — instead of
+      // hitting a dead-end ❌.
+      return {
+        content:
+          `${p} is a video/audio file. read_media_file only embeds images, ` +
+          `so it cannot display this. To show it to the user, write its absolute ` +
+          `path into your reply (in backticks): the desktop app renders a ` +
+          `playable inline preview card for video/audio paths automatically. ` +
+          `Do not call this tool again for video or audio files.`,
+      };
+    }
     return {
       content: `Unsupported media type (.${ext || 'unknown'}). Supported: ${Object.keys(MIME_BY_EXT).join(', ')}.`,
       isError: true,
@@ -264,7 +292,9 @@ export const FILESYSTEM_TOOL_DEFS: ToolDef[] = [
   {
     name: 'read_media_file',
     description:
-      'Read an image or media file (png/jpg/gif/webp/bmp/ico/tiff/avif/svg) and return it as an inline Markdown data-URI so it renders in the chat. Path is authorized like other file tools (out-of-sandbox paths raise an Allow/Deny prompt).',
+      'Read an image file (png/jpg/jpeg/gif/webp/bmp/ico/tif/tiff/avif/svg) and return it as an inline Markdown data-URI so it renders in the chat. ' +
+      'IMAGE-ONLY: never call this for video/audio (mp4/webm/mov/mp3/wav/…) — to show one, write its absolute path into your reply instead and the desktop app renders a playable inline preview card for it automatically. ' +
+      'Path is authorized like other file tools (out-of-sandbox paths raise an Allow/Deny prompt).',
     inputSchema: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Absolute path (or cwd-relative) to the media file' } },

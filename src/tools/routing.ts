@@ -128,7 +128,7 @@ const POSTGRES_ROUTING: Record<string, ToolRouting> = {
 
 const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   // filesystem
-  read_media_file: { group: 'media', readOnly: true, keywords: ['image', '图片', '看图', '截图', 'png', 'jpg', 'photo', '图片预览'] },
+  read_media_file: { group: 'media', readOnly: true, keywords: ['image', '图片', '看图', '截图', 'png', 'jpg', 'photo', '图片预览', 'video', '视频', 'audio', '音频', 'mp4', 'mp3', 'media', '媒体'] },
   list_directory_with_sizes: { group: 'fs', readOnly: true, keywords: ['list', '目录', '文件夹', '大小', 'size', '占用'] },
   list_allowed_directories: { group: 'fs', readOnly: true, keywords: ['allowed', '授权', '允许', '目录边界', 'sandbox'] },
   sequentialthinking: { group: 'meta', readOnly: true, keywords: ['think', '思考', '推理', 'reason', '分析步骤'] },
