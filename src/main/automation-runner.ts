@@ -21,7 +21,7 @@ import { logger } from '../shared/logger.js';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Automation, AutomationRun, MissPolicy } from 'nexus-coder/dist/src/automation/types.js';
-import type { AutomationRunner, RunnerEvent } from 'nexus-coder/dist/src/automation/runner.js';
+import type { AutomationRunner, RunnerEvent, AutomationPreflight } from 'nexus-coder/dist/src/automation/runner.js';
 import type { AutomationStore } from 'nexus-coder/dist/src/automation/store.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -58,11 +58,20 @@ async function createHost(): Promise<AutomationHost | null> {
             opts: { sessionId?: string; maxCostUsd?: number },
           ): Promise<{ sessionId: string; costUsd?: number }>;
         },
-        opts?: { tickMs?: number; serialisePerAutomation?: boolean; catchupGraceMs?: number; maxCostUsd?: number },
+        opts?: {
+          tickMs?: number;
+          serialisePerAutomation?: boolean;
+          catchupGraceMs?: number;
+          maxCostUsd?: number;
+          preflight?: AutomationPreflight;
+        },
       ) => AutomationRunner;
     };
     const store = new storeMod.AutomationStore();
-    const runner = new runnerMod.AutomationRunner(store, createAgentFactory(), { tickMs: 1000 });
+    const runner = new runnerMod.AutomationRunner(store, createAgentFactory(), {
+      tickMs: 1000,
+      preflight: buildDependencyPreflight(),
+    });
     return { store, runner, started: false };
   } catch (err) {
     logger.warn(
@@ -90,6 +99,49 @@ async function getHost(): Promise<AutomationHost | null> {
  * the app.
  */
 const inFlightWorkers = new Map<string, WorkerHost>();
+
+/**
+ * Build the per-run preflight hook that the AutomationRunner invokes before
+ * dispatching a run. Runs the dependency doctor (`nexus doctor` equivalent)
+ * so a missing native package or broken skill dependency is caught up front
+ * and recorded as a `failed` run with a diagnostic reason, instead of the
+ * headless worker wasting turns retrying dependencies mid-run.
+ *
+ * The doctor check is synchronous (filesystem stat only, no network / spawn),
+ * so it is safe on the tick path. A transient load failure of the doctor
+ * module itself (e.g. core not yet built) degrades to "no preflight" rather
+ * than blocking all automation runs — the runner logs a warning and proceeds.
+ */
+function buildDependencyPreflight(): AutomationPreflight {
+  let doctorMod:
+    | { runDependencyDoctor: () => { checks: { passed: boolean; name: string; message: string; failures?: string[] }[]; ok: boolean } }
+    | null
+    | undefined = undefined;
+
+  return async (aut) => {
+    if (doctorMod === undefined) {
+      try {
+        doctorMod = await import('nexus-coder/dist/src/doctor/dependency-doctor.js');
+      } catch (err) {
+        doctorMod = null;
+        logger.warn(
+          `automation preflight unavailable (doctor module not loadable): ${err instanceof Error ? err.message : String(err)} — continuing without preflight`,
+        );
+      }
+    }
+    if (!doctorMod) return { ok: true };
+
+    const result = doctorMod.runDependencyDoctor();
+    if (result.ok) return { ok: true };
+
+    // Only report the failing checks in the reason (compact, one line each).
+    const failing = result.checks.filter((c) => !c.passed);
+    const reason = failing
+      .map((c) => `${c.name}: ${c.message}${c.failures ? ` [${c.failures.length} issue(s)]` : ''}`)
+      .join('; ');
+    return { ok: false, reason };
+  };
+}
 
 /**
  * The factory the runner consults to execute each automation run: spawn a
