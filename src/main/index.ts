@@ -953,8 +953,14 @@ if (gotLock) {
         // custom protocol doesn't 403 on files under the new dir.
         notifyCwdChanged: (cwd: string) => { setPreviewCwd(cwd); },
       });
-      // Register AFTER app.whenReady() — Electron rejects scheme registration before ready.
-      void registerPreviewProtocol();
+      // Register AFTER app.whenReady() — Electron rejects scheme registration
+      // before ready. This MUST be awaited before createWindow(): the handler
+      // installation is what makes `nexus-preview://` resolvable in the browser
+      // process, and the renderer requests transcript images as soon as the
+      // first document parses. Racing it left the boot window with
+      // net::ERR_UNKNOWN_URL_SCHEME on every inline image (a reload "fixed" it
+      // only because by then the protocol was registered).
+      await registerPreviewProtocol();
       installPreviewHandlers();
       // PR3 document preview: parse docx/xlsx/pptx in the main process
       // (renderer is CSP-restricted) and serve the normalized model over

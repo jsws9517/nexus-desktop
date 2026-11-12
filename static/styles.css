@@ -3656,12 +3656,24 @@ textarea:focus-visible,
   justify-content: center;
   overflow: auto;
 }
-/* image thumbnail mode — the collapsed card shows a REAL 120px contained
-   thumbnail (stage stays visible, CSS contain-clamps the image; the
-   zoom/rotate bar is hidden to keep the strip quiet). */
+/* image thumbnail mode — the collapsed card shows a REAL contained thumbnail
+   (CSS contain-clamps the image; the zoom/rotate bar is hidden to keep the
+   strip quiet). */
 .ipc-body[data-collapsed='1'] .preview-image-bar { display: none; }
-.ipc-body[data-collapsed='1'] .ipc-stage .preview-viewer { height: 100%; max-height: 100%; }
-.ipc-body[data-collapsed='1'] .ipc-stage .preview-viewer img { max-height: 100%; }
+/* Image cards: the body height set inline by applyHeight()/the drag handle is
+   authoritative, so the stage must be pinned to it. Previously .ipc-stage kept
+   `min-height: 100%` + auto height, so a 1024px image grew the stage to 1024px
+   inside the 220px collapsed body — the card showed a cropped top slice and
+   fitToContainer() measured 1024px (scale 1) instead of the visible box. */
+.inline-preview-card[data-kind='image'] .ipc-stage {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.inline-preview-card[data-kind='image'] .ipc-stage .preview-viewer {
+  height: 100%;
+  max-height: 100%;
+}
 /* the viewer element itself is full-bleed inside the stage */
 .ipc-stage .preview-viewer {
   width: 100%;

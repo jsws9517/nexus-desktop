@@ -66,7 +66,13 @@ export function mountImageViewer(state: PreviewState): ViewerHandle {
     const availW = host.clientWidth - 16;
     const availH = host.clientHeight - 16;
     if (availW <= 0 || availH <= 0) { scale = 1; apply(); return; }
-    scale = Math.min(availW / img.naturalWidth, availH / img.naturalHeight, 1);
+    // The <img> is already clamped by max-width/max-height:100%, so its LAYOUT
+    // box is what the transform must scale from. Using naturalWidth here
+    // double-shrinks a fitted image (a 1024px photo clamped to 220px by a
+    // collapsed inline card then multiplied by 0.199 = 44px).
+    const baseW = img.offsetWidth || img.naturalWidth;
+    const baseH = img.offsetHeight || img.naturalHeight;
+    scale = Math.min(availW / baseW, availH / baseH, 1);
     if (scale < ZOOM_MIN) scale = ZOOM_MIN;
     apply();
   };
