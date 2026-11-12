@@ -26,6 +26,14 @@ globalThis.document = win.document;
 if (typeof globalThis.HTMLElement === 'undefined') {
   globalThis.HTMLElement = win.HTMLElement;
 }
+// The inline image card's expand/collapse refits via requestAnimationFrame;
+// Node has no global rAF, so back it with a zero-delay timer.
+if (typeof globalThis.requestAnimationFrame === 'undefined') {
+  globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+}
+// Node's global CustomEvent class is not happy-dom's, and happy-dom's
+// dispatchEvent rejects cross-realm events — use the window's own class.
+globalThis.CustomEvent = win.CustomEvent;
 
 const { mountViewer } = await import(pathToFileURL(join(dist, 'renderer', 'preview', 'core.js')));
 const { mountDocxViewer } = await import(pathToFileURL(join(dist, 'renderer', 'preview', 'viewers', 'docx.js')));
@@ -366,6 +374,73 @@ test('createInlinePreviewCard: unsupported kind shows the unavailable status', a
   assert.match(status?.textContent ?? '', /unavailable/i);
   assert.equal(status?.classList.contains('error'), true);
   anchor.remove();
+});
+
+// ── 4.5 — inline image card: real thumbnail, expand/collapse, token hygiene ─
+
+test('image inline card: collapsed shows a live thumbnail, click expands, dispose revokes', async () => {
+  const calls = { previewOpen: [], previewClose: [] };
+  win.nexusDesktop = {
+    previewOpen: async (path) => {
+      calls.previewOpen.push(path);
+      return { ok: true, token: 'tok-img', url: 'nexus-preview://local/tok-img', kind: 'image', mime: 'image/png', size: 1000, name: 'pic.png', path };
+    },
+    previewRead: async () => ({ ok: true, text: '' }),
+    previewClose: async (tok) => { calls.previewClose.push(tok); return { ok: true }; },
+    revealFile: async () => ({ ok: true }),
+    saveArtifact: async () => ({ ok: true }),
+    openExternalFile: async () => ({ ok: true }),
+  };
+  win.document.body.innerHTML = '';
+  const anchor = win.document.createElement('div');
+  win.document.body.appendChild(anchor);
+
+  const card = createInlinePreviewCard('C:/docs/pic.png', 'en', { after: anchor });
+  await tick();
+
+  const body = card.root.querySelector('.ipc-body');
+  const stage = card.root.querySelector('.ipc-stage');
+  // Regression: the thumbnail used to `display:none` the stage, which zeroed
+  // the fit calculation and left a 1px divider instead of an image.
+  assert.equal(stage.style.display, '', 'stage stays visible in thumbnail mode');
+  assert.equal(body.dataset.collapsed, '1', 'collapsed flag on the body');
+  // The body height now hugs the media's aspect ratio. In this DOM-less test
+  // the image never reports a natural size and the card width falls back to a
+  // default, so the compact thumbnail is clamped to [120, 220]px — a visible
+  // thumbnail, never a sliver.
+  const collapsedH = parseInt(body.style.height, 10);
+  assert.ok(collapsedH >= 120 && collapsedH <= 220, `compact thumbnail height ${collapsedH}px within [120,220]`);
+  const viewer = stage.querySelector('.preview-image-viewer');
+  assert.ok(viewer, 'image viewer mounted into the visible stage');
+  assert.ok(viewer.querySelector('img.preview-img'), 'thumbnail <img> present');
+
+  // Click the thumbnail → expand to the full (aspect-driven) body (refit is
+  // scheduled via rAF so the fit is never computed against a hidden box).
+  stage.click();
+  await tick();
+  assert.equal(body.dataset.collapsed, '', 'thumbnail click expanded the card');
+  const expandedH = parseInt(body.style.height, 10);
+  assert.ok(expandedH > collapsedH, `expanded height ${expandedH}px exceeds compact ${collapsedH}px`);
+  assert.ok(expandedH >= 220, 'full image view is floored at 220px');
+
+  // The toggle button collapses again (back to the same compact height).
+  const toggle = card.root.querySelector('.ipc-toggle');
+  toggle.click();
+  await tick();
+  assert.equal(body.dataset.collapsed, '1');
+  const refoldedH = parseInt(body.style.height, 10);
+  assert.equal(refoldedH, collapsedH, 'refolds to the compact height');
+
+  // dispose fires ipc:disposed (wrapper bookkeeping) and revokes the token.
+  let disposedEvt = 0;
+  card.root.addEventListener('ipc:disposed', () => { disposedEvt++; });
+  card.dispose();
+  assert.equal(disposedEvt, 1, 'ipc:disposed fired exactly once');
+  assert.equal(card.root.isConnected, false);
+  assert.ok(calls.previewClose.includes('tok-img'), 'dispose revoked the preview token');
+  assert.deepEqual(calls.previewOpen, ['C:/docs/pic.png']);
+  win.document.body.innerHTML = '';
+  delete win.nexusDesktop;
 });
 
 // ── 4.2 — STR completeness: every PR4 key has zh-CN + en ──────────────────

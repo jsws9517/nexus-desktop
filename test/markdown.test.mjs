@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { esc, renderInline, renderBlocks } from '../dist/renderer/markdown.js';
+import { Window } from 'happy-dom';
+import { esc, renderInline, renderBlocks, isAbsoluteLocalPath, hydrateImages } from '../dist/renderer/markdown.js';
 
 test('esc escapes HTML metacharacters', () => {
   assert.equal(esc('<b>&</b>'), '&lt;b&gt;&amp;&lt;/b&gt;');
@@ -91,4 +92,87 @@ test('renderBlocks preserves blank-line separated paragraphs', () => {
   assert.ok(out.length > 0);
   assert.match(out, /line1/);
   assert.match(out, /line2/);
+});
+
+// ── local image refs (chat png thumbnails → inline preview cards) ─────────
+
+test('isAbsoluteLocalPath classifies local filesystem refs', () => {
+  assert.equal(isAbsoluteLocalPath('C:/x.png'), true);
+  assert.equal(isAbsoluteLocalPath('C:\\x.png'), true);
+  assert.equal(isAbsoluteLocalPath('\\\\server\\share\\a.png'), true);
+  assert.equal(isAbsoluteLocalPath('/tmp/x.png'), true);
+  assert.equal(isAbsoluteLocalPath('images/x.png'), false);
+  assert.equal(isAbsoluteLocalPath('https://a.com/x.png'), false);
+  assert.equal(isAbsoluteLocalPath('data:image/png;base64,AAA'), false);
+  assert.equal(isAbsoluteLocalPath('blob:xyz'), false);
+});
+
+test('renderInline turns absolute local paths into hydratable images', () => {
+  const winPath = renderInline('![tokyo](C:/Users/pgw/pic.png)');
+  assert.match(winPath, /<img alt="tokyo" data-src="C:\/Users\/pgw\/pic\.png" loading="lazy"/);
+  const backslashed = renderInline('![b](C:\\Users\\pgw\\x.png)');
+  assert.match(backslashed, /data-src="C:\\Users\\pgw\\x\.png"/);
+  const posix = renderInline('![y](/tmp/x.png)');
+  assert.match(posix, /<img alt="y" data-src="\/tmp\/x\.png"/);
+});
+
+test('renderInline strips the local: prefix for hydration', () => {
+  const out = renderInline('![a](local:C:/x.png)');
+  assert.match(out, /<img alt="a" data-src="C:\/x\.png"/);
+});
+
+test('renderInline keeps relative / remote image refs as literal text', () => {
+  const out = renderInline('![a](images/pic.png)');
+  assert.equal(out, '![a](images/pic.png)');
+});
+
+// ── hydration: data URL + data-preview-path for the delegated click ───────
+
+const win = new Window();
+globalThis.window = win;
+globalThis.document = win.document;
+const tick = async () => { await new Promise((r) => setTimeout(r, 0)); };
+
+test('hydrateImages stamps data-preview-path and swaps in the data URL', async () => {
+  const seen = [];
+  win.nexusDesktop = {
+    readImagePreview: async (p) => { seen.push(p); return 'data:image/png;base64,AAA'; },
+  };
+  const div = win.document.createElement('div');
+  div.innerHTML = renderInline('![tokyo](C:/Users/pgw/pic.png)');
+  win.document.body.appendChild(div);
+  hydrateImages(div);
+  await tick();
+  const img = div.querySelector('img');
+  assert.equal(img.dataset.previewPath, 'C:/Users/pgw/pic.png', 'preview path stamped');
+  assert.equal(img.dataset.hydrated, '1');
+  assert.equal(img.getAttribute('src'), 'data:image/png;base64,AAA');
+  assert.deepEqual(seen, ['C:/Users/pgw/pic.png']);
+  win.document.body.innerHTML = '';
+  delete win.nexusDesktop;
+});
+
+test('hydrateImages leaves the node out when the IPC read fails', async () => {
+  win.nexusDesktop = {
+    readImagePreview: async () => { throw new Error('outside allowed roots'); },
+  };
+  const div = win.document.createElement('div');
+  div.innerHTML = renderInline('![gone](C:/nope/missing.png)');
+  win.document.body.appendChild(div);
+  hydrateImages(div);
+  await tick();
+  assert.equal(div.querySelector('img'), null, 'failed image removed');
+  win.document.body.innerHTML = '';
+  delete win.nexusDesktop;
+});
+
+test('hydrateImages without an IPC bridge removes unresolvable local images', async () => {
+  delete win.nexusDesktop;
+  const div = win.document.createElement('div');
+  div.innerHTML = renderInline('![x](C:/nope.png)');
+  win.document.body.appendChild(div);
+  hydrateImages(div);
+  await tick();
+  assert.equal(div.querySelector('img'), null);
+  win.document.body.innerHTML = '';
 });

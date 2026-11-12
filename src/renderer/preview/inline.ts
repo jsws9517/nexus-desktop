@@ -4,9 +4,10 @@
  *
  * Anatomy:
  *   ┌ header: icon + filename + [📂 ⤓ ⤢ ✕] (on app bg, ~32px)
- *   ├ body: full-bleed, default 340px tall, internally scrolling, drag handle
- *   │   to grow up to 70vh. Images start collapsed to a 120px thumbnail and
- *   │   expand on click.
+ *   ├ body: full-bleed, height hugs the media's natural aspect ratio (capped at
+ *   │   60vh, floored so nothing reads as a sliver), internally scrolling,
+ *   │   drag handle to grow it. Images start as a compact thumbnail and expand
+ *   │   on click; video/audio/documents size to their kind.
  *   └ action row: 复制 / 下载 / 收藏 / 引用 / 点赞 / 更多 · 「由 AI 生成」 · %
  *
  * The card mounts the SAME viewer kernel the side panel uses (core.mountViewer),
@@ -26,7 +27,8 @@ export interface InlinePreviewCardOptions {
   scrollIntoView?: boolean;
   /** Kind override (e.g. from an artifact body); defaults to classify(path). */
   kind?: PreviewKind;
-  /** Marks the card's action row source as AI-generated (default true). */
+  /** Show the "AI-generated" note in the action row. Default off: media tools
+   *  watermark their output natively, so the card doesn't repeat it. */
   aiGenerated?: boolean;
   /** 0-100 progress hint shown on the action row while streaming. */
   progress?: number;
@@ -51,8 +53,8 @@ function tr(lang: string) {
 
 const IMG_KINDS = new Set<PreviewKind>(['image']);
 const SOURCE_KINDS = new Set<PreviewKind>(['markdown', 'text', 'html']);
-const THUMB_HEIGHT = 120;
-const DEFAULT_BODY_HEIGHT = 340;
+/** Floor for the drag-to-resize handle and for compact image thumbnails. */
+const MIN_BODY_HEIGHT = 120;
 
 export function createInlinePreviewCard(
   path: string,
@@ -107,11 +109,41 @@ export function createInlinePreviewCard(
   // ── body ────────────────────────────────────────────────────────────
   const body = document.createElement('div');
   body.className = 'ipc-body';
-  body.style.height = `${IMG_KINDS.has(kind) ? THUMB_HEIGHT : DEFAULT_BODY_HEIGHT}px`;
 
   const stage = document.createElement('div');
   stage.className = 'ipc-stage';
   body.appendChild(stage);
+
+  // The body hugs the media's natural proportions instead of a fixed box, so a
+  // wide image isn't squeezed into a sliver and a tall one isn't stretched into
+  // a wall. `mediaAspect` is filled in from the <img> natural size / <video>
+  // metadata once the element is ready; until then a sensible default (3:2 image
+  // / 16:9 video) keeps the first paint reasonable.
+  let mediaAspect = 0;
+  const widthNow = () => root.clientWidth || 640;
+  const cap = () => {
+    const ih = typeof window !== 'undefined' ? window.innerHeight : 0;
+    return ih > 0 ? Math.round(ih * 0.6) : 720;
+  };
+  const applyHeight = (compact: boolean): void => {
+    let h: number;
+    const w = widthNow();
+    if (kind === 'image') {
+      const a = mediaAspect || 3 / 2;
+      // Compact thumbnail: a quiet strip (never under the floor). Full view:
+      // aspect-driven up to the 60vh cap so detail is actually visible.
+      h = compact ? Math.min(220, Math.max(MIN_BODY_HEIGHT, w / a)) : Math.min(cap(), Math.max(220, w / a));
+    } else if (kind === 'video') {
+      const a = mediaAspect || 16 / 9;
+      h = Math.min(cap(), Math.max(200, w / a));
+    } else if (kind === 'audio') {
+      h = 92; // a bare <audio> player — keep it to a slim strip
+    } else {
+      h = 360; // docs / text / html / pdf / office: a roomy scroll box
+    }
+    body.style.height = `${Math.round(h)}px`;
+  };
+  applyHeight(IMG_KINDS.has(kind)); // images open compact; everything else full
 
   const badge = document.createElement('span');
   badge.className = 'ipc-mode-badge';
@@ -126,20 +158,37 @@ export function createInlinePreviewCard(
   status.textContent = t('inlinePreviewLoading');
   body.appendChild(status);
 
-  // Image thumbnail expand / collapse.
+  // Image thumbnail expand / collapse. The stage STAYS visible in the collapsed
+  // (compact) state — hiding it zeroed the fit calculation and left an empty
+  // box instead of a real thumbnail. Collapsing just shrinks the body to its
+  // compact height and hides the zoom/rotate bar (styles.css
+  // .ipc-body[data-collapsed='1'] rules).
   const toggle = document.createElement('button');
   toggle.type = 'button';
   toggle.className = 'btn ghost icon tiny ipc-toggle';
   toggle.hidden = !IMG_KINDS.has(kind);
+  const refit = () => {
+    if (viewer) requestAnimationFrame(() => viewer?.fit?.());
+  };
   let imgCollapsed = IMG_KINDS.has(kind);
   const setCollapsed = (collapsed: boolean) => {
     imgCollapsed = collapsed;
-    body.style.height = collapsed ? `${THUMB_HEIGHT}px` : `${DEFAULT_BODY_HEIGHT}px`;
-    stage.style.display = collapsed ? 'none' : '';
+    body.dataset.collapsed = collapsed ? '1' : '';
+    applyHeight(collapsed);
     toggle.textContent = collapsed ? '⤢' : '⌃';
     toggle.title = collapsed ? t('inlinePreviewPreview') : t('inlinePreviewClose');
   };
-  toggle.addEventListener('click', () => setCollapsed(!imgCollapsed));
+  toggle.addEventListener('click', () => {
+    setCollapsed(!imgCollapsed);
+    refit();
+  });
+  // Click the thumbnail itself to expand. The toggle button collapses again.
+  stage.addEventListener('click', (e) => {
+    if (!IMG_KINDS.has(kind) || !imgCollapsed) return;
+    if ((e.target as HTMLElement).closest('.preview-image-btn')) return;
+    setCollapsed(false);
+    refit();
+  });
   if (IMG_KINDS.has(kind)) {
     body.appendChild(toggle);
     setCollapsed(imgCollapsed);
@@ -159,7 +208,7 @@ export function createInlinePreviewCard(
   });
   handle.addEventListener('pointermove', (e) => {
     if (!dragging) return;
-    const h = Math.min(maxH(), Math.max(THUMB_HEIGHT, startH + (startY - e.clientY)));
+    const h = Math.min(maxH(), Math.max(MIN_BODY_HEIGHT, startH + (startY - e.clientY)));
     body.style.height = `${h}px`;
   });
   const endDrag = () => {
@@ -170,6 +219,18 @@ export function createInlinePreviewCard(
   handle.addEventListener('pointerup', endDrag);
   handle.addEventListener('pointercancel', endDrag);
   body.appendChild(handle);
+
+  // Keep a media preview filling the (resizable) chat column: recompute the
+  // aspect-driven height when the card width changes. Height is a pure function
+  // of width, so the observer converges in a single pass.
+  let ro: ResizeObserver | null = null;
+  if ((kind === 'image' || kind === 'video') && typeof ResizeObserver !== 'undefined') {
+    ro = new ResizeObserver(() => {
+      applyHeight(IMG_KINDS.has(kind) ? imgCollapsed : false);
+      viewer?.fit?.();
+    });
+    ro.observe(root);
+  }
 
   // ── action row ───────────────────────────────────────────────────────
   const row = document.createElement('div');
@@ -196,7 +257,7 @@ export function createInlinePreviewCard(
   const aiNote = document.createElement('span');
   aiNote.className = 'ipc-ai-note';
   aiNote.textContent = t('inlinePreviewAiGenerated');
-  aiNote.hidden = !(opts.aiGenerated ?? true);
+  aiNote.hidden = !opts.aiGenerated; // default off — the model watermarks natively
   row.appendChild(aiNote);
   const prog = document.createElement('span');
   prog.className = 'ipc-progress';
@@ -219,8 +280,13 @@ export function createInlinePreviewCard(
   function dispose(): void {
     if (disposed) return;
     disposed = true;
+    ro?.disconnect();
+    ro = null;
     viewer?.dispose();
     viewer = null;
+    // Let wrappers (dedupe maps, re-render cleanup sweeps) drop their
+    // bookkeeping before the node leaves the DOM.
+    root.dispatchEvent(new CustomEvent('ipc:disposed'));
     root.remove();
   }
 
@@ -270,8 +336,36 @@ export function createInlinePreviewCard(
     status.remove();
     viewer = mountViewer(res);
     stage.appendChild(viewer); // viewer IS the element (ViewerHandle extends HTMLElement)
-    if (IMG_KINDS.has(kind)) setCollapsed(imgCollapsed);
-    else viewer.fit?.();
+    if (IMG_KINDS.has(kind)) {
+      // Re-drive the adaptive body height off the real image proportions once
+      // they're known, then fit the viewer into the freshly-sized stage.
+      const img = viewer.querySelector<HTMLImageElement>('img');
+      if (img) {
+        const onImgSize = (): void => {
+          mediaAspect = img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : mediaAspect;
+          setCollapsed(imgCollapsed);
+          refit();
+        };
+        if (img.complete && img.naturalWidth) onImgSize();
+        else img.addEventListener('load', onImgSize);
+      } else {
+        setCollapsed(imgCollapsed);
+      }
+    } else if (kind === 'video') {
+      const vid = viewer.querySelector<HTMLVideoElement>('video');
+      if (vid) {
+        const onMeta = (): void => {
+          mediaAspect = vid.videoWidth && vid.videoHeight ? vid.videoWidth / vid.videoHeight : mediaAspect;
+          applyHeight(false);
+          refit();
+        };
+        if (vid.videoWidth) onMeta();
+        else vid.addEventListener('loadedmetadata', onMeta);
+      }
+      viewer.fit?.();
+    } else {
+      viewer.fit?.();
+    }
   }
 
   void mount();

@@ -23,7 +23,8 @@ import { openPath as previewOpenPath, close as previewClose, toggleFullscreen, g
 import { mountDocDock } from './preview/dock.js';
 import { mountBrowserTabs, type BrowserTabs } from './browser-tab.js';
 import { mountRsideTabs, type RsideTabsHandle } from './rside-tabs.js';
-import { createInlinePreviewCard } from './preview/inline.js';
+import { createInlinePreviewCard, type InlinePreviewCard } from './preview/inline.js';
+import { findPreviewablePaths, partitionPreviewPaths } from './preview/paths.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 import { hydrateIcons, iconEl } from './icons.js';
 
@@ -1343,33 +1344,8 @@ interface ToolCardRec {
   resultText: string;
   /** args recorded at tool_call_start so tool_result can detect previewable paths. */
   args?: unknown;
-  /** Previewable path detected at tool_result; hydrated into the card on first expand. */
-  previewPath?: string;
 }
 const toolCards = new Map<number, ToolCardRec>();
-
-/**
- * Extract the first previewable absolute path from a tool's args or result.
- * Returns the path if found (and it is previewable); undefined otherwise.
- */
-function findPreviewablePath(args: unknown, content: string): string | undefined {
-  const candidates: string[] = [];
-  // 1. Look in structured args (path / file / filename / file_path fields).
-  if (args && typeof args === 'object') {
-    for (const key of ['path', 'file', 'filename', 'file_path', 'target']) {
-      const v = (args as Record<string, unknown>)[key];
-      if (typeof v === 'string' && v.length > 0) candidates.push(v);
-    }
-  }
-  // 2. Look in result content for backticked absolute paths.
-  const re = /`((?:[A-Za-z]:\\|\/|~\/)[^`\s]+)`/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content)) !== null) candidates.push(m[1]);
-  for (const p of candidates) {
-    if (isPreviewable(classify(p))) return p;
-  }
-  return undefined;
-}
 
 /** Slash-log entries for the active session, re-inserted after every history
  *  re-render (resume / load-earlier) so collapsible cards track their anchor. */
@@ -1851,13 +1827,9 @@ function addToolCard(event: Extract<AgentEvent, { type: 'tool_call_start' }>): v
       rec.card.appendChild(resultEl);
       rec.resultEl = resultEl;
     }
-    // hydrate a deferred preview strip (tool_result arrived while collapsed)
-    if (!collapsed && rec.previewPath && !card.querySelector('.tool-preview-strip')) {
-      const strip = document.createElement('div');
-      strip.className = 'tool-preview-strip';
-      card.appendChild(strip);
-      void createInlinePreviewCard(rec.previewPath, getUiLang(), { after: strip, aiGenerated: true });
-    }
+    // Deferred preview paths (recorded on `dataset.previewPaths` while the card
+    // was collapsed) are mounted by the single delegated expand listener below,
+    // so this handler stays focused on result hydration only.
   });
   scrollToBottom();
 }
@@ -1872,7 +1844,7 @@ function addFileChip(file: Extract<AgentEvent, { type: 'file_ready' }>): void {
   });
   messagesEl.appendChild(chip);
   // Inline preview card appears below the chip in the chat stream.
-  void createInlinePreviewCard(file.path, getUiLang(), { after: chip });
+  openInlinePreviewCard(chip, file.path);
   scrollToBottom();
 }
 
@@ -2168,10 +2140,6 @@ function handleEvent(event: AgentEvent): void {
     case 'tool_result': {
       const rec = toolCards.get(event.index);
       if (rec) {
-        // Detect a previewable path in args or content and mount an inline card.
-        const previewPath = !event.isError
-          ? findPreviewablePath(rec.args, event.content)
-          : undefined;
         // Artifact skills return an envelope — mount the preview card directly
         // (no truncation, no collapse) so the product is visible immediately.
         if (!event.isError) {
@@ -2197,14 +2165,24 @@ function handleEvent(event: AgentEvent): void {
             ? event.content.slice(0, 4000) + '\n… (truncated)'
             : event.content;
         rec.card.classList.toggle('error', !!event.isError);
-        // Record a previewable path; hydrate immediately if the card is already
-        // expanded, otherwise the expand handler below handles it.
-        if (previewPath && !rec.previewPath) rec.previewPath = previewPath;
-        if (previewPath && !rec.card.classList.contains('collapsed')) {
-          const strip = document.createElement('div');
-          strip.className = 'tool-preview-strip';
-          rec.card.appendChild(strip);
-          void createInlinePreviewCard(previewPath, getUiLang(), { after: strip, aiGenerated: true });
+        // Detect every previewable path in args or content. When the card is
+        // already expanded, mount them all now. When collapsed, record them on
+        // `dataset.previewPaths` so the single delegated expand listener mounts
+        // them lazily (and the main-process token store isn't flooded at render
+        // time). No paths survive on an error result.
+        if (!event.isError) {
+          const plan = partitionPreviewPaths(findPreviewablePaths(rec.args, event.content));
+          const all = [...plan.eager, ...plan.deferred];
+          if (all.length) {
+            if (!rec.card.classList.contains('collapsed')) {
+              const strip = document.createElement('div');
+              strip.className = 'tool-preview-strip';
+              rec.card.appendChild(strip);
+              for (const p of all) openInlinePreviewCard(strip, p);
+            } else {
+              stampDeferredPreviews(rec.card, all);
+            }
+          }
         }
         if (rec.card.classList.contains('collapsed')) {
           // Card still collapsed — defer the DOM write until first expand.
@@ -2461,6 +2439,125 @@ function errText(e: unknown): string {
 let streamRenderTimer: ReturnType<typeof setTimeout> | null = null;
 const STREAM_MD_MAX = 12000;
 
+// ---------- inline preview cards (dedupe + token hygiene) ----------
+//
+// One live card per file path: re-clicking the same file scrolls to the
+// existing card instead of stacking duplicates, and every transcript
+// re-render disposes the cards so their preview tokens are revoked (the
+// kernel's token map is capped at 32; undisposed cards would silently evict
+// each other once the user clicks through a handful of files).
+
+const liveInlineCards = new Map<string, InlinePreviewCard>();
+
+/** Open (or reveal) the inline preview card for `path` below `after`. */
+function openInlinePreviewCard(
+  after: HTMLElement,
+  path: string,
+  opts: { aiGenerated?: boolean; scrollIntoView?: boolean } = {},
+): void {
+  const existing = liveInlineCards.get(path);
+  if (existing && existing.root.isConnected) {
+    // Reveal the live card instead of stacking a duplicate. Only user
+    // actions (scrollIntoView: true) page to it — history restoration must
+    // not yank the transcript while it is rendering.
+    if (opts.scrollIntoView) {
+      existing.root.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+    return;
+  }
+  const card = createInlinePreviewCard(path, getUiLang(), {
+    after,
+    aiGenerated: opts.aiGenerated,
+    scrollIntoView: opts.scrollIntoView,
+  });
+  liveInlineCards.set(path, card);
+  card.root.addEventListener(
+    'ipc:disposed',
+    () => {
+      if (liveInlineCards.get(path) === card) liveInlineCards.delete(path);
+    },
+    { once: true },
+  );
+}
+
+/** Dispose every live inline card. Call BEFORE `#messages` is wiped. */
+function disposeAllInlineCards(): void {
+  for (const card of liveInlineCards.values()) card.dispose();
+  liveInlineCards.clear();
+}
+
+// Chat images (hydrated local refs, `data-preview-path`) open an inline
+// preview card below the triggering message. One delegated listener covers
+// streamed, history and re-rendered nodes alike; data:/blob: images carry no
+// path and stay inert.
+messagesEl.addEventListener('click', (e) => {
+  const target = (e.target as HTMLElement | null)?.closest?.('img[data-preview-path]') as HTMLElement | null;
+  if (!target || target.closest('.inline-preview-card')) return; // never nest a card in a card
+  const path = target.dataset.previewPath!;
+  if (!isPreviewable(classify(path))) return;
+  e.preventDefault();
+  const anchor =
+    target.closest<HTMLElement>('.msg') ??
+    target.closest<HTMLElement>('.file-chip') ??
+    target.closest<HTMLElement>('.tool-card') ??
+    target.parentElement;
+  if (!anchor) return;
+  openInlinePreviewCard(anchor, path, { scrollIntoView: true });
+});
+
+/**
+ * Record deferred preview paths on a tool card so they can be mounted lazily on
+ * first expand. The paths are kept on `dataset.previewPaths` (machine-readable)
+ * plus a visible `👁` hint in the header (no i18n — the tooltip is the raw path
+ * list, which needs no translation). A no-op when there is nothing deferred.
+ */
+function stampDeferredPreviews(card: HTMLElement, deferred: string[]): void {
+  if (!deferred.length) return;
+  card.dataset.previewPaths = JSON.stringify(deferred);
+  const header = card.querySelector<HTMLElement>('.tool-header');
+  if (!header || card.querySelector('.tool-preview-hint')) return;
+  const hint = document.createElement('span');
+  hint.className = 'tool-preview-hint';
+  hint.textContent = deferred.length > 1 ? `👁 ${deferred.length}` : '👁';
+  hint.title = deferred.join('\n');
+  header.appendChild(hint);
+}
+
+/**
+ * Mount the deferred preview cards recorded on an expanded tool card.
+ *
+ * One delegated listener covers both live cards (which may store deferred
+ * paths while collapsed) and history-restored cards (which always start
+ * collapsed). The bubble order guarantees this runs AFTER the card's own
+ * toggle handler, so it only ever sees the post-toggle `collapsed` state and
+ * therefore only mounts when the card is expanded. The
+ * `.tool-preview-strip` guard makes it idempotent against repeated toggles
+ * and against cards that already mounted their previews eagerly.
+ */
+messagesEl.addEventListener('click', (e) => {
+  const header = (e.target as HTMLElement | null)?.closest?.('.tool-header');
+  const card = header?.closest<HTMLElement>('.tool-card');
+  if (!card || card.classList.contains('collapsed')) return;
+  if (card.querySelector('.tool-preview-strip')) return;
+  const raw = card.dataset.previewPaths;
+  if (!raw) return;
+  let paths: string[];
+  try {
+    paths = JSON.parse(raw) as string[];
+  } catch {
+    delete card.dataset.previewPaths;
+    return;
+  }
+  const strip = document.createElement('div');
+  strip.className = 'tool-preview-strip';
+  card.appendChild(strip);
+  for (const p of paths) openInlinePreviewCard(strip, p);
+  delete card.dataset.previewPaths;
+  // The hint badge's job was to advertise the hidden previews; now that they
+  // are visible, drop it so the header doesn't keep showing "👁 N".
+  card.querySelector('.tool-preview-hint')?.remove();
+});
+
 /**
  * Post-render pass: make backticked absolute paths that are previewable into
  * clickable spans that open an inline preview card below the current message.
@@ -2478,7 +2575,7 @@ function linkifyPreviewPaths(container: HTMLElement): void {
     span.addEventListener('click', (e) => {
       e.stopPropagation();
       const msgEl = container.closest<HTMLElement>('.msg') ?? container.parentElement;
-      if (msgEl) void createInlinePreviewCard(text, getUiLang(), { after: msgEl, aiGenerated: true });
+      if (msgEl) openInlinePreviewCard(msgEl, text, { scrollIntoView: true });
     });
     el.replaceWith(span);
   }
@@ -2867,6 +2964,7 @@ function addSessionRow(s: SessionInfo, pinned: boolean, activeId?: string): void
         // view; the core agent's current session is unset by deleteSession,
         // so the next message lazily starts a fresh session (chat()).
         currentSessionId = '';
+        disposeAllInlineCards();
         messagesEl.innerHTML = '';
         toolCards.clear();
         tasks.clear();
@@ -3042,27 +3140,50 @@ function renderHistoryRow(m: StoredMsg, toolCallInfoMap?: Map<string, ToolCallIn
     }
   } else if (m.role === 'tool' && m.content) {
     const tcId = String(m.toolCallId ?? '');
+    const content = String(m.content);
+    // The tool-call args (name + args) live on the assistant row, keyed by the
+    // same tool_call_id. Some tools (get_file_info, read_text_file, …) return
+    // ONLY metadata and never echo the path in the result text, so the path is
+    // recoverable solely from `args`. Always look up the args, not just the
+    // name, so inspection-style tools restore their preview too.
+    const tcInfo = toolCallInfoMap?.get(tcId);
     const existingCard = tcId ? messagesEl.querySelector(`[data-tool-call-id="${tcId}"]`) : null;
+    let anchorEl: HTMLElement;
     if (existingCard) {
       const resultEl = document.createElement('div');
       resultEl.className = 'tool-result hidden';
-      resultEl.textContent = String(m.content);
+      resultEl.textContent = content;
       existingCard.appendChild(resultEl);
+      anchorEl = existingCard as HTMLElement;
     } else {
-      const tcInfo = toolCallInfoMap?.get(tcId);
-      addToolResultBlock(String(m.content), tcInfo?.name);
+      anchorEl = addToolResultBlock(content, tcInfo?.name);
+    }
+    // Restore generated-media previews in history: file_ready only lives for
+    // the live turn, so without this the produced file disappears on reload and
+    // only the backticked path text is left behind. Pass the original args so
+    // tools whose result text omits the path (get_file_info & friends) still
+    // restore. Images mount eagerly (their thumbnail is the content); every
+    // other previewable kind is recorded on the card and mounted lazily on
+    // first expand, so a result listing many files never requests a token for
+    // all of them at render time.
+    const plan = partitionPreviewPaths(findPreviewablePaths(tcInfo?.args, content));
+    for (const p of plan.eager) openInlinePreviewCard(anchorEl, p);
+    if (plan.deferred.length && anchorEl.classList.contains('tool-card')) {
+      stampDeferredPreviews(anchorEl, plan.deferred);
     }
   }
 }
 
 /** Collapsed tool-result card for restored history rows.
  *  Content hydrates on first expand.
- *  Artifact envelopes skip the collapse entirely and render the preview card. */
-function addToolResultBlock(content: string, toolName?: string): void {
+ *  Artifact envelopes skip the collapse entirely and render the preview card.
+ *  Returns the element the caller can anchor further content (preview cards)
+ *  after. */
+function addToolResultBlock(content: string, toolName?: string): HTMLElement {
   const artifactEl = tryMountArtifact(content);
   if (artifactEl) {
     messagesEl.appendChild(artifactEl);
-    return;
+    return artifactEl;
   }
   const card = document.createElement('div');
   card.className = 'tool-card collapsed';
@@ -3095,6 +3216,7 @@ function addToolResultBlock(content: string, toolName?: string): void {
       result.classList.add('hidden');
     }
   });
+  return card;
 }
 
 /** Largeness threshold: above this we render the slash card collapsed by default
@@ -3195,6 +3317,7 @@ async function refreshSlashLog(sessionId: string): Promise<void> {
 /** Rebuild the visible history window from the loaded rows. `scroll=false`
  *  preserves the caller's scroll position (used when prepending older rows). */
 function renderMessageWindow(scroll = true): void {
+  disposeAllInlineCards();
   messagesEl.innerHTML = '';
   toolCards.clear();
   tasks.clear();
@@ -3408,6 +3531,7 @@ async function startNewSession(): Promise<void> {
   // A background-job hold on the current session must NOT block a new session
   // (jobs keep running in the background); only renderer-owned work does.
   if (ownsWork()) return;
+  disposeAllInlineCards();
   messagesEl.innerHTML = '';
   toolCards.clear();
   tasks.clear();
@@ -3460,6 +3584,7 @@ async function startOrResumeLatestSession(): Promise<void> {
 function resetViewState(): void {
   setFrozen(false); // the per-session freeze lives and dies with the session
   if (curAssistant) curAssistant.stream.classList.remove('streaming');
+  disposeAllInlineCards();
   messagesEl.innerHTML = '';
   toolCards.clear();
   tasks.clear();
@@ -3911,6 +4036,7 @@ async function closeTabs(sessionIds: string[], keepId?: string): Promise<void> {
   activeTurnLive = false;
   drainHold = false;
   notifyActiveSessionChanged('');
+  disposeAllInlineCards();
   messagesEl.innerHTML = '';
   toolCards.clear();
   tasks.clear();

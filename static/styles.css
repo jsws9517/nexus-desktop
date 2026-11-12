@@ -1061,6 +1061,7 @@ body {
 .tool-name { color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-args { color: var(--text-dim); margin-top: 4px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: hidden; }
 .tool-result { margin-top: 6px; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 6px; }
+.tool-preview-hint { margin-left: auto; color: var(--text-dim); font-size: 12px; line-height: 1; flex-shrink: 0; cursor: help; }
 .tool-card.collapsed .tool-args,
 .tool-card.collapsed .tool-result,
 .tool-card.collapsed .tool-preview-strip { display: none; }
@@ -3618,7 +3619,8 @@ textarea:focus-visible,
   font-size: 12px;
 }
 
-/* body — full-bleed, default 340px, drag to 70vh */
+/* body — full-bleed, height set inline to hug the media's aspect ratio
+   (capped ~60vh, floored so nothing reads as a sliver); drag handle to 70vh */
 .ipc-body {
   position: relative;
   overflow: auto;
@@ -3632,8 +3634,12 @@ textarea:focus-visible,
   justify-content: center;
   overflow: auto;
 }
-/* image thumbnail mode */
-.ipc-body[data-collapsed='1'] .ipc-stage { display: none; }
+/* image thumbnail mode — the collapsed card shows a REAL 120px contained
+   thumbnail (stage stays visible, CSS contain-clamps the image; the
+   zoom/rotate bar is hidden to keep the strip quiet). */
+.ipc-body[data-collapsed='1'] .preview-image-bar { display: none; }
+.ipc-body[data-collapsed='1'] .ipc-stage .preview-viewer { height: 100%; max-height: 100%; }
+.ipc-body[data-collapsed='1'] .ipc-stage .preview-viewer img { max-height: 100%; }
 /* the viewer element itself is full-bleed inside the stage */
 .ipc-stage .preview-viewer {
   width: 100%;

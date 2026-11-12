@@ -23,17 +23,31 @@ function escapeHtml(s: string): string {
 const LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
 const IMG_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
 
+/** True when the image target is an absolute local filesystem path.
+ *  (IMG_RE excludes spaces, so the matched text is already one token.) */
+export function isAbsoluteLocalPath(url: string): boolean {
+  if (/^[A-Za-z]:[\\/]/.test(url)) return true; // C:\… or C:/…
+  if (url.startsWith('\\\\')) return true; // UNC share
+  if (url.startsWith('/')) return true; // POSIX
+  return false;
+}
+
 export function renderInline(src: string): string {
   // Escape first so headings/plain lines/cells are always safe; callers that
   // previously pre-escaped (escapeHtml) no longer need to.
   const safe = esc(src);
-  // Images first (data:/blob: inline, local paths get a data-src for hydration).
+  // Images first (data:/blob:/http inline, local paths get a data-src for
+  // hydration).
   let out = safe.replace(IMG_RE, (m, alt, url) => {
     if (/^(data:image\/|blob:|https?:\/\/)/.test(url)) {
       return `<img alt="${alt}" src="${url}" loading="lazy" />`;
     }
-    if (url.startsWith('local:')) {
-      return `<img alt="${alt}" data-src="${url.slice(6)}" loading="lazy" />`;
+    // Local references: the explicit `local:` prefix, plus raw absolute paths
+    // (Windows drive / UNC / POSIX) that tools or models emit — those need
+    // IPC hydration, not a same-origin <img>.
+    if (url.startsWith('local:') || isAbsoluteLocalPath(url)) {
+      const ref = url.startsWith('local:') ? url.slice(6) : url;
+      return `<img alt="${alt}" data-src="${ref}" loading="lazy" />`;
     }
     return m;
   });
@@ -222,12 +236,15 @@ export function attachCodeCopy(container: HTMLElement): void {
  * Resolve `<img data-src="path">` (local images the core referenced) to data
  * URLs via the main process. Only images that are already in the DOM get
  * hydrated; failures leave the placeholder (or remove the broken node).
+ * Every hydrated node keeps `data-preview-path` so the chat's delegated
+ * click handler can open an inline preview card for it.
  */
 export function hydrateImages(container: HTMLElement): void {
   container.querySelectorAll<HTMLImageElement>('img[data-src]').forEach((img) => {
     if (img.dataset.hydrated) return;
     img.dataset.hydrated = '1';
     const path = img.dataset.src!;
+    img.dataset.previewPath = path;
     const api = (window as unknown as { nexusDesktop?: { readImagePreview?: (p: string) => Promise<string> } })
       .nexusDesktop;
     if (!api?.readImagePreview) {
