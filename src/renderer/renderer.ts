@@ -7,6 +7,7 @@ import { formatSpeed } from '../shared/update-sources.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError, onI18nApplied } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
 import { classify, isPreviewable } from '../shared/preview.js';
+import type { ParsedDocument } from '../shared/preview-docs.js';
 import { tryMountArtifact } from './artifacts/index.js';
 import { TaskStatusCard, initTaskStatusCardTooltips } from './components/TaskStatusCard.js';
 import type { SubTaskResult, SubTaskStatus } from '../agent/types.js';
@@ -336,6 +337,10 @@ declare global {
       previewClose(token: string): Promise<{ ok: boolean; error?: string }>;
       previewRead(token: string, maxBytes?: number): Promise<{
         ok: boolean; text?: string; truncated?: boolean; error?: string;
+      }>;
+      // PR3 document preview — main-process parse of docx/xlsx/pptx.
+      previewDocument(path: string, body?: string): Promise<{
+        ok: boolean; source?: 'parse' | 'cache' | 'artifact'; doc?: ParsedDocument; error?: string;
       }>;
       // PR2 browser tab — WebContentsView manager (main-process owned).
       webviewOpen(

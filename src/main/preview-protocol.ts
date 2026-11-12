@@ -56,7 +56,10 @@ const DANGEROUS_EXT = new Set([
   '.sh', '.bash', '.zsh', '.run', '.bin', '.desktop', '.command',
 ]);
 
-async function isInsideAllowed(realPath: string): Promise<boolean> {
+/** True when the canonical path lives inside an allowed preview root.
+ *  Exported for the document-preview handler (src/main/preview-docs.ts) so
+ *  both surfaces share one containment policy. */
+export async function isInsideAllowed(realPath: string): Promise<boolean> {
   const roots = await liveAllowedRoots();
   const norm = realPath.replace(/\\/g, '/').toLowerCase();
   return roots.some((root) => norm === root || norm.startsWith(root + '/'));

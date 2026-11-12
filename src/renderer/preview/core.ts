@@ -23,6 +23,9 @@ import { mountVideoViewer } from './viewers/video.js';
 import { mountPdfViewer } from './viewers/pdf.js';
 import { mountHtmlViewer } from './viewers/html.js';
 import { mountTextViewer } from './viewers/text.js';
+import { mountDocxViewer } from './viewers/docx.js';
+import { mountXlsxViewer } from './viewers/xlsx.js';
+import { mountPptxViewer } from './viewers/pptx.js';
 import { mountFallbackView } from './viewers/fallback.js';
 
 /**
@@ -120,9 +123,9 @@ export function mountViewer(state: PreviewState): MountedViewer {
     case 'html':     el = mountHtmlViewer(state); break;
     case 'markdown':
     case 'text':     el = mountTextViewer(state); break;
-    case 'docx':
-    case 'pptx':
-    case 'xlsx':
+    case 'docx':     el = mountDocxViewer(state); break;
+    case 'xlsx':     el = mountXlsxViewer(state); break;
+    case 'pptx':     el = mountPptxViewer(state); break;
     default:         el = mountFallbackView(state); break;
   }
   const handle = el as unknown as ViewerHandle;

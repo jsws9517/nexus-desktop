@@ -154,6 +154,14 @@ const api = {
     ipcRenderer.invoke('nexus:previewRead', { token, maxBytes }) as Promise<{
       ok: boolean; text?: string; truncated?: boolean; error?: string;
     }>,
+  // PR3 document preview — main-process parse (renderer is CSP-restricted).
+  // Optional `body` implements the artifact-body-first shortcut: when the
+  // office-write tool already returned the document text, skip the OOXML
+  // re-parse and build the model straight from it.
+  previewDocument: (path: string, body?: string) =>
+    ipcRenderer.invoke('nexus:previewDocument', { path, body }) as Promise<{
+      ok: boolean; source?: string; doc?: unknown; error?: string;
+    }>,
 
   // PR2 browser tab — WebContentsView manager (main-process owned, isolated
   // session partition; local files bypass this via the nexus-preview iframe).

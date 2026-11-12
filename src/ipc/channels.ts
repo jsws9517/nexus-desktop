@@ -77,6 +77,8 @@ export const CHANNELS = {
   previewOpen: 'nexus:previewOpen',
   previewClose: 'nexus:previewClose',
   previewRead: 'nexus:previewRead',
+  // PR3 document parsing (docx/xlsx/pptx → normalized model, main-side LRU).
+  previewDocument: 'nexus:previewDocument',
   // PR2 browser tab — WebContentsView manager (main-process owned, isolated
   // session partition so external content never shares origin/cookies with
   // the app renderer; local files bypass this entirely via the

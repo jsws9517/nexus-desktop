@@ -3742,3 +3742,241 @@ textarea:focus-visible,
 .tool-preview-strip {
   /* anchor element inside tool-card; the inline card is inserted after it */
 }
+
+/* ── PR3 doc-canvas — document layout system for docx/xlsx/pptx viewers ── */
+/* The canvas follows the active theme: dark canvas on dark themes,
+   paper-white on light themes. HTML / iframe viewers intentionally keep
+   their own theme (no doc-canvas). */
+.preview-doc-viewer {
+  display: block;
+  overflow: auto;
+  background: var(--doc-bg, var(--bg-panel));
+  color: var(--doc-fg, var(--text));
+}
+.doc-canvas {
+  --doc-pad: 28px;
+  --doc-title-size: 26px;
+  --doc-title-lh: 1.25;
+  --doc-title-weight: 600;
+  --doc-eyebrow-size: 12px;
+  --doc-eyebrow-ls: 0.18em;
+  --doc-h2-size: 18px;
+  --doc-h2-lh: 1.45;
+  --doc-h2-weight: 600;
+  --doc-body-size: 15px;
+  --doc-body-lh: 1.8;
+  --doc-mono-size: 12.5px;
+  --doc-mono-lh: 1.7;
+  --doc-rule: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  --doc-kpi-min: 140px;
+
+  box-sizing: border-box;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--doc-pad);
+  font-size: var(--doc-body-size);
+  line-height: var(--doc-body-lh);
+  min-height: 100%;
+}
+.doc-canvas .doc-eyebrow {
+  font-size: var(--doc-eyebrow-size);
+  letter-spacing: var(--doc-eyebrow-ls);
+  text-transform: uppercase;
+  opacity: 0.72;
+  margin-bottom: 6px;
+}
+.doc-canvas .doc-title {
+  font-size: var(--doc-title-size);
+  line-height: var(--doc-title-lh);
+  font-weight: var(--doc-title-weight);
+  margin: 0 0 10px;
+}
+.doc-canvas .doc-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--doc-kpi-min), 1fr));
+  gap: 24px 40px;
+  margin: 14px 0 18px;
+}
+.doc-canvas .doc-kpi { border-top: var(--doc-rule); padding-top: 8px; }
+.doc-canvas .doc-kpi-label { font-size: 12px; opacity: 0.72; }
+.doc-canvas .doc-kpi-value { font-size: 20px; font-weight: 600; }
+.doc-canvas .doc-body { margin-top: 16px; border-top: var(--doc-rule); padding-top: 16px; }
+
+/* docx blocks */
+.doc-canvas .doc-p { margin: 0 0 0.9em; }
+.doc-canvas .doc-h {
+  font-weight: var(--doc-h2-weight);
+  line-height: var(--doc-h2-lh);
+  margin: 1.3em 0 0.5em;
+}
+.doc-canvas .doc-h[data-level='1'] { font-size: calc(var(--doc-h2-size) + 3px); }
+.doc-canvas .doc-h[data-level='2'] { font-size: var(--doc-h2-size); }
+.doc-canvas .doc-h[data-level='3'],
+.doc-canvas .doc-h[data-level='4'],
+.doc-canvas .doc-h[data-level='5'],
+.doc-canvas .doc-h[data-level='6'] { font-size: calc(var(--doc-h2-size) - 2px); }
+.doc-canvas .doc-table { border-collapse: collapse; width: 100%; margin: 14px 0; }
+.doc-canvas .doc-table th,
+.doc-canvas .doc-table td {
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.doc-canvas .doc-table th { font-weight: 600; background: color-mix(in srgb, currentColor 5%, transparent); }
+
+/* xlsx: mono table, right-aligned numbers, sticky header inside the wrap */
+.doc-canvas .doc-table-wrap { overflow: auto; max-height: 60vh; border: var(--doc-rule); border-radius: 6px; }
+.doc-canvas .doc-xlsx-table { font-family: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace; font-size: var(--doc-mono-size); line-height: var(--doc-mono-lh); }
+.doc-canvas .doc-xlsx-table th { position: sticky; top: 0; }
+.doc-canvas .doc-xlsx-table td.num { text-align: right; }
+.doc-canvas .doc-sheet-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.doc-canvas .doc-sheet-tab {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: var(--doc-rule);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.doc-canvas .doc-sheet-tab.active { background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: var(--accent); font-weight: 600; }
+.doc-canvas .doc-note { font-size: 12px; opacity: 0.72; margin-top: 10px; }
+.doc-canvas .doc-loading { font-size: 13px; opacity: 0.6; padding: 24px 0; }
+.doc-canvas .preview-error { font-size: 13px; color: var(--danger); padding: 8px 0; }
+
+/* pptx slide pager */
+.doc-canvas .doc-slide-pager { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
+.doc-canvas .doc-slide-btn {
+  width: 26px; height: 26px;
+  border: var(--doc-rule);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.doc-canvas .doc-slide-btn:disabled { opacity: 0.35; cursor: default; }
+.doc-canvas .doc-slide-counter { font-size: 13px; opacity: 0.72; font-variant-numeric: tabular-nums; }
+.doc-canvas .doc-slide { border-top: var(--doc-rule); padding-top: 18px; min-height: 120px; }
+.doc-canvas .doc-slide-image { max-width: 100%; max-height: 320px; border: var(--doc-rule); border-radius: 6px; margin-bottom: 14px; }
+.doc-canvas .doc-slide-title { font-size: 22px; font-weight: 600; line-height: 1.3; margin: 0 0 10px; }
+.doc-canvas .doc-slide-bullets { margin: 0; padding-left: 18px; }
+.doc-canvas .doc-slide-bullets li { margin: 4px 0; }
+
+/* Paper-white canvas on the light themes. */
+html[data-theme='light'] .preview-doc-viewer,
+html[data-theme='cartoon'] .preview-doc-viewer,
+html[data-theme='cream'] .preview-doc-viewer,
+html[data-theme='matcha'] .preview-doc-viewer {
+  --doc-bg: #fdfdfb;
+  --doc-fg: #23242a;
+}
+
+/* ── PR3 media viewer enhancements ─────────────────────────────────────── */
+
+/* pdf: host-side zoom bar; page / zoom / search stay native in the iframe */
+.preview-pdf-viewer { display: flex; flex-direction: column; overflow: hidden; }
+.preview-pdf-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+.preview-pdf-zoom-btn {
+  width: 24px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.preview-pdf-zoom-btn:hover { border-color: var(--accent); }
+.preview-pdf-zoom-label { font-size: 11px; color: var(--text-dim); min-width: 40px; text-align: center; }
+.preview-pdf-wrap { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; }
+.preview-pdf-viewer .preview-pdf-wrap > iframe { flex-shrink: 0; }
+
+/* image: rotate/fit bar + checkerboard behind transparent pixels */
+.preview-image-viewer { display: flex; flex-direction: column; overflow: hidden; }
+.preview-image-bar {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+.preview-image-btn {
+  width: 26px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.preview-image-btn:hover { border-color: var(--accent); }
+.preview-image-stage { flex: 1; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+/* The checkerboard paints on the <img> itself, so it shows through only
+   transparent regions (PNG/WebP/SVG alpha), never under opaque pixels. */
+.preview-image-stage img.preview-img {
+  background-image:
+    linear-gradient(45deg, rgba(128, 128, 128, 0.20) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(128, 128, 128, 0.20) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(128, 128, 128, 0.20) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(128, 128, 128, 0.20) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+/* text: search bar + line-number gutter, mono throughout */
+.preview-text-viewer { display: flex; flex-direction: column; padding: 0; overflow: hidden; max-height: none; }
+.preview-text-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+.preview-text-search-input {
+  flex: 1;
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text);
+}
+.preview-text-search-count { font-size: 10px; color: var(--text-dim); min-width: 64px; text-align: right; }
+.preview-text-body {
+  flex: 1; min-height: 0;
+  overflow: auto;
+  display: flex;
+  font-family: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--bg);
+}
+.preview-text-gutter {
+  margin: 0;
+  padding: 8px 8px 8px 10px;
+  user-select: none;
+  text-align: right;
+  color: var(--text-dim);
+  opacity: 0.6;
+  border-right: 1px solid var(--border);
+  min-width: 36px;
+  white-space: pre;
+  flex-shrink: 0;
+}
+.preview-text-content { margin: 0; padding: 8px 10px; white-space: pre; color: var(--text); flex: 1; }
+.preview-text-line { display: block; }
+.preview-text-content mark.preview-text-match { background: var(--warn); color: #1a1b1e; border-radius: 2px; }
