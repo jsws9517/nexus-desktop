@@ -11,14 +11,22 @@
 //   init({ cwd })        — full init (MCP/skills)
 //   chat({ input })      — run one agent turn (the automation prompt)
 //   startSession()       — create a new session id
+//   setAutomationProfile({ profile }) — pin office tools for the run's rounds
 //   getStatus()          — provider/model/busy
 //   shutdown             — flush + exit
 //
-// The automation profile (tool allowlist) is enforced in-process by the
-// desktop's AgentService when the host sets it via the `setAutomationProfile`
-// RPC (added in T6). Until that RPC lands, the worker uses the default tool
-// set and the profile restriction is a no-op (roadmap T7 adds the native
-// package that enforces it).
+// The automation profile is enforced in-process by the desktop's AgentService
+// via the `setAutomationProfile` RPC: while the profile is active, every
+// round's tool selection pins the deterministic office tool families
+// (AUTOMATION_OFFICE_PINS in src/tools/tool-relevance.ts) so a headless run
+// never loses the office read/write tools its one-shot prompt depends on.
+// The runner (src/main/automation-runner.ts) sends it right after
+// startSession, with the automation's stored `profile` value.
+// (A full per-profile tool ALLOWLIST — e.g. hard-denying exec_command in
+// unattended runs — is the planned follow-up: the core's
+// buildAutomationToolWhitelist (nexus-coder/src/automation/profile.ts) is
+// ready for it. This wiring lands the non-breaking half: office tools stay
+// reachable.)
 
 import './bootstrap/register.js';
 import readline from 'node:readline';
@@ -32,6 +40,7 @@ type WorkerRequest =
   | { id: number; method: 'initAcp' }
   | { id: number; method: 'chat'; params: { input: string } }
   | { id: number; method: 'startSession'; params?: { name?: string; sessionId?: string } }
+  | { id: number; method: 'setAutomationProfile'; params?: { profile?: string } }
   | { id: number; method: 'getStatus' }
   | { id: number; method: 'shutdown' };
 
@@ -161,6 +170,17 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         (req as { params?: { sessionId?: string } }).params?.sessionId,
       );
       respond(req.id, { sessionId: sid });
+    } catch (e) {
+      respondError(req.id, e);
+    }
+    return;
+  }
+
+  if (req.method === 'setAutomationProfile') {
+    try {
+      const profile = (req as { params?: { profile?: string } }).params?.profile ?? null;
+      service.setAutomationProfile(profile);
+      respond(req.id, { ok: true, profile });
     } catch (e) {
       respondError(req.id, e);
     }

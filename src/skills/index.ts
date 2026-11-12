@@ -14,14 +14,17 @@ import type { ToolRegistry } from '../tools/types.js';
 import { SHEET_TOOLS, SHEET_TOOL_DEFS, callSheetTool } from './sheet.js';
 import { CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } from './chart.js';
 import { OFFICE_WRITE_TOOLS, OFFICE_WRITE_TOOL_DEFS, callOfficeWriteTool } from './office-write.js';
+import { OFFICE_READ_TOOLS, OFFICE_READ_TOOL_DEFS, callOfficeReadTool } from './office-read.js';
 
 export { SHEET_TOOLS, SHEET_TOOL_DEFS, callSheetTool } from './sheet.js';
 export { CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } from './chart.js';
 export { OFFICE_WRITE_TOOLS, OFFICE_WRITE_TOOL_DEFS, callOfficeWriteTool } from './office-write.js';
+export { OFFICE_READ_TOOLS, OFFICE_READ_TOOL_DEFS, callOfficeReadTool } from './office-read.js';
 
 /** Every office skill family served by the worker. */
 export const SKILL_REGISTRIES: ToolRegistry[] = [
   { id: 'sheet', defs: SHEET_TOOL_DEFS, call: callSheetTool },
   { id: 'chart', defs: CHART_TOOL_DEFS, call: callChartTool },
   { id: 'office-write', defs: OFFICE_WRITE_TOOL_DEFS, call: callOfficeWriteTool },
+  { id: 'office-read', defs: OFFICE_READ_TOOL_DEFS, call: callOfficeReadTool },
 ];

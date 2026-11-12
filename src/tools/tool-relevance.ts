@@ -143,6 +143,35 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
   'vault_search', 'vault_open', 'vault_write', 'inline_search',
 ]);
 
+/**
+ * Office tool families pinned into every automation (headless) round.
+ *
+ * An automation prompt is a one-shot CJK/English string with no mid-turn
+ * steering, and its intent ("生成当天的日报 Word 文档") may not literally
+ * repeat a tool's keywords on every round, so the relevance selector can drop
+ * the exact tools the run depends on (this is how the "no docx reader" dead
+ * end showed up: the model stalled on reading and never reached docx.write).
+ *
+ * When AgentService runs with an automation profile set (setAutomationProfile
+ * from the automation worker), this set is merged into the selector's `force`
+ * for the run's lifetime — pinned tools survive the cap and keyword misses.
+ * All names are deterministic native/file tools: no shell, no exec, no human
+ * confirmation — consistent with the automation invariant (roadmap #6:
+ * deny exec, prefer native office writers/readers in unattended runs).
+ */
+export const AUTOMATION_OFFICE_PINS: ReadonlySet<string> = new Set([
+  // office read (doc-extract extractor)
+  'docx.read',
+  'office.read',
+  // office write (office-write native package)
+  'docx.write',
+  'pptx.write',
+  'pdf.write',
+  // tabular read/write (exceljs, in-process)
+  'sheet.read',
+  'sheet.write',
+]);
+
 export interface ScoreOptions {
   /** Raw user input for this round (already includes any mid-turn steer). */
   input: string;

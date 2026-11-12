@@ -144,6 +144,67 @@ function buildDependencyPreflight(): AutomationPreflight {
 }
 
 /**
+ * Post-run outcome check for a completed (i.e. chat-resolved) automation run.
+ *
+ * The core runner marks ANY resolved factory run `succeeded` — a chat turn that
+ * ends normally after the agent stalled behind the unattended security gates
+ * counts the same as a finished job. That is how the "daily report" run got a
+ * green `succeeded` with an empty output directory: every docx-read attempt
+ * was gate-blocked, the model gave up after `mkdir`, no final report text
+ * ever arrived, and nothing verified the artifact.
+ *
+ * `verifyRunOutcome` catches exactly that degenerate shape and throws, which
+ * the core runner's catch turns into a `failed` run with a diagnostic
+ * summary. Deliberately narrow so it cannot create false failures:
+ *
+ *  - it only fires when the LAST assistant message carries no closing text —
+ *    a run that reported its result normally always passes;
+ *  - AND at least one tool result in the session's tail is an unattended-mode
+ *    security-gate block ("Unattended mode blocked …");
+ *  - it fails OPEN: an unreadable transcript (DB lock, schema drift, no rows)
+ *    is treated as "cannot verify" and the legacy lenient behaviour stands.
+ *
+ * `session-db` is loaded lazily (dynamic import): it statically pulls in
+ * better-sqlite3, and a broken native binding must not take the whole
+ * main-process module graph (and with it every automation IPC handler)
+ * down with it.
+ */
+async function verifyRunOutcome(aut: Automation, sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  let mod: typeof import('../session-db.js');
+  try {
+    mod = await import('../session-db.js');
+  } catch (err) {
+    logger.debug(
+      `[automation ${aut.id}] outcome check skipped (session-db unavailable): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+  const items = mod.getMessageLast(sessionId, 50).items;
+  if (items.length === 0) return;
+
+  const lastAssistant = [...items].reverse().find((m) => m.role === 'assistant');
+  const finalText = String(lastAssistant?.content ?? '').trim();
+  if (finalText) return; // the run closed with a report — success stands.
+
+  const GATE_BLOCK_RE =
+    /unattended mode blocked|blocked (hard|command)|not under git version control|access denied|permission denied|denied: /i;
+  let toolResults = 0;
+  let blocked = 0;
+  for (const m of items) {
+    if (m.role !== 'tool') continue;
+    toolResults += 1;
+    if (GATE_BLOCK_RE.test(String(m.content ?? ''))) blocked += 1;
+  }
+  if (blocked === 0) return; // silent-but-unblocked ending — legacy lenient pass.
+
+  throw new Error(
+    `run ended without a closing report: ${blocked}/${toolResults} tool call(s) blocked by the unattended security gate, no final output (session ${sessionId}). ` +
+      `Artifact not verified — treat as failed. Check the run session for the gate blocks (git baseline / script-file escape) and re-run.`,
+  );
+}
+
+/**
  * The factory the runner consults to execute each automation run: spawn a
  * headless automation-worker, run the prompt, stop it. Isolated from the
  * user's open tabs by design.
@@ -179,8 +240,25 @@ function createAgentFactory() {
         sessionId = res?.sessionId ?? '';
         if (sessionId) inFlightWorkers.set(sessionId, worker);
 
+        // Pin the office tool families into every round of this run so the
+        // one-shot prompt keeps its read/write tools even when per-round
+        // relevance scoring mis-fires (see AUTOMATION_OFFICE_PINS). Tolerated:
+        // a worker from an older build lacks the RPC and the run proceeds
+        // with the default pool rather than failing.
+        await worker
+          .request('setAutomationProfile', { profile: aut.profile ?? null })
+          .catch((e) => {
+            logger.debug(`[automation ${aut.id}] setAutomationProfile unavailable: ${e instanceof Error ? e.message : String(e)}`);
+          });
+
         // Run the prompt through the agent.
         await worker.request('chat', { input: aut.prompt });
+
+        // Post-run outcome check: a resolved chat turn is NOT proof of a
+        // finished job — the "daily report" run ended after its security-gate
+        // dead-end with no closing report and no artifact, yet the runner
+        // marked it succeeded. Catch that shape here (only this, fail-open).
+        await verifyRunOutcome(aut, sessionId);
 
         return { sessionId };
       } finally {

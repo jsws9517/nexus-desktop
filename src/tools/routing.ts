@@ -179,6 +179,11 @@ const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   'pptx.write': { group: 'data', keywords: ['写ppt', '生成ppt', '写演示文稿', '导出ppt', 'powerpoint', 'pptx', '幻灯片', '生成幻灯片', 'office.write'] },
   'pdf.write': { group: 'data', keywords: ['写pdf', '生成pdf', '导出pdf', 'pdf文档', 'pdf写入', 'office.write'] },
 
+  // T7 office read family (doc-extract extractor; closes the "no docx reader"
+  // gap that made unattended office automations dead-end on Gate D/E)
+  'docx.read': { group: 'data', readOnly: true, keywords: ['读word', '读文档', '读取word', '读docx', '提取word', 'word文档', 'docx', '读报告', 'office.read'] },
+  'office.read': { group: 'data', readOnly: true, keywords: ['读pdf', '读ppt', '读office', '读取pdf', '读取ppt', '提取文本', '提取文字', 'pptx', 'pdf读取', 'office.read'] },
+
   // one-time attachment RAG (per-session store, desktop)
   attachments_search: { group: 'fs', readOnly: true, keywords: ['attachment', 'attachments', 'rag', '附件', '附件检索', '文档检索', '检索附件', '搜索附件', '知识库附件'] },
 

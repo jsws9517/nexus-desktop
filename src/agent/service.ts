@@ -40,6 +40,7 @@ import {
   skillHostFromAgent,
   skillToolNames,
   ToolRefreshQueue,
+  AUTOMATION_OFFICE_PINS,
 } from '../tools/index.js';
 import { applyRouting } from '../tools/routing.js';
 import { shouldHideVaultTools, inputNamesVaultTool, VAULT_TOOLS } from '../tools/attachment-rag.js';
@@ -528,6 +529,35 @@ export class AgentService {
   private readonly toolRefreshQueue = new ToolRefreshQueue();
 
   /**
+   * The automation profile this service instance is running under ('default',
+   * 'office', …) — null for interactive sessions.
+   *
+   * Set by the headless automation worker via `setAutomationProfile` right
+   * after `startSession` (one worker = one run, so the value is valid for the
+   * run's whole lifetime). While non-null, every round's tool selection pins
+   * the deterministic office tool families (AUTOMATION_OFFICE_PINS) so a
+   * one-shot automation prompt can never lose the read/write tools it
+   * depends on — the selector's per-round keyword/similarity scoring is
+   * brittle for unattended runs (no mid-turn steering to recover a dropped
+   * tool), and a missing office tool is what dead-ended the "daily report"
+   * automation behind the unattended security gates.
+   */
+  private automationProfile: string | null = null;
+
+  /**
+   * Declare that this service instance is executing an automation session
+   * under the given profile. The headless worker (src/automation-worker.ts)
+   * calls it right after `startSession`. Passing null/empty clears any prior
+   * state, so a reused worker cannot leak pins into another run.
+   */
+  setAutomationProfile(profile: string | null): void {
+    this.automationProfile = profile && profile.trim() ? profile.trim() : null;
+    if (this.automationProfile) {
+      logger.info(`[agent] automation profile "${this.automationProfile}" active — office tools pinned for all rounds`);
+    }
+  }
+
+  /**
    * Alias -> owning MCP server, for external MCP tools whose `name` collides
    * with an in-process tool (INTERNAL_TOOLS). The core's getAllTools/callTool
    * dedupe by tool NAME, so an external server that advertises a builtin name
@@ -818,6 +848,12 @@ export class AgentService {
       // a silent no-op. Resolve each intent to the candidate tools it names before
       // passing it to the selector.
       const force = new Set(this.resolveRefreshIntents(this.toolRefreshQueue.peek(), candidates));
+      // Headless automation runs pin the deterministic office tool families so
+      // the one-shot prompt keeps its read/write tools on EVERY round,
+      // regardless of keyword/similarity scoring (see AUTOMATION_OFFICE_PINS).
+      if (this.automationProfile) {
+        for (const name of AUTOMATION_OFFICE_PINS) force.add(name);
+      }
       const selected = selectTools(candidates, {
         input: input ?? '',
         used: this.toolUseMemory,
@@ -2634,7 +2670,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         '  /chcwd [path]        Temporarily switch runtime working directory (not persisted)\n' +
         '  /setdir [path]       (desktop) also switches the worker now (core records only projectDir)\n' +
         '  /rename-project <name>  Rename project across dirs, DB, and metadata (lowercase+hyphens)\n' +
-        '  /compact             Compress the current context (summarize/truncate) to free window space\n';
+        '  /compact             Compress the current context (summarize/truncate) to free window space\n' +
+        '  Scheduled automations: no slash command — ask in-session ("create a scheduled task: …")\n' +
+        '    and the agent calls automation_create; run-now / enable / history live in the sidebar\n' +
+        '    ⏰ Automations panel. Query: ask for "list my automations / run history".\n';
       this.emitText(text + '\n');
       return true;
     }
