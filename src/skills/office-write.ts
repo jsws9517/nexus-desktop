@@ -14,6 +14,7 @@
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { authorizePath } from 'nexus-coder/dist/src/security/path-authorizer.js';
 import { revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
@@ -96,7 +97,10 @@ async function loadOfficeWrite(): Promise<OfficeWriteModule> {
       if (!existsSync(entry)) {
         throw new Error('office-write package entry not found at ' + entry);
       }
-      const mod = await import(entry);
+      // Dynamic import needs a file:// URL — on Windows a raw
+      // `C:\...` path is rejected by the ESM loader ("Only URLs with a
+      // scheme in: file, data, and node are supported").
+      const mod = await import(pathToFileURL(entry).href);
       return mod.default ?? mod;
     })();
   }
