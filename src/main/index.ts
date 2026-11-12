@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, nativeImage, nativeTheme, Notification, Tray } from 'electron';
+import { app, BrowserWindow, dialog, Menu, nativeImage, nativeTheme, Notification, Tray } from 'electron';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
@@ -66,6 +66,20 @@ function logf(msg: string): void {
 // lock also guarantees automations are not double-triggered.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  // Never exit silently: the installed build (`C:\Program Files\nexus`) and a
+  // `npm run start` dev build share this same userData dir, so they contend for
+  // ONE single-instance lock. A tray-resident installed instance used to swallow
+  // every dev launch with exit code 0 and zero output (logging starts later),
+  // which reads as "编译后打不开了". Say what happened, and hand focus to the
+  // instance that owns the lock (it gets `second-instance`).
+  const msg =
+    '另一个 nexus-desktop 实例占用了同一份数据目录，本次启动已退出。\n' +
+    'Another nexus-desktop instance already owns this data directory, so this launch exited.\n\n' +
+    `数据目录 / data dir: ${app.getPath('userData')}\n` +
+    '请切换到已在运行的窗口；或先退出它（含托盘图标），再重新启动。\n' +
+    'Switch to the running window, or quit it first (including the tray icon) and launch again.';
+  logger.warn('single-instance lock busy; handing off to the existing instance');
+  dialog.showErrorBox('nexus-desktop 已在运行 / already running', msg);
   app.quit();
 } else {
   app.on('second-instance', () => {
