@@ -24,6 +24,11 @@ app.disableHardwareAcceleration();
 const SRC = path.join(__dirname, '..', 'icon.svg');
 const OUT_DIR = path.join(__dirname, '..', 'build');
 const OUT = path.join(OUT_DIR, 'icon.ico');
+// Render the SVG natively at 1024 so every smaller size is a real downscale.
+// (Previously the window was 512px, which meant the macOS 1024 master was an
+// upscale of a 512 capture — visibly soft in the .icns.)
+const RENDER = 1024;
+// Windows .ico entries (256 is the maximum size the .ico container allows).
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
 // electron-builder Linux icon-set sizes (file named `<s>x<s>.png`).
 const LINUX_SIZES = [16, 24, 32, 48, 64, 128, 256, 512];
@@ -36,8 +41,8 @@ async function run() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
   const win = new BrowserWindow({
-    width: 512,
-    height: 512,
+    width: RENDER,
+    height: RENDER,
     show: false,
     frame: false,
     useContentSize: true,
@@ -45,10 +50,19 @@ async function run() {
     webPreferences: { offscreen: true, backgroundThrottling: false },
   });
   await win.loadFile(SRC);
-  // Give the SVG filters (feGaussianBlur / feMerge) time to rasterize before capture.
+  // Scale whatever canvas size icon.svg declares into the capture window, so the
+  // source can change dimensions without silently cropping the artwork.
+  await win.webContents.insertCSS(
+    'html,body{margin:0;background:transparent;overflow:hidden}svg{display:block;width:100vw;height:100vh}'
+  );
+  // Give Chromium time to rasterize filters before capture.
   await new Promise((r) => setTimeout(r, 800));
 
   const img = await win.webContents.capturePage();
+  const captured = img.getSize();
+  if (captured.width !== RENDER || captured.height !== RENDER) {
+    throw new Error(`expected a ${RENDER}x${RENDER} capture, got ${captured.width}x${captured.height}`);
+  }
 
   // Windows .ico source buffers (PNG-compressed entries).
   const pngs = [];
@@ -71,7 +85,18 @@ async function run() {
   // Master 512px source PNG (Linux single-file fallback when a directory is not given).
   const master = img.resize({ width: 512, height: 512, quality: 'best' }).toPNG();
   fs.writeFileSync(path.join(OUT_DIR, 'icon.png'), master);
-  console.log('wrote', pngIconDir, sizes.length, 'png files');
+  console.log('wrote', pngIconDir, sizes.length, 'png files (master', RENDER + 'px capture)');
+
+  // System tray icon. The packaged app ships only dist/ + package.json, so the
+  // tray cannot read build/ at runtime — it embeds a data URL in src/main/index.ts.
+  // Emit that exact line here so keeping it in sync is a copy-paste, not a guess.
+  const trayPng = img.resize({ width: 32, height: 32, quality: 'best' }).toPNG();
+  fs.writeFileSync(path.join(OUT_DIR, 'tray-icon.png'), trayPng);
+  fs.writeFileSync(
+    path.join(OUT_DIR, 'tray-icon.dataurl.txt'),
+    "const TRAY_ICON_DATA_URL =\n  'data:image/png;base64," + trayPng.toString('base64') + "';\n"
+  );
+  console.log('wrote', path.join(OUT_DIR, 'tray-icon.dataurl.txt'));
 
   // macOS .icns: assemble a .iconset from the 1024px master and run iconutil.
   // iconutil is a macOS built-in; on Windows/Linux this step is skipped and the

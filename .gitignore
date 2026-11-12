@@ -28,6 +28,12 @@ verify-final.mjs
 # Core signing keys (private key must never be committed)
 keys/core-signing-private.pem
 
+# Icon comparison renders (regenerate: electron scripts/render-icon-drafts.cjs).
+# The sheet itself is kept as the design record; per-size PNGs are build output.
+icon-drafts/preview/*
+!icon-drafts/preview/compare.png
+icon-drafts/compare.html
+
 # Personal "escape hatch" helper for manually triggering a core-only publish
 # (fallback when the auto repository_dispatch chain breaks). Local-only, never committed.
 ESCAPE-HATCH-publish-core.ps1

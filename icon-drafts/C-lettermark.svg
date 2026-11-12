@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#1a2231"/>
+      <stop offset="1" stop-color="#0a0e16"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="292" x2="0" y2="732" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f4f8ff"/>
+      <stop offset="0.55" stop-color="#d2e2ff"/>
+      <stop offset="1" stop-color="#9dbdff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.46" r="0.42">
+      <stop offset="0" stop-color="#4f8cff" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#4f8cff" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#4f8cff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="0.75" stop-color="#ffffff" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="tileShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="24" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#tileShadow)">
+    <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  </g>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#glow)"/>
+  <rect x="104" y="104" width="816" height="816" rx="182" fill="none" stroke="url(#rim)" stroke-width="5"/>
+
+  <!-- N as true union geometry: two stems + one diagonal band (no miter spikes) -->
+  <path fill="url(#mark)" d="M354 292h104v440H354z
+            M566 292h104v440H566z
+            M354 292h108l208 440H562z"/>
+</svg>

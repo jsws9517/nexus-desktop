@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#1a2231"/>
+      <stop offset="1" stop-color="#0a0e16"/>
+    </linearGradient>
+    <linearGradient id="spoke" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#5b95ff"/>
+      <stop offset="1" stop-color="#3f78e8"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  <rect x="104" y="104" width="816" height="816" rx="182" fill="none" stroke="url(#rim)" stroke-width="5"/>
+
+  <circle cx="512" cy="512" r="268" fill="none" stroke="#5b8ff5" stroke-width="28" stroke-opacity="0.16"/>
+
+  <g stroke="url(#spoke)" stroke-width="52" stroke-linecap="round">
+    <line x1="512" y1="512" x2="701.5" y2="701.5"/>
+    <line x1="512" y1="512" x2="322.5" y2="701.5"/>
+    <line x1="512" y1="512" x2="322.5" y2="322.5"/>
+    <line x1="512" y1="512" x2="701.5" y2="322.5"/>
+  </g>
+
+  <g fill="#a9c8ff">
+    <circle cx="701.5" cy="701.5" r="62"/>
+    <circle cx="322.5" cy="701.5" r="62"/>
+    <circle cx="322.5" cy="322.5" r="62"/>
+    <circle cx="701.5" cy="322.5" r="62"/>
+  </g>
+
+  <circle cx="512" cy="512" r="108" fill="#e8f1ff"/>
+</svg>
