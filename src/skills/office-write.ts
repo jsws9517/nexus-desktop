@@ -127,7 +127,10 @@ const DOCX_WRITE_SCHEMA = {
     content: {
       type: 'object',
       description:
-        'Document content: { title?, paragraphs?: string[], headings?: { text, level }[], tables?: { columns: string[], rows: unknown[][] }[] }',
+        'Document content. PREFERRED for structured reports: `blocks` — an ordered array of ' +
+        '{ type:"heading", text, level } | { type:"paragraph", text } | { type:"table", columns: string[], rows: string[][] } ' +
+        'that interleave in document order (one call, no temp code, no exec). ' +
+        'Legacy flat shape also accepted: { title?, paragraphs?: string[], headings?: { text, level }[], tables?: { columns, rows }[] }.',
       properties: {
         title: { type: 'string' },
         paragraphs: { type: 'array', items: { type: 'string' } },
@@ -149,8 +152,22 @@ const DOCX_WRITE_SCHEMA = {
             },
           },
         },
+        blocks: {
+          type: 'array',
+          description:
+            'Ordered document blocks (preferred for reports). Each: { type:"heading", text, level } | { type:"paragraph", text } | { type:"table", columns: string[], rows: string[][] }.',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['heading', 'paragraph', 'table'] },
+              text: { type: 'string' },
+              level: { type: 'number' },
+              columns: { type: 'array', items: { type: 'string' } },
+              rows: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+            },
+          },
+        },
       },
-      required: ['paragraphs'],
     },
   },
   required: ['path', 'content'],
@@ -204,9 +221,10 @@ export const OFFICE_WRITE_TOOL_DEFS: ToolDef[] = [
   {
     name: 'docx.write',
     description:
-      'Write a structured .docx document (title, headings, paragraphs, tables) to a file. ' +
-      'Requires the office-write native package (Settings → Native Packages). ' +
-      'Returns a docx artifact with the written file path for preview.',
+      'Write a structured .docx in ONE deterministic call — title, headings, paragraphs, tables, and ordered `blocks` ' +
+      '(interleaved heading/paragraph/table in document order). PREFER this over spawn_office for a single .docx ' +
+      'report: it is fast, has no temp code, and no exec/verify loop. Requires the office-write native package ' +
+      '(Settings → Native Packages). Returns a docx artifact with the written file path for preview.',
     inputSchema: DOCX_WRITE_SCHEMA,
     server: 'office-write',
   },
