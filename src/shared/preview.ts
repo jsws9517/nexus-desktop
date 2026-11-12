@@ -137,6 +137,34 @@ export function isPreviewable(kind: PreviewKind): boolean {
   return PREVIEWABLE_KINDS.includes(kind);
 }
 
+// ── Directory normalization for preview roots ───────────────────────────────
+
+/**
+ * Canonical form for allowed-preview-root entries: lowercase, forward slashes,
+ * doubled slashes folded (JSON-escaped `\\` paths and UNC both normalize the
+ * same way), no trailing slash, and a bare Windows drive root written as `e:`
+ * so the containment check `norm === root || norm.startsWith(root + '/')`
+ * matches `e:/x` against root `e:`.
+ */
+export function normalizePreviewDir(p: string): string {
+  let s = p.replace(/\\/g, '/').replace(/\/{2,}/g, '/').toLowerCase();
+  while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1);
+  return s === '' ? '/' : s;
+}
+
+/**
+ * Directory component of an absolute path, in `normalizePreviewDir`'s
+ * lowercase-backslash-free form (drive roots stay bare, e.g. `E:`). Returns
+ * '' when the path has no directory component (relative input — callers must
+ * pass absolute paths).
+ */
+export function previewDirOf(p: string): string {
+  const n = p.replace(/\\/g, '/');
+  const i = n.lastIndexOf('/');
+  const dir = i <= 0 ? (i === 0 ? '/' : n.replace(/\/+$/, '')) : n.slice(0, i);
+  return dir.toLowerCase();
+}
+
 // ── Token ↔ real path map ─────────────────────────────────────────────────
 
 export interface TokenEntry {

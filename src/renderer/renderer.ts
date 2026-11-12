@@ -25,6 +25,7 @@ import { mountBrowserTabs, type BrowserTabs } from './browser-tab.js';
 import { mountRsideTabs, type RsideTabsHandle } from './rside-tabs.js';
 import { createInlinePreviewCard, type InlinePreviewCard } from './preview/inline.js';
 import { findPreviewablePaths, partitionPreviewPaths, findRawPathHits } from './preview/paths.js';
+import { registerPreviewPaths } from './preview/register.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 import { hydrateIcons, iconEl } from './icons.js';
 
@@ -343,6 +344,9 @@ declare global {
       previewDocument(path: string, body?: string): Promise<{
         ok: boolean; source?: 'parse' | 'cache' | 'artifact'; doc?: ParsedDocument; error?: string;
       }>;
+      // Widen the preview containment list with user-reached directories
+      // (attached files / agent-generated outputs). No-op when already known.
+      previewAllowPaths(paths: string[]): Promise<{ ok: boolean; added: number; error?: string }>;
       // PR2 browser tab — WebContentsView manager (main-process owned).
       webviewOpen(
         url: string,
@@ -2473,6 +2477,11 @@ function openInlinePreviewCard(
   path: string,
   opts: { aiGenerated?: boolean; scrollIntoView?: boolean } = {},
 ): void {
+  // Register the path's directory as a live preview root BEFORE the card
+  // issues its previewOpen — this covers every entry point (link click, file
+  // chip, eager media, history restore) in one place, and the IPC reaches the
+  // main process ahead of the token request on the same sender channel.
+  registerPreviewPaths([path]);
   const existing = liveInlineCards.get(path);
   if (existing && existing.root.isConnected) {
     // Reveal the live card instead of stacking a duplicate. Only user
@@ -2612,11 +2621,17 @@ function makePathLinkSpan(path: string): HTMLSpanElement {
  * calls on the same container never double-wrap.
  */
 function linkifyPreviewPaths(container: HTMLElement): void {
+  // Collect the paths we linkify this pass; registering their containing
+  // directories with the main process makes a later click able to issue a
+  // preview token even when the folder is not one of the static project roots
+  // (e.g. agent-written output next to a file the user only attached from).
+  const toRegister: string[] = [];
   // 1) Backticked full path: the whole <code> element is one path.
   const codeEls = container.querySelectorAll('code:not(.code-block code)');
   for (const el of codeEls) {
     const text = el.textContent ?? '';
     if (!isPreviewable(classify(text))) continue;
+    toRegister.push(text);
     el.replaceWith(makePathLinkSpan(text));
   }
   // 2) Raw absolute local paths in plain text nodes.
@@ -2635,6 +2650,7 @@ function linkifyPreviewPaths(container: HTMLElement): void {
     const frag = doc.createDocumentFragment();
     let pos = 0;
     for (const hit of hits) {
+      toRegister.push(hit.path);
       if (hit.start > pos) frag.appendChild(doc.createTextNode(text.slice(pos, hit.start)));
       frag.appendChild(makePathLinkSpan(hit.path));
       pos = hit.end;
@@ -2642,6 +2658,7 @@ function linkifyPreviewPaths(container: HTMLElement): void {
     if (pos < text.length) frag.appendChild(doc.createTextNode(text.slice(pos)));
     node.replaceWith(frag);
   }
+  if (toRegister.length > 0) registerPreviewPaths(toRegister);
 }
 
 function renderAssistantStream(asst: { stream: HTMLElement; buffer: string }): void {
@@ -2751,6 +2768,10 @@ async function attachFiles(paths: string[]): Promise<void> {
     }
   }
   if (added.length > 0) {
+    // A folder the user attached a file from is as much a working directory
+    // as an opened project — register it so agent output written next to it
+    // previews on click instead of failing the containment check.
+    registerPreviewPaths(added);
     try {
       const infos = await window.nexusDesktop.getFileInfos(added);
       for (const info of infos) attachInfos.set(info.path, info);

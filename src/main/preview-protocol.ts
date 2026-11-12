@@ -42,6 +42,8 @@ import {
   exceedsPreviewCap,
   formatBytes,
   mimeForPath,
+  normalizePreviewDir,
+  previewDirOf,
 } from '../shared/preview.js';
 import { logger } from '../shared/logger.js';
 
@@ -61,7 +63,9 @@ const DANGEROUS_EXT = new Set([
  *  both surfaces share one containment policy. */
 export async function isInsideAllowed(realPath: string): Promise<boolean> {
   const roots = await liveAllowedRoots();
-  const norm = realPath.replace(/\\/g, '/').toLowerCase();
+  // Double-slash folding keeps UNC and JSON-doubled-`\\` forms comparable
+  // against roots registered through addPreviewRoots.
+  const norm = realPath.replace(/\\/g, '/').replace(/\/{2,}/g, '/').toLowerCase();
   return roots.some((root) => norm === root || norm.startsWith(root + '/'));
 }
 
@@ -70,18 +74,27 @@ export async function isInsideAllowed(realPath: string): Promise<boolean> {
  *  Delegates to the main-process context (same source as the IPC layer),
  *  falling back to the static list for tests that don't set one up. */
 async function liveAllowedRoots(): Promise<string[]> {
+  let base: string[] = [];
   const c = ctx();
   if (c?.getAllowedRoots) {
     try {
       const roots = await c.getAllowedRoots();
-      if (roots.length) {
-        return roots.map((r: string) => r.replace(/\\/g, '/').toLowerCase());
-      }
+      if (roots.length) base = roots.map((r: string) => normalizePreviewDir(r));
     } catch { /* fall through to static list */ }
   }
-  if (cachedRoots) return cachedRoots;
-  await ensureCachedRoots();
-  return cachedRoots ?? [];
+  if (!base.length) {
+    if (cachedRoots) base = cachedRoots;
+    else {
+      await ensureCachedRoots();
+      base = cachedRoots ?? [];
+    }
+  }
+  // Union with user-reached directories (see addPreviewRoots): folders the
+  // user attached files from, or where the agent wrote its outputs — these
+  // reach the transcript and therefore deserve the same preview reach as
+  // project roots, without being persisted or growing unbounded.
+  for (const d of dynamicRoots) if (!base.includes(d)) base.push(d);
+  return base;
 }
 
 let cachedRoots: string[] | null = null;
@@ -113,7 +126,7 @@ async function ensureCachedRoots(force = false): Promise<void> {
       if (!resolved.includes(r)) resolved.push(r);
     } catch { /* dir missing: skip */ }
   }
-  cachedRoots = resolved.map((r) => r.replace(/\\/g, '/').toLowerCase());
+  cachedRoots = resolved.map((r) => normalizePreviewDir(r));
   log('cachedRoots =', cachedRoots);
 }
 
@@ -131,6 +144,65 @@ export function setPreviewCwd(cwd: string): void {
     previewCwd = cwd;
     void ensureCachedRoots(true).catch(() => {});
   }
+}
+
+// ── Dynamic preview roots (user-reached directories) ───────────────────────
+// The static root list (project cwds, ~/.nexus, tmp, launch cwd) misses the
+// case this product keeps hitting: the user attaches a source file from some
+// folder (e.g. `E:\低效小区\评估流程.md`), the agent writes its generated
+// output right next to it, and the user clicks that generated file's link in
+// chat — the preview token is refused because that folder was never "opened"
+// as a project. Directories the user reached are therefore registered live
+// through CHANNELS.previewAllowPaths and unioned into the containment check.
+// In-memory only (never persisted), bounded, and trusted-sender-gated: the
+// renderer may only widen the set with paths that are already in the user's
+// own transcript.
+
+const MAX_DYNAMIC_ROOTS = 32;
+let dynamicRoots: string[] = [];
+
+/**
+ * Register the containing directories of `input` (a path array, or
+ * `{ paths: [...] }`) as preview roots. File paths register their parent
+ * directory (so sibling outputs of the same agent run become previewable);
+ * directory paths register themselves. Resolves via realpath when possible
+ * (symlink-safe) and falls back to the lexical parent for paths that do not
+ * exist yet. Returns the number of roots actually added.
+ */
+export async function addPreviewRoots(input: unknown): Promise<number> {
+  const arr: unknown[] = Array.isArray(input)
+    ? input
+    : input && Array.isArray((input as { paths?: unknown[] }).paths)
+      ? (input as { paths: unknown[] }).paths
+      : [];
+  let added = 0;
+  for (const raw of arr) {
+    if (typeof raw !== 'string' || raw.length === 0 || raw.length > 4096) continue;
+    // Absolute paths only: Windows drive, UNC, or POSIX root.
+    if (!(/^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\') || raw.startsWith('/'))) continue;
+    let dir: string;
+    try {
+      const fs = await import('node:fs/promises');
+      const r = await fs.realpath(raw);
+      const st = await fs.stat(r);
+      dir = st.isDirectory() ? r : previewDirOf(r);
+    } catch {
+      dir = previewDirOf(raw); // missing file / absent drive → lexical parent
+    }
+    const n = normalizePreviewDir(dir);
+    if (!n || n === '.') continue;
+    if (dynamicRoots.includes(n)) continue;
+    dynamicRoots.push(n);
+    if (dynamicRoots.length > MAX_DYNAMIC_ROOTS) dynamicRoots.shift();
+    added++;
+    log('preview root +=', n);
+  }
+  return added;
+}
+
+/** Test seam: drop all dynamically registered roots. */
+export function clearDynamicPreviewRoots(): void {
+  dynamicRoots = [];
 }
 
 // ── Per-context token store ────────────────────────────────────────────────
@@ -326,6 +398,24 @@ export function installPreviewHandlers(): void {
       size: st.size,
       name: real.split(/[\\/]/).pop() ?? '',
     };
+  });
+
+  // Widen the preview containment list with user-reached directories (the
+  // renderer registers attached-file paths and agent-generated output paths).
+  // Main-frame sender only: this channel expands what the renderer may read,
+  // so it must not be callable from embedded web content.
+  ipcMain.handle(CHANNELS.previewAllowPaths, async (event, params: unknown) => {
+    const w = ctx()?.getWin?.() ?? null;
+    if (!w || w.isDestroyed()) return { ok: false, added: 0, error: 'no window' };
+    // Main-frame sender only (mirrors register.ts isTrustedSender): this
+    // channel widens what the renderer may read, so embedded web content
+    // must not be able to call it.
+    const senderFrame = (event as Electron.IpcMainInvokeEvent)?.senderFrame;
+    if (!senderFrame || senderFrame !== w.webContents.mainFrame) {
+      return { ok: false, added: 0, error: 'untrusted sender' };
+    }
+    const added = await addPreviewRoots(params);
+    return { ok: true, added };
   });
 
   ipcMain.handle(CHANNELS.previewClose, async (_event, params: unknown) => {

@@ -162,6 +162,13 @@ const api = {
     ipcRenderer.invoke('nexus:previewDocument', { path, body }) as Promise<{
       ok: boolean; source?: string; doc?: unknown; error?: string;
     }>,
+  // Widen the preview containment list with user-reached directories: pass
+  // attached-file paths or agent-generated output paths; the main process
+  // registers their containing directories (bounded, in-memory only).
+  previewAllowPaths: (paths: string[]) =>
+    ipcRenderer.invoke('nexus:previewAllowPaths', paths) as Promise<{
+      ok: boolean; added: number; error?: string;
+    }>,
 
   // PR2 browser tab — WebContentsView manager (main-process owned, isolated
   // session partition; local files bypass this via the nexus-preview iframe).
