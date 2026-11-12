@@ -94,7 +94,10 @@ describe('core hook wiring', () => {
     // the Allow/Deny card. Hard-denying here would make that card a no-op.
     svc.activeSentinel = new SecuritySentinel({ root: process.cwd() });
     svc.sentinelDecisions.clear();
-    const args = { path: 'C:\\Windows\\Temp\\nexus-probe.txt', content: 'x' };
+    // A path outside the project root: use the OS temp dir so the case holds on
+    // POSIX too (a literal `C:\Windows\Temp\...` is a *relative* path on Linux,
+    // which stays inside the root and never raises a probe).
+    const args = { path: join(tmpdir(), 'nexus-probe.txt'), content: 'x' };
     const emitted = [];
     svc.onEvent = (e) => emitted.push(e);
     svc.handleAgentEvent({ type: 'tool_call_start', name: 'write_file', args });
