@@ -244,29 +244,46 @@ const AGENT_LAYER_ROUTING: Record<string, ToolRouting> = {
       'automation', 'automations', '定时', '定时任务', '周期任务',
       '计划任务', 'scheduled', 'cron', 'interval',
       '每周', '每天', '每小时', '自动运行', '定时运行', '自动执行',
+      // Natural phrasings that carry no jargon — so a user can say "建个任务"
+      // / "每隔30分钟" / "定期提醒" and still reach automation_create without
+      // knowing it is a tool. (These are the phrases that previously failed to
+      // trigger the selector and made automation creation phrase-sensitive.)
+      '创建任务', '新建任务', '建个任务', '建一个任务', '加个任务', '添加任务',
+      '定期', '周期性', '每隔', '间隔', '提醒',
     ],
   },
   automation_list: {
     group: 'automation',
     readOnly: true,
-    keywords: ['automation', '定时任务', '周期任务', '计划任务', 'scheduled', '列出自动化', '自动化列表', 'automation list'],
+    keywords: ['automation', '定时任务', '周期任务', '计划任务', 'scheduled', '列出自动化', '自动化列表', 'automation list',
+      // natural phrasings: "看下有哪些任务" / "列一下我的任务"
+      '有哪些任务', '什么任务', '任务列表', '看下任务', '列一下任务', '看看任务'],
   },
   automation_update: {
     group: 'automation',
-    keywords: ['automation', '定时任务', '周期任务', '计划任务', 'scheduled', '修改自动化', '更新自动化', 'automation update'],
+    keywords: ['automation', '定时任务', '周期任务', '计划任务', 'scheduled', '修改自动化', '更新自动化', 'automation update',
+      // natural phrasings: "把那个任务改到早上" / "任务时间调一下"
+      '改一下任务', '修改任务', '更新任务', '调整任务', '任务改成', '任务时间',
+      '改时间', '换个时间', '改到'],
   },
   automation_delete: {
     group: 'automation',
-    keywords: ['automation', '删除自动化', '移除自动化', 'automation delete', '定时任务', '计划任务'],
+    keywords: ['automation', '删除自动化', '移除自动化', 'automation delete', '定时任务', '计划任务',
+      // natural phrasings: "把那个任务删了" / "不要那个任务了"
+      '删掉任务', '删任务', '删除任务', '取消任务', '去掉任务', '不要那个任务',
+      '停掉任务', '删了', '停掉'],
   },
   automation_run_now: {
     group: 'automation',
-    keywords: ['automation', '立即运行', '马上跑', '手动触发', 'run now', '立即执行', '定时任务', '计划任务'],
+    keywords: ['automation', '立即运行', '马上跑', '手动触发', 'run now', '立即执行', '定时任务', '计划任务',
+      // natural phrasings: "现在跑一下那个任务" / "先手动跑一次"
+      '现在跑', '现在运行', '手动跑', '跑一次', '跑一下', '运行一下', '立即跑'],
   },
   automation_runs: {
     group: 'automation',
     readOnly: true,
-    keywords: ['automation', '运行历史', '执行记录', '自动化日志', 'automation runs', '定时任务', '计划任务'],
+    keywords: ['automation', '运行历史', '执行记录', '自动化日志', 'automation runs', '定时任务', '计划任务',
+      '任务跑过', '运行记录', '执行情况', '跑过'],
   },
 
   // T8 desktop perception tools (core builtin-tools, wrap PowerShell host)
