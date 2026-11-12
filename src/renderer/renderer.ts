@@ -6,6 +6,7 @@ import { isWorkerBlockText, PROVIDER_CATEGORIES, stripProtocolXml } from '../sha
 import { formatSpeed } from '../shared/update-sources.js';
 import { t, fmtNum, getUiLang, loadLanguage, localizeError, onI18nApplied } from './i18n.js';
 import { renderBlocks, attachCodeCopy, hydrateImages } from './markdown.js';
+import { classify, isPreviewable } from '../shared/preview.js';
 import { tryMountArtifact } from './artifacts/index.js';
 import { TaskStatusCard, initTaskStatusCardTooltips } from './components/TaskStatusCard.js';
 import type { SubTaskResult, SubTaskStatus } from '../agent/types.js';
@@ -17,7 +18,8 @@ import { AutomationPage, mountAutomationPage } from './sidebar/pages/automations
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
-import { openPath as previewOpenPath, close as previewClose, updateToolbarButton as updatePreviewBtn, getState as getPreviewState, toggleFullscreen } from './preview/open.js';
+import { openPath as previewOpenPath, close as previewClose, updateToolbarButton as updatePreviewBtn, getState as getPreviewState, toggleFullscreen, wirePreviewToolbar, getLiveHandle } from './preview/open.js';
+import { createInlinePreviewCard } from './preview/inline.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 import { hydrateIcons, iconEl } from './icons.js';
 
@@ -1305,8 +1307,35 @@ interface ToolCardRec {
   card: HTMLElement;
   resultEl: HTMLElement | null;
   resultText: string;
+  /** args recorded at tool_call_start so tool_result can detect previewable paths. */
+  args?: unknown;
+  /** Previewable path detected at tool_result; hydrated into the card on first expand. */
+  previewPath?: string;
 }
 const toolCards = new Map<number, ToolCardRec>();
+
+/**
+ * Extract the first previewable absolute path from a tool's args or result.
+ * Returns the path if found (and it is previewable); undefined otherwise.
+ */
+function findPreviewablePath(args: unknown, content: string): string | undefined {
+  const candidates: string[] = [];
+  // 1. Look in structured args (path / file / filename / file_path fields).
+  if (args && typeof args === 'object') {
+    for (const key of ['path', 'file', 'filename', 'file_path', 'target']) {
+      const v = (args as Record<string, unknown>)[key];
+      if (typeof v === 'string' && v.length > 0) candidates.push(v);
+    }
+  }
+  // 2. Look in result content for backticked absolute paths.
+  const re = /`((?:[A-Za-z]:\\|\/|~\/)[^`\s]+)`/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) candidates.push(m[1]);
+  for (const p of candidates) {
+    if (isPreviewable(classify(p))) return p;
+  }
+  return undefined;
+}
 
 /** Slash-log entries for the active session, re-inserted after every history
  *  re-render (resume / load-earlier) so collapsible cards track their anchor. */
@@ -1772,7 +1801,7 @@ function addToolCard(event: Extract<AgentEvent, { type: 'tool_call_start' }>): v
   card.appendChild(header);
   card.appendChild(args);
   messagesEl.appendChild(card);
-  const rec: ToolCardRec = { card, resultEl: null, resultText: '' };
+  const rec: ToolCardRec = { card, resultEl: null, resultText: '', args: event.args };
   toolCards.set(event.index, rec);
   header.addEventListener('click', () => {
     const collapsed = card.classList.toggle('collapsed');
@@ -1788,6 +1817,13 @@ function addToolCard(event: Extract<AgentEvent, { type: 'tool_call_start' }>): v
       rec.card.appendChild(resultEl);
       rec.resultEl = resultEl;
     }
+    // hydrate a deferred preview strip (tool_result arrived while collapsed)
+    if (!collapsed && rec.previewPath && !card.querySelector('.tool-preview-strip')) {
+      const strip = document.createElement('div');
+      strip.className = 'tool-preview-strip';
+      card.appendChild(strip);
+      void createInlinePreviewCard(rec.previewPath, getUiLang(), { after: strip, aiGenerated: true });
+    }
   });
   scrollToBottom();
 }
@@ -1801,6 +1837,8 @@ function addFileChip(file: Extract<AgentEvent, { type: 'file_ready' }>): void {
     void window.nexusDesktop.revealFile(file.path);
   });
   messagesEl.appendChild(chip);
+  // Inline preview card appears below the chip in the chat stream.
+  void createInlinePreviewCard(file.path, getUiLang(), { after: chip });
   scrollToBottom();
 }
 
@@ -2096,6 +2134,10 @@ function handleEvent(event: AgentEvent): void {
     case 'tool_result': {
       const rec = toolCards.get(event.index);
       if (rec) {
+        // Detect a previewable path in args or content and mount an inline card.
+        const previewPath = !event.isError
+          ? findPreviewablePath(rec.args, event.content)
+          : undefined;
         // Artifact skills return an envelope — mount the preview card directly
         // (no truncation, no collapse) so the product is visible immediately.
         if (!event.isError) {
@@ -2121,6 +2163,15 @@ function handleEvent(event: AgentEvent): void {
             ? event.content.slice(0, 4000) + '\n… (truncated)'
             : event.content;
         rec.card.classList.toggle('error', !!event.isError);
+        // Record a previewable path; hydrate immediately if the card is already
+        // expanded, otherwise the expand handler below handles it.
+        if (previewPath && !rec.previewPath) rec.previewPath = previewPath;
+        if (previewPath && !rec.card.classList.contains('collapsed')) {
+          const strip = document.createElement('div');
+          strip.className = 'tool-preview-strip';
+          rec.card.appendChild(strip);
+          void createInlinePreviewCard(previewPath, getUiLang(), { after: strip, aiGenerated: true });
+        }
         if (rec.card.classList.contains('collapsed')) {
           // Card still collapsed — defer the DOM write until first expand.
           scrollToBottom();
@@ -2375,11 +2426,36 @@ function errText(e: unknown): string {
 // beyond that we fall back to raw streaming and finalize at turn_end.
 let streamRenderTimer: ReturnType<typeof setTimeout> | null = null;
 const STREAM_MD_MAX = 12000;
+
+/**
+ * Post-render pass: make backticked absolute paths that are previewable into
+ * clickable spans that open an inline preview card below the current message.
+ * Called after `renderAssistantStream` fills the DOM.
+ */
+function linkifyPreviewPaths(container: HTMLElement): void {
+  const codeEls = container.querySelectorAll('code:not(.code-block code)');
+  for (const el of codeEls) {
+    const text = el.textContent ?? '';
+    if (!isPreviewable(classify(text))) continue;
+    const span = document.createElement('span');
+    span.className = 'preview-path-link';
+    span.textContent = text;
+    span.title = text;
+    span.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const msgEl = container.closest<HTMLElement>('.msg') ?? container.parentElement;
+      if (msgEl) void createInlinePreviewCard(text, getUiLang(), { after: msgEl, aiGenerated: true });
+    });
+    el.replaceWith(span);
+  }
+}
+
 function renderAssistantStream(asst: { stream: HTMLElement; buffer: string }): void {
   try {
     asst.stream.innerHTML = renderBlocks(asst.buffer);
     attachCodeCopy(asst.stream);
     hydrateImages(asst.stream);
+    linkifyPreviewPaths(asst.stream);
   } catch (err) {
     console.error('Markdown render error:', err);
     asst.stream.textContent = asst.buffer;
@@ -2457,7 +2533,15 @@ function renderAttachments(): void {
     });
     chip.appendChild(rm);
     chip.addEventListener('click', () => {
-      void window.nexusDesktop.revealFile(p);
+      // Previewable types open the built-in preview panel (images expand to
+      // fullscreen). Non-previewable types fall back to revealFile.
+      if (isPreviewable(classify(p))) {
+        void previewOpenPath(p).then((ok) => {
+          if (!ok) void window.nexusDesktop.revealFile(p);
+        });
+      } else {
+        void window.nexusDesktop.revealFile(p);
+      }
     });
     chip.title = t('revealFile');
     attachmentsEl.appendChild(chip);
@@ -3920,12 +4004,10 @@ function makeFileBrowserContext(): FileBrowserContext {
       void attachFiles([path]);
     },
     previewPath: async (path: string) => {
-      try {
-        await previewOpenPath(path);
-        return true;
-      } catch {
-        return false;
-      }
+      // `openPath` now reports real success (false when the type is
+      // unpreviewable / outside roots / over the cap), so FileBrowser's
+      // external-open fallback is actually reachable.
+      return previewOpenPath(path);
     },
   };
 }
@@ -6494,11 +6576,37 @@ if (btnPreview) {
     if (state) await toggleFullscreen();
   });
 }
+// Zoom / fit / fullscreen / close toolbar controls (drives the live viewer).
+wirePreviewToolbar();
 
 /** Global keyboard shortcuts for preview. */
 document.addEventListener('keydown', (e) => {
+  // Don't hijack typing in inputs / textareas.
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  const typing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement | null)?.isContentEditable;
   if (e.key === 'Escape') {
     void previewClose();
+    return;
+  }
+  if (typing) return;
+  const handle = getLiveHandle();
+  if (!handle) return;
+  switch (e.key) {
+    case 'f':
+    case 'F':
+      e.preventDefault();
+      void toggleFullscreen();
+      break;
+    case '+':
+    case '=':
+      e.preventDefault();
+      handle.zoomIn?.();
+      break;
+    case '-':
+    case '_':
+      e.preventDefault();
+      handle.zoomOut?.();
+      break;
   }
 });
 

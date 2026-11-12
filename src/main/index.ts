@@ -30,7 +30,7 @@ import { registerIpc } from '../ipc/register.js';
 import { CHANNELS } from '../ipc/channels.js';
 // Preview protocol must be registered before app.whenReady() so Chromium accepts
 // our custom scheme; ctxObj reads the live `win` ref at request time.
-import { setPreviewCtx, registerPreviewProtocol, installPreviewHandlers, destroyPreviewContext } from '../main/preview-protocol.js';
+import { setPreviewCtx, setPreviewCwd, registerPreviewProtocol, installPreviewHandlers, destroyPreviewContext } from '../main/preview-protocol.js';
 
 // Windows UTF-8 child stdio contract (same as nexus-core's
 // bootstrapProcessEncoding in src/utils/child-env.ts): on Chinese Windows a
@@ -900,6 +900,9 @@ if (gotLock) {
        getCoreVersion: currentCoreVersion,
         restartCoreWorker: () => { void restartWorker(); },
         sendEvent: send,
+        // Project-dir switches re-sync the preview allowed-roots cache so the
+        // custom protocol doesn't 403 on files under the new dir.
+        notifyCwdChanged: (cwd: string) => { setPreviewCwd(cwd); },
       });
       // Register AFTER app.whenReady() — Electron rejects scheme registration before ready.
       void registerPreviewProtocol();

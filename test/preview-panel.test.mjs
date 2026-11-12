@@ -32,9 +32,14 @@ const { formatBytes } = await import(pathToFileURL(join(dist, 'shared', 'preview
 
 after(() => win.close());
 
+/**
+ * `baseState` now includes `path` (the real absolute source path) in addition
+ * to the token/url/kind/mime/size/name fields the kernel requires.
+ */
 const baseState = (overrides = {}) => ({
   token: 'abcdef0123456789',
   url: 'nexus-preview://local/abcdef0123456789/test.png',
+  path: '/tmp/test.png',
   kind: 'image',
   mime: 'image/png',
   size: 102400,
@@ -43,8 +48,7 @@ const baseState = (overrides = {}) => ({
 });
 
 test('mountImageViewer creates img element with proper class', () => {
-  const fn = mountImageViewer(baseState({ kind: 'image' }));
-  const el = fn();
+  const el = mountImageViewer(baseState({ kind: 'image' }));
   assert.ok(el instanceof HTMLElement);
   assert.equal(el.className.includes('preview-viewer'), true);
   assert.equal(el.querySelectorAll('img').length, 1);
@@ -55,9 +59,15 @@ test('mountImageViewer creates img element with proper class', () => {
   assert.equal(img.hasAttribute('draggable'), false);
 });
 
+test('mountImageViewer exposes zoomIn / zoomOut / fit control surface', () => {
+  const el = mountImageViewer(baseState({ kind: 'image' }));
+  assert.equal(typeof el.zoomIn, 'function');
+  assert.equal(typeof el.zoomOut, 'function');
+  assert.equal(typeof el.fit, 'function');
+});
+
 test('mountVideoViewer creates <video> for video kind', () => {
-  const fn = mountVideoViewer(baseState({ kind: 'video', mime: 'video/mp4' }));
-  const el = fn();
+  const el = mountVideoViewer(baseState({ kind: 'video', mime: 'video/mp4' }));
   assert.ok(el instanceof HTMLElement);
   assert.equal(el.querySelectorAll('video').length, 1);
   const vid = el.querySelector('video');
@@ -66,8 +76,7 @@ test('mountVideoViewer creates <video> for video kind', () => {
 });
 
 test('mountVideoViewer creates <audio> for audio kind', () => {
-  const fn = mountVideoViewer(baseState({ kind: 'audio', mime: 'audio/mpeg' }));
-  const el = fn();
+  const el = mountVideoViewer(baseState({ kind: 'audio', mime: 'audio/mpeg' }));
   assert.ok(el.querySelectorAll('audio').length > 0);
   const aud = el.querySelector('audio');
   assert.ok(aud);
@@ -75,8 +84,7 @@ test('mountVideoViewer creates <audio> for audio kind', () => {
 });
 
 test('mountPdfViewer creates iframe without sandbox restrictions on origin', () => {
-  const fn = mountPdfViewer(baseState({ kind: 'pdf', url: 'nexus-preview://local/abcdef0123456789/test.pdf' }));
-  const el = fn();
+  const el = mountPdfViewer(baseState({ kind: 'pdf', url: 'nexus-preview://local/abcdef0123456789/test.pdf' }));
   assert.ok(el instanceof HTMLElement);
   assert.equal(el.querySelectorAll('iframe').length, 1);
   const iframe = el.querySelector('iframe');
@@ -87,8 +95,7 @@ test('mountPdfViewer creates iframe without sandbox restrictions on origin', () 
 });
 
 test('mountHtmlViewer creates sandboxed iframe blocking same-origin', () => {
-  const fn = mountHtmlViewer(baseState({ kind: 'html' }));
-  const el = fn();
+  const el = mountHtmlViewer(baseState({ kind: 'html' }));
   assert.equal(el.querySelectorAll('iframe').length, 1);
   const iframe = el.querySelector('iframe');
   assert.ok(iframe);
@@ -98,9 +105,8 @@ test('mountHtmlViewer creates sandboxed iframe blocking same-origin', () => {
   assert.ok(!iframe.getAttribute('sandbox')?.includes('allow-popups'));
 });
 
-test('mountFallbackView shows message and open button', () => {
-  const fn = mountFallbackView(baseState({ kind: 'unsupported', mime: '', size: 0, name: 'broken.exe' }));
-  const el = fn();
+test('mountFallbackView shows message and open button using state.path', () => {
+  const el = mountFallbackView(baseState({ kind: 'unsupported', mime: '', size: 0, name: 'broken.exe', path: '/tmp/broken.exe' }));
   assert.ok(el instanceof HTMLElement);
   assert.ok(el.textContent?.includes('external') || el.textContent?.includes('预览') || el.textContent?.includes('Open'));
   const btn = el.querySelector('button');
@@ -116,7 +122,7 @@ test('formatBytes formats correctly across ranges', () => {
   assert.match(formatBytes(3 * 1024 * 1024 * 1024), /GB/);
 });
 
-test('all viewers return an HTMLElement', async () => {
+test('all viewers return an HTMLElement directly (not a factory)', () => {
   const testers = [
     { fn: mountImageViewer, state: baseState({ kind: 'image' }) },
     { fn: mountVideoViewer, state: baseState({ kind: 'video' }) },
@@ -125,9 +131,7 @@ test('all viewers return an HTMLElement', async () => {
     { fn: mountFallbackView, state: baseState({ kind: 'unsupported' }) },
   ];
   for (const { fn, state } of testers) {
-    // Each viewer returns a factory function; call it to get the actual DOM node.
-    const factory = fn(state);
-    const el = typeof factory === 'function' ? factory() : factory;
+    const el = fn(state);
     assert.ok(el != null && typeof el === 'object' && ('nodeType' in el || 'tagName' in el),
       `viewer for ${state.kind} returned a DOM node (got ${typeof el})`);
   }

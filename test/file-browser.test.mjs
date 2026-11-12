@@ -694,25 +694,28 @@ test('right-click menu adds a file to chat and opens it in an editor', async () 
   await TICKS();
   let menu = menuEls()[0];
   assert.ok(menu, 'menu shown on contextmenu');
+  // PR1 restructure: built-in preview is primary; management actions follow;
+  // external open is demoted to a bottom fallback item behind a separator.
   assert.deepEqual(
     findEls(menu, { cls: 'fb-context-item' }).map((i) => i.textContent),
-    ['Add to chat', 'Open in editor'],
-    'both actions listed',
+    ['Preview', 'Add to chat', 'Open in editor', 'Copy path', 'Reveal in folder', 'Open externally (fallback)'],
+    'full menu order',
   );
+  assert.ok(findEls(menu, { cls: 'fb-context-sep' }).length === 1, 'separator before the external fallback');
 
-  const firstItem = findEls(menu, { cls: 'fb-context-item' })[0];
-  document.dispatch('pointerdown', { target: firstItem });
+  const addChatItem = findEls(menu, { cls: 'fb-context-item' })[1];
+  document.dispatch('pointerdown', { target: addChatItem });
   assert.ok(menuEls()[0], 'press inside the menu keeps it open');
-  firstItem.dispatch('click');
+  addChatItem.dispatch('click');
   assert.deepEqual(h.chatAdds, ['/proj/a.ts'], 'add-to-chat invoked with the row path');
   assert.equal(menuEls().length, 0, 'menu closed after action');
 
   row.dispatch('contextmenu', { preventDefault() {}, clientX: 1, clientY: 2 });
   await TICKS();
   menu = menuEls()[0];
-  const secondItem = findEls(menu, { cls: 'fb-context-item' })[1];
-  document.dispatch('pointerdown', { target: secondItem });
-  secondItem.dispatch('click');
+  const editorItem = findEls(menu, { cls: 'fb-context-item' })[2];
+  document.dispatch('pointerdown', { target: editorItem });
+  editorItem.dispatch('click');
   assert.ok(h.calls.some(([m, p]) => m === 'editor' && p === '/proj/a.ts'), 'open-in-editor invoked');
   assert.equal(menuEls().length, 0, 'menu closed after action');
 });
@@ -776,7 +779,8 @@ test('open-in-editor falls back to the OS default app on failure', async () => {
     row.dispatch('contextmenu', { preventDefault() {}, clientX: 0, clientY: 0 });
     await TICKS();
     const menu = findEls(document.body, { cls: 'fb-context-menu' })[0];
-    findEls(menu, { cls: 'fb-context-item' })[1].dispatch('click');
+    // PR1: 'Open in editor' moved to index 2 (Preview, Add to chat, Open in editor, …)
+    findEls(menu, { cls: 'fb-context-item' })[2].dispatch('click');
     await TICKS();
   };
 

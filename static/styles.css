@@ -1062,7 +1062,8 @@ body {
 .tool-args { color: var(--text-dim); margin-top: 4px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: hidden; }
 .tool-result { margin-top: 6px; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 6px; }
 .tool-card.collapsed .tool-args,
-.tool-card.collapsed .tool-result { display: none; }
+.tool-card.collapsed .tool-result,
+.tool-card.collapsed .tool-preview-strip { display: none; }
 .tool-card.error { border-left-color: var(--danger); }
 
 /* slash-command output cards (per-session log, persisted on disk) */
@@ -3289,6 +3290,193 @@ textarea:focus-visible,
 
 @keyframes previewFadeIn { from { opacity: 0; } to { opacity: 1; } }
 .preview-overlay.visible { animation: previewFadeIn 0.15s ease-out; }
+
+/* ── Inline preview card (chat stream) ─────────────────────────────── */
+/* Appended below a triggering message/tool-card/chip in the chat flow. */
+
+.inline-preview-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 6px 0;
+  background: var(--bg);
+  animation: previewFadeIn 0.18s ease-out;
+}
+
+/* header — ~32px, app-bg, filename + action buttons */
+.ipc-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border-bottom: 1px solid var(--border);
+  min-height: 32px;
+}
+.ipc-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ipc-header-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.ipc-header-actions .btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+
+/* body — full-bleed, default 340px, drag to 70vh */
+.ipc-body {
+  position: relative;
+  overflow: auto;
+  background: var(--bg);
+}
+.ipc-stage {
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+/* image thumbnail mode */
+.ipc-body[data-collapsed='1'] .ipc-stage { display: none; }
+/* the viewer element itself is full-bleed inside the stage */
+.ipc-stage .preview-viewer {
+  width: 100%;
+  height: auto;
+  max-height: inherit;
+}
+
+/* mode badge — top-right, toggle 预览/源码 */
+.ipc-mode-badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #e06c75;
+  background: rgba(224, 108, 117, 0.12);
+  border: 1px solid rgba(224, 108, 117, 0.35);
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+  user-select: none;
+  z-index: 2;
+}
+.ipc-mode-badge:hover { background: rgba(224, 108, 117, 0.25); }
+.ipc-mode-badge[hidden] { display: none; }
+
+/* image collapse toggle */
+.ipc-toggle {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+
+/* drag handle — bottom of body */
+.ipc-drag {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  background: transparent;
+  z-index: 3;
+}
+.ipc-drag:hover, .ipc-drag.dragging {
+  background: var(--accent-dim, var(--accent));
+  opacity: 0.4;
+}
+
+/* status / loading */
+.ipc-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 12px;
+  text-align: center;
+}
+.ipc-status.error { color: var(--danger, #e06c75); }
+
+/* source view (raw <pre>) */
+.ipc-source {
+  width: 100%;
+  min-height: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text);
+  padding: 10px;
+  margin: 0;
+  background: var(--bg-input);
+}
+
+/* bottom action row */
+.ipc-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.ipc-row-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+.ipc-ai-note {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.ipc-ai-note[hidden] { display: none; }
+.ipc-progress {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+  margin-left: 4px;
+}
+.ipc-progress[hidden] { display: none; }
+
+/* preview path link in markdown */
+.preview-path-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.preview-path-link:hover { opacity: 0.8; }
+
+/* tool card preview strip */
+.tool-preview-strip {
+  /* anchor element inside tool-card; the inline card is inserted after it */
+}
 
 @media (max-width: 900px) {
   #preview-section { display: none !important; }

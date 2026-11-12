@@ -3,10 +3,10 @@
  * Supports speed toggle and volume persistence via sessionStorage.
  */
 
-import type { PreviewState } from '../open.js';
+import type { PreviewState, ViewerHandle } from '../core.js';
 
-export function mountVideoViewer(state: PreviewState): () => HTMLElement {
-  const container = document.createElement('div');
+export function mountVideoViewer(state: PreviewState): ViewerHandle {
+  const container = document.createElement('div') as unknown as ViewerHandle;
   container.className = 'preview-viewer preview-media-viewer';
 
   const isAudio = state.mime.startsWith('audio/') || state.kind === 'audio';
@@ -43,5 +43,5 @@ export function mountVideoViewer(state: PreviewState): () => HTMLElement {
   container.dataset.kind = isAudio ? 'audio' : 'video';
   container.dataset.size = String(state.size);
 
-  return () => container;
+  return container;
 }

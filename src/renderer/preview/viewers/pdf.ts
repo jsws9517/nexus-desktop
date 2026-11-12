@@ -3,10 +3,10 @@
  * iframe. Zero dependencies; requires webPreferences.plugins:true (set in index.ts).
  */
 
-import type { PreviewState } from '../open.js';
+import type { PreviewState, ViewerHandle } from '../core.js';
 
-export function mountPdfViewer(state: PreviewState): () => HTMLElement {
-  const container = document.createElement('div');
+export function mountPdfViewer(state: PreviewState): ViewerHandle {
+  const container = document.createElement('div') as unknown as ViewerHandle;
   container.className = 'preview-viewer preview-pdf-viewer';
 
   const iframe = document.createElement('iframe');
@@ -21,5 +21,7 @@ export function mountPdfViewer(state: PreviewState): () => HTMLElement {
   container.dataset.kind = 'pdf';
   container.dataset.name = state.name;
 
-  return () => container;
+  // PDF zoom is handled by Chromium's built-in renderer (Ctrl +/- inside the
+  // iframe); no host-side zoom surface needed.
+  return container;
 }
