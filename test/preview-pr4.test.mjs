@@ -13,6 +13,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { join, dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 
@@ -135,6 +136,27 @@ test('text viewer: ±/fit scale the body font (gutter stays aligned)', async () 
   el.fit();
   assert.equal(body.style.fontSize, '13px');
   void calls;
+});
+
+test('text viewer: content + gutter render from the loaded source (regression: centered shrink-wrap)', async () => {
+  const calls = mockNexus({ previewRead: async () => ({ ok: true, text: 'alpha\nbeta\ngamma' }) });
+  const el = mountTextViewer(mkState('text'));
+  win.document.body.appendChild(el);
+  await tick();
+  const content = el.querySelector('.preview-text-content');
+  assert.ok(content, 'content column present');
+  assert.equal(content.textContent, 'alpha\nbeta\ngamma', 'all lines rendered into the content column');
+  const gutter = el.querySelector('.preview-text-gutter');
+  assert.equal(gutter?.textContent, '1\n2\n3', 'line numbers 1..N');
+  assert.ok(el.querySelector('.preview-text-search-input'), 'in-view search bar present');
+  void calls;
+});
+
+test('styles.css: the text viewer fills the box (no centered shrink-wrap children)', () => {
+  const css = readFileSync(join(__dirname, '..', 'static', 'styles.css'), 'utf8');
+  const rule = css.match(/\.preview-text-viewer\s*\{[^}]*\}/g)?.find((r) => r.includes('flex-direction: column'));
+  assert.ok(rule, '.preview-text-viewer column-flex rule found');
+  assert.match(rule, /align-items:\s*stretch/, 'text/markdown children must stretch, not center (shrink-wrap bug)');
 });
 
 // ── 4.2 — labels follow the UI language (no hardcoded strings) ───────────

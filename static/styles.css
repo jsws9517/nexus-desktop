@@ -3952,7 +3952,12 @@ html[data-theme='matcha'] .preview-doc-viewer {
 }
 
 /* text: search bar + line-number gutter, mono throughout */
-.preview-text-viewer { display: flex; flex-direction: column; padding: 0; overflow: hidden; max-height: none; }
+/* The base .preview-viewer is flex-centered (page layout for the doc
+   canvases); text/markdown children must FILL the box instead. With the
+   inherited centering the search row and the gutter/content body
+   shrink-wrap to fit-content and float in the middle of the stage, so
+   long lines overflow invisibly and the text appears "missing". */
+.preview-text-viewer { display: flex; flex-direction: column; padding: 0; overflow: hidden; max-height: none; align-items: stretch; justify-content: flex-start; }
 .preview-text-search {
   display: flex;
   align-items: center;

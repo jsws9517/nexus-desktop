@@ -135,6 +135,11 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
         if (debounce) clearTimeout(debounce);
         debounce = setTimeout(() => renderContent(input.value.trim()), 150);
       });
+
+      // Initial paint — without this the content column stays empty until
+      // the user types a search query (the gutter alone gave the false
+      // impression that "the file loaded").
+      renderContent('');
     })
     .catch(() => {
       if (!container.isConnected) return;

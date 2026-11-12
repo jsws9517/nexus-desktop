@@ -3,9 +3,13 @@
  *
  * Drives the horizontal #rside-tabs strip and the four .rside-tab-panel
  * containers (信息 / 文件 / 浏览器 / 侧边对话). Panels keep their DOM while
- * inactive (state preservation), the incoming panel fades in over 200ms
- * (`.panel-in`), and the active id persists to localStorage so a panel
- * choice survives restarts.
+ * inactive (state preservation), and the incoming panel fades in over 200ms
+ * (`.panel-in`).
+ *
+ * The active panel always starts at 信息 on load. The earlier cross-restart
+ * persistence of the panel choice was dropped deliberately: a sticky 文件
+ * choice from a previous session made the app boot into the wrong panel;
+ * in-session switches simply are not persisted.
  *
  * The activation callback is the hook the renderer uses to re-arm the
  * FileBrowser idle timer (files tab), sync auto-hide hints, and pause the
@@ -16,15 +20,17 @@ export type RsidePanelId = 'info' | 'files' | 'browser' | 'sidechat';
 
 export const RSIDE_PANELS: readonly RsidePanelId[] = ['info', 'files', 'browser', 'sidechat'];
 
-const PANE_KEY = 'nexus.right-sidebar.panel';
+/** Legacy persistence key — removed on mount so older sessions' sticky
+ *  panel choice (e.g. 文件) stops leaking into every new launch. */
+const LEGACY_PANE_KEY = 'nexus.right-sidebar.panel';
 
 export interface RsideTabsOptions {
-  /** Fired whenever a panel becomes active (including the initial restore). */
+  /** Fired whenever a panel becomes active (including the initial load). */
   readonly onActivate?: (panel: RsidePanelId, prev: RsidePanelId | null) => void;
 }
 
 export interface RsideTabsHandle {
-  /** Switch to a panel (persisted + activation callback). */
+  /** Switch to a panel (activation callback; the choice is not persisted). */
   set(id: RsidePanelId): void;
   /** The active panel id. */
   get(): RsidePanelId;
@@ -44,15 +50,16 @@ export function mountRsideTabs(
   }
   let current: RsidePanelId = 'info';
 
-  function restore(): RsidePanelId {
-    let saved: string | null = null;
-    try {
-      saved = localStorage.getItem(PANE_KEY);
-    } catch {
-      /* storage unavailable */
-    }
-    return RSIDE_PANELS.includes(saved as RsidePanelId) ? (saved as RsidePanelId) : 'info';
+  // Always load into 信息 — the panel choice is not persisted across
+  // restarts; drop any stale value written by older builds.
+  try {
+    localStorage.removeItem(LEGACY_PANE_KEY);
+  } catch {
+    /* storage unavailable */
   }
+  const initial: RsidePanelId = 'info';
+  // Align the DOM to `initial` without a visible flash: hide every other
+  // panel, mark buttons, then fire activation.
 
   function set(id: RsidePanelId): void {
     const target = RSIDE_PANELS.includes(id) ? id : 'info';
@@ -78,11 +85,6 @@ export function mountRsideTabs(
       inEl.classList.add('panel-in');
     }
     current = target;
-    try {
-      localStorage.setItem(PANE_KEY, target);
-    } catch {
-      /* storage unavailable */
-    }
     opts.onActivate?.(target, prev);
   }
 
@@ -102,9 +104,7 @@ export function mountRsideTabs(
     });
   }
 
-  // Restore the persisted panel (or default 信息) and fire the first
-  // activation so idle timers / pause hooks arm on load.
-  const initial = restore();
+  // Fire the first activation so idle timers / pause hooks arm on load.
   // Align the DOM to `initial` without a visible flash: hide every other
   // panel, mark buttons, then fire activation.
   for (const b of buttons) {

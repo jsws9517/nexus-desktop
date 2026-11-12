@@ -1,6 +1,7 @@
 /**
  * PR2 right-sidebar rework tests — headless under happy-dom (no Electron):
- *   - rside-tabs: panel switch, persistence, invalid-id fallback
+ *   - rside-tabs: panel switch, default-Info load (no persistence),
+ *     invalid-id fallback
  *   - document dock (文件 tab): LRU eviction ≤8, viewer-node move
  *     stage↔stash, middle-click close, fullscreen overlay + Esc,
  *     fetch-failure tab drop
@@ -93,7 +94,7 @@ test('rside-tabs: mount restores 信息 by default and fires activation', async 
   assert.equal(panels.querySelector('[data-panel="files"]').hidden, true);
 });
 
-test('rside-tabs: clicking a panel swaps active state and persists', async () => {
+test('rside-tabs: clicking a panel swaps active state (choice is not persisted)', async () => {
   const { nav, panels } = rsideDom();
   const handle = mountRsideTabs(nav, panels);
   const filesBtn = nav.querySelector('[data-panel="files"]');
@@ -103,17 +104,18 @@ test('rside-tabs: clicking a panel swaps active state and persists', async () =>
   assert.equal(panels.querySelector('[data-panel="info"]').hidden, true);
   assert.equal(filesBtn.classList.contains('active'), true);
   assert.equal(filesBtn.getAttribute('aria-selected'), 'true');
-  assert.equal(win.localStorage.getItem('nexus.right-sidebar.panel'), 'files');
+  assert.equal(win.localStorage.getItem('nexus.right-sidebar.panel'), null, 'panel choice must not persist');
 });
 
-test('rside-tabs: a fresh mount restores the persisted panel', async () => {
+test('rside-tabs: a fresh mount loads into 信息 even with a stale persisted panel', async () => {
   win.localStorage.setItem('nexus.right-sidebar.panel', 'browser');
   const { nav, panels } = rsideDom();
   const handle = mountRsideTabs(nav, panels);
-  assert.equal(handle.get(), 'browser');
-  assert.equal(panels.querySelector('[data-panel="browser"]').hidden, false);
-  assert.equal(panels.querySelector('[data-panel="info"]').hidden, true);
-  win.localStorage.removeItem('nexus.right-sidebar.panel');
+  assert.equal(handle.get(), 'info');
+  assert.equal(panels.querySelector('[data-panel="info"]').hidden, false);
+  assert.equal(panels.querySelector('[data-panel="browser"]').hidden, true);
+  // The stale legacy value is cleaned up on mount.
+  assert.equal(win.localStorage.getItem('nexus.right-sidebar.panel'), null);
 });
 
 test('rside-tabs: invalid set() falls back to 信息; set() of same panel re-fires', async () => {
