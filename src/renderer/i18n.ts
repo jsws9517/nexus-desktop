@@ -488,6 +488,20 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   artifactError: { 'zh-CN': '产物生成失败', en: 'Artifact generation failed' },
   artifactEmptyData: { 'zh-CN': '（空数据）', en: '(empty data)' },
   artifactTruncated: { 'zh-CN': '已截断', en: 'truncated' },
+
+  // P0 Preview panel.
+  previewTitle: { 'zh-CN': '媒体预览', en: 'Preview' },
+  previewOpenLabel: { 'zh-CN': '预览文件', en: 'Preview file' },
+  previewCloseLabel: { 'zh-CN': '关闭预览', en: 'Close preview' },
+  previewFullscreenLabel: { 'zh-CN': '全屏预览', en: 'Toggle fullscreen' },
+  previewFitLabel: { 'zh-CN': '适应窗口', en: 'Fit to window' },
+  previewZoomInLabel: { 'zh-CN': '放大', en: 'Zoom in' },
+  previewZoomOutLabel: { 'zh-CN': '缩小', en: 'Zoom out' },
+  previewUnsupported: { 'zh-CN': '无法内嵌预览此类型，请用系统程序打开。', en: 'Cannot preview inline — open with system app.' },
+  previewTooLarge: { 'zh-CN': '文件过大（>512MB），请在外部查看。', en: 'File too large (>512 MB) — view externally.' },
+  previewLoading: { 'zh-CN': '加载中…', en: 'Loading…' },
+  previewFailed: { 'zh-CN': '加载失败', en: 'Failed to load' },
+  artifactOpenExternal: { 'zh-CN': '外部打开', en: 'Open externally' },
 };
 
 export function setUiLang(lang: Lang): void {

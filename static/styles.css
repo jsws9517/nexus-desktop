@@ -3240,3 +3240,56 @@ textarea:focus-visible,
   .session-pager .btn .btn-label { display: none; }
   .session-pager .btn { width: 26px; padding: 0; }
 }
+
+/* P0 Preview Panel */
+#preview-section { display: flex; flex-direction: column; gap: 6px; }
+#preview-section.hidden { display: none; }
+.preview-panel-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+.preview-toolbar { display: flex; align-items: center; gap: 3px; padding: 4px 2px; }
+.preview-toolbar.hidden { display: none; }
+.preview-name { flex: 1; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-meta-badge { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+.preview-toolbar-btn { width: 22px; height: 22px; padding: 0; display: flex; align-items: center; justify-content: center; }
+.preview-host { min-height: 80px; max-height: 320px; overflow: hidden; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; }
+.preview-viewer { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+.preview-image-viewer img { max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.1s ease; cursor: zoom-in; }
+.preview-media-viewer video, .preview-media-viewer audio { width: 100%; max-width: 100%; }
+.preview-pdf-viewer iframe, .preview-html-viewer iframe { width: 100%; height: 100%; border: none; background: #fff; }
+.preview-text-viewer { padding: 10px; font-size: 11px; line-height: 1.6; color: var(--text); overflow: auto; max-height: 300px; }
+.preview-pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: monospace; font-size: 11px; }
+.preview-error { color: var(--danger, #e06c75); font-size: 12px; padding: 8px; }
+.preview-fallback { padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+.preview-header { font-size: 12px; font-weight: 600; color: var(--text); }
+.preview-meta { font-size: 10px; color: var(--text-dim); }
+.preview-fallback-msg { font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+.preview-markdown { font-size: 12px; line-height: 1.6; }
+.preview-markdown p { margin: 4px 0; }
+.preview-markdown code { background: var(--bg-input); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+.preview-markdown pre { background: var(--bg-input); padding: 8px; border-radius: 6px; overflow-x: auto; }
+.preview-markdown pre code { background: none; padding: 0; }
+.preview-markdown blockquote { border-left: 2px solid var(--accent-dim); padding-left: 8px; color: var(--text-dim); }
+.preview-markdown ul, .preview-markdown ol { padding-left: 16px; margin: 4px 0; }
+.preview-markdown li { margin: 2px 0; }
+.preview-markdown h1, .preview-markdown h2, .preview-markdown h3 { margin: 8px 0 4px; }
+.preview-markdown h1 { font-size: 16px; }
+.preview-markdown h2 { font-size: 14px; }
+.preview-markdown h3 { font-size: 13px; }
+.preview-markdown table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 11px; }
+.preview-markdown th, .preview-markdown td { border: 1px solid var(--border); padding: 4px 6px; text-align: left; }
+.preview-markdown th { background: var(--bg-input); font-weight: 600; }
+.preview-markdown img { max-width: 100%; border-radius: 4px; }
+
+/* Preview overlay (fullscreen mode) */
+.preview-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+.preview-overlay.visible { pointer-events: all; }
+.preview-overlay .preview-viewer { width: 90vw; height: 80vh; max-width: 1200px; }
+.preview-overlay .preview-image-viewer img { max-width: 90vw; max-height: 80vh; }
+.preview-overlay .preview-media-viewer video { max-width: 90vw; max-height: 75vh; }
+.preview-overlay .preview-pdf-viewer iframe, .preview-overlay .preview-html-viewer iframe { width: 90vw; height: 80vh; max-width: 1200px; }
+
+@keyframes previewFadeIn { from { opacity: 0; } to { opacity: 1; } }
+.preview-overlay.visible { animation: previewFadeIn 0.15s ease-out; }
+
+@media (max-width: 900px) {
+  #preview-section { display: none !important; }
+}

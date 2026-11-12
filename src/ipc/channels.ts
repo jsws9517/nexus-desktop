@@ -73,6 +73,10 @@ export const CHANNELS = {
   coreBgKill: 'nexus:coreBgKill',
   coreBgTail: 'nexus:coreBgTail',
   coreBgRemove: 'nexus:coreBgRemove',
+  // P0 preview subsystem — main-process owned, no worker round-trip.
+  previewOpen: 'nexus:previewOpen',
+  previewClose: 'nexus:previewClose',
+  previewRead: 'nexus:previewRead',
   // T6 automation control plane (runner-side; main-process owned, no worker
   // round-trip — the store lives in automation.db next to the session store).
   automationList: 'nexus:automationList',

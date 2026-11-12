@@ -17,6 +17,7 @@ import { AutomationPage, mountAutomationPage } from './sidebar/pages/automations
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
+import { openPath as previewOpenPath, close as previewClose, updateToolbarButton as updatePreviewBtn, getState as getPreviewState, toggleFullscreen } from './preview/open.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 import { hydrateIcons, iconEl } from './icons.js';
 
@@ -322,6 +323,15 @@ declare global {
       saveArtifact(defaultName: string, data: string, encoding?: 'base64' | 'text'): Promise<{ ok: boolean; path?: string; error?: string }>;
       getPathForFile(file: File): string;
       regenerate(sessionId: string, userIndex: number): Promise<unknown>;
+
+      // P0 preview subsystem (main-process owned).
+      previewOpen(path: string): Promise<{
+        ok: boolean; token?: string; url?: string; kind?: string; mime?: string; size?: number; name?: string; error?: string;
+      }>;
+      previewClose(token: string): Promise<{ ok: boolean; error?: string }>;
+      previewRead(token: string, maxBytes?: number): Promise<{
+        ok: boolean; text?: string; truncated?: boolean; error?: string;
+      }>;
       withdraw(sessionId: string, userIndex: number): Promise<string>;
       respondPermission(id: string, answer: string, sessionId?: string): Promise<unknown>;
       setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
@@ -3909,6 +3919,14 @@ function makeFileBrowserContext(): FileBrowserContext {
     addFileToChat: (path) => {
       void attachFiles([path]);
     },
+    previewPath: async (path: string) => {
+      try {
+        await previewOpenPath(path);
+        return true;
+      } catch {
+        return false;
+      }
+    },
   };
 }
 
@@ -6467,6 +6485,22 @@ function makeFieldValues(row: HTMLElement): Record<string, string> {
 }
 
 $('#btn-settings').addEventListener('click', () => void openSettings());
+
+// P0 preview button — toggles fullscreen when a file is currently being previewed.
+const btnPreview = document.getElementById('btn-preview');
+if (btnPreview) {
+  btnPreview.addEventListener('click', async () => {
+    const state = getPreviewState();
+    if (state) await toggleFullscreen();
+  });
+}
+
+/** Global keyboard shortcuts for preview. */
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    void previewClose();
+  }
+});
 
 /** Dot badge on the settings entry when a core update is available. */
 function markSettingsUpdateBadge(on: boolean): void {

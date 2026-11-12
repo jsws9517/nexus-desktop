@@ -143,6 +143,18 @@ const api = {
   coreBgRemove: (jobId: string, sessionId?: string) =>
     ipcRenderer.invoke('nexus:coreBgRemove', { jobId, sessionId }) as Promise<{ ok: boolean; text?: string; error?: string }>,
 
+  // P0 preview subsystem (main-process owned).
+  previewOpen: (path: string) =>
+    ipcRenderer.invoke('nexus:previewOpen', { path }) as Promise<{
+      ok: boolean; token?: string; url?: string; kind?: string; mime?: string; size?: number; name?: string; error?: string;
+    }>,
+  previewClose: (token: string) =>
+    ipcRenderer.invoke('nexus:previewClose', { token }) as Promise<{ ok: boolean; error?: string }>,
+  previewRead: (token: string, maxBytes?: number) =>
+    ipcRenderer.invoke('nexus:previewRead', { token, maxBytes }) as Promise<{
+      ok: boolean; text?: string; truncated?: boolean; error?: string;
+    }>,
+
   // T6 automation control plane (main-process owned; store lives in the
   // automation DB, no worker round-trip).
   automationList: () =>

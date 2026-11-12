@@ -28,6 +28,9 @@ import { configureGpuForEnvironment } from './gpu-guard.js';
 import { EARLY_METHODS } from '../shared/constants.js';
 import { registerIpc } from '../ipc/register.js';
 import { CHANNELS } from '../ipc/channels.js';
+// Preview protocol must be registered before app.whenReady() so Chromium accepts
+// our custom scheme; ctxObj reads the live `win` ref at request time.
+import { setPreviewCtx, registerPreviewProtocol, installPreviewHandlers, destroyPreviewContext } from '../main/preview-protocol.js';
 
 // Windows UTF-8 child stdio contract (same as nexus-core's
 // bootstrapProcessEncoding in src/utils/child-env.ts): on Chinese Windows a
@@ -248,6 +251,7 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      plugins: true,
       v8CacheOptions: 'bypassHeatCheck' as const,
     },
   });
@@ -687,6 +691,28 @@ function startWorker(): void {
 }
 
 if (gotLock) {
+  // Preview context reads the live `win` ref at request time; call early so any
+  // handler closure captures the right variable. Protocol itself is registered
+  // after app.whenReady() — Electron rejects scheme registration before ready.
+  setPreviewCtx({
+    getWin: () => win,
+    getAllowedRoots: async () => {
+      const os = await import('node:os');
+      const fs = await import('node:fs/promises');
+      const candidates = [
+        desktopState.loadSavedCwd(),
+        ...sessionWorkers.cwds(),
+        process.env.NEXUS_CONFIG_DIR || join(homedir(), '.nexus'),
+        os.tmpdir(),
+        process.cwd(),
+      ].filter((p): p is string => !!p);
+      const out: string[] = [];
+      for (const p of candidates) {
+        try { out.push(await fs.realpath(p)); } catch { /* missing root */ }
+      }
+      return out;
+    },
+  });
   app.whenReady().then(async () => {
     // No default Electron window menu bar on Windows/Linux (settings/config view
     // should not reuse the app's menu styling). On macOS a null menu removes the
@@ -872,10 +898,13 @@ if (gotLock) {
        coreUpdater,
        coreOverlayRoot,
        getCoreVersion: currentCoreVersion,
-       restartCoreWorker: () => { void restartWorker(); },
-sendEvent: send,
-     });
-     createWindow();
+        restartCoreWorker: () => { void restartWorker(); },
+        sendEvent: send,
+      });
+      // Register AFTER app.whenReady() — Electron rejects scheme registration before ready.
+      void registerPreviewProtocol();
+      installPreviewHandlers();
+      createWindow();
 
     // Silent startup check for a newer core overlay. Only surfaces availability
     // (never auto-downloads); the renderer turns an 'available' state into a
@@ -903,6 +932,7 @@ sendEvent: send,
 app.on('window-all-closed', () => {
   // Minimize-to-tray: keep the app alive when the last window closes.
   if (desktopState.getMinimizeToTray() && !isQuitting) return;
+  destroyPreviewContext();
   if (process.platform !== 'darwin') app.quit();
 });
 

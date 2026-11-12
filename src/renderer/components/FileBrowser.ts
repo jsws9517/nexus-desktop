@@ -63,6 +63,10 @@ export interface FileBrowserBridge {
    *  elsewhere). Optional: absent on an older preload, in which case the caller
    *  falls back to `openExternalFile`. */
   openInEditor?(path: string): Promise<{ ok: boolean; error?: string }>;
+  /** Preview a file in the inline preview panel. Returns true when the file
+   *  type can be previewed; false means the caller should fall back to
+   *  openExternalFile. The preview system handles all safety checks. */
+  previewPath?(path: string): Promise<boolean>;
   /** Absolute-path-indexed entries; a missing path means the working tree is
    *  clean. `ignored` entries are excluded from badges entirely. */
   getGitStatus(root: string): Promise<GitStatusResult>;
@@ -80,6 +84,10 @@ export interface FileBrowserContext {
   /** Host-owned hook that adds an absolute file path to the chat composer
    *  (as an attachment). Optional so the component stays standalone. */
   addFileToChat?(path: string): void;
+  /** P0: attempt to open a file in the inline preview panel. Returns true
+   *  when successful; false means the caller should fall back to
+   *  openExternalFile. Optional — not all host environments implement it. */
+  previewPath?(path: string): Promise<boolean>;
 }
 
 export interface FileBrowserMountOptions {
@@ -525,6 +533,13 @@ export function mountFileBrowser(
   }
 
   async function onClickFile(path: string): Promise<void> {
+    // Try preview first (context-hosted preferred; bridge as fallback);
+    // only fall back to external open if the type is unsupported.
+    const previewFn = ctx.previewPath ?? bridge.previewPath;
+    if (typeof previewFn === 'function') {
+      const ok = await previewFn(path);
+      if (ok) { armIdle(); return; }
+    }
     const res = await bridge.openExternalFile(path);
     if (!res.ok) showToast(`${str('fbOpenFailed', getLang())}: ${res.error ?? ''}`);
     armIdle();

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; script-src 'self' 'unsafe-eval'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: nexus-preview:; font-src 'self'; script-src 'self' 'unsafe-eval'; media-src 'self' blob: nexus-preview:; frame-src 'self' nexus-preview:; object-src 'self' nexus-preview:; worker-src 'self' blob:;" />
   <title>Nexus Desktop</title>
   <link rel="stylesheet" href="./styles.css" />
     <!-- Vega chart runtime (vendored bundles, loaded as classic scripts; the
@@ -54,6 +54,11 @@
           <label class="field-label" for="model-select" data-i18n="modelLabel">Model</label>
           <span class="select-wrap"><select id="model-select"></select></span>
         </div>
+        <span class="toolbar-sep" aria-hidden="true"></span>
+        <button id="btn-preview" class="btn ghost icon-text" title="Preview media files (click when file selected)" data-i18n-title="previewOpenLabel" aria-label="Preview media files">
+          <span class="icon-slot" data-icon="image"></span>
+          <span class="btn-label" data-i18n="previewTitle">预览</span>
+        </button>
         <span class="toolbar-sep" aria-hidden="true"></span>
         <button id="btn-settings" class="btn ghost icon-text" title="Settings" data-i18n-title="settings" aria-label="Settings">
           <span class="icon-slot" data-icon="sliders"></span>
@@ -178,6 +183,20 @@
           <div id="task-empty" class="task-empty hidden" data-i18n="noTasks">暂无任务</div>
         </div>
         <div class="rside-divider"></div>
+        <!-- P0: Preview panel — accordion inside #right-sidebar; collapsed by default. -->
+        <div id="preview-section" class="rside-section hidden">
+          <div class="rside-title preview-panel-title" data-i18n="previewTitle" title="Preview media files">媒体预览</div>
+          <div id="preview-toolbar" class="preview-toolbar hidden">
+            <span id="preview-name" class="preview-name" title=""></span>
+            <span id="preview-meta" class="preview-meta-badge"></span>
+            <button id="btn-preview-zoom-in" class="btn ghost icon tiny preview-toolbar-btn" title="Zoom in (+)" aria-label="Zoom in"><span class="icon-slot" data-icon="zoom-in"></span></button>
+            <button id="btn-preview-zoom-out" class="btn ghost icon tiny preview-toolbar-btn" title="Zoom out (-)" aria-label="Zoom out"><span class="icon-slot" data-icon="zoom-out"></span></button>
+            <button id="btn-preview-fit" class="btn ghost icon tiny preview-toolbar-btn" title="Fit to window" aria-label="Fit to window"><span class="icon-slot" data-icon="fit-window"></span></button>
+            <button id="btn-preview-fullscreen" class="btn ghost icon tiny preview-toolbar-btn" title="Toggle fullscreen (F)" aria-label="Toggle fullscreen"><span class="icon-slot" data-icon="fullscreen"></span></button>
+            <button id="btn-preview-close" class="btn ghost icon tiny preview-toolbar-btn" title="Close preview (Esc)" aria-label="Close preview"><span class="icon-slot" data-icon="x"></span></button>
+          </div>
+          <div id="preview-host" class="preview-host"></div>
+        </div>
         <div id="file-browser" class="rside-section" role="complementary" aria-label="文件浏览器"></div>
         <button id="btn-collapse-right-sidebar" class="rsidebar-toggle" title="折叠信息栏" data-i18n-title="collapseSidebar" aria-label="折叠信息栏">
           <span class="icon-slot" data-icon="chevron-right"></span>
@@ -241,6 +260,9 @@
       </div>
     </div>
   </div>
+
+  <!-- P0: Preview fullscreen overlay -->
+  <div id="preview-overlay-root" class="preview-overlay hidden"></div>
 
   <script type="module" src="../renderer/renderer.js"></script>
 </body>
