@@ -27,6 +27,7 @@
  */
 
 import type { AgentEvent } from '../../agent/types.js';
+import { classify } from '../../shared/preview.js';
 import { STR } from '../i18n.js';
 
 export interface FileBrowserEntry {
@@ -84,9 +85,13 @@ export interface FileBrowserContext {
   /** Host-owned hook that adds an absolute file path to the chat composer
    *  (as an attachment). Optional so the component stays standalone. */
   addFileToChat?(path: string): void;
-  /** P0: attempt to open a file in the inline preview panel. Returns true
-   *  when successful; false means the caller should fall back to
-   *  openExternalFile. Optional — not all host environments implement it. */
+  /**
+   * Attempt to open a file in the built-in preview panel. Returns `true` only
+   * when the preview actually mounted; `false` (or throwing) means the caller
+   * should fall back to `openExternalFile`. Optional — not all host
+   * environments implement it. The bridge form is the fallback when a host
+   * context omits it.
+   */
   previewPath?(path: string): Promise<boolean>;
 }
 
@@ -104,6 +109,9 @@ export interface FileBrowserMountOptions {
 export interface FileBrowserHandle {
   dispose(): void;
   setIdleMs(ms: number): void;
+  /** PR2: gate the idle countdown on the host panel being visible (文件 tab
+   *  active). false pauses any running countdown; true re-arms it. */
+  setIdleArmed(armed: boolean): void;
 }
 
 interface DirNode {
@@ -239,6 +247,9 @@ export function mountFileBrowser(
 ): FileBrowserHandle {
   const bridge: FileBrowserBridge = opts.bridge ?? (window as unknown as { nexusDesktop?: FileBrowserBridge }).nexusDesktop ?? { listDirectory: async () => ({ ok: false, error: 'bridge missing' }), openExternalFile: async () => ({ ok: false, error: 'bridge missing' }), openInEditor: async () => ({ ok: false, error: 'bridge missing' }), getGitStatus: async () => ({ ok: false, isRepo: false, error: 'bridge missing' }) };
   let idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
+  // PR2: the idle countdown only runs while the host 文件 panel is active;
+  // the renderer gates this via handle.setIdleArmed(panelVisible).
+  let idleArmed = true;
   const getLang = () => ctx.getUiLang() || 'zh-CN';
 
   container.className = 'rside-section file-browser';
@@ -362,6 +373,8 @@ export function mountFileBrowser(
 
   function armIdle(): void {
     cancelIdle();
+    // Host panel not visible (PR2 文件 tab gating) → no countdown at all.
+    if (!idleArmed) return;
     // Pointer/focus inside the panel (or an open menu) suspends the countdown.
     if (disposed || collapsed || interacting || contextMenu) return;
     idleTimer = setTimeout(() => {
@@ -495,6 +508,15 @@ export function mountFileBrowser(
           const fileState = gitStateOf(row);
           if (fileState) renderGitBadge(el, fileState, true);
           el.appendChild(size);
+          // PR2: hover 👁 badge marks previewable files — single-click opens
+          // them in the 文件 tab's document strip (html → 浏览器 tab).
+          if (classify(row.path) !== 'unsupported') {
+            const badge = document.createElement('span');
+            badge.className = 'fb-preview-badge';
+            badge.textContent = '👁';
+            badge.title = str('previewOpenLabel', getLang());
+            el.appendChild(badge);
+          }
           el.addEventListener('click', () => {
             void onClickFile(row.path);
           });
@@ -533,12 +555,18 @@ export function mountFileBrowser(
   }
 
   async function onClickFile(path: string): Promise<void> {
-    // Try preview first (context-hosted preferred; bridge as fallback);
-    // only fall back to external open if the type is unsupported.
+    // Built-in preview is the primary action; the external open is now a
+    // fallback only. Two distinct fallback paths (kept visible to the user):
+    //   1. type not previewable at all → external open silently (expected);
+    //   2. previewable but the preview failed (403 / cap / missing) →
+    //      external open + an explanatory toast.
     const previewFn = ctx.previewPath ?? bridge.previewPath;
     if (typeof previewFn === 'function') {
-      const ok = await previewFn(path);
-      if (ok) { armIdle(); return; }
+      try {
+        const ok = await previewFn(path);
+        if (ok) { armIdle(); return; }
+        showToast(str('fbPreviewUnavailable', getLang()));
+      } catch { /* fall through to external open */ }
     }
     const res = await bridge.openExternalFile(path);
     if (!res.ok) showToast(`${str('fbOpenFailed', getLang())}: ${res.error ?? ''}`);
@@ -619,8 +647,30 @@ export function mountFileBrowser(
     menu.className = 'fb-context-menu';
     menu.style.left = `${Math.max(0, ev.clientX ?? 0)}px`;
     menu.style.top = `${Math.max(0, ev.clientY ?? 0)}px`;
+    // Primary actions first: built-in preview (same as single-click), then
+    // chat / editor / management actions.
+    const previewFn = ctx.previewPath ?? bridge.previewPath;
+    menu.appendChild(contextMenuItem(str('fbPreview', getLang()), () => {
+      if (typeof previewFn === 'function') void previewFn(path);
+      else void bridge.openExternalFile(path);
+    }));
     menu.appendChild(contextMenuItem(str('fbAddToChat', getLang()), () => ctx.addFileToChat?.(path)));
     menu.appendChild(contextMenuItem(str('fbOpenInEditor', getLang()), () => openFileInEditor(path)));
+    menu.appendChild(contextMenuItem(str('fbCopyPath', getLang()), () => {
+      void navigator.clipboard?.writeText(path).catch(() => {});
+    }));
+    menu.appendChild(contextMenuItem(str('fbRevealInFolder', getLang()), () => {
+      void window.nexusDesktop.revealFile(path).catch(() => {});
+    }));
+    // Fallback, kept at the very bottom behind a separator: now that the
+    // built-in preview is the default, external open is no longer the primary
+    // action — it is the escape hatch for unpreviewable types / failures.
+    const sep = document.createElement('hr');
+    sep.className = 'fb-context-sep';
+    menu.appendChild(sep);
+    menu.appendChild(contextMenuItem(str('fbOpenExternal', getLang()), () => {
+      void bridge.openExternalFile(path);
+    }));
     // Mount at the document root so panel overflow / re-renders can't clip it.
     (document.body ?? container).appendChild(menu);
     contextMenu = menu;
@@ -872,6 +922,11 @@ export function mountFileBrowser(
   }) as unknown) as FileBrowserHandle & CallableFunction;
   handle.dispose = disposeFn;
   handle.setIdleMs = (ms: number) => { (handle as CallableFunction)(ms); };
+  handle.setIdleArmed = (armed: boolean) => {
+    idleArmed = armed;
+    if (armed) armIdle(); // re-arm on return to the 文件 tab
+    else cancelIdle();     // pause on panel switch
+  };
   return handle;
 }
 

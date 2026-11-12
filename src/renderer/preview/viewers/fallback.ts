@@ -3,11 +3,12 @@
  * plus a "Open externally" button wired to the existing revealFile IPC.
  */
 
-import type { PreviewState } from '../open.js';
+import type { PreviewState, ViewerHandle } from '../core.js';
 import { formatBytes } from '../../../shared/preview.js';
+import { t } from '../../i18n.js';
 
-export function mountFallbackView(state: PreviewState): () => HTMLElement {
-  const container = document.createElement('div');
+export function mountFallbackView(state: PreviewState): ViewerHandle {
+  const container = document.createElement('div') as unknown as ViewerHandle;
   container.className = 'preview-viewer preview-fallback';
 
   const header = document.createElement('div');
@@ -24,17 +25,23 @@ export function mountFallbackView(state: PreviewState): () => HTMLElement {
 
   const msg = document.createElement('div');
   msg.className = 'preview-fallback-msg';
-  msg.textContent =
-    state.kind === 'unsupported'
-      ? 'This file type cannot be previewed inline. Open with the default application instead.'
-      : 'Inline preview is not implemented for this type yet.';
+  msg.dataset.i18n = state.kind === 'unsupported' ? 'docUnsupportedMsg' : 'docUnimplMsg';
+  msg.textContent = t(msg.dataset.i18n);
 
   const btn = document.createElement('button');
   btn.className = 'btn primary small';
   btn.type = 'button';
-  btn.textContent = 'Open externally';
+  btn.dataset.i18n = 'docOpenExternal';
+  btn.textContent = t('docOpenExternal');
+  // `state.path` is the real absolute path (not the nexus-preview:// URL) so
+  // the OS default app gets a usable target.
   btn.addEventListener('click', () => {
-    void window.nexusDesktop.revealFile(state.url); // the URL still resolves via the custom scheme
+    void window.nexusDesktop.openExternalFile(state.path).then((res) => {
+      if (res && res.ok === false) {
+        msg.dataset.i18n = 'docExternalFailed';
+        msg.textContent = t('docExternalFailed', { error: res.error ?? 'unknown' });
+      }
+    }).catch(() => {});
   });
 
   container.appendChild(header);
@@ -44,5 +51,5 @@ export function mountFallbackView(state: PreviewState): () => HTMLElement {
 
   container.dataset.kind = 'fallback';
 
-  return () => container;
+  return container;
 }

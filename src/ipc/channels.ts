@@ -77,6 +77,18 @@ export const CHANNELS = {
   previewOpen: 'nexus:previewOpen',
   previewClose: 'nexus:previewClose',
   previewRead: 'nexus:previewRead',
+  // PR3 document parsing (docx/xlsx/pptx → normalized model, main-side LRU).
+  previewDocument: 'nexus:previewDocument',
+  // PR2 browser tab — WebContentsView manager (main-process owned, isolated
+  // session partition so external content never shares origin/cookies with
+  // the app renderer; local files bypass this entirely via the
+  // nexus-preview:// iframe path).
+  webviewOpen: 'nexus:webviewOpen',
+  webviewBack: 'nexus:webviewBack',
+  webviewForward: 'nexus:webviewForward',
+  webviewReload: 'nexus:webviewReload',
+  webviewClose: 'nexus:webviewClose',
+  webviewBounds: 'nexus:webviewBounds',
   // T6 automation control plane (runner-side; main-process owned, no worker
   // round-trip — the store lives in automation.db next to the session store).
   automationList: 'nexus:automationList',
@@ -165,6 +177,8 @@ export const CHANNELS = {
   configWindowClosed: 'nexus:configWindowClosed',
   rateLimitUpdate: 'nexus:rateLimitUpdate',
   getRateLimitStatus: 'nexus:getRateLimitStatus',
+  // PR2 browser tab progress/state pushes (main → renderer).
+  webviewEvent: 'nexus:webviewEvent',
 
   // core overlay updates (phase 2).
   getCoreVersion: 'nexus:getCoreVersion',

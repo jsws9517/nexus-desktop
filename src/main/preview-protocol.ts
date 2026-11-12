@@ -56,7 +56,10 @@ const DANGEROUS_EXT = new Set([
   '.sh', '.bash', '.zsh', '.run', '.bin', '.desktop', '.command',
 ]);
 
-async function isInsideAllowed(realPath: string): Promise<boolean> {
+/** True when the canonical path lives inside an allowed preview root.
+ *  Exported for the document-preview handler (src/main/preview-docs.ts) so
+ *  both surfaces share one containment policy. */
+export async function isInsideAllowed(realPath: string): Promise<boolean> {
   const roots = await liveAllowedRoots();
   const norm = realPath.replace(/\\/g, '/').toLowerCase();
   return roots.some((root) => norm === root || norm.startsWith(root + '/'));
@@ -82,8 +85,13 @@ async function liveAllowedRoots(): Promise<string[]> {
 }
 
 let cachedRoots: string[] | null = null;
-async function ensureCachedRoots(): Promise<void> {
-  if (cachedRoots) return;
+/**
+ * (Re)build the static fallback root list. Runs at launch and again after a
+ * project directory switch so the cached fallback never serves a stale set.
+ * Only matters when the live `getAllowedRoots` context yields nothing.
+ */
+async function ensureCachedRoots(force = false): Promise<void> {
+  if (cachedRoots && !force) return;
   const os = await import('node:os');
   const fs = await import('node:fs/promises');
   const raw: string[] = [];
@@ -95,6 +103,8 @@ async function ensureCachedRoots(): Promise<void> {
   try { raw.push(process.cwd()); } catch {}
   // 4. homedir itself — covers all user files
   try { raw.push(os.homedir()); } catch {}
+  // 5. the last known session/project cwd (refreshed via setPreviewCwd)
+  try { if (previewCwd) raw.push(previewCwd); } catch {}
   // Realpath each candidate so per-request check is fast and symlink-safe.
   const resolved: string[] = [];
   for (const p of raw) {
@@ -105,6 +115,22 @@ async function ensureCachedRoots(): Promise<void> {
   }
   cachedRoots = resolved.map((r) => r.replace(/\\/g, '/').toLowerCase());
   log('cachedRoots =', cachedRoots);
+}
+
+/** Last known session/project working directory; refreshed on cwd change. */
+let previewCwd: string | null = null;
+
+/**
+ * Call whenever the active project/session cwd changes (new project, /setdir,
+ * /chcwd) so the fallback allowed-roots cache reflects it immediately instead
+ * of waiting for the next launch. The live `getAllowedRoots` path already reads
+ * current session cwds; this covers the fallback branch.
+ */
+export function setPreviewCwd(cwd: string): void {
+  if (typeof cwd === 'string' && cwd) {
+    previewCwd = cwd;
+    void ensureCachedRoots(true).catch(() => {});
+  }
 }
 
 // ── Per-context token store ────────────────────────────────────────────────
@@ -288,7 +314,7 @@ export function installPreviewHandlers(): void {
     if (!isPreviewable(kind)) return { ok: false, error: `unsupported type: ${kind}` };
     let st: import('node:fs').Stats;
     try { st = await stat(real); } catch { return { ok: false, error: 'stat failed' }; }
-    if (exceedsPreviewCap(st.size)) return { ok: false, error: `file too large (${formatBytes(st.size)} > ${formatBytes(MAX_PREVIEW_BYTES)})` };
+    if (exceedsPreviewCap(st.size)) return { ok: false, error: `preview too large: ${formatBytes(st.size)} exceeds the ${formatBytes(MAX_PREVIEW_BYTES)} cap` };
     const alloc = await allocateToken(ctxObj!, real);
     if (!alloc) return { ok: false, error: 'token allocation failed' };
     return {

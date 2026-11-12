@@ -152,6 +152,12 @@ export interface IpcContext extends DesktopStateAccess {
   restartCoreWorker: () => void;
   /** Send an event to the renderer process (for state change pushes). */
   sendEvent: (channel: string, payload: unknown) => void;
+  /**
+   * Optional: notify the preview subsystem that the session/project cwd
+   * changed so its allowed-roots cache stays current (prevents 403s after a
+   * project switch). No-op when the preview protocol is not registered.
+   */
+  notifyCwdChanged?: (cwd: string) => void;
 }
 
 /**
@@ -484,7 +490,11 @@ export function registerIpc(ctx: IpcContext): void {
     // global worker used by the sidebar). Fall back to the global worker.
     const res = await callForSession('setCwd')(_e, params);
     const cwd = (res as { cwd?: unknown } | undefined)?.cwd;
-    if (typeof cwd === 'string' && cwd) ctx.saveSavedCwd(cwd);
+    if (typeof cwd === 'string' && cwd) {
+      ctx.saveSavedCwd(cwd);
+      // Keep the preview allowed-roots cache in sync with the new project dir.
+      ctx.notifyCwdChanged?.(cwd);
+    }
     return res;
   });
   ipcMain.handle(CHANNELS.getDefaultProjectDir, call('getDefaultProjectDir'));

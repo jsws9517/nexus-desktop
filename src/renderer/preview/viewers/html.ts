@@ -4,10 +4,10 @@
  * malicious page cannot exfiltrate data or reach the host UI.
  */
 
-import type { PreviewState } from '../open.js';
+import type { PreviewState, ViewerHandle } from '../core.js';
 
-export function mountHtmlViewer(state: PreviewState): () => HTMLElement {
-  const container = document.createElement('div');
+export function mountHtmlViewer(state: PreviewState): ViewerHandle {
+  const container = document.createElement('div') as unknown as ViewerHandle;
   container.className = 'preview-viewer preview-html-viewer';
 
   const iframe = document.createElement('iframe');
@@ -23,5 +23,5 @@ export function mountHtmlViewer(state: PreviewState): () => HTMLElement {
   container.dataset.kind = 'html';
   container.dataset.name = state.name;
 
-  return () => container;
+  return container;
 }

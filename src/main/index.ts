@@ -30,7 +30,9 @@ import { registerIpc } from '../ipc/register.js';
 import { CHANNELS } from '../ipc/channels.js';
 // Preview protocol must be registered before app.whenReady() so Chromium accepts
 // our custom scheme; ctxObj reads the live `win` ref at request time.
-import { setPreviewCtx, registerPreviewProtocol, installPreviewHandlers, destroyPreviewContext } from '../main/preview-protocol.js';
+import { setPreviewCtx, setPreviewCwd, registerPreviewProtocol, installPreviewHandlers, destroyPreviewContext } from '../main/preview-protocol.js';
+import { installPreviewDocumentHandlers, docCache } from '../main/preview-docs.js';
+import { installWebviewHandlers, destroyAllWebviews } from '../main/webview-manager.js';
 
 // Windows UTF-8 child stdio contract (same as nexus-core's
 // bootstrapProcessEncoding in src/utils/child-env.ts): on Chinese Windows a
@@ -276,6 +278,7 @@ function createWindow(): void {
     logf(`renderer[${event.level}]: ${event.message}`);
   });
   win.on('closed', () => {
+    destroyAllWebviews();
     win = null;
   });
 
@@ -900,10 +903,24 @@ if (gotLock) {
        getCoreVersion: currentCoreVersion,
         restartCoreWorker: () => { void restartWorker(); },
         sendEvent: send,
+        // Project-dir switches re-sync the preview allowed-roots cache so the
+        // custom protocol doesn't 403 on files under the new dir.
+        notifyCwdChanged: (cwd: string) => { setPreviewCwd(cwd); },
       });
       // Register AFTER app.whenReady() — Electron rejects scheme registration before ready.
       void registerPreviewProtocol();
       installPreviewHandlers();
+      // PR3 document preview: parse docx/xlsx/pptx in the main process
+      // (renderer is CSP-restricted) and serve the normalized model over
+      // `nexus:previewDocument`, with a path+mtime+size LRU cache.
+      void installPreviewDocumentHandlers();
+      // PR2 browser tab: WebContentsView manager for external URLs in the
+      // 浏览器 panel. Events (progress/title/fallback) push over the
+      // webviewEvent channel; bounds follow the renderer-synced panel rect.
+      installWebviewHandlers({
+        getWin: () => win,
+        pushEvent: (payload) => { send(CHANNELS.webviewEvent, payload); },
+      });
       createWindow();
 
     // Silent startup check for a newer core overlay. Only surfaces availability
@@ -933,6 +950,10 @@ app.on('window-all-closed', () => {
   // Minimize-to-tray: keep the app alive when the last window closes.
   if (desktopState.getMinimizeToTray() && !isQuitting) return;
   destroyPreviewContext();
+  // PR3 document cache: drop the parsed-model LRU on window close so a
+  // re-opened window re-parses against fresh mtime/size keys.
+  docCache.clear();
+  destroyAllWebviews();
   if (process.platform !== 'darwin') app.quit();
 });
 

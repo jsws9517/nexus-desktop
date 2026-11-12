@@ -1,0 +1,50 @@
+{
+  "kind": "docx",
+  "name": "report.docx",
+  "title": "Quarterly Report",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Quarterly Report"
+    },
+    {
+      "type": "paragraph",
+      "text": "Revenue & growth overview"
+    },
+    {
+      "type": "paragraph",
+      "text": "North\tSouth\nEast"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Details"
+    },
+    {
+      "type": "table",
+      "rows": [
+        [
+          "region",
+          "revenue"
+        ],
+        [
+          "north",
+          "1200"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Notes follow"
+    },
+    {
+      "type": "table",
+      "rows": [
+        [
+          "outer\ninner"
+        ]
+      ]
+    }
+  ]
+}

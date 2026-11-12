@@ -1062,7 +1062,8 @@ body {
 .tool-args { color: var(--text-dim); margin-top: 4px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: hidden; }
 .tool-result { margin-top: 6px; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 6px; }
 .tool-card.collapsed .tool-args,
-.tool-card.collapsed .tool-result { display: none; }
+.tool-card.collapsed .tool-result,
+.tool-card.collapsed .tool-preview-strip { display: none; }
 .tool-card.error { border-left-color: var(--danger); }
 
 /* slash-command output cards (per-session log, persisted on disk) */
@@ -1607,9 +1608,13 @@ body {
 }
 .rules-actions { flex-direction: row; align-items: center; gap: 8px; }
 
-/* ---- Right sidebar: session info + task progress ---- */
+/* ---- Right sidebar: PR2 tab system (信息 / 文件 / 浏览器 / 侧边对话) ---- */
 #right-sidebar {
-  width: 274px;
+  /* PR2 E1: width is a variable so the drag handle + responsive rules share
+     one source; the 浏览器/侧边对话 panels need a minimum working width. */
+  --rside-w: 274px;
+  --rside-min-w: 0px;
+  width: max(var(--rside-w), var(--rside-min-w));
   background: var(--bg-sidebar);
   border-left: 1px solid var(--border);
   display: flex;
@@ -1618,12 +1623,34 @@ body {
   overflow: hidden;
   position: relative;
   padding: 12px;
-  gap: 12px;
-  transition: width 0.2s ease;
+  gap: 8px;
+  transition: width 0.2s ease, opacity 0.2s ease;
 }
+/* PR2 E1/E2: .collapsing = the 300ms collapse/expand transition; .dragging =
+   width-drag in flight (transitions off so the panel tracks the pointer). */
+#right-sidebar.collapsing { transition: width 0.3s ease, opacity 0.3s ease; }
+#right-sidebar.dragging { transition: none; }
 #right-sidebar.collapsed { width: 48px; }
+#right-sidebar.collapsed .rside-tabs { display: none; }
+#right-sidebar.collapsed .rside-panels { display: none; }
 #right-sidebar.collapsed .rside-section { display: none; }
 #right-sidebar.collapsed .rside-divider { display: none; }
+/* Width drag handle (PR2 E2): thin strip on the inner edge, 274~720px. */
+.rsidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 30;
+  background: transparent;
+  transition: background 0.15s;
+}
+.rsidebar-resize:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+/* PR2: the 侧边对话 panel needs more room — the host enforces a 380px floor
+   on the variable while that panel is active. */
+#right-sidebar[data-active-panel="sidechat"] { --rside-min-w: 380px; }
 .rsidebar-toggle {
   position: absolute;
   top: 50%;
@@ -1653,6 +1680,241 @@ body {
 .rside-section { display: flex; flex-direction: column; gap: 8px; }
 .rside-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
 .rside-divider { border: 0; border-top: 1px solid var(--border); margin: 2px 0; }
+
+/* PR2: right-sidebar tab strip (信息 / 文件 / 浏览器 / 侧边对话). */
+.rside-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 0 4px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.rside-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 8px;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s, background 0.15s;
+  outline: none;
+}
+.rside-tab:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.rside-tab.active { color: var(--accent); }
+.rside-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -5px;
+  border-bottom: 2px solid var(--accent);
+}
+.rside-panels {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Panels keep their DOM while hidden (state preservation); the incoming
+   panel fades in over 200ms — no remount, no scroll/zoom loss. */
+.rside-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.rside-tab-panel[hidden] { display: none; }
+.rside-tab-panel[data-panel="info"] { gap: 12px; }
+.rside-tab-panel.panel-in { animation: rsidePanelIn 0.2s ease-out; }
+@keyframes rsidePanelIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* PR2 文件 panel: document tab strip + persistent viewer stage/stash. */
+.doc-tab-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  padding: 0 0 4px;
+  scrollbar-width: thin;
+}
+.doc-tab-strip.hidden { display: none; }
+.doc-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 150px;
+  min-width: 72px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.doc-tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-input));
+}
+.doc-tab.loading .doc-tab-name { opacity: 0.6; }
+.doc-tab-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.doc-tab-kind { font-size: 10px; opacity: 0.8; flex-shrink: 0; }
+.doc-tab-close {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 10px;
+  padding: 0 2px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.doc-tab-close:hover { color: var(--text); background: rgba(0, 0, 0, 0.2); }
+.doc-tab-stage {
+  flex: 1 1 0;
+  min-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.doc-tab-stage.hidden { display: none; flex: 0 0 auto; }
+/* Inactive viewers park here — off-screen but alive, so zoom / scroll /
+   playback position survive tab switches. */
+.doc-tab-stash { display: none; }
+
+/* PR2 浏览器 panel (local iframe + main-side WebContentsView over the stage). */
+.browser-tab-root {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.browser-tab-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+}
+.browser-tab-strip.hidden { display: none; }
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+  min-width: 64px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.browser-tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-input));
+}
+.browser-tab-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.browser-tab-kind { font-size: 10px; flex-shrink: 0; }
+.browser-tab-close {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 10px;
+  padding: 0 2px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.browser-tab-close:hover { color: var(--text); background: rgba(0, 0, 0, 0.2); }
+.browser-toolbar { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.browser-toolbar-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+.browser-toolbar-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.browser-toolbar-btn:disabled { opacity: 0.35; cursor: default; }
+.browser-address {
+  flex: 1;
+  min-width: 60px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  outline: none;
+}
+.browser-address:focus { border-color: var(--accent); }
+.browser-progress {
+  position: relative;
+  height: 2px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.browser-progress.hidden { display: none; }
+.browser-progress:not(.hidden)::after {
+  content: '';
+  position: absolute;
+  left: -40%;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: var(--accent);
+  animation: browserProgressSlide 1s linear infinite;
+}
+@keyframes browserProgressSlide { from { left: -40%; } to { left: 100%; } }
+.browser-tab-stage {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.browser-tab-stash { display: none; }
+.browser-local-frame { display: block; width: 100%; height: 100%; border: none; background: #fff; }
+.browser-external-holder { position: absolute; inset: 0; }
+
+/* PR2 侧边对话 panel: give the transcript room (the left-sidebar sizing had
+   a 300px cap that is too small for a full panel). */
+.sidechat-panel { flex: 1; min-height: 0; }
+.sidechat-panel .sidechat-history { max-height: none; }
+
+/* PR2: hover 👁 badge on previewable file rows (hidden until row hover). */
+.fb-preview-badge { display: none; font-size: 10px; opacity: 0.7; margin-left: 6px; flex-shrink: 0; }
+.filebrowser-row:hover .fb-preview-badge { display: inline-block; }
 
 /* Live memory/CPU readout (right sidebar + settings). Labels stay dim-neutral
    with the values tinted by channel; status shifts to warn/danger under load. */
@@ -2102,6 +2364,22 @@ html[data-theme='matcha'] #fx-vignette {
   #messages > .file-chip,
   #messages > .load-earlier {
     animation: none !important;
+  }
+  /* PR4: preview subsystem motion degrade — the fullscreen overlay pop,
+     inline card fade, tab-panel fade, image zoom transition and the
+     indeterminate browser progress slide all become instant/static. */
+  .preview-overlay.visible,
+  .inline-preview-card,
+  .rside-tab-panel.panel-in {
+    animation: none !important;
+  }
+  .preview-image-viewer img,
+  .preview-img {
+    transition: none !important;
+  }
+  .browser-progress:not(.hidden)::after {
+    animation: none !important;
+    left: 0 !important;
   }
 }
 
@@ -3180,7 +3458,12 @@ textarea:focus-visible,
 
 /* ---- responsive ---- */
 @media (max-width: 1440px) {
-  #sidebar, #right-sidebar { width: 250px; }
+  #sidebar { width: 250px; }
+  /* PR2 E1: the right sidebar's width is driven by the --rside-w variable
+     (drag handle + localStorage); on narrower screens the responsive cap is
+     the variable value itself — the JS resize handler keeps any inline value
+     in sync with these caps. */
+  #right-sidebar { --rside-w: 250px; }
 }
 
 @media (max-width: 1320px) {
@@ -3196,7 +3479,7 @@ textarea:focus-visible,
     right: 0;
     top: 0;
     bottom: 0;
-    width: 300px;
+    --rside-w: 300px;
     z-index: 45;
     background: var(--bg-sidebar);
     box-shadow: -20px 0 44px -26px rgba(0, 0, 0, 0.5);
@@ -3242,15 +3525,10 @@ textarea:focus-visible,
 }
 
 /* P0 Preview Panel */
-#preview-section { display: flex; flex-direction: column; gap: 6px; }
-#preview-section.hidden { display: none; }
-.preview-panel-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
-.preview-toolbar { display: flex; align-items: center; gap: 3px; padding: 4px 2px; }
-.preview-toolbar.hidden { display: none; }
-.preview-name { flex: 1; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.preview-meta-badge { font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+/* PR2: the legacy #preview-section accordion / .preview-host / .preview-toolbar
+   were retired with the right-sidebar tab rework. The fullscreen overlay kept
+   its `.preview-toolbar-btn` button class for the overlay bar. */
 .preview-toolbar-btn { width: 22px; height: 22px; padding: 0; display: flex; align-items: center; justify-content: center; }
-.preview-host { min-height: 80px; max-height: 320px; overflow: hidden; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; }
 .preview-viewer { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
 .preview-image-viewer img { max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.1s ease; cursor: zoom-in; }
 .preview-media-viewer video, .preview-media-viewer audio { width: 100%; max-width: 100%; }
@@ -3279,17 +3557,442 @@ textarea:focus-visible,
 .preview-markdown th { background: var(--bg-input); font-weight: 600; }
 .preview-markdown img { max-width: 100%; border-radius: 4px; }
 
-/* Preview overlay (fullscreen mode) */
-.preview-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
-.preview-overlay.visible { pointer-events: all; }
+/* Preview overlay (fullscreen mode, PR2 E3: fade + scale 0.96 → 1.0) */
+.preview-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; opacity: 0; }
+.preview-overlay.visible { pointer-events: all; opacity: 1; animation: previewOverlayIn 0.2s ease-out; }
 .preview-overlay .preview-viewer { width: 90vw; height: 80vh; max-width: 1200px; }
 .preview-overlay .preview-image-viewer img { max-width: 90vw; max-height: 80vh; }
 .preview-overlay .preview-media-viewer video { max-width: 90vw; max-height: 75vh; }
 .preview-overlay .preview-pdf-viewer iframe, .preview-overlay .preview-html-viewer iframe { width: 90vw; height: 80vh; max-width: 1200px; }
+.preview-overlay-title { font-size: 13px; color: rgba(255, 255, 255, 0.9); margin-bottom: 10px; max-width: 80vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-overlay-bar { display: flex; gap: 6px; margin-top: 10px; }
+.preview-overlay-stage { width: 90vw; height: 80vh; max-width: 1200px; overflow: auto; display: flex; align-items: center; justify-content: center; }
 
+@keyframes previewOverlayIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+/* Inline cards keep the plain fade (no scale). */
 @keyframes previewFadeIn { from { opacity: 0; } to { opacity: 1; } }
-.preview-overlay.visible { animation: previewFadeIn 0.15s ease-out; }
 
-@media (max-width: 900px) {
-  #preview-section { display: none !important; }
+/* ── Inline preview card (chat stream) ─────────────────────────────── */
+/* Appended below a triggering message/tool-card/chip in the chat flow. */
+
+.inline-preview-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 6px 0;
+  background: var(--bg);
+  animation: previewFadeIn 0.18s ease-out;
 }
+
+/* header — ~32px, app-bg, filename + action buttons */
+.ipc-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border-bottom: 1px solid var(--border);
+  min-height: 32px;
+}
+.ipc-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ipc-header-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.ipc-header-actions .btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+
+/* body — full-bleed, default 340px, drag to 70vh */
+.ipc-body {
+  position: relative;
+  overflow: auto;
+  background: var(--bg);
+}
+.ipc-stage {
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+/* image thumbnail mode */
+.ipc-body[data-collapsed='1'] .ipc-stage { display: none; }
+/* the viewer element itself is full-bleed inside the stage */
+.ipc-stage .preview-viewer {
+  width: 100%;
+  height: auto;
+  max-height: inherit;
+}
+
+/* mode badge — top-right, toggle 预览/源码 */
+.ipc-mode-badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #e06c75;
+  background: rgba(224, 108, 117, 0.12);
+  border: 1px solid rgba(224, 108, 117, 0.35);
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+  user-select: none;
+  z-index: 2;
+}
+.ipc-mode-badge:hover { background: rgba(224, 108, 117, 0.25); }
+.ipc-mode-badge[hidden] { display: none; }
+
+/* image collapse toggle */
+.ipc-toggle {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+
+/* drag handle — bottom of body */
+.ipc-drag {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  background: transparent;
+  z-index: 3;
+}
+.ipc-drag:hover, .ipc-drag.dragging {
+  background: var(--accent-dim, var(--accent));
+  opacity: 0.4;
+}
+
+/* status / loading */
+.ipc-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 12px;
+  text-align: center;
+}
+.ipc-status.error { color: var(--danger, #e06c75); }
+
+/* source view (raw <pre>) */
+.ipc-source {
+  width: 100%;
+  min-height: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text);
+  padding: 10px;
+  margin: 0;
+  background: var(--bg-input);
+}
+
+/* bottom action row */
+.ipc-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.ipc-row-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+.ipc-ai-note {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.ipc-ai-note[hidden] { display: none; }
+.ipc-progress {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+  margin-left: 4px;
+}
+.ipc-progress[hidden] { display: none; }
+
+/* preview path link in markdown */
+.preview-path-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.preview-path-link:hover { opacity: 0.8; }
+
+/* tool card preview strip */
+.tool-preview-strip {
+  /* anchor element inside tool-card; the inline card is inserted after it */
+}
+
+/* ── PR3 doc-canvas — document layout system for docx/xlsx/pptx viewers ── */
+/* The canvas follows the active theme: dark canvas on dark themes,
+   paper-white on light themes. HTML / iframe viewers intentionally keep
+   their own theme (no doc-canvas). */
+.preview-doc-viewer {
+  display: block;
+  overflow: auto;
+  background: var(--doc-bg, var(--bg-panel));
+  color: var(--doc-fg, var(--text));
+}
+.doc-canvas {
+  --doc-pad: 28px;
+  --doc-title-size: 26px;
+  --doc-title-lh: 1.25;
+  --doc-title-weight: 600;
+  --doc-eyebrow-size: 12px;
+  --doc-eyebrow-ls: 0.18em;
+  --doc-h2-size: 18px;
+  --doc-h2-lh: 1.45;
+  --doc-h2-weight: 600;
+  --doc-body-size: 15px;
+  --doc-body-lh: 1.8;
+  --doc-mono-size: 12.5px;
+  --doc-mono-lh: 1.7;
+  --doc-rule: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  --doc-kpi-min: 140px;
+
+  box-sizing: border-box;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--doc-pad);
+  font-size: var(--doc-body-size);
+  line-height: var(--doc-body-lh);
+  min-height: 100%;
+}
+.doc-canvas .doc-eyebrow {
+  font-size: var(--doc-eyebrow-size);
+  letter-spacing: var(--doc-eyebrow-ls);
+  text-transform: uppercase;
+  opacity: 0.72;
+  margin-bottom: 6px;
+}
+.doc-canvas .doc-title {
+  font-size: var(--doc-title-size);
+  line-height: var(--doc-title-lh);
+  font-weight: var(--doc-title-weight);
+  margin: 0 0 10px;
+}
+.doc-canvas .doc-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--doc-kpi-min), 1fr));
+  gap: 24px 40px;
+  margin: 14px 0 18px;
+}
+.doc-canvas .doc-kpi { border-top: var(--doc-rule); padding-top: 8px; }
+.doc-canvas .doc-kpi-label { font-size: 12px; opacity: 0.72; }
+.doc-canvas .doc-kpi-value { font-size: 20px; font-weight: 600; }
+.doc-canvas .doc-body { margin-top: 16px; border-top: var(--doc-rule); padding-top: 16px; }
+
+/* docx blocks */
+.doc-canvas .doc-p { margin: 0 0 0.9em; }
+.doc-canvas .doc-h {
+  font-weight: var(--doc-h2-weight);
+  line-height: var(--doc-h2-lh);
+  margin: 1.3em 0 0.5em;
+}
+.doc-canvas .doc-h[data-level='1'] { font-size: calc(var(--doc-h2-size) + 3px); }
+.doc-canvas .doc-h[data-level='2'] { font-size: var(--doc-h2-size); }
+.doc-canvas .doc-h[data-level='3'],
+.doc-canvas .doc-h[data-level='4'],
+.doc-canvas .doc-h[data-level='5'],
+.doc-canvas .doc-h[data-level='6'] { font-size: calc(var(--doc-h2-size) - 2px); }
+.doc-canvas .doc-table { border-collapse: collapse; width: 100%; margin: 14px 0; }
+.doc-canvas .doc-table th,
+.doc-canvas .doc-table td {
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.doc-canvas .doc-table th { font-weight: 600; background: color-mix(in srgb, currentColor 5%, transparent); }
+
+/* xlsx: mono table, right-aligned numbers, sticky header inside the wrap */
+.doc-canvas .doc-table-wrap { overflow: auto; max-height: 60vh; border: var(--doc-rule); border-radius: 6px; }
+.doc-canvas .doc-xlsx-table { font-family: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace; font-size: var(--doc-mono-size); line-height: var(--doc-mono-lh); }
+.doc-canvas .doc-xlsx-table th { position: sticky; top: 0; }
+.doc-canvas .doc-xlsx-table td.num { text-align: right; }
+.doc-canvas .doc-sheet-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.doc-canvas .doc-sheet-tab {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: var(--doc-rule);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.doc-canvas .doc-sheet-tab.active { background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: var(--accent); font-weight: 600; }
+.doc-canvas .doc-note { font-size: 12px; opacity: 0.72; margin-top: 10px; }
+.doc-canvas .doc-loading { font-size: 13px; opacity: 0.6; padding: 24px 0; }
+.doc-canvas .preview-error { font-size: 13px; color: var(--danger); padding: 8px 0; }
+
+/* pptx slide pager */
+.doc-canvas .doc-slide-pager { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
+.doc-canvas .doc-slide-btn {
+  width: 26px; height: 26px;
+  border: var(--doc-rule);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.doc-canvas .doc-slide-btn:disabled { opacity: 0.35; cursor: default; }
+.doc-canvas .doc-slide-counter { font-size: 13px; opacity: 0.72; font-variant-numeric: tabular-nums; }
+.doc-canvas .doc-slide { border-top: var(--doc-rule); padding-top: 18px; min-height: 120px; }
+.doc-canvas .doc-slide-image { max-width: 100%; max-height: 320px; border: var(--doc-rule); border-radius: 6px; margin-bottom: 14px; }
+.doc-canvas .doc-slide-title { font-size: 22px; font-weight: 600; line-height: 1.3; margin: 0 0 10px; }
+.doc-canvas .doc-slide-bullets { margin: 0; padding-left: 18px; }
+.doc-canvas .doc-slide-bullets li { margin: 4px 0; }
+
+/* Paper-white canvas on the light themes. */
+html[data-theme='light'] .preview-doc-viewer,
+html[data-theme='cartoon'] .preview-doc-viewer,
+html[data-theme='cream'] .preview-doc-viewer,
+html[data-theme='matcha'] .preview-doc-viewer {
+  --doc-bg: #fdfdfb;
+  --doc-fg: #23242a;
+}
+
+/* ── PR3 media viewer enhancements ─────────────────────────────────────── */
+
+/* pdf: host-side zoom bar; page / zoom / search stay native in the iframe */
+.preview-pdf-viewer { display: flex; flex-direction: column; overflow: hidden; }
+.preview-pdf-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+.preview-pdf-zoom-btn {
+  width: 24px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.preview-pdf-zoom-btn:hover { border-color: var(--accent); }
+.preview-pdf-zoom-label { font-size: 11px; color: var(--text-dim); min-width: 40px; text-align: center; }
+.preview-pdf-wrap { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; }
+.preview-pdf-viewer .preview-pdf-wrap > iframe { flex-shrink: 0; }
+
+/* image: rotate/fit bar + checkerboard behind transparent pixels */
+.preview-image-viewer { display: flex; flex-direction: column; overflow: hidden; }
+.preview-image-bar {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+.preview-image-btn {
+  width: 26px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.preview-image-btn:hover { border-color: var(--accent); }
+.preview-image-stage { flex: 1; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+/* The checkerboard paints on the <img> itself, so it shows through only
+   transparent regions (PNG/WebP/SVG alpha), never under opaque pixels. */
+.preview-image-stage img.preview-img {
+  background-image:
+    linear-gradient(45deg, rgba(128, 128, 128, 0.20) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(128, 128, 128, 0.20) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(128, 128, 128, 0.20) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(128, 128, 128, 0.20) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+/* text: search bar + line-number gutter, mono throughout */
+.preview-text-viewer { display: flex; flex-direction: column; padding: 0; overflow: hidden; max-height: none; }
+.preview-text-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+.preview-text-search-input {
+  flex: 1;
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text);
+}
+.preview-text-search-count { font-size: 10px; color: var(--text-dim); min-width: 64px; text-align: right; }
+.preview-text-body {
+  flex: 1; min-height: 0;
+  overflow: auto;
+  display: flex;
+  font-family: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--bg);
+}
+.preview-text-gutter {
+  margin: 0;
+  padding: 8px 8px 8px 10px;
+  user-select: none;
+  text-align: right;
+  color: var(--text-dim);
+  opacity: 0.6;
+  border-right: 1px solid var(--border);
+  min-width: 36px;
+  white-space: pre;
+  flex-shrink: 0;
+}
+.preview-text-content { margin: 0; padding: 8px 10px; white-space: pre; color: var(--text); flex: 1; }
+.preview-text-line { display: block; }
+.preview-text-content mark.preview-text-match { background: var(--warn); color: #1a1b1e; border-radius: 2px; }
