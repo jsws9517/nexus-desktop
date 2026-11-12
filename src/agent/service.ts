@@ -33,6 +33,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import {
   INTERNAL_TOOLS,
   ALL_TOOL_DEFS,
+  BUILTIN_TOOL_ALIASES,
   callBuiltinTool,
   mergeCoreAgentTools,
   selectTools,
@@ -694,8 +695,14 @@ export class AgentService {
       // The hub's `callTool` routes by original name, so translate here.
       const alias = this.mcpToolAliases[name];
       const forwardedName = alias ? alias.originalName : name;
-      if (INTERNAL_TOOLS.has(name)) {
-        result = await callBuiltinTool(name, args, {
+      // Near-miss name recovery: the model normalizes dotted tool names to
+      // underscores (`docx_write` for `docx.write`). Resolve before routing —
+      // otherwise the name misses INTERNAL_TOOLS and the call falls through
+      // to the MCP hub as an unknown tool, surfacing as a hard "tool not
+      // found" error that makes the model escalate to a sub-agent spawn.
+      const builtinName = BUILTIN_TOOL_ALIASES[name] ?? name;
+      if (INTERNAL_TOOLS.has(builtinName)) {
+        result = await callBuiltinTool(builtinName, args, {
           getConfig: () => this.agent?.['config']?.get?.(),
           skills: skillHostFromAgent(this.agent) ?? undefined,
           toolRefresh: this.toolRefreshQueue,

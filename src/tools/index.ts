@@ -69,12 +69,34 @@ export const DISCLOSURE_TOOLS: ReadonlySet<string> = new Set([
   ...REFRESH_TOOLS,
 ]);
 
+/**
+ * Alias table for tool names LLMs habitually "normalize" wrongly: dotted tool
+ * names get written with underscores (`docx_write` instead of `docx.write`,
+ * `sheet_read` instead of `sheet.read`). Both dispatch entry points
+ * (`callBuiltinTool` and the service MCP proxy) resolve these so a near-miss
+ * call keeps working instead of falling through to "tool not found" and
+ * escalating into a heavyweight sub-agent spawn. Derived from the registry
+ * itself, so a new dotted tool family is covered automatically.
+ */
+export const BUILTIN_TOOL_ALIASES: Record<string, string> = (() => {
+  const aliases: Record<string, string> = {};
+  for (const def of ALL_TOOL_DEFS) {
+    if (def.name.includes('.')) aliases[def.name.replace(/\./g, '_')] = def.name;
+  }
+  return aliases;
+})();
+
 /** Route a name to the owning registry, or a not-found error when unknown. */
 export async function callBuiltinTool(name: string, args: unknown, ctx?: ToolContext): Promise<ToolResult> {
+  // Near-miss name recovery: `docx_write` → `docx.write`.
+  const target = BUILTIN_TOOL_ALIASES[name] ?? name;
   for (const r of TOOL_REGISTRIES) {
-    if (r.defs.some((d) => d.name === name)) {
-      return await r.call(name, args, ctx);
+    if (r.defs.some((d) => d.name === target)) {
+      return await r.call(target, args, ctx);
     }
+  }
+  if (target !== name) {
+    return { content: `Tool "${name}" not found (its alias "${target}" is not registered).`, isError: true };
   }
   return { content: `Tool "${name}" not found`, isError: true };
 }
