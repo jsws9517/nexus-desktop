@@ -1,0 +1,46 @@
+{
+  "kind": "xlsx",
+  "name": "sales.xlsx",
+  "sheets": [
+    {
+      "name": "Q1",
+      "rows": [
+        [
+          "name",
+          "qty"
+        ],
+        [
+          "widget",
+          42
+        ],
+        [
+          "rich",
+          3.14
+        ],
+        [
+          2,
+          ""
+        ],
+        [
+          "#N/A",
+          "2026-01-01T00:00:00.000Z"
+        ]
+      ],
+      "truncated": false
+    },
+    {
+      "name": "Q2",
+      "rows": [
+        [
+          "name",
+          "qty"
+        ],
+        [
+          "gadget",
+          7
+        ]
+      ],
+      "truncated": false
+    }
+  ]
+}

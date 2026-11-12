@@ -7,25 +7,30 @@
  */
 
 import type { PreviewState, ViewerHandle } from '../core.js';
+import { t } from '../../i18n.js';
 
 export function mountImageViewer(state: PreviewState): ViewerHandle {
   const container = document.createElement('div') as unknown as ViewerHandle;
   container.className = 'preview-viewer preview-image-viewer';
 
-  // Rotate / 1:1 bar above the stage.
+  // Rotate / 1:1 bar above the stage. Labels come from i18n keys; the
+  // `data-i18n-title` attribute keeps the tooltip in sync on language
+  // switches (applyI18n rewrites it), aria-label is set at mount time.
   const bar = document.createElement('div');
   bar.className = 'preview-image-bar';
-  const makeBtn = (text: string, label: string): HTMLButtonElement => {
+  const makeBtn = (text: string, key: string): HTMLButtonElement => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'preview-image-btn';
     b.textContent = text;
-    b.setAttribute('aria-label', label);
+    b.dataset.i18nTitle = key;
+    b.title = t(key);
+    b.setAttribute('aria-label', t(key));
     return b;
   };
-  const btnRotL = makeBtn('⟲', 'rotate left');
-  const btnRotR = makeBtn('⟳', 'rotate right');
-  const btnReset = makeBtn('1:1', 'reset (zoom + rotation)');
+  const btnRotL = makeBtn('⟲', 'docImageRotateLeft');
+  const btnRotR = makeBtn('⟳', 'docImageRotateRight');
+  const btnReset = makeBtn('1:1', 'previewFitLabel');
   bar.append(btnRotL, btnRotR, btnReset);
   container.appendChild(bar);
 

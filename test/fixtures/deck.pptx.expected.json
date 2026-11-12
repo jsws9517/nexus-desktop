@@ -1,0 +1,32 @@
+{
+  "kind": "pptx",
+  "name": "deck.pptx",
+  "slides": [
+    {
+      "index": 1,
+      "title": "Title One",
+      "bullets": [
+        "Title One",
+        "Point a",
+        "Point b"
+      ],
+      "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      "imageMime": "image/png"
+    },
+    {
+      "index": 3,
+      "title": "Three",
+      "bullets": [
+        "Three"
+      ]
+    },
+    {
+      "index": 7,
+      "title": "Seven",
+      "bullets": [
+        "Seven",
+        "Last point"
+      ]
+    }
+  ]
+}

@@ -535,6 +535,50 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   browserAddressPlaceholder: { 'zh-CN': '输入网址 (https://…) 并回车', en: 'Enter a URL (https://…) and press Enter' },
   browserOpenedExternally: { 'zh-CN': '已在系统浏览器中打开', en: 'Opened in your system browser' },
   browserNavFailed: { 'zh-CN': '无法打开该地址', en: 'Could not open that address' },
+
+  // PR3 document preview — doc-canvas viewers (docx/xlsx/pptx) + media bars.
+  docParsing: { 'zh-CN': '解析文档中…', en: 'Parsing document…' },
+  docEyebrow: { 'zh-CN': '{kind} · 文档', en: '{kind} · document' },
+  docUnsupported: { 'zh-CN': '不支持的文档', en: 'Unsupported document' },
+  docNoSheets: { 'zh-CN': '工作簿中未找到工作表', en: 'No sheets found in workbook' },
+  docNoSlides: { 'zh-CN': '演示文稿中未找到幻灯片', en: 'No slides found in presentation' },
+  docXlsxTruncated: {
+    'zh-CN': '已截断 — 仅显示该工作表的前部分内容（预览上限）',
+    en: 'Truncated — showing the first portion of this sheet (preview caps).',
+  },
+  docPptxTruncated: {
+    'zh-CN': '已截断 — 仅显示前若干张幻灯片（预览上限）',
+    en: 'Truncated — showing the first portion of the deck (preview caps).',
+  },
+  docKpiParagraphs: { 'zh-CN': '段落', en: 'Paragraphs' },
+  docKpiTables: { 'zh-CN': '表格', en: 'Tables' },
+  docKpiWords: { 'zh-CN': '字数（约）', en: 'Words (approx)' },
+  docKpiSheets: { 'zh-CN': '工作表', en: 'Sheets' },
+  docKpiSheet: { 'zh-CN': '当前工作表', en: 'Sheet' },
+  docKpiRows: { 'zh-CN': '行数', en: 'Rows' },
+  docKpiColumns: { 'zh-CN': '列数', en: 'Columns' },
+  docKpiSlides: { 'zh-CN': '幻灯片', en: 'Slides' },
+  docKpiPage: { 'zh-CN': '页码', en: 'Page' },
+  docSlidePrev: { 'zh-CN': '上一张幻灯片', en: 'Previous slide' },
+  docSlideNext: { 'zh-CN': '下一张幻灯片', en: 'Next slide' },
+  docImageRotateLeft: { 'zh-CN': '向左旋转', en: 'Rotate left' },
+  docImageRotateRight: { 'zh-CN': '向右旋转', en: 'Rotate right' },
+  docTextSearchPlaceholder: { 'zh-CN': '在文件中搜索…', en: 'Search in file…' },
+  docTextSearchCount: { 'zh-CN': '匹配 {n} 行', en: '{n} lines' },
+  docTextTruncated: { 'zh-CN': '…（已截断）', en: '… (truncated)' },
+  docLoadFailed: { 'zh-CN': '无法加载内容', en: 'Unable to load content' },
+  docUnsupportedMsg: {
+    'zh-CN': '此文件类型无法内联预览，请使用默认应用打开。',
+    en: 'This file type cannot be previewed inline. Open with the default application instead.',
+  },
+  docUnimplMsg: { 'zh-CN': '此类型的内联预览尚未实现。', en: 'Inline preview is not implemented for this type yet.' },
+  docOpenExternal: { 'zh-CN': '外部打开', en: 'Open externally' },
+  docExternalFailed: { 'zh-CN': '外部打开失败：{error}', en: 'External open failed: {error}' },
+
+  // Inline preview card — action-row labels (收藏/点赞/更多 were hardcoded).
+  inlinePreviewFavorite: { 'zh-CN': '收藏', en: 'Favorite' },
+  inlinePreviewLike: { 'zh-CN': '点赞', en: 'Like' },
+  inlinePreviewMore: { 'zh-CN': '更多', en: 'More' },
 };
 
 export function setUiLang(lang: Lang): void {

@@ -111,7 +111,9 @@ test('mountFallbackView shows message and open button using state.path', () => {
   assert.ok(el.textContent?.includes('external') || el.textContent?.includes('预览') || el.textContent?.includes('Open'));
   const btn = el.querySelector('button');
   assert.ok(btn);
-  assert.ok(btn.textContent?.trim().toLowerCase().includes('open'));
+  // The button label is i18n'd (docOpenExternal); accept the English or the
+  // default zh-CN rendering so the test is language-agnostic.
+  assert.ok(btn.textContent?.trim().toLowerCase().includes('open') || btn.textContent?.includes('打开'));
 });
 
 test('formatBytes formats correctly across ranges', () => {

@@ -8,6 +8,7 @@
 import type { PreviewState, ViewerHandle } from '../core.js';
 import type { PptxDoc, PptxSlide } from '../../../shared/preview-docs.js';
 import { docShell, loadDocument } from './doc-shell.js';
+import { t } from '../../i18n.js';
 
 export function mountPptxViewer(state: PreviewState): ViewerHandle {
   const shell = docShell(state, 'pptx');
@@ -15,12 +16,12 @@ export function mountPptxViewer(state: PreviewState): ViewerHandle {
 
   void loadDocument(state).then(({ doc, error }) => {
     if (!doc || doc.kind !== 'pptx') {
-      shell.showError(error ?? 'Unsupported document');
+      shell.showError(error ?? t('docUnsupported'));
       return;
     }
     const d = doc as PptxDoc;
     shell.setTitle(d.name || state.name);
-    if (!d.slides.length) { shell.showError('No slides found in presentation'); return; }
+    if (!d.slides.length) { shell.showError(t('docNoSlides')); return; }
 
     let index = 0;
     const total = d.slides.length;
@@ -32,7 +33,9 @@ export function mountPptxViewer(state: PreviewState): ViewerHandle {
     prev.type = 'button';
     prev.className = 'doc-slide-btn';
     prev.textContent = '←';
-    prev.setAttribute('aria-label', 'previous slide');
+    prev.setAttribute('aria-label', t('docSlidePrev'));
+    prev.dataset.i18nTitle = 'docSlidePrev';
+    prev.title = t('docSlidePrev');
 
     const counter = document.createElement('span');
     counter.className = 'doc-slide-counter';
@@ -41,7 +44,9 @@ export function mountPptxViewer(state: PreviewState): ViewerHandle {
     next.type = 'button';
     next.className = 'doc-slide-btn';
     next.textContent = '→';
-    next.setAttribute('aria-label', 'next slide');
+    next.setAttribute('aria-label', t('docSlideNext'));
+    next.dataset.i18nTitle = 'docSlideNext';
+    next.title = t('docSlideNext');
 
     pager.append(prev, counter, next);
 
@@ -55,15 +60,15 @@ export function mountPptxViewer(state: PreviewState): ViewerHandle {
         const img = document.createElement('img');
         img.className = 'doc-slide-image';
         img.src = slide.image;
-        img.alt = `Slide ${slide.index}`;
+        img.alt = slide.title || String(slide.index);
         img.draggable = false;
         view.appendChild(img);
       }
       if (slide.title) {
-        const t = document.createElement('div');
-        t.className = 'doc-slide-title';
-        t.textContent = slide.title;
-        view.appendChild(t);
+        const h = document.createElement('div');
+        h.className = 'doc-slide-title';
+        h.textContent = slide.title;
+        view.appendChild(h);
       }
       const rest = slide.bullets.slice(1);
       if (rest.length) {
@@ -79,7 +84,10 @@ export function mountPptxViewer(state: PreviewState): ViewerHandle {
       counter.textContent = `${index + 1} / ${total}`;
       prev.disabled = index === 0;
       next.disabled = index === total - 1;
-      shell.setKpis([['Slides', total], ['Page', index + 1]]);
+      shell.setKpis([
+        ['docKpiSlides', total],
+        ['docKpiPage', index + 1],
+      ]);
     };
 
     const go = (dir: 1 | -1): void => {
@@ -101,7 +109,8 @@ export function mountPptxViewer(state: PreviewState): ViewerHandle {
     if (d.truncated) {
       const note = document.createElement('div');
       note.className = 'doc-note';
-      note.textContent = 'Truncated — showing the first portion of the deck (preview caps).';
+      note.dataset.i18n = 'docPptxTruncated';
+      note.textContent = t('docPptxTruncated');
       shell.body.appendChild(note);
     }
 

@@ -8,6 +8,7 @@
 import type { PreviewState, ViewerHandle } from '../core.js';
 import type { XlsxDoc, XlsxSheet } from '../../../shared/preview-docs.js';
 import { docShell, loadDocument } from './doc-shell.js';
+import { t } from '../../i18n.js';
 
 function renderTable(sheet: XlsxSheet, host: HTMLElement): void {
   host.replaceChildren();
@@ -48,7 +49,8 @@ function renderTable(sheet: XlsxSheet, host: HTMLElement): void {
   if (sheet.truncated) {
     const note = document.createElement('div');
     note.className = 'doc-note';
-    note.textContent = 'Truncated — showing the first portion of this sheet (preview caps).';
+    note.dataset.i18n = 'docXlsxTruncated';
+    note.textContent = t('docXlsxTruncated');
     host.appendChild(note);
   }
 }
@@ -59,15 +61,12 @@ export function mountXlsxViewer(state: PreviewState): ViewerHandle {
 
   void loadDocument(state).then(({ doc, error }) => {
     if (!doc || doc.kind !== 'xlsx') {
-      shell.showError(error ?? 'Unsupported document');
+      shell.showError(error ?? t('docUnsupported'));
       return;
     }
     const d = doc as XlsxDoc;
     shell.setTitle(d.name || state.name);
-    if (!d.sheets.length) { shell.showError('No sheets found in workbook'); return; }
-
-    // KPIs + current sheet (sheet KPIs update on tab switch).
-    shell.setKpis([['Sheets', d.sheets.length]]);
+    if (!d.sheets.length) { shell.showError(t('docNoSheets')); return; }
 
     // Sheet tabs (hidden for single-sheet workbooks to keep the canvas calm).
     const tabs = document.createElement('div');
@@ -79,9 +78,9 @@ export function mountXlsxViewer(state: PreviewState): ViewerHandle {
 
     const showSheet = (sheet: XlsxSheet): void => {
       shell.setKpis([
-        ['Sheet', sheet.name],
-        ['Rows', sheet.rows.length],
-        ['Columns', sheet.rows[0]?.length ?? 0],
+        ['docKpiSheet', sheet.name],
+        ['docKpiRows', sheet.rows.length],
+        ['docKpiColumns', sheet.rows[0]?.length ?? 0],
       ]);
       renderTable(sheet, tableHost);
       for (const btn of tabs.children) {
@@ -101,16 +100,6 @@ export function mountXlsxViewer(state: PreviewState): ViewerHandle {
 
     shell.body.append(tabs, tableHost);
     showSheet(d.sheets[0]);
-
-    // Text zoom surface for the shared toolbar / ± shortcuts (font scaling
-    // keeps the table layout readable; state lives on the element).
-    let scale = 1;
-    const apply = (): void => {
-      tableHost.style.fontSize = `${Math.round(13 * scale)}px`;
-    };
-    shell.container.zoomIn = () => { scale = Math.min(2, scale + 0.15); apply(); };
-    shell.container.zoomOut = () => { scale = Math.max(0.5, scale - 0.15); apply(); };
-    shell.container.fit = () => { scale = 1; apply(); };
   });
 
   return shell.container;

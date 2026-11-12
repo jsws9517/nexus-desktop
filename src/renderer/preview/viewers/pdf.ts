@@ -10,6 +10,7 @@
  */
 
 import type { PreviewState, ViewerHandle } from '../core.js';
+import { t } from '../../i18n.js';
 
 export function mountPdfViewer(state: PreviewState): ViewerHandle {
   const container = document.createElement('div') as unknown as ViewerHandle;
@@ -23,19 +24,25 @@ export function mountPdfViewer(state: PreviewState): ViewerHandle {
   btnOut.type = 'button';
   btnOut.className = 'preview-pdf-zoom-btn';
   btnOut.textContent = '−';
-  btnOut.setAttribute('aria-label', 'zoom out');
+  btnOut.setAttribute('aria-label', t('previewZoomOutLabel'));
+  btnOut.dataset.i18nTitle = 'previewZoomOutLabel';
+  btnOut.title = t('previewZoomOutLabel');
   const btnIn = document.createElement('button');
   btnIn.type = 'button';
   btnIn.className = 'preview-pdf-zoom-btn';
   btnIn.textContent = '+';
-  btnIn.setAttribute('aria-label', 'zoom in');
+  btnIn.setAttribute('aria-label', t('previewZoomInLabel'));
+  btnIn.dataset.i18nTitle = 'previewZoomInLabel';
+  btnIn.title = t('previewZoomInLabel');
   const label = document.createElement('span');
   label.className = 'preview-pdf-zoom-label';
   const btnFit = document.createElement('button');
   btnFit.type = 'button';
   btnFit.className = 'preview-pdf-zoom-btn';
   btnFit.textContent = '1:1';
-  btnFit.setAttribute('aria-label', 'reset zoom');
+  btnFit.setAttribute('aria-label', t('previewFitLabel'));
+  btnFit.dataset.i18nTitle = 'previewFitLabel';
+  btnFit.title = t('previewFitLabel');
   bar.append(btnOut, label, btnIn, btnFit);
   container.appendChild(bar);
 

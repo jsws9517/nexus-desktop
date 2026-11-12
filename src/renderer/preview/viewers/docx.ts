@@ -8,6 +8,7 @@
 import type { PreviewState, ViewerHandle } from '../core.js';
 import type { DocxBlock } from '../../../shared/preview-docs.js';
 import { docShell, loadDocument } from './doc-shell.js';
+import { t } from '../../i18n.js';
 
 function renderBlock(block: DocxBlock, body: HTMLElement): void {
   if (block.type === 'table' && block.rows?.length) {
@@ -47,7 +48,7 @@ export function mountDocxViewer(state: PreviewState): ViewerHandle {
 
   void loadDocument(state).then(({ doc, error }) => {
     if (!doc || doc.kind !== 'docx') {
-      shell.showError(error ?? 'Unsupported document');
+      shell.showError(error ?? t('docUnsupported'));
       return;
     }
     shell.setTitle(doc.title || state.name);
@@ -55,7 +56,11 @@ export function mountDocxViewer(state: PreviewState): ViewerHandle {
     const tables = doc.blocks.filter((b) => b.type === 'table').length;
     const words = doc.blocks.reduce((n, b) => n + ((b.text ? b.text.split(/\s+/).filter(Boolean).length : 0)
       + (b.rows?.reduce((m, r) => m + r.reduce((k, c) => k + c.split(/\s+/).filter(Boolean).length, 0), 0) ?? 0)), 0);
-    shell.setKpis([['Paragraphs', paragraphs], ['Tables', tables], ['Words (approx)', words]]);
+    shell.setKpis([
+      ['docKpiParagraphs', paragraphs],
+      ['docKpiTables', tables],
+      ['docKpiWords', words],
+    ]);
     shell.body.replaceChildren();
     for (const b of doc.blocks) renderBlock(b, shell.body);
   });

@@ -32,6 +32,10 @@ const { mountViewer } = await import(pathToFileURL(join(dist, 'renderer', 'previ
 const { mountDocxViewer } = await import(pathToFileURL(join(dist, 'renderer', 'preview', 'viewers', 'docx.js')));
 const { mountXlsxViewer } = await import(pathToFileURL(join(dist, 'renderer', 'preview', 'viewers', 'xlsx.js')));
 const { mountPptxViewer } = await import(pathToFileURL(join(dist, 'renderer', 'preview', 'viewers', 'pptx.js')));
+// Viewer labels are i18n'd (default zh-CN). Pin English so the assertions
+// below (written against the English strings) are deterministic.
+const i18nMod = await import(pathToFileURL(join(dist, 'renderer', 'i18n.js')));
+i18nMod.setUiLang('en');
 
 after(() => win.close());
 

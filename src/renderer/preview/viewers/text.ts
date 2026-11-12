@@ -7,6 +7,7 @@
 
 import { renderBlocks, hydrateImages, attachCodeCopy } from '../../markdown.js';
 import type { PreviewState, ViewerHandle } from '../core.js';
+import { t } from '../../i18n.js';
 
 export function mountTextViewer(state: PreviewState): ViewerHandle {
   const container = document.createElement('div') as unknown as ViewerHandle;
@@ -31,7 +32,7 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
         if (!container.isConnected) return;
         const err = document.createElement('div');
         err.className = 'preview-error';
-        err.textContent = 'Unable to load text content';
+        err.textContent = t('docLoadFailed');
         container.appendChild(err);
         return;
       }
@@ -49,7 +50,9 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
       }
 
       // ── Plain text: mono, line-numbered gutter, in-view search. ───────
-      const full = text.length > 2_000_000 ? text.slice(0, 2_000_000) + '\n… (truncated)' : text;
+      const full = text.length > 2_000_000
+        ? text.slice(0, 2_000_000) + '\n' + t('docTextTruncated')
+        : text;
       const lines = full.split('\n');
 
       const search = document.createElement('div');
@@ -57,7 +60,8 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'preview-text-search-input';
-      input.placeholder = 'Search in file…';
+      input.dataset.i18nPlaceholder = 'docTextSearchPlaceholder';
+      input.placeholder = t('docTextSearchPlaceholder');
       const count = document.createElement('span');
       count.className = 'preview-text-search-count';
       search.append(input, count);
@@ -113,7 +117,7 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
         }
         content.replaceChildren();
         content.appendChild(frag);
-        count.textContent = `${matchLines} line${matchLines === 1 ? '' : 's'}`;
+        count.textContent = t('docTextSearchCount', { n: matchLines });
       };
 
       // Text zoom surface for the shared toolbar / ± shortcuts (font scaling
@@ -136,7 +140,7 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
       if (!container.isConnected) return;
       const err = document.createElement('div');
       err.className = 'preview-error';
-      err.textContent = 'Unable to load text content';
+      err.textContent = t('docLoadFailed');
       container.appendChild(err);
     });
 

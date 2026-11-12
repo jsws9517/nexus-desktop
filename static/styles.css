@@ -2365,6 +2365,22 @@ html[data-theme='matcha'] #fx-vignette {
   #messages > .load-earlier {
     animation: none !important;
   }
+  /* PR4: preview subsystem motion degrade — the fullscreen overlay pop,
+     inline card fade, tab-panel fade, image zoom transition and the
+     indeterminate browser progress slide all become instant/static. */
+  .preview-overlay.visible,
+  .inline-preview-card,
+  .rside-tab-panel.panel-in {
+    animation: none !important;
+  }
+  .preview-image-viewer img,
+  .preview-img {
+    transition: none !important;
+  }
+  .browser-progress:not(.hidden)::after {
+    animation: none !important;
+    left: 0 !important;
+  }
 }
 
 /* ---- session search + pinned (E3) ---- */

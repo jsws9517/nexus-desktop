@@ -187,12 +187,12 @@ export function createInlinePreviewCard(
     void navigator.clipboard?.writeText(path).catch(() => {});
   });
   addRowBtn('⤓', t('inlinePreviewDownload'), () => { void downloadFile(path); });
-  addRowBtn('⭐', '收藏', () => {});
+  addRowBtn('⭐', t('inlinePreviewFavorite'), () => {});
   addRowBtn('❝', t('inlinePreviewQuote'), () => {
     window.dispatchEvent(new CustomEvent('nexus:quote-file', { detail: { path } }));
   });
-  addRowBtn('👍', '点赞', () => {});
-  addRowBtn('⋯', '更多', () => {});
+  addRowBtn('👍', t('inlinePreviewLike'), () => {});
+  addRowBtn('⋯', t('inlinePreviewMore'), () => {});
   const aiNote = document.createElement('span');
   aiNote.className = 'ipc-ai-note';
   aiNote.textContent = t('inlinePreviewAiGenerated');
