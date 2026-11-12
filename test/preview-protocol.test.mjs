@@ -132,7 +132,11 @@ describe('formatBytes', () => {
   });
 });
 
-test('exceedsPreviewCap', () => {
+// `describe`, not a bare `test`: subtests created by a plain `test()` callback
+// are not awaited by the parent on Node 22 (what Electron ships), which
+// cancels them as "did not finish before its parent". Node 26 happens to wait,
+// so this only ever failed in CI.
+describe('exceedsPreviewCap', () => {
   test('allows files under 512 MiB', () => {
     assert.equal(exceedsPreviewCap(512 * 1024 * 1024 - 1), false);
   });

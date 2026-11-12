@@ -20,6 +20,8 @@ const dist = join(__dirname, '..', 'dist');
 const win = new Window();
 globalThis.window = win;
 globalThis.document = win.document;
+// Node 22 (Electron's runtime, and what CI runs) has no Web Storage globals.
+globalThis.sessionStorage ??= win.sessionStorage;
 if (typeof globalThis.HTMLElement === 'undefined') {
   globalThis.HTMLElement = win.HTMLElement;
 }

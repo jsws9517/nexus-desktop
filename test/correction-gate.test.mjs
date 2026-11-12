@@ -16,6 +16,11 @@ import { join } from 'node:path';
 const tmp = mkdtempSync(join(tmpdir(), 'nexus-correction-gate-'));
 process.env.NEXUS_CONFIG_DIR = join(tmp, '.nexus');
 process.env.LLMA_DATA_DIR = join(tmp, '.llm-agent');
+// The sandboxed config dir has no credentials, and constructing AgentService
+// resolves the default provider's key eagerly. CI has no ambient key (a dev
+// machine often does), so provide a throwaway one — these tests never call the
+// network.
+process.env.ANTHROPIC_API_KEY ??= 'test-key-not-used';
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
 const { AgentService } = await import('../dist/agent/service.js');

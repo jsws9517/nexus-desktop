@@ -16,6 +16,10 @@ const dist = join(__dirname, '..', 'dist');
 const win = new Window();
 globalThis.window = win;
 globalThis.document = win.document;
+// Node 22 (Electron's runtime, and what CI runs) has no Web Storage globals;
+// Node 26 does. The video viewer persists volume/speed via sessionStorage, so
+// borrow happy-dom's implementation when the runtime has none.
+globalThis.sessionStorage ??= win.sessionStorage;
 // happy-dom does not polyfill HTMLElement globally by default in node --test.
 // Set it explicitly so the viewers' instanceof checks work.
 if (typeof globalThis.HTMLElement === 'undefined') {
