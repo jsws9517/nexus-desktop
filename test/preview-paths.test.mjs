@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = join(__dirname, '..', 'dist');
-const { jsonPathFields, findPreviewablePaths, isLocalFilePath, partitionPreviewPaths } =
+const { jsonPathFields, findPreviewablePaths, isLocalFilePath, partitionPreviewPaths, findRawPathHits } =
   await import(pathToFileURL(join(dist, 'renderer', 'preview', 'paths.js')).href);
 
 const PNG = 'C:/Users/pgw/.nexus/caches/tokyo_rain_1794295610760.png';
@@ -165,4 +165,52 @@ test('findPreviewablePaths: get_file_info — path only in args, content is meta
   assert.deepEqual(findPreviewablePaths(args, content), [VIDEO]);
   // Without the args (the old `{}` behavior) the path is lost.
   assert.deepEqual(findPreviewablePaths({}, content), []);
+});
+
+// ── raw (non-backticked) absolute local paths in plain prose ──────────────
+// Helper: assert the hit sequence is the expected paths AND that each
+// (start, end) slice reconstructs the path exactly (no hand-computed offsets).
+function expectRawPaths(text, expected) {
+  const hits = findRawPathHits(text);
+  assert.deepEqual(hits.map((h) => h.path), expected, 'hit paths');
+  for (const h of hits) {
+    assert.equal(text.slice(h.start, h.end), h.path, `slice reconstructs path for "${h.path}"`);
+  }
+}
+
+test('findRawPathHits: a bare Windows drive path in prose is found', () => {
+  expectRawPaths('视频已保存到 C:\\Users\\pgw\\.nexus\\caches\\clip.mp4 请查看', [
+    'C:\\Users\\pgw\\.nexus\\caches\\clip.mp4',
+  ]);
+});
+
+test('findRawPathHits: trailing CJK/ASCII punctuation is trimmed off the path', () => {
+  // "…clip.mp4。" and "…b.png," must not swallow the punctuation; the
+  // extension has to survive classify() or the path is never linked.
+  expectRawPaths('见 C:\\out\\a.mp4。', ['C:\\out\\a.mp4']);
+  expectRawPaths('see C:\\out\\b.png, then done', ['C:\\out\\b.png']);
+});
+
+test('findRawPathHits: UNC and POSIX paths are found', () => {
+  expectRawPaths('share: \\\\nas\\media\\report.pdf here', ['\\\\nas\\media\\report.pdf']);
+  expectRawPaths('wrote /tmp/out/result.png now', ['/tmp/out/result.png']);
+});
+
+test('findRawPathHits: JSON-escaped (doubled-backslash) paths still match', () => {
+  // Tool-result JSON shows paths as "C:\\\\..." — doubled separators must be
+  // consumed so the whole path becomes one link (fs accepts the form).
+  expectRawPaths('files: ["C:\\\\Users\\\\pgw\\\\x.mp4"]', ['C:\\\\Users\\\\pgw\\\\x.mp4']);
+});
+
+test('findRawPathHits: non-previewable or non-path prose stays inert', () => {
+  expectRawPaths('C:\\temp and \\server\\share', []); // no previewable ext
+  expectRawPaths('the ratio 1/2 of /x/y', []); // no previewable ext
+  expectRawPaths('see https://ex.com/a.png for refs', []); // URL, not local
+  expectRawPaths('plain sentence with no path', []);
+});
+
+test('findRawPathHits: multiple paths in one line are all found, in order', () => {
+  const hits = findRawPathHits('A: C:\\a\\1.mp4 B: C:\\b\\2.png');
+  assert.deepEqual(hits.map((h) => h.path), ['C:\\a\\1.mp4', 'C:\\b\\2.png']);
+  assert.ok(hits[0].start < hits[1].start, 'order preserved');
 });

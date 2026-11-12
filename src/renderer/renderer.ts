@@ -24,7 +24,7 @@ import { mountDocDock } from './preview/dock.js';
 import { mountBrowserTabs, type BrowserTabs } from './browser-tab.js';
 import { mountRsideTabs, type RsideTabsHandle } from './rside-tabs.js';
 import { createInlinePreviewCard, type InlinePreviewCard } from './preview/inline.js';
-import { findPreviewablePaths, partitionPreviewPaths } from './preview/paths.js';
+import { findPreviewablePaths, partitionPreviewPaths, findRawPathHits } from './preview/paths.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 import { hydrateIcons, iconEl } from './icons.js';
 
@@ -1691,6 +1691,7 @@ function addUser(text: string, mid?: number): void {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   bubble.textContent = text;
+  linkifyPreviewPaths(bubble); // pasted paths in user messages become clickable previews
   wrap.appendChild(bubble);
   const actions = document.createElement('div');
   actions.className = 'user-actions';
@@ -1807,6 +1808,7 @@ function addToolCard(event: Extract<AgentEvent, { type: 'tool_call_start' }>): v
   const args = document.createElement('div');
   args.className = 'tool-args hidden';
   args.textContent = JSON.stringify(event.args ?? {}, null, 2);
+  linkifyPreviewPaths(args); // paths in the expanded args JSON become clickable
   // result is built lazily on first expand (see tool_result)
   card.appendChild(header);
   card.appendChild(args);
@@ -1824,6 +1826,7 @@ function addToolCard(event: Extract<AgentEvent, { type: 'tool_call_start' }>): v
       resultEl.className = 'tool-result';
       resultEl.textContent = rec.resultText;
       resultEl.dataset.filled = '1';
+      linkifyPreviewPaths(resultEl); // paths in the result text become clickable
       rec.card.appendChild(resultEl);
       rec.resultEl = resultEl;
     }
@@ -2207,6 +2210,7 @@ function handleEvent(event: AgentEvent): void {
         resultEl.className = 'tool-result';
         resultEl.textContent = rec.resultText;
         resultEl.dataset.filled = '1';
+        linkifyPreviewPaths(resultEl); // paths in the result text become clickable
         rec.card.appendChild(resultEl);
         rec.resultEl = resultEl;
         scrollToBottom();
@@ -2573,25 +2577,70 @@ messagesEl.addEventListener('click', (e) => {
 });
 
 /**
- * Post-render pass: make backticked absolute paths that are previewable into
- * clickable spans that open an inline preview card below the current message.
- * Called after `renderAssistantStream` fills the DOM.
+ * Build a clickable span for a previewable path. Clicking mounts (or reveals)
+ * the inline preview card below the host `.msg` / `.tool-card` / `.file-chip`
+ * — one card per path, deduped globally. `scrollIntoView` pages to it so a
+ * re-click on an already-open card doesn't silently do nothing.
+ */
+function makePathLinkSpan(path: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = 'preview-path-link';
+  span.textContent = path;
+  span.title = path;
+  span.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const anchor =
+      span.closest<HTMLElement>('.msg') ??
+      span.closest<HTMLElement>('.file-chip') ??
+      span.closest<HTMLElement>('.tool-card') ??
+      span.parentElement;
+    if (anchor) openInlinePreviewCard(anchor, path, { scrollIntoView: true });
+  });
+  return span;
+}
+
+/**
+ * Post-render pass: make absolute local paths that are previewable into
+ * clickable `.preview-path-link` spans that open an inline preview card below
+ * the host message / tool card. Two shapes are covered:
+ *   1. backticked paths — a `code` element whose entire text is a path;
+ *   2. raw paths in plain text (Windows drive / UNC / POSIX) — only when
+ *      classify() says the path is previewable, so prose stays inert.
+ *
+ * Raw-text linkification is idempotent: text already wrapped in
+ * `.preview-path-link` or sitting inside `code`/`pre` is skipped, so repeated
+ * calls on the same container never double-wrap.
  */
 function linkifyPreviewPaths(container: HTMLElement): void {
+  // 1) Backticked full path: the whole <code> element is one path.
   const codeEls = container.querySelectorAll('code:not(.code-block code)');
   for (const el of codeEls) {
     const text = el.textContent ?? '';
     if (!isPreviewable(classify(text))) continue;
-    const span = document.createElement('span');
-    span.className = 'preview-path-link';
-    span.textContent = text;
-    span.title = text;
-    span.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const msgEl = container.closest<HTMLElement>('.msg') ?? container.parentElement;
-      if (msgEl) openInlinePreviewCard(msgEl, text, { scrollIntoView: true });
-    });
-    el.replaceWith(span);
+    el.replaceWith(makePathLinkSpan(text));
+  }
+  // 2) Raw absolute local paths in plain text nodes.
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
+  for (const node of textNodes) {
+    const parent = node.parentElement;
+    if (!parent) continue;
+    if (parent.closest('.preview-path-link')) continue; // already linked
+    if (parent.closest('code, pre, .code-block')) continue; // inline code / blocks
+    const text = node.nodeValue ?? '';
+    const hits = findRawPathHits(text);
+    if (hits.length === 0) continue;
+    const doc = node.ownerDocument;
+    const frag = doc.createDocumentFragment();
+    let pos = 0;
+    for (const hit of hits) {
+      if (hit.start > pos) frag.appendChild(doc.createTextNode(text.slice(pos, hit.start)));
+      frag.appendChild(makePathLinkSpan(hit.path));
+      pos = hit.end;
+    }
+    if (pos < text.length) frag.appendChild(doc.createTextNode(text.slice(pos)));
+    node.replaceWith(frag);
   }
 }
 
@@ -3133,6 +3182,7 @@ function renderHistoryRow(m: StoredMsg, toolCallInfoMap?: Map<string, ToolCallIn
         const args = document.createElement('div');
         args.className = 'tool-args hidden';
         args.textContent = JSON.stringify(tc.args ?? {}, null, 2);
+        linkifyPreviewPaths(args); // paths in the restored args JSON become clickable
         card.appendChild(header);
         card.appendChild(args);
         messagesEl.appendChild(card);
@@ -3167,6 +3217,7 @@ function renderHistoryRow(m: StoredMsg, toolCallInfoMap?: Map<string, ToolCallIn
       const resultEl = document.createElement('div');
       resultEl.className = 'tool-result hidden';
       resultEl.textContent = content;
+      linkifyPreviewPaths(resultEl); // paths in the restored result text become clickable
       existingCard.appendChild(resultEl);
       anchorEl = existingCard as HTMLElement;
     } else {
@@ -3223,6 +3274,7 @@ function addToolResultBlock(content: string, toolName?: string): HTMLElement {
     if (!collapsed) {
       if (!filled) {
         result.textContent = content;
+        linkifyPreviewPaths(result); // paths in the restored result text become clickable
         filled = true;
       }
       result.classList.remove('hidden');

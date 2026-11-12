@@ -137,3 +137,42 @@ export function partitionPreviewPaths(paths: string[]): PreviewPlan {
   }
   return { eager, deferred };
 }
+
+// ----------------------------------------------------------------- prose
+/**
+ * Raw absolute local paths embedded in PLAIN prose (no backticks): Windows
+ * drive paths (C:\…), UNC shares (\\server\share\…) and POSIX paths
+ * (/tmp/…).
+ *
+ *  - A candidate only becomes a hit when `classify()` says it is previewable
+ *    — so prose fragments and URLs stay inert: the drive branch refuses to
+ *    start mid-word ("https:" never matches `s:/`), the POSIX branch refuses
+ *    a slash preceded by word chars / `.` / `/` / `:`, and anything without
+ *    a previewable extension is dropped.
+ *  - Trailing prose punctuation ("…clip.mp4。" / "…clip.mp4,") is trimmed
+ *    off the candidate so the extension survives classify(); the
+ *    punctuation itself stays in the text (see `RawPathHit.end`).
+ */
+export interface RawPathHit {
+  /** Index in the source text where the cleaned path starts. */
+  start: number;
+  /** Index just past the cleaned path's last char (trailing punctuation is outside). */
+  end: number;
+  /** The cleaned path. */
+  path: string;
+}
+
+const RAW_PATH_RE =
+  /(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s"'`<>|*?\[\]]+|\\\\[^\s"'`<>|*?\[\]]+|(?<![A-Za-z0-9./:])\/[A-Za-z0-9._-]+(?:\/[^\s"'`<>|*?]+)*/g;
+const TRAILING_PUNCT_RE = /[。.，、；：！？,;:!?）】)\]]+$/;
+
+export function findRawPathHits(text: string): RawPathHit[] {
+  const hits: RawPathHit[] = [];
+  for (const m of text.matchAll(RAW_PATH_RE)) {
+    const raw = m[0];
+    const path = raw.replace(TRAILING_PUNCT_RE, '');
+    if (path.length < 4 || !isPreviewable(classify(path))) continue;
+    hits.push({ start: m.index, end: m.index + path.length, path });
+  }
+  return hits;
+}
