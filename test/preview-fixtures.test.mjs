@@ -78,4 +78,12 @@ test('fixtures: structural invariants of the committed models', () => {
   assert.equal(pptx.slides[0].imageMime, 'image/png');
   assert.equal(pptx.slides[1].image, undefined); // EMF thumbnail skipped
   assert.equal(pptx.slides[2].image, undefined); // no rels → no image
+  // Enhanced layout: slide1 carries placed shapes + background; the rest
+  // (no a:xfrm) fall back to the legacy layout (no shapes key in the JSON).
+  assert.ok(Array.isArray(pptx.slides[0].shapes), 'slide1 shapes in the snapshot');
+  assert.deepEqual(pptx.slides[0].shapes.map((s) => s.kind), ['text', 'image', 'table']);
+  assert.ok(pptx.slides[0].background?.startsWith('data:image/png;base64,'), 'p:bg background inlined');
+  assert.equal(pptx.sizeW, 12192000, 'p:sldSz width in the snapshot');
+  assert.equal(pptx.sizeH, 6858000, 'p:sldSz height in the snapshot');
+  assert.equal(pptx.slides[1].shapes, undefined, 'slide3 keeps the legacy layout');
 });

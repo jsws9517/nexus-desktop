@@ -26,15 +26,20 @@ import {
   type DocxDoc,
   type ParsedDocument,
   type PptxDoc,
+  type PptxShape,
   type PptxSlide,
   type XlsxDoc,
   type XlsxSheet,
   isDocKind,
   MAX_PPTX_IMAGE_BYTES,
+  MAX_PPTX_IMAGE_BUDGET_BYTES,
+  MAX_PPTX_SHAPES,
   MAX_PPTX_SLIDES,
   MAX_XLSX_COLS,
   MAX_XLSX_ROWS,
   MAX_XLSX_SHEETS,
+  PPTX_DEFAULT_SLIDE_H,
+  PPTX_DEFAULT_SLIDE_W,
 } from '../shared/preview-docs.js';
 import { logger } from '../shared/logger.js';
 
@@ -286,6 +291,166 @@ async function slideImage(zip: JSZip, slideName: string): Promise<{ image?: stri
   return { image: `data:${mime};base64,${b64}`, imageMime: mime };
 }
 
+// ── enhanced layout: rels map, slide size, placed shapes ────────────────────
+
+/** Id → decoded Target map of a slide's .rels entries (all relationship
+ *  types; callers filter by target shape). */
+function relsMap(relsXml: string | null | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!relsXml) return out;
+  for (const m of relsXml.matchAll(/<Relationship\s+([^>]*?)\/?>/g)) {
+    const attrs = m[1];
+    const id = /Id="([^"]+)"/.exec(attrs)?.[1];
+    const target = /Target="([^"]+)"/.exec(attrs)?.[1];
+    if (!id || !target) continue;
+    let decoded = target;
+    try { decoded = decodeURIComponent(target); } catch { /* keep raw */ }
+    out.set(id, decoded);
+  }
+  return out;
+}
+
+/** `p:sldSz` (EMU) from presentation.xml; 16:9 defaults when absent. */
+function slideSize(presentationXml: string | null | undefined): { w: number; h: number } {
+  const tag = presentationXml ? /<p:sldSz[^>]*>/.exec(presentationXml)?.[0] : undefined;
+  const pick = (attr: string): number | null =>
+    tag ? Number(new RegExp(`${attr}="(-?\\d+)"`).exec(tag)?.[1] ?? Number.NaN) : null;
+  const w = pick('cx'); const h = pick('cy');
+  return {
+    w: Number.isFinite(w) ? w! : PPTX_DEFAULT_SLIDE_W,
+    h: Number.isFinite(h) ? h! : PPTX_DEFAULT_SLIDE_H,
+  };
+}
+
+/** Inline an image referenced by a rels Id (`../media/…` only, cap + shared
+ *  byte budget). Vector formats and over-cap media are skipped. */
+async function mediaDataUrl(
+  zip: JSZip,
+  rels: Map<string, string>,
+  rid: string | undefined,
+  budget: { left: number },
+): Promise<{ url?: string; mime?: string }> {
+  if (!rid) return {};
+  const target = rels.get(rid);
+  if (!target || !target.startsWith('../media/')) return {};
+  const mediaName = `ppt/${target.replace('../media/', 'media/')}`;
+  const ext = mediaName.slice(mediaName.lastIndexOf('.')).toLowerCase();
+  const mime = PPTX_IMAGE_EXT[ext];
+  if (!mime || mime.startsWith('image/x-')) return {}; // skip non-inlineable vectors
+  const media = zip.file(mediaName);
+  if (!media) return {};
+  const b64 = await media.async('base64');
+  const rawBytes = b64.length * 0.75;
+  if (rawBytes > MAX_PPTX_IMAGE_BYTES || rawBytes > budget.left) return {};
+  budget.left -= rawBytes;
+  return { url: `data:${mime};base64,${b64}`, mime };
+}
+
+/** The shape's own `a:xfrm` (first off/ext pair in the block; group shapes
+ *  are not walked, so child transforms never leak in). */
+function xfrmGeometry(block: string): { x: number; y: number; cx: number; cy: number } | null {
+  const off = /<a:off[^>]*\/?>/.exec(block)?.[0];
+  const ext = /<a:ext[^>]*\/?>/.exec(block)?.[0];
+  const num = (tag: string | undefined, attr: string): number | null => {
+    if (!tag) return null;
+    const m = new RegExp(`${attr}="(-?\\d+)"`).exec(tag);
+    return m ? Number(m[1]) : null;
+  };
+  const x = num(off, 'x'); const y = num(off, 'y');
+  const cx = num(ext, 'cx'); const cy = num(ext, 'cy');
+  if (x == null || y == null || cx == null || cy == null) return null;
+  return { x, y, cx, cy };
+}
+
+/** Paragraph text + the shape's dominant font size (pt; 0 = unknown). */
+function shapeParagraphs(block: string): { paragraphs: string[]; fontPt: number } {
+  const paras: string[] = [];
+  let fontPt = 0;
+  for (const pm of block.matchAll(/<a:p(?:\s[^>]*)?>[\s\S]*?<\/a:p>/g)) {
+    const p = pm[0];
+    const text = [...p.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
+      .map((m) => unescapeXml(m[1])).join('').trim();
+    if (text) paras.push(text);
+    if (!fontPt) {
+      // sz is in 1/100 pt units.
+      const sz = /<a:(?:rPr|defRPr|endParaRPr)\b[^>]*\bsz="(\d+)"/.exec(p)?.[1];
+      if (sz) fontPt = Math.round(Number(sz) / 10) / 10;
+    }
+  }
+  return { paragraphs: paras, fontPt };
+}
+
+/** Row-major cell text of a graphicFrame table; null for non-table frames
+ *  (charts / diagrams). Multi-paragraph cells join with '\n'. */
+function tableRows(block: string): string[][] | null {
+  if (!block.includes('<a:tbl>')) return null;
+  const rows: string[][] = [];
+  for (const tr of block.matchAll(/<a:tr\b[^>]*>[\s\S]*?<\/a:tr>/g)) {
+    const cells: string[] = [];
+    for (const tc of tr[0].matchAll(/<a:tc\b[^>]*>[\s\S]*?<\/a:tc>/g)) {
+      cells.push(shapeParagraphs(tc[0]).paragraphs.join('\n'));
+    }
+    if (cells.length) rows.push(cells);
+  }
+  return rows.length ? rows : null;
+}
+
+/** Placed shapes of one slide: text boxes (p:sp), pictures (p:pic),
+ *  graphic-frame tables. Shapes without an a:xfrm (hand-crafted XML, no
+ *  geometry) are skipped — the legacy title/bullets path still covers
+ *  their text. */
+async function slideShapes(
+  slideXml: string,
+  rels: Map<string, string>,
+  zip: JSZip,
+  budget: { left: number },
+  size: { w: number; h: number },
+): Promise<PptxShape[]> {
+  const out: PptxShape[] = [];
+  const blocks = slideXml.matchAll(
+    /<p:sp\b[\s\S]*?<\/p:sp>|<p:pic\b[\s\S]*?<\/p:pic>|<p:graphicFrame\b[\s\S]*?<\/p:graphicFrame>/g,
+  );
+  for (const m of blocks) {
+    if (out.length >= MAX_PPTX_SHAPES) break;
+    const block = m[0];
+    const geo = xfrmGeometry(block);
+    if (!geo) continue;
+    const pos = {
+      x: geo.x / size.w,
+      y: geo.y / size.h,
+      w: geo.cx / size.w,
+      h: geo.cy / size.h,
+    };
+    if (block.startsWith('<p:pic')) {
+      const rid = /<a:blip[^>]*\br:embed="([^"]+)"/.exec(block)?.[1]
+        ?? /r:embed="([^"]+)"/.exec(block)?.[1];
+      const img = await mediaDataUrl(zip, rels, rid, budget);
+      out.push({ ...pos, kind: 'image', image: img.url, imageMime: img.mime });
+    } else if (block.startsWith('<p:graphicFrame')) {
+      const rows = tableRows(block);
+      if (!rows) continue;
+      out.push({ ...pos, kind: 'table', rows });
+    } else {
+      const { paragraphs, fontPt } = shapeParagraphs(block);
+      if (!paragraphs.length) continue;
+      out.push({ ...pos, kind: 'text', paragraphs, fontPt: fontPt || undefined });
+    }
+  }
+  return out;
+}
+
+/** Slide-level `p:bg` image background (when the slide sets one). */
+async function slideBackground(
+  slideXml: string,
+  rels: Map<string, string>,
+  zip: JSZip,
+  budget: { left: number },
+): Promise<{ url?: string; mime?: string }> {
+  const bg = /<p:bg>[\s\S]*?<\/p:bg>/.exec(slideXml)?.[0];
+  if (!bg) return {};
+  return mediaDataUrl(zip, rels, /r:embed="([^"]+)"/.exec(bg)?.[1], budget);
+}
+
 /** Parse a .pptx (OOXML zip) into the normalized slide model. */
 export async function parsePptx(buf: Buffer, name: string): Promise<PptxDoc> {
   const zip = await JSZip.loadAsync(buf);
@@ -293,22 +458,38 @@ export async function parsePptx(buf: Buffer, name: string): Promise<PptxDoc> {
     .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
     .sort((a, b) => slideNumber(a) - slideNumber(b));
   if (!slideNames.length) throw new Error('not a pptx: no slides found');
+  const size = slideSize(await zip.file('ppt/presentation.xml')?.async('string'));
+  const budget = { left: MAX_PPTX_IMAGE_BUDGET_BYTES };
   const slides: PptxSlide[] = [];
   const total = slideNames.length;
   const limit = Math.min(total, MAX_PPTX_SLIDES);
   for (let i = 0; i < limit; i++) {
     const xml = await zip.file(slideNames[i])!.async('string');
     const texts = slideTexts(xml);
-    const img = await slideImage(zip, slideNames[i]);
+    const rels = relsMap(
+      await zip.file(`ppt/slides/_rels/${basename(slideNames[i])}.rels`)?.async('string'),
+    );
+    const img = await slideImage(zip, slideNames[i]); // legacy fields, as before
+    const shapes = await slideShapes(xml, rels, zip, budget, size);
+    const bg = await slideBackground(xml, rels, zip, budget);
     slides.push({
       index: slideNumber(slideNames[i]),
       title: texts[0] ?? '',
       bullets: texts,
       image: img.image,
       imageMime: img.imageMime,
+      ...(shapes.length ? { shapes } : {}),
+      ...(bg.url ? { background: bg.url, backgroundMime: bg.mime } : {}),
     });
   }
-  return { kind: 'pptx', name, slides, truncated: total > MAX_PPTX_SLIDES || undefined };
+  return {
+    kind: 'pptx',
+    name,
+    slides,
+    truncated: total > MAX_PPTX_SLIDES || undefined,
+    sizeW: size.w,
+    sizeH: size.h,
+  };
 }
 
 // ── dispatch ────────────────────────────────────────────────────────────────

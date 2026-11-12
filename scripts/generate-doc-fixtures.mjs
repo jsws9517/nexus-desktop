@@ -95,16 +95,46 @@ function slideXml(title, ...bullets) {
 </p:sld>`;
 }
 
+/** slide1 — enhanced-layout slide: placed text box + picture + table with
+ *  a:xfrm geometry, a p:bg background image, and p:sldSz (16:9) so the
+ *  snapshot exercises the shape/background/size fields. */
+function shapedSlide1Xml() {
+  const runs = ['Title One', 'Point a', 'Point b']
+    .map((text) => `<a:p><a:r><a:t>${text}</a:t></a:r></a:p>`)
+    .join('');
+  return `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<p:cSld>
+<p:bg><p:bgPr><a:blipFill><a:blip r:embed="r2"/></a:blipFill></p:bgPr></p:bg>
+<p:spTree>
+<p:sp><p:txBody><a:bodyPr/>${runs}</p:txBody>
+<p:spPr><a:xfrm><a:off x="838200" y="274638"/><a:ext cx="10515600" cy="1600200"/></a:xfrm></p:spPr></p:sp>
+<p:pic><p:blipFill><a:blip r:embed="r1"/></p:blipFill>
+<p:spPr><a:xfrm><a:off x="838200" y="2011680"/><a:ext cx="4114800" cy="3086100"/></a:xfrm></p:spPr></p:pic>
+<p:graphicFrame><p:xfrm><a:off x="838200" y="5120880"/><a:ext cx="5486400" cy="1280160"/></p:xfrm>
+<a:graphic><a:graphicData><a:tbl>
+<a:tr h="640080"><a:tc><a:txBody><a:p><a:r><a:t>k</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>v</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+<a:tr h="640080"><a:tc><a:txBody><a:p><a:r><a:t>a</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>1</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+</a:tbl></a:graphicData></a:graphic></p:graphicFrame>
+</p:spTree></p:cSld></p:sld>`;
+}
+
 async function buildPptx() {
   const zip = new JSZip();
-  zip.file('ppt/slides/slide1.xml', slideXml('Title One', 'Point a', 'Point b'));
+  zip.file('ppt/presentation.xml',
+    '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldSz cx="12192000" cy="6858000" type="screen16x9"/></p:presentation>');
+  zip.file('ppt/slides/slide1.xml', shapedSlide1Xml());
   zip.file('ppt/slides/slide3.xml', slideXml('Three'));
   zip.file('ppt/slides/slide7.xml', slideXml('Seven', 'Last point'));
-  // slide1 → real PNG thumbnail (inlined); slide3 → EMF (skipped); slide7 → no rels.
+  // slide1 → PNG picture + PNG background (inlined); slide3 → EMF (skipped);
+  // slide7 → no rels.
   zip.file('ppt/media/image1.png', PNG_1PX);
+  zip.file('ppt/media/bg.png', PNG_1PX);
   zip.file('ppt/media/diagram.emf', Buffer.from([0x01, 0x02]));
   zip.file('ppt/slides/_rels/slide1.xml.rels',
-    '<Relationships><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>');
+    '<Relationships>' +
+    '<Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>' +
+    '<Relationship Id="r2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/bg.png"/>' +
+    '</Relationships>');
   zip.file('ppt/slides/_rels/slide3.xml.rels',
     '<Relationships><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/diagram.emf"/></Relationships>');
   return zip.generateAsync({ type: 'nodebuffer' });

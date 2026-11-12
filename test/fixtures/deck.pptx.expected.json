@@ -8,10 +8,56 @@
       "bullets": [
         "Title One",
         "Point a",
-        "Point b"
+        "Point b",
+        "k",
+        "v",
+        "a",
+        "1"
       ],
       "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-      "imageMime": "image/png"
+      "imageMime": "image/png",
+      "shapes": [
+        {
+          "x": 0.06875,
+          "y": 0.04004636920384952,
+          "w": 0.8625,
+          "h": 0.23333333333333334,
+          "kind": "text",
+          "paragraphs": [
+            "Title One",
+            "Point a",
+            "Point b"
+          ]
+        },
+        {
+          "x": 0.06875,
+          "y": 0.29333333333333333,
+          "w": 0.3375,
+          "h": 0.45,
+          "kind": "image",
+          "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          "imageMime": "image/png"
+        },
+        {
+          "x": 0.06875,
+          "y": 0.7467016622922135,
+          "w": 0.45,
+          "h": 0.18666666666666668,
+          "kind": "table",
+          "rows": [
+            [
+              "k",
+              "v"
+            ],
+            [
+              "a",
+              "1"
+            ]
+          ]
+        }
+      ],
+      "background": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      "backgroundMime": "image/png"
     },
     {
       "index": 3,
@@ -28,5 +74,7 @@
         "Last point"
       ]
     }
-  ]
+  ],
+  "sizeW": 12192000,
+  "sizeH": 6858000
 }

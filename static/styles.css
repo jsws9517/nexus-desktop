@@ -3880,6 +3880,62 @@ textarea:focus-visible,
 .doc-canvas .doc-slide-bullets { margin: 0; padding-left: 18px; }
 .doc-canvas .doc-slide-bullets li { margin: 4px 0; }
 
+/* Enhanced PPTX layout — positioned slide stage (a:xfrm geometry, p:sldSz
+   aspect ratio, pt→cqw font scaling, per-slide background image). The stage
+   is a container (inline-size) so cqw units scale with the rendered slide;
+   the doc-shell's canvas `zoom` scales the whole stage proportionally. */
+.doc-canvas .doc-pptx-stage {
+  position: relative;
+  width: 100%;
+  margin: 4px auto 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid rgba(128, 128, 140, 0.35);
+  border-radius: 8px;
+  background-color: #fff;
+  background-size: cover;
+  background-position: center;
+  color: #202124;
+  container-type: inline-size;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.22);
+}
+.doc-canvas .doc-pptx-shape { position: absolute; overflow: hidden; min-width: 0; min-height: 0; }
+.doc-canvas .doc-pptx-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.3;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  /* pt → cqw: --doc-pptx-pt (shape font size, pt; 20pt default) times the
+     stage's --doc-pptx-cqw-per-pt (914400·100 / 72 / slideWEmu), rendered
+     in container-query units so the type scales with the slide. */
+  font-size: calc(var(--doc-pptx-pt, 20) * var(--doc-pptx-cqw-per-pt, 0.10417) * 1cqw);
+}
+.doc-canvas .doc-pptx-text p { margin: 0; }
+.doc-canvas .doc-pptx-img img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.doc-canvas .doc-pptx-img.empty {
+  border: 1px dashed rgba(0, 0, 0, 0.22);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.035);
+}
+.doc-canvas .doc-pptx-table-wrap { display: flex; align-items: center; justify-content: center; }
+.doc-canvas .doc-pptx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: clamp(8px, 1.6cqw, 14px);
+  line-height: 1.35;
+}
+.doc-canvas .doc-pptx-table td {
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  padding: 2px 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  vertical-align: top;
+}
+
 /* Paper-white canvas on the light themes. */
 html[data-theme='light'] .preview-doc-viewer,
 html[data-theme='cartoon'] .preview-doc-viewer,

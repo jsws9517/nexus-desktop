@@ -178,6 +178,100 @@ test('parsePptx: numeric slide order, titles/bullets, image inline, EMF skipped'
   assert.equal(doc.slides[0].imageMime, 'image/png');
   assert.equal(doc.slides[1].image, undefined); // EMF not inlined
   assert.equal(doc.truncated, undefined);
+  // No a:xfrm geometry in these slides → no placed shapes (legacy layout).
+  assert.equal(doc.slides[0].shapes, undefined);
+  // No presentation.xml → 16:9 EMU defaults.
+  assert.equal(doc.sizeW, 12192000);
+  assert.equal(doc.sizeH, 6858000);
+});
+
+// ── pptx enhanced layout (a:xfrm shapes, p:sldSz, p:bg, media budget) ─────
+
+async function shapedPptxFixture() {
+  const W = 9144000; // 4:3
+  const H = 6858000;
+  const slide1 = `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<p:cSld>
+<p:bg><p:bgPr><a:blipFill><a:blip r:embed="rId1"/></a:blipFill></p:bgPr></p:bg>
+<p:spTree>
+<p:sp><p:txBody><a:bodyPr/>
+<a:p><a:r><a:rPr lang="en-US" sz="3600"/><a:t>Head</a:t></a:r></a:p>
+<a:p><a:r><a:t>Body line</a:t></a:r></a:p>
+</p:txBody>
+<p:spPr><a:xfrm><a:off x="457200" y="274638"/><a:ext cx="8229600" cy="1371672"/></a:xfrm></p:spPr></p:sp>
+<p:pic><p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+<p:spPr><a:xfrm><a:off x="457200" y="1828800"/><a:ext cx="3657600" cy="2743200"/></a:xfrm></p:spPr></p:pic>
+<p:graphicFrame><p:xfrm><a:off x="457200" y="4572000"/><a:ext cx="5486400" cy="914400"/></p:xfrm>
+<a:graphic><a:graphicData><a:tbl>
+<a:tr h="457200"><a:tc><a:txBody><a:p><a:r><a:t>A</a:t></a:r></a:p></a:txBody></a:tc>
+<a:tc><a:txBody><a:p><a:r><a:t>B</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+<a:tr h="457200"><a:tc><a:txBody><a:p><a:r><a:t>C</a:t></a:r></a:p></a:txBody></a:tc>
+<a:tc><a:txBody><a:p><a:r><a:t>D</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+</a:tbl></a:graphicData></a:graphic></p:graphicFrame>
+</p:spTree></p:cSld></p:sld>`;
+  const zip = new JSZip();
+  zip.file('ppt/presentation.xml',
+    '<p:presentation xmlns:p="x"><p:sldSz cx="9144000" cy="6858000" type="custom"/></p:presentation>');
+  zip.file('ppt/slides/slide1.xml', slide1);
+  zip.file('ppt/slides/_rels/slide1.xml.rels',
+    '<Relationships>' +
+    '<Relationship Id="rId1" Type=".../image" Target="../media/bg.png"/>' +
+    '<Relationship Id="rId2" Type=".../image" Target="../media/pic1.png"/>' +
+    '</Relationships>');
+  zip.file('ppt/media/bg.png', PNG_1PX);
+  zip.file('ppt/media/pic1.png', PNG_1PX);
+  void W; void H;
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+test('parsePptx: placed shapes (text/pic/table) normalized to slide fractions', async () => {
+  const doc = await parsePptx(await shapedPptxFixture(), 'shaped.pptx');
+  assert.equal(doc.sizeW, 9144000, 'p:sldSz width honored');
+  assert.equal(doc.sizeH, 6858000, 'p:sldSz height honored');
+  const slide = doc.slides[0];
+  assert.ok(slide.background?.startsWith('data:image/png;base64,'), 'p:bg background inlined');
+  assert.equal(slide.backgroundMime, 'image/png');
+  const shapes = slide.shapes ?? [];
+  assert.equal(shapes.length, 3, 'text box + picture + table placed');
+  const [sp, pic, table] = shapes;
+  assert.equal(sp.kind, 'text');
+  assert.deepEqual(sp.paragraphs, ['Head', 'Body line'], 'per-paragraph text, runs joined');
+  assert.equal(sp.fontPt, 36, 'rPr sz 3600 → 36pt');
+  assert.deepEqual([sp.x, sp.y, sp.w, sp.h], [457200 / 9144000, 274638 / 6858000, 8229600 / 9144000, 1371672 / 6858000], 'a:off/a:ext → fractions of p:sldSz');
+  assert.equal(pic.kind, 'image');
+  assert.ok(pic.image?.startsWith('data:image/png;base64,'), 'pic blip inlined via rels');
+  assert.equal(pic.imageMime, 'image/png');
+  assert.deepEqual([pic.x, pic.y, pic.w, pic.h], [457200 / 9144000, 1828800 / 6858000, 3657600 / 9144000, 2743200 / 6858000]);
+  assert.equal(table.kind, 'table');
+  assert.deepEqual(table.rows, [['A', 'B'], ['C', 'D']], 'row-major table cells');
+  assert.deepEqual([table.x, table.y, table.w, table.h], [457200 / 9144000, 4572000 / 6858000, 5486400 / 9144000, 914400 / 6858000]);
+  // Legacy fields still populated alongside the new ones.
+  assert.equal(slide.title, 'Head');
+  assert.ok(slide.bullets.includes('Body line'));
+});
+
+test('parsePptx: document-wide media budget — late images drop out', async () => {
+  // 7 pics, each at the 300 KiB per-image cap → the shared budget
+  // (6 × cap) admits the first six and drops the seventh.
+  const big = Buffer.alloc(300 * 1024, 0x41); // 300 KiB raw
+  const pics = Array.from({ length: 7 }, (_, i) =>
+    `<p:pic><p:blipFill><a:blip r:embed="rId${i + 2}"/></p:blipFill>` +
+    `<p:spPr><a:xfrm><a:off x="${i * 457200}" y="0"/><a:ext cx="457200" cy="457200"/></a:xfrm></p:spPr></p:pic>`).join('');
+  const zip = new JSZip();
+  zip.file('ppt/slides/slide1.xml',
+    `<p:sld><p:cSld><p:spTree>${pics}</p:spTree></p:cSld></p:sld>`);
+  zip.file('ppt/slides/_rels/slide1.xml.rels',
+    '<Relationships>' +
+    Array.from({ length: 7 }, (_, i) =>
+      `<Relationship Id="rId${i + 2}" Type=".../image" Target="../media/p${i}.png"/>`).join('') +
+    '</Relationships>');
+  for (let i = 0; i < 7; i++) zip.file(`ppt/media/p${i}.png`, big);
+  const doc = await parsePptx(await zip.generateAsync({ type: 'nodebuffer' }), 'budget.pptx');
+  const shapes = doc.slides[0].shapes ?? [];
+  assert.equal(shapes.length, 7, 'shape boxes kept even when media drops');
+  assert.ok(shapes.slice(0, 6).every((s) => s.image?.startsWith('data:image/png;base64,')),
+    'first six images within the 6×cap budget');
+  assert.equal(shapes[6].image, undefined, 'seventh image over the document budget');
 });
 
 // ── dispatch + artifact-body-first ────────────────────────────────────────
@@ -392,13 +486,13 @@ test('image viewer: rotate bar + checkerboard class + zoom surface', async () =>
   assert.doesNotMatch(img.style.transform, /rotate/); // 90 - 90 → 0° → identity
 });
 
-test('text viewer: line-number gutter, mono body, live search highlight', async () => {
+test('text viewer: line-number gutter for code/config types, mono body, live search highlight', async () => {
   win.nexusDesktop = {
     previewRead: async () => ({ ok: true, text: 'alpha\nbeta\nalpha' }),
     previewClose: async () => ({ ok: true }),
   };
   const { mountTextViewer } = await import(pathToFileURL(join(dist, 'renderer', 'preview', 'viewers', 'text.js')));
-  const el = mountTextViewer(baseState({ kind: 'text', name: 'a.txt' }));
+  const el = mountTextViewer(baseState({ kind: 'text', name: 'a.json' }));
   // The viewer only renders once connected to a host DOM.
   win.document.body.appendChild(el);
   await tick();
@@ -413,4 +507,17 @@ test('text viewer: line-number gutter, mono body, live search highlight', async 
   const marks = el.querySelectorAll('.preview-text-content mark.preview-text-match');
   assert.equal(marks.length, 2);
   assert.match(el.querySelector('.preview-text-search-count').textContent, /2 lines/);
+  el.remove();
+});
+
+test('text viewer: .txt / .log skip the gutter (plain data files read edge-to-edge)', async () => {
+  const { mountTextViewer } = await import(pathToFileURL(join(dist, 'renderer', 'preview', 'viewers', 'text.js')));
+  for (const name of ['a.txt', 'b.log']) {
+    const el = mountTextViewer(baseState({ kind: 'text', name }));
+    win.document.body.appendChild(el);
+    await tick();
+    assert.equal(el.querySelector('.preview-text-gutter'), null, `${name} has no gutter`);
+    assert.equal(el.querySelector('.preview-text-content')?.textContent, 'alpha\nbeta\nalpha', `${name} content still renders`);
+    el.remove();
+  }
 });

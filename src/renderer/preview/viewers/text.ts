@@ -2,7 +2,12 @@
  * Viewer for Markdown / plain-text files. Markdown goes through the desktop's
  * own rendering pipeline (`renderBlocks` — which returns an HTML string, plus
  * `hydrateImages` / `attachCodeCopy` for post-processing); plain text gets a
- * mono, line-numbered view with an in-view search bar.
+ * mono view with an in-view search bar.
+ *
+ * Gutter policy: code / config / structured text (json, sql, csv, yaml, py,
+ * sh, …) keeps the editor-style line-number gutter. Plain data files —
+ * `.txt` / `.log` — are read edge-to-edge, so they get NO gutter (the two
+ * columns looked odd for prose / dump files).
  */
 
 import { renderBlocks, hydrateImages, attachCodeCopy } from '../../markdown.js';
@@ -49,11 +54,17 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
         return;
       }
 
-      // ── Plain text: mono, line-numbered gutter, in-view search. ───────
+      // ── Plain text: mono view with in-view search. A line-number gutter
+      //    only for code / config / structured types — plain data files
+      //    (.txt / .log) read edge-to-edge without one.
       const full = text.length > 2_000_000
         ? text.slice(0, 2_000_000) + '\n' + t('docTextTruncated')
         : text;
       const lines = full.split('\n');
+
+      const extMatch = /\.([a-z0-9]+)$/i.exec(state.name);
+      const ext = extMatch ? `.${extMatch[1].toLowerCase()}` : '';
+      const withGutter = ext !== '.txt' && ext !== '.log';
 
       const search = document.createElement('div');
       search.className = 'preview-text-search';
@@ -66,17 +77,20 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
       count.className = 'preview-text-search-count';
       search.append(input, count);
 
-      const gutter = document.createElement('pre');
-      gutter.className = 'preview-text-gutter';
       const content = document.createElement('pre');
       content.className = 'preview-text-content';
       const body = document.createElement('div');
       body.className = 'preview-text-body';
-      body.append(gutter, content);
+      if (withGutter) {
+        const gutter = document.createElement('pre');
+        gutter.className = 'preview-text-gutter';
+        // Line numbers (shared line-height keeps the gutter aligned).
+        gutter.textContent = lines.map((_, i) => String(i + 1)).join('\n');
+        body.append(gutter, content);
+      } else {
+        body.append(content);
+      }
       container.append(search, body);
-
-      // Line numbers (shared line-height keeps the gutter aligned).
-      gutter.textContent = lines.map((_, i) => String(i + 1)).join('\n');
 
       // Content column: plain text without a query; with a query the matches
       // are wrapped in <mark> (rebuilds are debounced, large files capped).
