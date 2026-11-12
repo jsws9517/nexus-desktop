@@ -1,7 +1,7 @@
 {
   "name": "nexus-desktop",
   "version": "0.4.1",
-  "nexusCoreVersion": "1.2.2",
+  "nexusCoreVersion": "1.2.5",
   "nexusDesktopProtocol": 3,
   "description": "Nexus — where every agent finds home.",
   "type": "module",
@@ -58,7 +58,7 @@
     "exceljs": "^3.4.0",
     "http-cache-semantics": "^4.3.0",
     "jszip": "^3.10.2",
-    "nexus-coder": "^1.2.2",
+    "nexus-coder": "^1.2.5",
     "proxy-addr": "^2.0.8",
     "tar": "^7.5.22",
     "undici": "^8.11.2",
