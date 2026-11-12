@@ -25,6 +25,16 @@ const MAX_REGISTERED = 4000;
  * absent in embedded/test contexts).
  */
 export function registerPreviewPaths(paths: string[]): void {
+  void registerPreviewPathsAsync(paths);
+}
+
+/**
+ * Same as {@link registerPreviewPaths} but returns the bridge call's promise,
+ * so callers that must NOT issue a preview request until the main process has
+ * the root (the inline card's mount path) can `await` it. Resolves to the
+ * bridge result, or `null` when there was nothing to send / no bridge.
+ */
+export async function registerPreviewPathsAsync(paths: string[]): Promise<{ ok: boolean; added: number; error?: string } | null> {
   const fresh: string[] = [];
   for (const p of paths) {
     if (typeof p !== 'string' || p.length === 0 || p.length > 4096) continue;
@@ -35,7 +45,7 @@ export function registerPreviewPaths(paths: string[]): void {
     registered.add(p);
     fresh.push(p);
   }
-  if (fresh.length === 0) return;
+  if (fresh.length === 0) return null;
   if (registered.size > MAX_REGISTERED) {
     registered.clear();
     for (const p of fresh) registered.add(p);
@@ -43,12 +53,14 @@ export function registerPreviewPaths(paths: string[]): void {
   // Fire-and-forget; the bridge (or its method) may be absent in embedded or
   // test contexts — degrade to the static roots without throwing.
   const fn = window.nexusDesktop?.previewAllowPaths;
-  if (fn) {
-    void fn(fresh).catch(() => {
-      // Bridge missing / main refused: the preview will fall back to its
-      // static roots; re-attempt on the next fresh registration.
-      for (const p of fresh) registered.delete(p);
-    });
+  if (!fn) return null;
+  try {
+    return await fn(fresh);
+  } catch {
+    // Bridge threw: the preview will fall back to its static roots;
+    // re-attempt on the next fresh registration.
+    for (const p of fresh) registered.delete(p);
+    return null;
   }
 }
 

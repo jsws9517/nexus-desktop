@@ -95,3 +95,35 @@ test('registerPreviewPaths: ignores malformed entries and missing bridge', async
   registerPreviewPaths(['E:/x/y.docx']);
   await new Promise((r) => setTimeout(r, 20));
 });
+
+// ── awaited registration (inline card mount path) ───────────────────────────
+
+test('registerPreviewPathsAsync: resolves the bridge result and dedupes', async () => {
+  globalThis.window = {
+    nexusDesktop: {
+      previewAllowPaths: async (paths) => {
+        calls.push([...paths]);
+        return { ok: true, added: paths.length };
+      },
+    },
+  };
+  clearRegisteredPreviewPaths();
+  const r1 = await reg.registerPreviewPathsAsync(['E:/a/r.docx']);
+  assert.deepEqual(r1, { ok: true, added: 1 });
+  // Second call with the same path is a dedupe no-op → null, no new IPC.
+  const before = calls.length;
+  const r2 = await reg.registerPreviewPathsAsync(['E:/a/r.docx']);
+  assert.equal(r2, null);
+  assert.equal(calls.length, before);
+
+  // The fire-and-forget variant delegates to the same dedupe state.
+  registerPreviewPaths(['E:/a/r.docx']);
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(calls.length, before, 'already-registered path is not re-sent');
+
+  // No bridge → resolves null, never throws.
+  globalThis.window = {};
+  clearRegisteredPreviewPaths();
+  const r3 = await reg.registerPreviewPathsAsync(['E:/z/z.docx']);
+  assert.equal(r3, null);
+});

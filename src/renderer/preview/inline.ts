@@ -18,6 +18,7 @@
 
 import { classify, isPreviewable, type PreviewKind } from '../../shared/preview.js';
 import { fetchPreview, mountViewer, type ViewerHandle, type MountedViewer, type PreviewState } from './core.js';
+import { registerPreviewPathsAsync } from './register.js';
 import { STR } from '../i18n.js';
 
 export interface InlinePreviewCardOptions {
@@ -325,6 +326,12 @@ export function createInlinePreviewCard(
       status.classList.add('error');
       return;
     }
+    // Await the root registration BEFORE the token request: the main process
+    // may still be realpath-ing the user-reached directory, and a first click
+    // right after launch otherwise races the async previewAllowPaths handler
+    // and fails the containment check ("path outside allowed roots").
+    await registerPreviewPathsAsync([path]);
+    if (disposed) return;
     const res = await fetchPreview(path);
     if (disposed) return;
     if (!res || !res.token) {

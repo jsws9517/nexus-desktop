@@ -867,6 +867,21 @@ body {
   gap: 14px;
 }
 
+/* #messages is a definite-height column flexbox: its children must NEVER
+   shrink. Any child with `overflow: hidden` (inline preview cards, file
+   chips) has an automatic min-height of 0, so with the default
+   flex-shrink:1 it absorbs the whole conversation's overflow and collapses
+   to a 2px border sliver — the "thin divider line at the bottom of the chat"
+   bug. Pin every child at its natural height; the container scrolls instead. */
+#messages > .msg,
+#messages > .thinking,
+#messages > .tool-card,
+#messages > .file-chip,
+#messages > .load-earlier,
+#messages > .inline-preview-card {
+  flex-shrink: 0;
+}
+
 .msg { max-width: 86%; line-height: 1.6; font-size: 14px; }
 .msg.user {
   align-self: flex-end;
@@ -3583,6 +3598,13 @@ textarea:focus-visible,
   margin: 6px 0;
   background: var(--bg);
   animation: previewFadeIn 0.18s ease-out;
+  /* #messages is a column flexbox with a definite height + overflow-y:auto.
+     The card's `overflow: hidden` makes its automatic min-height 0, so the
+     default flex-shrink:1 lets it absorb ALL the conversation's overflow and
+     collapse to a 2px border sliver (the "thin line at the bottom of the
+     chat" bug — the doc viewer inside was fully rendered but clipped).
+     Pin the card at its natural height; the container scrolls instead. */
+  flex-shrink: 0;
 }
 
 /* header — ~32px, app-bg, filename + action buttons */
