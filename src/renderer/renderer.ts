@@ -2165,22 +2165,36 @@ function handleEvent(event: AgentEvent): void {
             ? event.content.slice(0, 4000) + '\n… (truncated)'
             : event.content;
         rec.card.classList.toggle('error', !!event.isError);
-        // Detect every previewable path in args or content. When the card is
-        // already expanded, mount them all now. When collapsed, record them on
+        // Detect every previewable path in args or content. Eager media
+        // (image/video) mounts immediately as a VISIBLE sibling of the tool
+        // card, no matter the collapsed state. Non-media kinds only mount now
+        // when the card is already expanded; otherwise they are recorded on
         // `dataset.previewPaths` so the single delegated expand listener mounts
         // them lazily (and the main-process token store isn't flooded at render
         // time). No paths survive on an error result.
         if (!event.isError) {
           const plan = partitionPreviewPaths(findPreviewablePaths(rec.args, event.content));
-          const all = [...plan.eager, ...plan.deferred];
-          if (all.length) {
+          if (plan.eager.length) {
+            // Eager media is the deliverable itself, so it must show the
+            // moment it lands, mounted below the tool card — the same shape
+            // history restore uses. Tool cards start collapsed and a media result
+            // (media_task "succeeded" carrying files[]) typically arrives
+            // while the card is still collapsed; routing the eager paths
+            // through dataset.previewPaths would hide the player/thumbnail
+            // until a manual expand, so the generated image/video is never
+            // seen live.
+            for (const p of plan.eager) openInlinePreviewCard(rec.card, p);
+          }
+          if (plan.deferred.length) {
             if (!rec.card.classList.contains('collapsed')) {
+              // Card is expanded — mount the deferred previews into it now.
               const strip = document.createElement('div');
               strip.className = 'tool-preview-strip';
               rec.card.appendChild(strip);
-              for (const p of all) openInlinePreviewCard(strip, p);
+              for (const p of plan.deferred) openInlinePreviewCard(strip, p);
             } else {
-              stampDeferredPreviews(rec.card, all);
+              // Card is collapsed — defer to first expand (lazy mount).
+              stampDeferredPreviews(rec.card, plan.deferred);
             }
           }
         }
