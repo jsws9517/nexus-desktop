@@ -41,6 +41,45 @@ const MIME_BY_EXT = new Map<string, string>([
   ['.json', 'application/json'],
   ['.csv', 'text/csv'],
   ['.xml', 'text/xml'],
+  // Project text types (config / data / code) — all render as plain text.
+  ['.sql', 'text/x-sql'],
+  ['.toml', 'application/toml'],
+  ['.yaml', 'application/yaml'],
+  ['.yml', 'application/yaml'],
+  ['.ini', 'text/x-ini'],
+  ['.properties', 'text/x-properties'],
+  ['.env', 'text/plain'],
+  ['.log', 'text/plain'],
+  ['.lock', 'text/plain'],
+  ['.sh', 'text/x-sh'],
+  ['.bash', 'text/x-sh'],
+  ['.py', 'text/x-python'],
+  ['.js', 'text/javascript'],
+  ['.mjs', 'text/javascript'],
+  ['.cjs', 'text/javascript'],
+  ['.ts', 'text/typescript'],
+  ['.tsx', 'text/tsx'],
+  ['.jsx', 'text/jsx'],
+  ['.css', 'text/css'],
+  ['.scss', 'text/x-scss'],
+  ['.less', 'text/x-less'],
+  ['.vue', 'text/x-vue'],
+  ['.go', 'text/x-go'],
+  ['.rs', 'text/x-rust'],
+  ['.java', 'text/x-java'],
+  ['.c', 'text/x-c'],
+  ['.h', 'text/x-c'],
+  ['.cpp', 'text/x-c++'],
+  ['.hpp', 'text/x-c++'],
+  ['.cs', 'text/x-csharp'],
+  ['.rb', 'text/x-ruby'],
+  ['.php', 'text/x-php'],
+  ['.swift', 'text/x-swift'],
+  ['.kt', 'text/x-kotlin'],
+  ['.ps1', 'text/x-powershell'],
+  ['.bat', 'text/x-batch'],
+  ['.graphql', 'text/x-graphql'],
+  ['.proto', 'text/x-proto'],
 ]);
 
 export function mimeForPath(path: string): string {
@@ -75,8 +114,12 @@ function classifyByMime(mime: string): PreviewKind {
   if (mime.startsWith('text/html')) return 'html';
   if (mime === 'text/markdown') return 'markdown';
   if (mime.startsWith('text/')) return 'text';
-  // JSON / XML are text-like; render as plain text.
-  if (mime === 'application/json' || mime === 'application/xml') return 'text';
+  // JSON / XML / TOML / YAML are text-like; render as plain text.
+  if (
+    mime === 'application/json' || mime === 'application/xml' ||
+    mime === 'application/toml' || mime === 'application/yaml' ||
+    mime === 'application/x-yaml'
+  ) return 'text';
   return 'unsupported';
 }
 

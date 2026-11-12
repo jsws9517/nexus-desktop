@@ -495,7 +495,6 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   artifactTruncated: { 'zh-CN': '已截断', en: 'truncated' },
 
   // P0 Preview panel.
-  previewTitle: { 'zh-CN': '媒体预览', en: 'Preview' },
   previewOpenLabel: { 'zh-CN': '预览文件', en: 'Preview file' },
   previewCloseLabel: { 'zh-CN': '关闭预览', en: 'Close preview' },
   previewFullscreenLabel: { 'zh-CN': '全屏预览', en: 'Toggle fullscreen' },

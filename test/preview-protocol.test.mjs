@@ -61,6 +61,19 @@ describe('classify', () => {
     ['/a/i.md', 'markdown'],
     ['/a/j.txt', 'text'],
     ['/a/k.csv', 'text'],
+    // Project text types (config / data / code).
+    ['/a/k.json', 'text'],
+    ['/a/schema.sql', 'text'],
+    ['/a/config.toml', 'text'],
+    ['/a/a.yaml', 'text'],
+    ['/a/b.yml', 'text'],
+    ['/a/c.ini', 'text'],
+    ['/a/d.log', 'text'],
+    ['/a/e.sh', 'text'],
+    ['/a/f.py', 'text'],
+    ['/a/g.js', 'text'],
+    ['/a/h.ts', 'text'],
+    ['/a/i.css', 'text'],
     ['/a/l.unknown', 'unsupported'],
   ];
   for (const [path, expected] of cases) {

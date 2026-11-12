@@ -112,6 +112,10 @@ export interface FileBrowserHandle {
   /** PR2: gate the idle countdown on the host panel being visible (文件 tab
    *  active). false pauses any running countdown; true re-arms it. */
   setIdleArmed(armed: boolean): void;
+  /** Expand the tree if collapsed (no-op when already open). Used by the
+   *  host on 文件-tab activation so users can pick files immediately;
+   *  re-arms the idle countdown for the new window. */
+  expand(): void;
 }
 
 interface DirNode {
@@ -926,6 +930,11 @@ export function mountFileBrowser(
     idleArmed = armed;
     if (armed) armIdle(); // re-arm on return to the 文件 tab
     else cancelIdle();     // pause on panel switch
+  };
+  handle.expand = () => {
+    // setCollapsed() is a no-op when already expanded; when it does open
+    // the tree it re-arms the idle countdown (gated on idleArmed).
+    setCollapsed(false);
   };
   return handle;
 }

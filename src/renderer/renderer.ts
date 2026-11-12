@@ -19,7 +19,7 @@ import { AutomationPage, mountAutomationPage } from './sidebar/pages/automations
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
-import { openPath as previewOpenPath, close as previewClose, getState as getPreviewState, toggleFullscreen, getLiveHandle, bindDock } from './preview/open.js';
+import { openPath as previewOpenPath, close as previewClose, toggleFullscreen, getLiveHandle, bindDock } from './preview/open.js';
 import { mountDocDock } from './preview/dock.js';
 import { mountBrowserTabs, type BrowserTabs } from './browser-tab.js';
 import { mountRsideTabs, type RsideTabsHandle } from './rside-tabs.js';
@@ -6602,15 +6602,6 @@ function makeFieldValues(row: HTMLElement): Record<string, string> {
 
 $('#btn-settings').addEventListener('click', () => void openSettings());
 
-// P0 preview button — toggles fullscreen when a file is currently being previewed.
-const btnPreview = document.getElementById('btn-preview');
-if (btnPreview) {
-  btnPreview.addEventListener('click', () => {
-    const state = getPreviewState();
-    if (state) toggleFullscreen();
-  });
-}
-
 /** Global keyboard shortcuts for preview. */
 document.addEventListener('keydown', (e) => {
   // Ctrl/Cmd+W closes the active doc / browser tab of the 右栏 panel the
@@ -7177,6 +7168,10 @@ async function openPreviewPath(path: string): Promise<boolean> {
         // The FileBrowser idle countdown runs only while the 文件 panel is
         // on screen (paused on switch, re-armed on return).
         fileBrowserHandle?.setIdleArmed(panel === 'files');
+        // Switching to the 文件 tab opens the tree (when collapsed) so the
+        // user can pick files immediately; the idle timer still fires later
+        // after inactivity. No-op at startup (handle not yet mounted).
+        if (panel === 'files') fileBrowserHandle?.expand();
         // Hide the main-side WebContentsViews unless the browser panel is
         // active AND the right sidebar is expanded.
         const visible = panel === 'browser' && !rightSidebarEl.classList.contains('collapsed');

@@ -227,6 +227,27 @@ test('mount: renders header/tools and lazy-loads the project root', async () => 
   assert.ok(!h.container.classList.contains('collapsed'), 'opens on explicit user click');
 });
 
+test('expand(): host-driven 文件-tab activation opens the tree', async () => {
+  const h = makeHarness({ entries: PROJ });
+  const handle = mountFileBrowser(h.container, h.ctx, { bridge: h.bridge });
+  await TICKS(); await TICKS();
+  assert.ok(h.container.classList.contains('collapsed'), 'starts collapsed');
+
+  handle.expand();
+  assert.ok(!h.container.classList.contains('collapsed'), 'expand() opens the tree');
+
+  // Collapsing via the toggle button, then expand() again.
+  const toggleBtn = findEls(h.container, { cls: 'filebrowser-toggle' })[0];
+  toggleBtn.dispatch('click');
+  assert.ok(h.container.classList.contains('collapsed'), 'collapsed via user toggle');
+  handle.expand();
+  assert.ok(!h.container.classList.contains('collapsed'), 're-opens on next activation');
+
+  // Idempotent when already open.
+  handle.expand();
+  assert.ok(!h.container.classList.contains('collapsed'), 'no-op when already open');
+});
+
 test('dir expand: lazily lists children, then toggles closed again', async () => {
   const h = makeHarness({ entries: PROJ });
   h.setListing('/proj/src', SRC);
