@@ -23,15 +23,26 @@
  *     boundary would delete the very follow-up being applied.
  */
 
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = join(__dirname, '..', 'dist');
 const coreDist = join(__dirname, '..', 'node_modules', 'nexus-coder', 'dist', 'src');
+
+// Sandbox the data root BEFORE the real agent code runs: the rollback tests
+// below drive Agent.prototype.drainSteerQueue() -> applyRollback() ->
+// writeRollbackBackup(), which resolves dataRoot() at call time
+// (nexus-coder/src/config/paths.ts). Without this, every `npm test` run
+// leaks the 'sess-1' fixture into the real ~/.nexus/trash/rollback/.
+const tmpDir = mkdtempSync(join(tmpdir(), 'nexus-intent-steer-'));
+process.env.NEXUS_CONFIG_DIR = join(tmpDir, '.nexus');
+process.env.LLMA_DATA_DIR = tmpDir;
+after(() => rmSync(tmpDir, { recursive: true, force: true }));
 
 const { AgentService } = await import(pathToFileURL(join(dist, 'agent', 'service.js')));
 const { validateWorkerParams } = await import(pathToFileURL(join(dist, 'shared', 'ipc-validation.js')));

@@ -8,6 +8,7 @@
  * It also pins the manifest URL to the desktop release tag that carries the
  * asset, and that a base-copy install is not offered its own bundled version.
  */
+import './sandbox-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { sign } from 'node:crypto';

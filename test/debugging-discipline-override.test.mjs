@@ -15,6 +15,7 @@
  *   - it keeps the throwaway-script cleanup rule from the core block
  */
 
+import './sandbox-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath, pathToFileURL } from 'node:url';

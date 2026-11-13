@@ -18,6 +18,7 @@
  *  - calibration: 5 identical deltas do NOT fire (threshold is exactly 6)
  */
 
+import './sandbox-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath, pathToFileURL } from 'node:url';

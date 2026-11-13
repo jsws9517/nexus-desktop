@@ -1,3 +1,4 @@
+import './sandbox-env.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ContextManager } from '../node_modules/nexus-coder/dist/src/llm/context-manager.js';
