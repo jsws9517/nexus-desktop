@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = join(__dirname, '..', 'dist');
 
-const { selectTools, ESSENTIAL_TOOLS, mergeCoreAgentTools } = await import(
+const { selectTools, ESSENTIAL_TOOLS, mergeCoreAgentTools, TOOL_ALIAS_FAMILIES, aliasFamilyOf } = await import(
   pathToFileURL(join(dist, 'tools', 'tool-relevance.js'))
 );
 const { TOOL_ROUTING, applyRouting } = await import(pathToFileURL(join(dist, 'tools', 'routing.js')));
@@ -201,6 +201,64 @@ test('a mention only keeps the tool it names, not unrelated tools', () => {
   );
   assert.ok(out.includes('loadtest_add'));
   assert.ok(!out.includes('git_commit'), 'an unrelated tool must not ride along on a mention');
+  assert.ok(!out.includes('git_push'));
+});
+
+// ---------------------------------------------------------------------------
+// Alias-family coherence (TOOL_ALIAS_FAMILIES): a capability the core ships
+// under two names must never be split by the selector — the exact class of
+// landmine the load test hit when the model called `read_text_file` and a
+// downstream exact-name consumer expected `file_read`.
+// ---------------------------------------------------------------------------
+
+test('aliasFamilyOf maps each alias to its capability family, and unknowns to themselves', () => {
+  // Live read pair.
+  assert.ok(aliasFamilyOf('file_read').includes('read_text_file'));
+  assert.ok(aliasFamilyOf('read_text_file').includes('file_read'));
+  // Latent exec pair (the sibling may not be a registered tool yet).
+  assert.ok(aliasFamilyOf('exec_command').includes('execute_command'));
+  // A name in no known family is its own singleton family.
+  assert.deepEqual(aliasFamilyOf('git_commit'), ['git_commit']);
+  // The exported table is the single source of truth these lookups derive from.
+  const families = TOOL_ALIAS_FAMILIES.map((f) => [...f]);
+  assert.ok(families.some((f) => f.includes('file_read') && f.includes('read_text_file')));
+  assert.ok(families.some((f) => f.includes('exec_command') && f.includes('execute_command')));
+});
+
+test('naming a family member pins its non-essential sibling against the cap', () => {
+  // The regression this closes: `exec_command` is essential, but its sibling
+  // `execute_command` (latent in this build) is NOT. Before the alias-aware
+  // mention channel, a prompt naming `exec_command` scored `execute_command` 0
+  // on every channel and the MAX_KEPT cap trimmed it out of a capped round —
+  // splitting the command capability across two names. A large keyword-matched
+  // tail forces the cap to actually trim, so this measures the pin, not luck.
+  const pinned = [...ESSENTIAL_TOOLS].map((n) => def(n));
+  assert.ok(pinned.length > 48, 'fixture needs a pinned floor above MAX_KEPT');
+  const tail = filler(30, '销售额'); // every one is keyword-matched, so the cap trims them
+  const out = names(
+    selectTools([...pinned, def('execute_command'), ...tail], {
+      input: '用 exec_command 执行命令，分析 data.csv 的销售额',
+      used: new Set(),
+    }),
+  );
+  assert.ok(
+    out.includes('execute_command'),
+    'the non-essential sibling must be pinned by its essential family member, not trimmed by the cap',
+  );
+});
+
+test('a family mention does not drag in unrelated tools', () => {
+  // Cohering a family must stay bounded: naming `exec_command` widens to its
+  // own capability family only, never to an arbitrary tool.
+  const pinned = [...ESSENTIAL_TOOLS].map((n) => def(n));
+  const out = names(
+    selectTools([...pinned, def('git_commit'), def('git_push')], {
+      input: '用 exec_command 执行命令',
+      used: new Set(),
+    }),
+  );
+  assert.ok(out.includes('exec_command'));
+  assert.ok(!out.includes('git_commit'), 'unrelated tools must not ride along on a family mention');
   assert.ok(!out.includes('git_push'));
 });
 

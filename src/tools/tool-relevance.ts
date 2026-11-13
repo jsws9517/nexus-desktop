@@ -25,6 +25,12 @@
  * author keywords and bigram similarity — are structurally blind to external
  * MCP tools on a CJK prompt (no routing entry, English-only descriptions),
  * and an explicit name is the strongest intent signal we have.
+ *
+ * The mention channel is alias-aware (TOOL_ALIAS_FAMILIES): naming any member
+ * of a known capability family keeps the WHOLE family and pins it against
+ * MAX_KEPT. A capability the core ships under two names (exec_command ↔
+ * execute_command) is never split by a mention of only one — the model can't
+ * reach for the sibling the prompt didn't name and find it dropped.
  */
 
 import type { ToolDef } from './types.js';
@@ -157,6 +163,46 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Known alias families: distinct registered tool names that serve ONE
+ * capability. The core registers both a canonical name and a friendlier alias
+ * next to it (`file_read` is documented as an alias of `read_text_file` — same
+ * handler), so the model may dispatch either name. Anything that keys on an
+ * exact tool name — the relevance keep/drop, the cap's pinned floor — must treat
+ * the family as a unit, or it can keep one variant and drop its alias, leaving
+ * the capability split and an exact-name consumer (permissions allowlist, a
+ * telemetry query) surprised by whichever name the model happened to pick.
+ *
+ * Live today: the read pair (both registered). The write/exec pairs are latent
+ * in this core build (not every name is a registered tool) but are named in
+ * ESSENTIAL_TOOLS and the core's permission table, so cohering them now is
+ * forward-looking: when the core registers the sibling, the selector already
+ * keeps the capability whole.
+ *
+ * A name's family is itself plus any siblings listed here; a name in no family
+ * maps to a singleton, so the generalizations built on this are strict no-ops
+ * for the large majority of tools.
+ */
+export const TOOL_ALIAS_FAMILIES: ReadonlyArray<ReadonlySet<string>> = [
+  new Set(['file_read', 'read_text_file']),
+  new Set(['file_write', 'write_file', 'create_file']),
+  new Set(['exec_command', 'execute_command']),
+];
+
+const ALIAS_FAMILY_OF: ReadonlyMap<string, readonly string[]> = (() => {
+  const m = new Map<string, readonly string[]>();
+  for (const fam of TOOL_ALIAS_FAMILIES) {
+    const arr: readonly string[] = [...fam];
+    for (const n of arr) m.set(n, arr);
+  }
+  return m;
+})();
+
+/** The full capability family a name belongs to — itself plus known aliases. */
+export function aliasFamilyOf(name: string): readonly string[] {
+  return ALIAS_FAMILY_OF.get(name) ?? [name];
+}
+
+/**
  * Office tool families pinned into every automation (headless) round.
  *
  * An automation prompt is a one-shot CJK/English string with no mid-turn
@@ -211,7 +257,7 @@ export function scoreTool(
   if (keywordHit(def, opts.input)) score += W_KEYWORD;
   if (opts.used.has(def.name)) score += W_MEMORY;
   if (opts.force?.has(def.name)) score += W_KEYWORD;
-  if (nameMention(def, lower)) score += W_MENTION;
+  if (familyMention(def, lower)) score += W_MENTION;
 
   const sim = similarity(def, inputBigrams);
   score += W_SIMILARITY * sim;
@@ -244,12 +290,25 @@ function keywordHit(def: ToolDef, input: string): boolean {
  * The length-3 floor keeps a two-character name from matching as a substring
  * of ordinary prose.
  */
-function nameMention(def: ToolDef, inputLower: string): boolean {
-  const n = def.name.toLowerCase();
+function mentionOf(name: string, inputLower: string): boolean {
+  const n = name.toLowerCase();
   if (n.length < 3 || !inputLower) return false;
   if (inputLower.includes(n)) return true;
   const alt = n.includes('.') ? n.replace(/\./g, '_') : n.replace(/_/g, '.');
   return alt !== n && inputLower.includes(alt);
+}
+
+/**
+ * Alias-aware mention: true when the prompt names the tool OR any sibling in
+ * its capability family verbatim. Naming `exec_command` keeps `execute_command`
+ * too, so a capability that ships under two names is never split by a mention
+ * of only one — the model can't reach for a variant the prompt didn't name and
+ * find it missing. A name in no family is just `mentionOf` on itself, so this
+ * is a strict superset of the old single-name channel.
+ */
+function familyMention(def: ToolDef, inputLower: string): boolean {
+  for (const member of aliasFamilyOf(def.name)) if (mentionOf(member, inputLower)) return true;
+  return false;
 }
 
 /** Bigram overlap between the prompt and the tool's name + description. */
@@ -261,8 +320,9 @@ function similarity(def: ToolDef, inputBigrams: Set<string>): number {
  * The keep/drop decision, with each signal on its own threshold.
  *
  * A tool survives if it is essential, already used this session, explicitly
- * requested via `refresh_tools`, NAMED verbatim in the prompt (mention
- * channel), matches an author keyword, or clears the similarity bar. Nothing
+ * requested via `refresh_tools`, NAMED verbatim in the prompt — or named
+ * through a capability-family alias (mention channel, `familyMention`),
+ * matches an author keyword, or clears the similarity bar. Nothing
  * else keeps it — in particular a negligible similarity does not, which is
  * what an aggregate `score > 0` would have done.
  */
@@ -275,7 +335,7 @@ function isRelevant(
   if (ESSENTIAL_TOOLS.has(def.name)) return true;
   if (opts.used.has(def.name)) return true;
   if (opts.force?.has(def.name)) return true;
-  if (nameMention(def, inputLower)) return true;
+  if (familyMention(def, inputLower)) return true;
   if (keywordHit(def, opts.input)) return true;
   return similarity(def, inputBigrams) >= SIMILARITY_KEEP;
 }
@@ -293,6 +353,9 @@ function isRelevant(
  *     the cap: an explicit intent to reach a capability ("用 loadtest_add
  *     计算") must not be dropped by scoring or truncated by MAX_KEPT — the
  *     vault_search incident, closed for every tool, external MCP included.
+ *     The channel is alias-aware: naming one member of a known capability
+ *     family keeps and pins the whole family, so a two-name capability is
+ *     never split by the cap.
  *
  * Pure: returns a new array, never mutates its input.
  */
@@ -349,10 +412,12 @@ export function selectTools<T extends ToolDef>(candidates: T[], opts: ScoreOptio
     // `MAX_KEPT - kept.length` budget went negative — zeroing the tail and
     // cutting every matched non-pinned tool from the round.
     const pinned = (d: T) =>
-      ESSENTIAL_TOOLS.has(d.name) ||
-      opts.used.has(d.name) ||
-      opts.force?.has(d.name) === true ||
-      nameMention(d, inputLower);
+      aliasFamilyOf(d.name).some((m) =>
+        ESSENTIAL_TOOLS.has(m) ||
+        opts.used.has(m) ||
+        opts.force?.has(m) === true ||
+        mentionOf(m, inputLower),
+      );
     const kept = out.filter((d) => pinned(d));
     const tail = out.filter((d) => !pinned(d));
     const budget = Math.max(MAX_TAIL, MAX_KEPT - kept.length);
