@@ -208,7 +208,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "nexus",
+      "shortcutName": "Nexus",
       "installerLanguages": [
         "zh_CN",
         "en_US"
