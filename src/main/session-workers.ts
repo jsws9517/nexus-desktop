@@ -225,6 +225,11 @@ export class SessionWorkers {
       // never run — without this their registry is empty and every acp_route call
       // fails with "Agent <id> not found" while the global worker works.
       await worker.request('initAcp');
+      // The skill scan is now a standalone RPC (split out of the core's
+      // Agent.init()): running it here leaves the tab-bound worker with a
+      // populated SkillRegistry, so the disclosure tools work on first use.
+      // One filesystem pass, absorbed into the prewarm — not on the tab's path.
+      await worker.request('loadSkills');
       if (worker.alive) {
         this.spare = worker;
         this.onLog?.('info', 'Spare worker warmed');
@@ -354,8 +359,10 @@ export class SessionWorkers {
       }
       // A spare was warmed with ACP already registered, but this branch may have
       // spawned fresh; start() is idempotent, so call it unconditionally rather
-      // than tracking which path we took.
+      // than tracking which path we took. Same for the skill scan: spares ran
+      // loadSkills during warm-up; a freshly spawned worker needs it now.
       await worker.request('initAcp');
+      await worker.request('loadSkills');
       const sid = (await worker.request('startSession', { sessionId })) as string;
       bound.sessionId = sid || sessionId;
       const status = (await worker.request('getStatus')) as {
@@ -436,8 +443,10 @@ export class SessionWorkers {
         await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
       }
       // Same as open(): a fresh-session worker needs its own ACP registry, since
-      // registration is per Agent and lives behind Agent.init().
+      // registration is per Agent and lives behind Agent.init() — same for the
+      // skill scan, which only ran if this worker came off the spare pool.
       await worker.request('initAcp');
+      await worker.request('loadSkills');
       const sid = (await worker.request('startSession', {
         prevSessionId: opts?.prevSessionId,
       })) as string;
@@ -575,7 +584,10 @@ export class SessionWorkers {
           RESTART_RPC_TIMEOUT_MS,
           'earlyInit',
         );
+        // ACP registration and the skill scan are per-Agent steps that live
+        // behind Agent.init(), which session workers never run.
         await withTimeout(w.request('initAcp'), RESTART_RPC_TIMEOUT_MS, 'initAcp');
+        await withTimeout(w.request('loadSkills'), RESTART_RPC_TIMEOUT_MS, 'loadSkills');
       } catch (err) {
         this.onLog?.('warn', `session worker restart init failed (sessionId=${sessionId}): ${err instanceof Error ? err.message : String(err)}`);
         try { worker?.stop(); } catch {}

@@ -1285,8 +1285,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    * Register ACP delegation targets without paying for a full init.
    *
    * Session workers deliberately stop at `earlyInit`: MCP is owned by the global
-   * worker through the hub proxy, and the skills load in `init()` is the 10-20s
-   * cost we do not want per tab. But the core calls `acp.start()` from inside
+   * worker through the hub proxy. Skill loading used to live inside `init()`
+   * (the 10-20s cost we did not want per tab); it is now a standalone, cheap
+   * `loadSkills()` RPC that session workers run after this, so per-tab skill
+   * disclosure works without paying for the full init. But the core calls `acp.start()` from inside
    * `Agent.init()`, so an earlyInit-only worker holds an empty agent registry and
    * every `acp_route` call fails with "Agent <id> not found" while the global
    * worker, which does run `init()`, works fine — the same request succeeds or
@@ -1313,6 +1315,30 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       `[acp-init] worker registered=${ids.length} agents=${ids.join(',') || '(none)'}`,
     );
     return ids;
+  }
+
+  /**
+   * Populate the skill registry without paying for a full init.
+   *
+   * Session workers stop at earlyInit (MCP is owned by the global worker via
+   * the hub proxy), and the skills load used to live inside `Agent.init()` —
+   * so every tab held an empty SkillRegistry and the disclosure tools
+   * (skills_index / skills_search) reported "no skills installed" while the
+   * user's skills sat in ~/.nexus/skills. The core now exposes the skill scan
+   * as a standalone `Agent.loadSkills()`: one filesystem pass (~100-200ms),
+   * idempotent, cheap enough to absorb into the spare-worker prewarm.
+   *
+   * Runs earlyInit first, like initAcp. Returns the number of skills the host
+   * now exposes, so the outcome is visible in logs.
+   */
+  async loadSkills(): Promise<number> {
+    await this.earlyInit();
+    const agent = this.agent;
+    if (!agent) throw new Error('Agent not initialized');
+    await agent.loadSkills();
+    const count = (skillHostFromAgent(agent)?.listSkills() ?? []).length;
+    logger.info(`[skills] worker loaded=${count}`);
+    return count;
   }
 
   async shutdown(): Promise<void> {

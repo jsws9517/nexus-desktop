@@ -14,6 +14,7 @@ type WorkerRequest =
   | { id: number; method: 'earlyInit'; params?: { cwd?: string } }
   | { id: number; method: 'init'; params?: { cwd?: string; deferMcp?: boolean } }
   | { id: number; method: 'initAcp' }
+  | { id: number; method: 'loadSkills' }
   | { id: number; method: 'chat'; params: { input: string } }
   | { id: number; method: 'steer'; params: { input: string; rollback?: boolean } }
   | { id: number; method: 'restore'; params: { backupPath: string } }
@@ -151,6 +152,9 @@ service.onMcpRequest = (op, params) =>
 // Startup is split into two phases:
 //   earlyInit — constructs the Agent (config/session/provider), fast.
 //   init      — MCP connect + skills load, slow.
+// Session workers stop at earlyInit and add initAcp + loadSkills: skill
+// loading was split out of the core's Agent.init() so per-tab workers can
+// populate the SkillRegistry without paying the full init.
 // Read-only session/config methods only need phase 1 and must NOT wait for
 // phase 2; mutations (chat, MCP toggles, ...) wait on the full init promise.
 // Full serialization is NOT an option: abort() must stay able to run
@@ -196,6 +200,14 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   initAcp: async () => {
     const agents = await service.initAcp();
     return { agents };
+  },
+  // Session workers skip the full init() (MCP is hub-owned, the skill scan was
+  // the 10-20s cost that used to live inside Agent.init()). It is now a
+  // cheap, idempotent standalone step, so tabs load their skills the same
+  // way they register ACP targets — after earlyInit, before startSession.
+  loadSkills: async () => {
+    const count = await service.loadSkills();
+    return { count };
   },
   chat: async (req: WorkerRequest & { method: 'chat' }) => {
     await service.chat(req.params.input);

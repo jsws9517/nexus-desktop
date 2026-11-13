@@ -73,10 +73,15 @@ const AUTOMATION_METHODS: Record<string, MethodSpec> = {
 export const WORKER_METHODS = {
   earlyInit: { fields: { cwd: S.str() }, optional: ['cwd'] },
   init: { fields: { cwd: S.str(), deferMcp: S.bool() }, optional: ['cwd', 'deferMcp'] },
-  // ACP target registration only, no skills / MCP. Session workers stay on
-  // earlyInit, but acp.start() lives inside the core's Agent.init(), so without
-  // this they have an empty registry and every acp_route call fails.
+  // ACP target registration only, no skills / MCP. Session workers run
+  // earlyInit + initAcp + loadSkills, but acp.start() lives inside the
+  // core's Agent.init(), so without this they have an empty registry and
+  // every acp_route call fails.
   initAcp: { fields: {} },
+  // Skill-registry load, split out of the core's Agent.init() so session
+  // workers can populate their SkillRegistry without the full init (MCP stays
+  // hub-owned by the global worker). One filesystem scan, idempotent.
+  loadSkills: { fields: {} },
   chat: { fields: { input: S.str(MAX_CHAT_INPUT) } },
   // Mid-turn follow-up: merged into the running turn's context instead of
   // waiting for the in-flight chat() to finish. `rollback` additionally asks the
