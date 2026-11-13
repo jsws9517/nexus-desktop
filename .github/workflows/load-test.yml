@@ -1,0 +1,118 @@
+# CICD load test — batch real-LLM runs through the desktop agent architecture
+# to verify built-in tool × MCP tool coordination and runtime quality.
+#
+# Topology (production-faithful): K agent workers proxy every MCP discovery/
+# call through ONE shared hub (dist/main/mcp-hub.js), exactly as the Electron
+# main process does for tabs. Scenarios drive the coding/agnes-2.5-flash
+# provider through deterministic built-in + MCP + skill tool chains and gate
+# the pipeline on pass rate, tool-error rate and optional p99 latency.
+#
+# The test is manual (workflow_dispatch) — it spends real LLM quota and
+# requires the AGNES_API_KEY secret (exposed to the job as API_KEY_CODING).
+# Reports (JSON + JUnit) are uploaded as artifacts.
+
+name: Load Test (builtin tools × MCP)
+
+on:
+  workflow_dispatch:
+    inputs:
+      concurrency:
+        description: "并行 agent worker 数 (K)"
+        required: false
+        default: "4"
+      rounds:
+        description: "每个 worker 的场景轮数 (R)"
+        required: false
+        default: "2"
+      scenarios:
+        description: "场景子集, 逗号分隔 (--list 可查全部)"
+        required: false
+        default: "builtin-fs,mcp-add,exec-time,mixed-chain,skill-sheet"
+      provider:
+        description: "provider id"
+        required: false
+        default: "coding"
+      providerType:
+        description: "provider 协议类型"
+        required: false
+        default: "openai"
+      model:
+        description: "model id (默认 coding/agnes-2.5-flash)"
+        required: false
+        default: "agnes-2.5-flash"
+      baseUrl:
+        description: "provider baseUrl"
+        required: false
+        default: "https://apihub.agnes-ai.com/v1"
+      passRate:
+        description: "通过门禁: 最低通过率 (0-1)"
+        required: false
+        default: "0.75"
+      toolErrorRate:
+        description: "工具错误门禁: 最高工具错误率 (0-1)"
+        required: false
+        default: "0.30"
+      maxStallAbortRate:
+        description: "思考死锁门禁: 最高 core 内部中止率 (thinking-stall loop / watchdog, 0-1)"
+        required: false
+        default: "0.5"
+      maxTurnMs:
+        description: "p99 延迟门禁 (ms, 0 = 关闭)"
+        required: false
+        default: "0"
+      turnTimeoutMs:
+        description: "单 turn 硬超时 (ms)"
+        required: false
+        default: "180000"
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (worker + production hub)
+        run: npm run build
+
+      - name: Load test (real LLM — ${{ inputs.provider }}/${{ inputs.model }})
+        env:
+          # The generated config carries $API_KEY_CODING; the harness resolves
+          # it from this variable at provider construction.
+          API_KEY_CODING: ${{ secrets.AGNES_API_KEY }}
+          # Per-worker event dumps land in test/reports/ and ride along with
+          # the report artifact — the post-mortem trail for a red gate.
+          LOADTEST_EVENT_LOG: "1"
+        run: |
+          node scripts/load-test.mjs \
+            --concurrency "${{ inputs.concurrency }}" \
+            --rounds "${{ inputs.rounds }}" \
+            --scenarios "${{ inputs.scenarios }}" \
+            --provider "${{ inputs.provider }}" \
+            --provider-type "${{ inputs.providerType }}" \
+            --model "${{ inputs.model }}" \
+            --base-url "${{ inputs.baseUrl }}" \
+            --pass-rate "${{ inputs.passRate }}" \
+            --tool-error-rate "${{ inputs.toolErrorRate }}" \
+            --max-stall-abort-rate "${{ inputs.maxStallAbortRate }}" \
+            --max-turn-ms "${{ inputs.maxTurnMs }}" \
+            --turn-timeout-ms "${{ inputs.turnTimeoutMs }}"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-reports
+          path: test/reports/
+          if-no-files-found: warn

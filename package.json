@@ -28,6 +28,7 @@
     "check:i18n": "node scripts/check-i18n.mjs",
     "icon": "electron scripts/make-icon.cjs && electron scripts/export-preview.cjs",
     "test:chat": "node scripts/chat-test.mjs",
+    "test:load": "node scripts/load-test.mjs",
     "test:work": "node scripts/work-mode-test.mjs",
     "verify:restart": "node scripts/verify-core-restart.mjs",
     "pack:npm": "node scripts/pack-npm.mjs",

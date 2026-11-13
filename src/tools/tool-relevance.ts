@@ -18,6 +18,13 @@
  *
  * Scoring is deliberately local and deterministic. An extra LLM call to pick
  * tools would cost more than the tokens it saves and add latency.
+ *
+ * One channel is verbatim, not scored: the prompt NAMING a tool (`用
+ * loadtest_add 计算`, case-insensitive, dot/underscore-variant) keeps that
+ * tool and pins it against MAX_KEPT. Both language-neutral channels —
+ * author keywords and bigram similarity — are structurally blind to external
+ * MCP tools on a CJK prompt (no routing entry, English-only descriptions),
+ * and an explicit name is the strongest intent signal we have.
  */
 
 import type { ToolDef } from './types.js';
@@ -53,6 +60,12 @@ const W_KEYWORD = 1.0;
 const W_MEMORY = 0.6;
 const W_GROUP = 0.25;
 const W_SIMILARITY = 0.8;
+/**
+ * Explicit-mention weight: the prompt names the tool verbatim. A strong intent
+ * signal — below author keywords (the tool's own trigger words) and proven
+ * usage, above raw similarity.
+ */
+const W_MENTION = 0.5;
 
 /**
  * Bigram overlap required to keep a tool on similarity alone.
@@ -191,11 +204,14 @@ export function scoreTool(
   def: ToolDef,
   inputBigrams: Set<string>,
   opts: ScoreOptions,
+  inputLower?: string,
 ): number {
+  const lower = inputLower ?? (opts.input ?? '').toLowerCase();
   let score = 0;
   if (keywordHit(def, opts.input)) score += W_KEYWORD;
   if (opts.used.has(def.name)) score += W_MEMORY;
   if (opts.force?.has(def.name)) score += W_KEYWORD;
+  if (nameMention(def, lower)) score += W_MENTION;
 
   const sim = similarity(def, inputBigrams);
   score += W_SIMILARITY * sim;
@@ -210,6 +226,32 @@ function keywordHit(def: ToolDef, input: string): boolean {
   return def.keywords.some((kw) => kw.length > 0 && lower.includes(kw.toLowerCase()));
 }
 
+/**
+ * True when the prompt names the tool verbatim (case-insensitive, with the
+ * dot/underscore alias either the user or the model may type: `sheet.read` ↔
+ * `sheet_read`).
+ *
+ * Both language-neutral channels — author keywords and bigram similarity —
+ * miss EXTERNAL MCP tools on a CJK prompt: the hub's tool defs carry no
+ * keywords (the routing table is desktop-owned, builtins only) and their
+ * English-only descriptions never clear SIMILARITY_KEEP against a Chinese
+ * bigram set. So "用 loadtest_add 计算…" silently becomes a text-only answer
+ * — the vault_search incident ("a user who typed 'use vault_search' was told
+ * the tool did not exist"), generalized to every server-qualified tool. An
+ * explicit name is the strongest per-round intent signal we have; it must
+ * keep that tool on every round.
+ *
+ * The length-3 floor keeps a two-character name from matching as a substring
+ * of ordinary prose.
+ */
+function nameMention(def: ToolDef, inputLower: string): boolean {
+  const n = def.name.toLowerCase();
+  if (n.length < 3 || !inputLower) return false;
+  if (inputLower.includes(n)) return true;
+  const alt = n.includes('.') ? n.replace(/\./g, '_') : n.replace(/_/g, '.');
+  return alt !== n && inputLower.includes(alt);
+}
+
 /** Bigram overlap between the prompt and the tool's name + description. */
 function similarity(def: ToolDef, inputBigrams: Set<string>): number {
   return jaccard(inputBigrams, bigrams(`${def.name} ${def.description ?? ''}`));
@@ -219,18 +261,21 @@ function similarity(def: ToolDef, inputBigrams: Set<string>): number {
  * The keep/drop decision, with each signal on its own threshold.
  *
  * A tool survives if it is essential, already used this session, explicitly
- * requested via `refresh_tools`, matches an author keyword, or clears the
- * similarity bar. Nothing else keeps it — in particular a negligible similarity
- * does not, which is what an aggregate `score > 0` would have done.
+ * requested via `refresh_tools`, NAMED verbatim in the prompt (mention
+ * channel), matches an author keyword, or clears the similarity bar. Nothing
+ * else keeps it — in particular a negligible similarity does not, which is
+ * what an aggregate `score > 0` would have done.
  */
 function isRelevant(
   def: ToolDef,
   inputBigrams: Set<string>,
   opts: ScoreOptions,
+  inputLower: string,
 ): boolean {
   if (ESSENTIAL_TOOLS.has(def.name)) return true;
   if (opts.used.has(def.name)) return true;
   if (opts.force?.has(def.name)) return true;
+  if (nameMention(def, inputLower)) return true;
   if (keywordHit(def, opts.input)) return true;
   return similarity(def, inputBigrams) >= SIMILARITY_KEEP;
 }
@@ -244,6 +289,10 @@ function isRelevant(
  *   - Everything in `ESSENTIAL_TOOLS` and in `used` always survives.
  *   - At least `MIN_KEPT` tools survive, so the list is never empty.
  *   - Everything in `force` always survives (the `refresh_tools` escape hatch).
+ *   - Everything NAMED verbatim in the prompt survives AND is pinned against
+ *     the cap: an explicit intent to reach a capability ("用 loadtest_add
+ *     计算") must not be dropped by scoring or truncated by MAX_KEPT — the
+ *     vault_search incident, closed for every tool, external MCP included.
  *
  * Pure: returns a new array, never mutates its input.
  */
@@ -252,6 +301,7 @@ export function selectTools<T extends ToolDef>(candidates: T[], opts: ScoreOptio
   if (opts.respectNarrowing) return candidates.slice();
 
   const inputBigrams = bigrams(opts.input ?? '');
+  const inputLower = (opts.input ?? '').toLowerCase();
   const hasSignal = inputBigrams.size > 0 || (opts.force?.size ?? 0) > 0;
 
   // Nothing to go on (empty input, e.g. a synthetic first turn): keep the full
@@ -269,7 +319,7 @@ export function selectTools<T extends ToolDef>(candidates: T[], opts: ScoreOptio
   });
 
   const scored = unique
-    .map((def) => ({ def, keep: isRelevant(def, inputBigrams, opts), score: scoreTool(def, inputBigrams, opts) }))
+    .map((def) => ({ def, keep: isRelevant(def, inputBigrams, opts, inputLower), score: scoreTool(def, inputBigrams, opts, inputLower) }))
     // Highest score first among the kept, so the cap drops the weakest.
     .sort((a, b) => Number(b.keep) - Number(a.keep) || b.score - a.score);
 
@@ -299,7 +349,10 @@ export function selectTools<T extends ToolDef>(candidates: T[], opts: ScoreOptio
     // `MAX_KEPT - kept.length` budget went negative — zeroing the tail and
     // cutting every matched non-pinned tool from the round.
     const pinned = (d: T) =>
-      ESSENTIAL_TOOLS.has(d.name) || opts.used.has(d.name) || opts.force?.has(d.name) === true;
+      ESSENTIAL_TOOLS.has(d.name) ||
+      opts.used.has(d.name) ||
+      opts.force?.has(d.name) === true ||
+      nameMention(d, inputLower);
     const kept = out.filter((d) => pinned(d));
     const tail = out.filter((d) => !pinned(d));
     const budget = Math.max(MAX_TAIL, MAX_KEPT - kept.length);

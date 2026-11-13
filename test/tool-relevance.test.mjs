@@ -150,6 +150,61 @@ test('bigram similarity surfaces a tool with no keywords at all', () => {
 });
 
 // ---------------------------------------------------------------------------
+// selectTools: the explicit-mention channel (vault_search incident, closed for
+// every tool — external MCP included)
+// ---------------------------------------------------------------------------
+
+test('a tool named verbatim in the prompt survives without keywords or similarity', () => {
+  // The regression the CICD load test hit: an external MCP tool (no routing
+  // entry, no author keywords, English-only description) named outright in a
+  // Chinese prompt scored 0 on every channel and silently left the round's
+  // tool list, so the model could only answer in text.
+  const tool = def('loadtest_add', { description: 'Add two integers and return their sum.' });
+  const out = selectTools([tool, def('read_text_file'), ...deadFiller(40)], {
+    input: '请严格执行：用 MCP 工具 loadtest_add 计算 a=17 且 b=25 的和，然后报告结果。',
+    used: new Set(),
+  });
+  assert.ok(names(out).includes('loadtest_add'), 'an explicitly named tool must survive selection');
+});
+
+test('dotted and underscored names are both mention-recoverable', () => {
+  const candidates = [def('sheet.read'), def('sheet_read'), def('read_text_file'), ...deadFiller(30)];
+  const out = selectTools(candidates, {
+    input: '先 sheet_read 读一遍，再 sheet.read 确认',
+    used: new Set(),
+  });
+  const n = names(out);
+  assert.ok(n.includes('sheet.read'), 'the dotted form must survive an underscore mention');
+  assert.ok(n.includes('sheet_read'), 'the underscore form must survive a dotted mention');
+});
+
+test('an explicitly named tool is pinned against the MAX_KEPT cap', () => {
+  const pinned = [...ESSENTIAL_TOOLS].map((n) => def(n));
+  const out = names(
+    selectTools([...pinned, def('loadtest_now')], {
+      input: '用 loadtest_now 获取当前 UTC 时间戳',
+      used: new Set(),
+    }),
+  );
+  assert.ok(out.includes('loadtest_now'), 'a named tool must not be truncated by the cap');
+});
+
+test('a mention only keeps the tool it names, not unrelated tools', () => {
+  // A realistic pinned floor (all essentials) so MIN_KEPT backfill never runs
+  // and the assertion measures the keep/drop channels, not the floor.
+  const floor = [...ESSENTIAL_TOOLS].map((n) => def(n));
+  const out = names(
+    selectTools([...floor, def('git_commit'), def('git_push'), def('loadtest_add'), ...deadFiller(30)], {
+      input: '请调用 loadtest_add 计算 1+2，不要做其他事',
+      used: new Set(),
+    }),
+  );
+  assert.ok(out.includes('loadtest_add'));
+  assert.ok(!out.includes('git_commit'), 'an unrelated tool must not ride along on a mention');
+  assert.ok(!out.includes('git_push'));
+});
+
+// ---------------------------------------------------------------------------
 // selectTools: usage memory
 // ---------------------------------------------------------------------------
 
