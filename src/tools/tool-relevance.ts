@@ -34,6 +34,10 @@
  */
 
 import type { ToolDef } from './types.js';
+import {
+  TOOL_ALIAS_FAMILIES as CORE_TOOL_ALIAS_FAMILIES,
+  aliasFamilyOf as coreAliasFamilyOf,
+} from 'nexus-coder/dist/src/mcp/tool-aliases.js';
 
 /**
  * Language-agnostic similarity, lifted from the core's ACP intent matcher
@@ -163,43 +167,30 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Known alias families: distinct registered tool names that serve ONE
- * capability. The core registers both a canonical name and a friendlier alias
- * next to it (`file_read` is documented as an alias of `read_text_file` — same
- * handler), so the model may dispatch either name. Anything that keys on an
- * exact tool name — the relevance keep/drop, the cap's pinned floor — must treat
- * the family as a unit, or it can keep one variant and drop its alias, leaving
- * the capability split and an exact-name consumer (permissions allowlist, a
- * telemetry query) surprised by whichever name the model happened to pick.
+ * Known alias families — the CORE registry (nexus-coder
+ * `src/mcp/tool-aliases.ts`), the same table the core's permission allowlist,
+ * session-approval cache, and dispatch canonicalization use. The desktop used
+ * to keep a mirrored copy of this table; a mirror that can drift from the
+ * security-critical consumer is exactly the class of landmine it was added to
+ * prevent, so the selector now imports the canonical registry from the core
+ * build instead of maintaining its own.
  *
- * Live today: the read pair (both registered). The write/exec pairs are latent
- * in this core build (not every name is a registered tool) but are named in
- * ESSENTIAL_TOOLS and the core's permission table, so cohering them now is
- * forward-looking: when the core registers the sibling, the selector already
- * keeps the capability whole.
+ * A capability ships under several names (the core registers `file_read` as a
+ * documented alias of `read_text_file` — same handler; `exec_command` pairs
+ * with `execute_command`), so the model may dispatch any of them. Anything
+ * that keys on an exact tool name — the relevance keep/drop, the cap's pinned
+ * floor — treats the family as a unit, or it can keep one variant and drop its
+ * alias, leaving the capability split.
  *
- * A name's family is itself plus any siblings listed here; a name in no family
- * maps to a singleton, so the generalizations built on this are strict no-ops
- * for the large majority of tools.
+ * A name's family is itself plus any siblings in the registry; a name in no
+ * family maps to a singleton, so the generalizations built on this are strict
+ * no-ops for the large majority of tools.
  */
-export const TOOL_ALIAS_FAMILIES: ReadonlyArray<ReadonlySet<string>> = [
-  new Set(['file_read', 'read_text_file']),
-  new Set(['file_write', 'write_file', 'create_file']),
-  new Set(['exec_command', 'execute_command']),
-];
-
-const ALIAS_FAMILY_OF: ReadonlyMap<string, readonly string[]> = (() => {
-  const m = new Map<string, readonly string[]>();
-  for (const fam of TOOL_ALIAS_FAMILIES) {
-    const arr: readonly string[] = [...fam];
-    for (const n of arr) m.set(n, arr);
-  }
-  return m;
-})();
+export const TOOL_ALIAS_FAMILIES: readonly (readonly string[])[] = CORE_TOOL_ALIAS_FAMILIES;
 
 /** The full capability family a name belongs to — itself plus known aliases. */
 export function aliasFamilyOf(name: string): readonly string[] {
-  return ALIAS_FAMILY_OF.get(name) ?? [name];
+  return coreAliasFamilyOf(name);
 }
 
 /**

@@ -65,6 +65,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { aliasFamilyOf } from 'nexus-coder/dist/src/mcp/tool-aliases.js';
 
 // ---------------------------------------------------------------------------
 // Paths / constants
@@ -228,21 +229,13 @@ function normTool(name) {
 }
 
 /**
- * Capability families: distinct tool names that satisfy the SAME required
- * capability. The model may legitimately pick any member of the family the
- * prompt asked for (e.g. "read the file" → `file_read` or the core-builtin
- * alias `read_text_file`), so a scenario requirement is met when ANY family
- * member was observed. The map is symmetric (each direction is listed).
+ * Capability-family aliasing is derived from the CORE registry (nexus-coder
+ * `src/mcp/tool-aliases.ts`) — the same table its permission and dispatch
+ * layers use — instead of a second, drift-prone copy in the harness. A
+ * scenario requirement is met when ANY member of its family was observed,
+ * and vice versa; a name in no family only matches itself (plus the
+ * dotted/underscore variants below).
  */
-const TOOL_FAMILY_ALIASES = {
-  file_read: ['read_text_file'],
-  read_text_file: ['file_read'],
-  file_write: ['write_file', 'create_file'],
-  write_file: ['file_write', 'create_file'],
-  create_file: ['file_write', 'write_file'],
-  exec_command: ['execute_command'],
-  execute_command: ['exec_command'],
-};
 
 /** A required tool counts as called when any observed name matches under
  *  dotted/underscore alias recovery AND capability-family aliasing
@@ -250,13 +243,11 @@ const TOOL_FAMILY_ALIASES = {
 function matchesRequired(observedNames, required) {
   const r1 = required.replace(/\./g, '_');
   const r2 = required.replace(/_/g, '.');
-  const family = TOOL_FAMILY_ALIASES[required] ?? [];
-  const familyOfObserved = (n) => (TOOL_FAMILY_ALIASES[n] ?? []).includes(required);
   return observedNames.some((n) => {
     const n1 = n.replace(/\./g, '_');
     const n2 = n.replace(/_/g, '.');
-    return n === required || n === r1 || n === r2 || n1 === required || n2 === required
-      || family.includes(n) || familyOfObserved(n);
+    if (n === required || n === r1 || n === r2 || n1 === required || n2 === required) return true;
+    return aliasFamilyOf(n).includes(required) || aliasFamilyOf(required).includes(n);
   });
 }
 
