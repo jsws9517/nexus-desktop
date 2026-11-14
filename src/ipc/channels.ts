@@ -136,6 +136,11 @@ export const CHANNELS = {
   setAllowBetaUpdates: 'nexus:setAllowBetaUpdates',
   getResourceState: 'nexus:getResourceState',
 
+  // Spend mode: per-provider billing tier + global default (desktop.json).
+  getSpendMode: 'nexus:getSpendMode',
+  setSpendModeDefault: 'nexus:setSpendModeDefault',
+  setProviderSpendMode: 'nexus:setProviderSpendMode',
+
   // renderer → main: main-local (no worker round-trip) channels.
   openSession: 'nexus:openSession',
   openNewSession: 'nexus:openNewSession',

@@ -628,6 +628,26 @@ export function registerIpc(ctx: IpcContext): void {
   });
   ipcMain.handle(CHANNELS.getResourceState, (): ResourceState => resourceMon.getState());
 
+  // Spend mode: per-provider billing tier (token/coding/free) + global default.
+  // Persists to desktop.json; the /billing worker writes the same file, so the
+  // main cache above is mtime-aware and both stay consistent.
+  ipcMain.handle(CHANNELS.getSpendMode, () => ctx.getSpendMode());
+  ipcMain.handle(CHANNELS.setSpendModeDefault, (_e, mode: unknown): { ok: boolean } => {
+    if (typeof mode !== 'string') return { ok: false };
+    ctx.setSpendModeDefault(mode);
+    return { ok: true };
+  });
+  ipcMain.handle(
+    CHANNELS.setProviderSpendMode,
+    (_e, p: { provider?: unknown; host?: unknown; mode?: unknown }): { ok: boolean } => {
+      if (typeof p?.provider !== 'string' || !p.provider) return { ok: false };
+      const host = typeof p?.host === 'string' ? p.host : '';
+      const mode = typeof p?.mode === 'string' && p.mode ? p.mode : null;
+      ctx.setProviderSpendMode(p.provider, host, mode);
+      return { ok: true };
+    },
+  );
+
   // ── Multi-tab: per-session worker lifecycle ──
   // openSession binds (and optionally spawns) a worker to a concrete session.
   // It honors the tab ceiling — when resourceMon reports overload OR the open

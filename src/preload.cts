@@ -233,6 +233,17 @@ const api = {
   getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
   getRateLimitStatus: () => ipcRenderer.invoke('nexus:getRateLimitStatus'),
 
+  // Spend mode: per-provider billing tier + global default.
+  getSpendMode: () =>
+    ipcRenderer.invoke('nexus:getSpendMode') as Promise<{
+      default: string;
+      providers: Record<string, { mode: string; host?: string; updatedAt?: string }>;
+    }>,
+  setSpendModeDefault: (mode: string) =>
+    ipcRenderer.invoke('nexus:setSpendModeDefault', mode) as Promise<{ ok: boolean }>,
+  setProviderSpendMode: (provider: string, host: string, mode: string | null) =>
+    ipcRenderer.invoke('nexus:setProviderSpendMode', { provider, host, mode }) as Promise<{ ok: boolean }>,
+
   // Multi-tab: per-session worker lifecycle.
   openSession: (sessionId: string, cwd?: string) =>
     ipcRenderer.invoke('nexus:openSession', { sessionId, cwd }),

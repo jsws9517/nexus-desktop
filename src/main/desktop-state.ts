@@ -13,7 +13,15 @@
  * at every instant; a failed write leaves the legacy file untouched).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ResourceMonitor } from './resource-monitor.js';
@@ -48,6 +56,14 @@ interface DesktopStateData {
   // GitHub prerelease (e.g. 0.3.5-beta.1), so stable builds can surface a
   // beta update in-app. Persisted to ~/.nexus/desktop.json.
   allowBetaUpdates?: boolean;
+  // Per-provider spend mode (token/coding/free) + global default. Written by the
+  // settings page (main) AND the /billing slash command (worker) — so reads are
+  // mtime-aware. See src/shared/spend-policy.ts.
+  spendMode?: {
+    v?: number;
+    default?: string;
+    providers?: Record<string, { mode?: string; host?: string; updatedAt?: string }>;
+  };
   // Namespaced sections absorbed from former top-level files.
   modelBlacklist?: Record<string, Record<string, string>>;
 }
@@ -96,6 +112,13 @@ export interface DesktopStateAccess {
   /** Model capability blacklist (absorbed from model-blacklist.json). */
   getModelBlacklist(): Record<string, Record<string, string>>;
   setModelBlacklist(data: Record<string, Record<string, string>>): void;
+  /** Per-provider spend mode + global default (see src/shared/spend-policy.ts). */
+  getSpendMode(): {
+    default: string;
+    providers: Record<string, { mode: string; host?: string; updatedAt?: string }>;
+  };
+  setSpendModeDefault(mode: string): void;
+  setProviderSpendMode(provider: string, host: string, mode: string | null): void;
 }
 
 /** Full store: the 20 IPC accessors plus the app-bootstrap helpers. */
@@ -109,6 +132,18 @@ export interface DesktopStateStore extends DesktopStateAccess {
 
 export function createDesktopState(): DesktopStateStore {
   let cache: DesktopStateData | null = null;
+  // mtime of the file that produced `cache`. Reads re-parse when an external
+  // writer (the /billing worker) bumps it, so main's cache never goes stale.
+  let cachedMtime: number | null = null;
+
+  /** Current on-disk mtime, or -1 when absent. */
+  const fileMtime = (): number => {
+    try {
+      return statSync(desktopConfigPath()).mtimeMs;
+    } catch {
+      return -1;
+    }
+  };
 
   /** Crash-safe legacy retire: rename → rm keeps a complete copy at every instant. */
   const retireLegacy = (legacyPath: string): void => {
@@ -159,10 +194,10 @@ export function createDesktopState(): DesktopStateStore {
       try { writeFileSync(path, JSON.stringify(cache, null, 2), 'utf-8'); }
       finally { try { rmSync(tmp, { force: true }); } catch { /* ignore */ } }
     }
+    cachedMtime = fileMtime();
   };
 
-  const read = (): DesktopStateData => {
-    if (cache) return cache;
+  const load = (): DesktopStateData => {
     const path = desktopConfigPath();
     try {
       if (!existsSync(path)) {
@@ -176,6 +211,16 @@ export function createDesktopState(): DesktopStateStore {
       try { renameSync(path, `${path}.corrupt.${Date.now()}`); } catch { /* best-effort */ }
       cache = {};
     }
+    cachedMtime = fileMtime();
+    return cache as DesktopStateData;
+  };
+
+  const read = (): DesktopStateData => {
+    // Serve the cache only while the file is unchanged; an external writer
+    // (the /billing worker) bumps the mtime, which forces a reload so main's
+    // view of spendMode never goes stale.
+    if (cache && cachedMtime === fileMtime()) return cache;
+    load();
     const dir = configDir();
     migrateLegacy<Record<string, Record<string, string>>>(
       'modelBlacklist', join(dir, 'model-blacklist.json'),
@@ -184,7 +229,7 @@ export function createDesktopState(): DesktopStateStore {
         return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
       },
     );
-    return cache;
+    return cache as DesktopStateData;
   };
 
   const write = (patch: DesktopStateData): void => {
@@ -309,6 +354,54 @@ export function createDesktopState(): DesktopStateStore {
     },
     setModelBlacklist(data: Record<string, Record<string, string>>): void {
       write({ modelBlacklist: data });
+    },
+    getSpendMode() {
+      const s = read().spendMode;
+      const raw = s?.providers && typeof s.providers === 'object' ? s.providers : {};
+      // Normalize entries to the access contract (mode: string required): the
+      // file is dual-written by the /billing worker, which may carry odd shapes.
+      const providers: Record<string, { mode: string; host?: string; updatedAt?: string }> = {};
+      for (const [name, entry] of Object.entries(raw)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const e = entry as { mode?: unknown; host?: unknown; updatedAt?: unknown };
+        providers[name] = {
+          mode: typeof e.mode === 'string' && e.mode ? e.mode : 'token',
+          host: typeof e.host === 'string' && e.host ? e.host : undefined,
+          updatedAt: typeof e.updatedAt === 'string' ? e.updatedAt : undefined,
+        };
+      }
+      return {
+        default: typeof s?.default === 'string' && s.default ? s.default : 'token',
+        providers,
+      };
+    },
+    setSpendModeDefault(mode: string): void {
+      const s = read().spendMode;
+      write({
+        spendMode: {
+          v: 1,
+          default: typeof mode === 'string' && mode ? mode : 'token',
+          providers: s?.providers ?? {},
+        },
+      });
+    },
+    setProviderSpendMode(provider: string, host: string, mode: string | null): void {
+      const s = read().spendMode;
+      const providers: Record<string, { mode: string; host?: string; updatedAt?: string }> = {
+        ...((s?.providers as Record<string, { mode: string; host?: string; updatedAt?: string }>) ?? {}),
+      };
+      if (mode === null || mode === undefined || mode === '') {
+        delete providers[provider];
+      } else {
+        providers[provider] = { mode, host: host || undefined, updatedAt: new Date().toISOString() };
+      }
+      write({
+        spendMode: {
+          v: 1,
+          default: typeof s?.default === 'string' ? s.default : 'token',
+          providers,
+        },
+      });
     },
     loadSavedCwd(): string | undefined {
       const cwd = read().lastCwd;

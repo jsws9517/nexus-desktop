@@ -180,6 +180,29 @@ export function configForTaskKind(base: CorrectionConfig, kind: TaskKind): Corre
   return out;
 }
 
+/**
+ * Scale the correction-loop SPEND knobs for a spend mode. Multiplies the
+ * per-turn L1–L4 budgets and the dilution floor; a mode with a scale < 1 (the
+ * frugal `token` tier) spends less on retries/corrections. Loop-detection
+ * thresholds and de-escalation progress are NOT spend — they stay put.
+ * Positive integer budgets never drop below 1 (a zero budget is only kept
+ * when the base was already 0).
+ */
+export function applySpendScale(base: CorrectionConfig, scale: number): CorrectionConfig {
+  const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const out = cloneConfig(base);
+  const spendInt = (b: number): number => (b === 0 ? 0 : Math.max(1, Math.round(b * s)));
+  out.budget.l1PerTurn = spendInt(base.budget.l1PerTurn);
+  out.budget.l2PerTurn = spendInt(base.budget.l2PerTurn);
+  out.budget.l3PerTurn = spendInt(base.budget.l3PerTurn);
+  out.budget.coolDownStepsAfterL1 = spendInt(base.budget.coolDownStepsAfterL1);
+  out.thresholds.dilution.minThinkingTokens = Math.max(
+    100,
+    Math.min(100_000, Math.round(base.thresholds.dilution.minThinkingTokens * s)),
+  );
+  return out;
+}
+
 function cloneConfig(c: CorrectionConfig): CorrectionConfig {
   return {
     budget: { ...c.budget },

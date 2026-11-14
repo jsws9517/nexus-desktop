@@ -1616,6 +1616,85 @@ body {
 .startup-toggle input { accent-color: var(--accent); cursor: pointer; margin: 0; }
 .startup-toggle input[type="number"] { width: 60px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-input); color: var(--text); font-size: 13px; }
 .startup-hint { font-size: 12px; color: var(--text-dim); }
+
+/* Spend mode (settings ▸ resource): per-provider memory rows. */
+.spend-providers { display: flex; flex-direction: column; gap: 6px; }
+.spend-provider-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+}
+.spend-provider-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text);
+}
+.spend-provider-mode {
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  text-transform: capitalize;
+}
+.spend-clear-btn {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.spend-clear-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+/* Sidebar chip. */
+.rside-spend { font-size: 11px; color: var(--text-dim); }
+
+/* One-time spend-mode suggestion chip (after saveProvider). */
+.spend-suggest-chip {
+  position: fixed;
+  right: 16px;
+  bottom: 88px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 340px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel, var(--bg));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+  color: var(--text);
+}
+.spend-suggest-text { flex: 1; min-width: 0; }
+.spend-suggest-apply {
+  font-size: 11px;
+  color: var(--text);
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.spend-suggest-dismiss {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.spend-suggest-dismiss:hover { color: var(--text); }
 .rules-path {
   font-size: 12px;
   color: var(--text-dim);

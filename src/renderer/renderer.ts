@@ -222,6 +222,14 @@ type AgentEvent =
   // source of truth, not this event.
   | { type: 'subagent_task_progress'; taskId: string; status: string; description?: string; error?: string }
   | { type: 'session_changed'; sessionId: string }
+  // Desktop /billing (spend mode) wrote or reset the provider's billing tier:
+  // the sidebar chip + an open settings overlay repaint from it. `hostChanged`
+  // is set (true) only when a manual entry exists but its host no longer
+  // matches, so the UI shows the fallback instead of the stale tier.
+  | { type: 'spend_mode'; provider: string; mode: string | null; source: 'manual' | 'default'; hostChanged?: boolean }
+  // saveProvider produced a vendor-based spend-mode SUGGESTION (never written):
+  // the renderer shows a one-time dismissible chip with an apply button.
+  | { type: 'spend_mode_suggest'; provider: string; host?: string; suggested: string; reason?: string }
   // T6 automation control plane: tray-notification click → jump to the run's
   // session (emitted from the main process, not from the worker).
   | { type: 'open_session_request'; sessionId: string }
@@ -438,6 +446,10 @@ declare global {
       onUpdateState(cb: (state: Record<string, unknown>) => void): void;
       getRateLimitStatus(): Promise<{ providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }>;
       onRateLimitUpdate(cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }) => void): void;
+      // Spend mode: per-provider billing tier + global default.
+      getSpendMode(): Promise<{ default: string; providers: Record<string, { mode: string; host?: string; updatedAt?: string }> }>;
+      setSpendModeDefault(mode: string): Promise<{ ok: boolean }>;
+      setProviderSpendMode(provider: string, host: string, mode: string | null): Promise<{ ok: boolean }>;
       blacklistRead(): Promise<Record<string, Record<string, string>>>;
       blacklistWrite(data: Record<string, Record<string, string>>): Promise<void>;
       // T6 automation control plane (main-process owned).
@@ -714,6 +726,7 @@ const rsideSummaryThreshold = $('#rside-summary-threshold');
 const rsideSpeech = $('#rside-speech');
 const rsideVision = $('#rside-vision');
 const rsideRateLimit = $('#rside-rate-limit');
+const rsideSpendMode = $('#rside-spend-mode');
 const taskListEl = $('#task-list');
 const taskEmptyEl = $('#task-empty');
 const tabBarEl = $('#tab-bar') as HTMLElement;
@@ -1870,6 +1883,8 @@ function handleEvent(event: AgentEvent): void {
       currentSessionId = event.sessionId;
       void refreshSidebarSession();
       void refreshSessionStats();
+      // A new session may carry a different provider: refresh the spend chip.
+      refreshSpendModeChip();
       break;
     case 'turn_start':
       // Keep the task progress list across turns (a worker runs many turns per
@@ -1968,8 +1983,30 @@ function handleEvent(event: AgentEvent): void {
       // next tab switch or real turn.
       if (!event.sessionId || event.sessionId === currentSessionId) {
         applyModelChanged(event.provider, event.model);
+        refreshSpendModeChip();
       }
       break;
+    case 'spend_mode': {
+      // /billing wrote (or reset) the active provider's spend mode. The slash
+      // card already shows the human text; this keeps the sidebar chip and an
+      // open settings overlay in sync.
+      refreshSpendModeChip();
+      if (!settingsOverlay.classList.contains('hidden')) {
+        // Re-render the spend block inside an open settings overlay so its
+        // per-provider list reflects the write that just happened.
+        const spendBlock = settingsBody.querySelector<HTMLElement>('#spend-mode-block');
+        if (spendBlock?.parentElement) buildSpendModeSection(spendBlock.parentElement);
+      }
+      break;
+    }
+    case 'spend_mode_suggest': {
+      // saveProvider produced a vendor-based spend-mode suggestion (never
+      // auto-written): show the one-time dismissible chip with an apply button.
+      if (event.provider && event.suggested) {
+        showSpendSuggest({ provider: event.provider, host: event.host, suggested: event.suggested });
+      }
+      break;
+    }
     case 'cwdChanged':
       // Session's working directory changed (e.g. /setdir or /chcwd): refresh
       // the status label + sidebar so the UI reflects where the agent operates.
@@ -4440,6 +4477,92 @@ async function refreshSidebarSession(): Promise<void> {
   renderRateLimit(st.rateLimit);
 }
 
+/** Normalized host for a baseUrl (no scheme/port/path; '' when absent). Mirrors the worker's hostOf() so a chip fallback matches what /billing reports. */
+function hostOfBaseUrl(baseUrl?: string): string {
+  if (!baseUrl) return '';
+  try {
+    return new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return baseUrl.trim().toLowerCase();
+  }
+}
+
+/**
+ * Refresh the sidebar spend-mode chip for the active provider. Reads the
+ * desktop.json store (getSpendMode) and applies the same host-mismatch
+ * fallback the worker uses: an entry whose host no longer matches shows the
+ * global default, not the stale entry.
+ */
+function refreshSpendModeChip(): void {
+  if (!rsideSpendMode) return;
+  const provider = status.provider;
+  if (!provider) {
+    rsideSpendMode.textContent = '—';
+    rsideSpendMode.className = 'info-value rside-spend';
+    return;
+  }
+  const zh = getUiLang() === 'zh-CN';
+  void window.nexusDesktop.getSpendMode().then((st) => {
+    const p = providers.find((x) => x.name === provider);
+    const entry = st.providers?.[provider];
+    const curHost = hostOfBaseUrl(p?.baseUrl);
+    const entryHost = entry?.host ? hostOfBaseUrl(entry.host) : '';
+    const manual = zh ? '手动' : 'manual';
+    const def = zh ? '默认' : 'default';
+    if (entry && entryHost && curHost && entryHost !== curHost) {
+      rsideSpendMode.textContent = `${st.default} · ${def} (host 已变)`;
+      rsideSpendMode.title = `Provider "${provider}" 地址已变，暂按全局默认 ${st.default}`;
+    } else if (entry) {
+      rsideSpendMode.textContent = `${entry.mode} · ${manual}`;
+      rsideSpendMode.title = `Provider "${provider}" 消费模式（${manual}）`;
+    } else {
+      rsideSpendMode.textContent = `${st.default} · ${def}`;
+      rsideSpendMode.title = `Provider "${provider}" 消费模式（全局默认）`;
+    }
+    rsideSpendMode.className = 'info-value rside-spend';
+  }).catch(() => {});
+}
+
+/** One-time dismissible chip for a spend-mode suggestion after saveProvider. */
+function showSpendSuggest(ev: { provider: string; host?: string; suggested: string }): void {
+  const key = `${ev.provider}:${ev.suggested}`;
+  if (spendSuggestDismissed.has(key)) return;
+  const zh = getUiLang() === 'zh-CN';
+  document.querySelector('#spend-suggest-chip')?.remove();
+  const chip = document.createElement('div');
+  chip.id = 'spend-suggest-chip';
+  chip.className = 'spend-suggest-chip';
+  const text = document.createElement('span');
+  text.className = 'spend-suggest-text';
+  text.textContent = zh
+    ? `建议将 "${ev.provider}" 设为 ${ev.suggested} 消费模式`
+    : `Suggest "${ev.provider}" → ${ev.suggested} spend mode`;
+  const apply = document.createElement('button');
+  apply.className = 'spend-suggest-apply';
+  apply.textContent = zh ? `设为 ${ev.suggested}` : `set ${ev.suggested}`;
+  apply.addEventListener('click', () => {
+    void window.nexusDesktop.setProviderSpendMode(ev.provider, ev.host ?? '', ev.suggested).then(() => {
+      spendSuggestDismissed.add(key);
+      chip.remove();
+      showToast(zh ? `已将 "${ev.provider}" 设为 ${ev.suggested}` : `Set "${ev.provider}" → ${ev.suggested}`, 'success');
+      refreshSpendModeChip();
+    });
+  });
+  const dismiss = document.createElement('button');
+  dismiss.className = 'spend-suggest-dismiss';
+  dismiss.textContent = '×';
+  dismiss.setAttribute('aria-label', zh ? '忽略' : 'dismiss');
+  dismiss.addEventListener('click', () => {
+    spendSuggestDismissed.add(key);
+    chip.remove();
+  });
+  chip.append(text, apply, dismiss);
+  document.body.appendChild(chip);
+}
+
+// Dismissed spend-mode suggestions for this app run (provider:mode keys).
+const spendSuggestDismissed = new Set<string>();
+
 function renderRateLimit(rl: StatusInfo['rateLimit']): void {
   if (!rl) {
     rsideRateLimit.textContent = '—';
@@ -5980,6 +6103,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
   // Build resource section
   const resourceSection = sectionElements['resource'];
   buildResourceSection(resourceSection);
+  buildSpendModeSection(resourceSection);
 
   // Build appearance section
   const appearanceSection = sectionElements['appearance'];
@@ -6212,6 +6336,106 @@ function buildResourceSection(container?: HTMLElement): void {
       return window.nexusDesktop.setPanelIdleMs(v * 1000);
     },
   ));
+}
+
+/**
+ * Spend-mode control (desktop.json `spendMode`). Global default + per-provider
+ * memory. Labels are bilingual inline (not t()) so no new i18n keys are needed;
+ * the in-session `/billing` command writes the same store.
+ */
+function buildSpendModeSection(container: HTMLElement): void {
+  container.querySelector('#spend-mode-block')?.remove();
+  const zh = getUiLang() === 'zh-CN';
+  const block = document.createElement('div');
+  block.id = 'spend-mode-block';
+
+  const MODES: Array<{ value: string; label: string }> = [
+    { value: 'token', label: zh ? 'Token（按量，省额度）' : 'Token (metered)' },
+    { value: 'coding', label: zh ? 'Coding Plan（包月）' : 'Coding plan (subscription)' },
+    { value: 'free', label: zh ? 'Free（免费 / 本地）' : 'Free (free tier / local)' },
+  ];
+
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = zh ? '消费模式' : 'Spend Mode';
+  block.appendChild(title);
+
+  const hint = document.createElement('div');
+  hint.className = 'startup-hint';
+  hint.textContent = zh
+    ? '控制 harness 的空转 / 限速 / 扇出策略。全局默认 + 每个 provider 的记忆；会话内可用 /billing 切换。'
+    : 'Paces the harness (idle / RPM / fan-out). Global default + per-provider memory; switch in-session with /billing.';
+  block.appendChild(hint);
+
+  // Global default selector.
+  const row = document.createElement('div');
+  row.className = 'startup-row';
+  const label = document.createElement('label');
+  label.className = 'startup-toggle';
+  const text = document.createElement('span');
+  text.textContent = zh ? '全局默认' : 'Global default';
+  const sel = document.createElement('select');
+  sel.className = 'provider-field';
+  for (const m of MODES) {
+    const opt = document.createElement('option');
+    opt.value = m.value;
+    opt.textContent = m.label;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => {
+    void window.nexusDesktop.setSpendModeDefault(sel.value).then(() => {
+      settingsMsg.textContent = '';
+      if (sel.parentElement?.parentElement?.id === 'spend-mode-block') {
+        buildSpendModeSection(sel.parentElement.parentElement as HTMLElement);
+      }
+    });
+  });
+  label.appendChild(text);
+  label.appendChild(sel);
+  row.appendChild(label);
+  block.appendChild(row);
+
+  // Per-provider memory.
+  const list = document.createElement('div');
+  list.className = 'spend-providers';
+  block.appendChild(list);
+
+  container.appendChild(block);
+
+  void window.nexusDesktop.getSpendMode().then((st) => {
+    sel.value = MODES.some((m) => m.value === st.default) ? st.default : 'token';
+    const provs = Object.entries(st.providers ?? {});
+    if (provs.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'startup-hint';
+      empty.textContent = zh ? '（尚无已记忆的 provider）' : '(no providers remembered yet)';
+      list.appendChild(empty);
+      return;
+    }
+    for (const [name, entry] of provs) {
+      const prow = document.createElement('div');
+      prow.className = 'startup-row spend-provider-row';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'spend-provider-name';
+      nameEl.textContent = name;
+      const modeEl = document.createElement('span');
+      modeEl.className = 'spend-provider-mode';
+      modeEl.textContent = entry.mode;
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'spend-clear-btn';
+      clearBtn.textContent = zh ? '清除' : 'clear';
+      clearBtn.addEventListener('click', () => {
+        void window.nexusDesktop.setProviderSpendMode(name, entry.host ?? '', null).then(() => {
+          prow.remove();
+          if (list.childElementCount === 0) buildSpendModeSection(block.parentElement as HTMLElement);
+        });
+      });
+      prow.appendChild(nameEl);
+      prow.appendChild(modeEl);
+      prow.appendChild(clearBtn);
+      list.appendChild(prow);
+    }
+  }).catch(() => {});
 }
 
 /**

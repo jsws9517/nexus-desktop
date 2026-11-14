@@ -107,12 +107,12 @@ export class RateLimiter {
     bucket.timestamps.push(Date.now());
   }
 
-  markRateLimited(family: string): void {
+  markRateLimited(family: string, baseMs?: number, capMs?: number): void {
     const bucket = this.getOrCreate(family);
     bucket.consecutive429 += 1;
-    const baseMs = 15_000;
-    const capMs = 60_000;
-    const backoffMs = Math.min(baseMs * Math.pow(2, bucket.consecutive429 - 1), capMs);
+    const b = baseMs && baseMs > 0 ? baseMs : 15_000;
+    const c = capMs && capMs > 0 ? capMs : 60_000;
+    const backoffMs = Math.min(b * Math.pow(2, bucket.consecutive429 - 1), c);
     bucket.backoffUntil = Date.now() + backoffMs;
   }
 
@@ -120,6 +120,11 @@ export class RateLimiter {
     const bucket = this.buckets.get(family);
     if (!bucket) return 0;
     return Math.max(0, bucket.backoffUntil - Date.now());
+  }
+
+  /** Consecutive 429 count for a family (0 when none / reset). */
+  getConsecutive429(family: string): number {
+    return this.buckets.get(family)?.consecutive429 ?? 0;
   }
 
   resetBackoff(family: string): void {
