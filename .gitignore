@@ -40,3 +40,6 @@ icon-drafts/compare.html
 # Personal "escape hatch" helper for manually triggering a core-only publish
 # (fallback when the auto repository_dispatch chain breaks). Local-only, never committed.
 ESCAPE-HATCH-publish-core.ps1
+
+# Local publish-core build log (never committed)
+release-build.log
