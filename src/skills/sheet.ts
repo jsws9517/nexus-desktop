@@ -20,7 +20,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, normalize, resolve as resolvePath, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
+import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/desktop-api.js';
 import type { ToolDef, ToolResult, ToolContext } from '../tools/types.js';
 import { toArtifactContent, type Artifact } from '../shared/artifact.js';
 

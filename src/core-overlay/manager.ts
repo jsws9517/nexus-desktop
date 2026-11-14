@@ -19,7 +19,7 @@ import {
   CoreManifestSignatureError,
 } from './download.js';
 import { GITHUB_MIRRORS } from '../shared/update-sources.js';
-import { isProtocolCompatible, desktopProtocol, readCoreDirProtocol } from './protocol.js';
+import { isProtocolCompatible, readCoreDirProtocol, protocolMismatch, protocolRangeFromManifest } from './protocol.js';
 
 export interface CheckResult {
   available: boolean;
@@ -146,16 +146,22 @@ export class CoreUpdateManager {
         url: latestEntry.url,
         urls: latestEntry.urls,
         timestamp: latestEntry.timestamp,
-        protocol: latestEntry.protocol,
+        protocolMin: latestEntry.protocolMin,
+        protocolMax: latestEntry.protocolMax,
       };
-      // Protocol gate: a core built against a different desktop protocol must
-      // not be installed as an overlay (it could silently break IPC).
-      if (latest && !isProtocolCompatible(latest.protocol)) {
+      // Protocol gate: a core whose declared range does not cover this
+      // desktop's protocol must not be installed as an overlay (it could
+      // silently break IPC).
+      const mismatch = protocolMismatch(
+        protocolRangeFromManifest(latest.protocolMin, latest.protocolMax),
+        latest.version,
+      );
+      if (mismatch) {
         this.setState({
           status: 'incompatible',
           latest,
           active: this.activeVersion(root),
-          error: `core ${latest.version} speaks protocol ${latest.protocol}, this desktop speaks ${desktopProtocol()}`,
+          error: mismatch,
         });
         return this.checkResult(root, null, false, source ?? null);
       }
@@ -187,11 +193,14 @@ export class CoreUpdateManager {
   async download(root: string): Promise<UpdateState> {
     if (!this.enabled) return this.state;
     if (this.state.status !== 'available' || !this.state.latest) return this.state;
-    if (!isProtocolCompatible(this.state.latest.protocol)) {
+    const latestMismatch = protocolMismatch(
+      protocolRangeFromManifest(this.state.latest.protocolMin, this.state.latest.protocolMax),
+      this.state.latest.version,
+    );
+    if (latestMismatch) {
       return this.setState({
         status: 'incompatible',
-        error: `core ${this.state.latest.version} speaks protocol ${this.state.latest.protocol}, ` +
-          `this desktop speaks ${desktopProtocol()}`,
+        error: latestMismatch,
       });
     }
     const info = this.state.latest;
@@ -280,14 +289,27 @@ export class CoreUpdateManager {
       cleanup();
       return this.setState({ status: 'error', error: `core ${version} missing package.json after extraction` });
     }
-    // Defense in depth: verify the protocol from the extracted artifact itself,
-    // independent of what the (signed) manifest claimed.
+    // Defense in depth: verify the protocol range from the extracted artifact
+    // itself, independent of what the (signed) manifest claimed.
     const coreProtocol = readCoreDirProtocol(extractDir);
-    if (!isProtocolCompatible(coreProtocol)) {
+    const coreMismatch = protocolMismatch(coreProtocol, version);
+    if (coreMismatch) {
       cleanup();
       return this.setState({
         status: 'incompatible',
-        error: `core ${version} speaks protocol ${coreProtocol}, this desktop speaks ${desktopProtocol()}`,
+        error: coreMismatch,
+      });
+    }
+    // Integrity gate: this desktop imports the core through the
+    // `desktop-api` facade. The resolve-hook falls back to the base copy for
+    // any file the overlay lacks, so an overlay without the facade would
+    // silently degrade to the base core — the overlay dies without an error
+    // ever surfacing. Reject it up front instead.
+    if (!fs.existsSync(path.join(extractDir, 'dist', 'src', 'desktop-api.js'))) {
+      cleanup();
+      return this.setState({
+        status: 'error',
+        error: `core ${version} is missing dist/src/desktop-api.js (the desktop-api facade) — this desktop requires it; refusing activation`,
       });
     }
     try {
@@ -344,12 +366,13 @@ export class CoreUpdateManager {
       const meta = readStagedMeta(root, latest?.version ?? '');
       if (meta) staged = {
         version: meta.version, sha512: meta.sha512, size: meta.size,
-        url: meta.url, timestamp: meta.timestamp, protocol: null,
+        url: meta.url, timestamp: meta.timestamp, protocolMin: null, protocolMax: null,
       };
     } catch {}
     let active: string | null = null;
     try { active = this.activeVersion(root); } catch {}
-    const protocolOk = !gateProtocol || !latest || isProtocolCompatible(latest.protocol);
+    const protocolOk = !gateProtocol || !latest
+      || isProtocolCompatible(protocolRangeFromManifest(latest.protocolMin, latest.protocolMax));
     const available = protocolOk
       && latest !== null
       && latest.version !== active

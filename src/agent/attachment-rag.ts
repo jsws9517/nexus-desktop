@@ -19,13 +19,16 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, extname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { VaultStore } from 'nexus-coder/dist/src/vault/store.js';
-import { extractForRag, chunkText, hasExtractor } from 'nexus-coder/dist/src/vault/extract/registry.js';
-import { ragFormatFor } from 'nexus-coder/dist/src/vault/extract/formats.js';
-import { searchVault } from 'nexus-coder/dist/src/vault/retrieval.js';
-import { rerankVaultHits } from 'nexus-coder/dist/src/vault/rerank.js';
-import type { EmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/types.js';
-import type { ParsedNote } from 'nexus-coder/dist/src/vault/parser.js';
+import {
+  VaultStore,
+  extractForRag,
+  chunkText,
+  hasExtractor,
+  ragFormatFor,
+  searchVault,
+  rerankVaultHits,
+} from 'nexus-coder/dist/src/desktop-api.js';
+import type { EmbeddingProvider, ParsedNote } from 'nexus-coder/dist/src/desktop-api.js';
 
 export interface AttachmentIngestResult {
   path: string;

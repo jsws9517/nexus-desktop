@@ -63,11 +63,13 @@ function installedVersion() {
 }
 
 /**
- * Protocol pre-gate: the pinned core must speak the desktop's protocol,
- * otherwise the installer would ship a baseline the client refuses to run
- * (mirror of the client-side gate in src/core-overlay/protocol.ts). A
- * missing field on the published package means the core predates the
- * field and is treated as legacy-compatible, same as the client.
+ * Protocol pre-gate: the pinned core's declared range must cover the
+ * desktop's protocol, otherwise the installer would ship a baseline the
+ * client refuses to run (mirror of the client-side gate in
+ * src/core-overlay/protocol.ts). The published field may be a legacy integer
+ * N (exact match: N === desktop) or a {min,max} range (desktop inside it).
+ * A missing or malformed field means the core predates the range and is
+ * treated as legacy-compatible, same as the client.
  */
 function verifyProtocol(target) {
   const desktopPkg = JSON.parse(readFileSync(PKG_PATH, 'utf8'));
@@ -78,17 +80,28 @@ function verifyProtocol(target) {
   } catch (e) {
     fail(`cannot read nexus-coder@${target} metadata: ${String(e.message ?? e).slice(0, 300)}`);
   }
-  let protocol = null;
+  // npm --json prints the field's JSON: `3` for a legacy integer,
+  // `{"min":2,"max":4}` for a range, and `undefined`/"" for an absent field.
+  let range = null;
   try {
-    protocol = JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'number' && Number.isInteger(parsed) && parsed >= 0) {
+      range = { min: parsed, max: parsed };
+    } else if (
+      parsed && typeof parsed === 'object'
+      && Number.isInteger(parsed.min) && Number.isInteger(parsed.max)
+      && parsed.min >= 0 && parsed.max >= parsed.min
+    ) {
+      range = { min: parsed.min, max: parsed.max };
+    }
   } catch {
-    protocol = null; // npm prints plain "undefined"/"" for absent fields
+    range = null; // absent / malformed → legacy-allowed, mirroring the client
   }
-  if (protocol !== null && protocol !== undefined && Number(protocol) !== Number(desktop)) {
+  if (range && !(range.min <= desktop && desktop <= range.max)) {
     fail(
-      `nexus-coder@${target} speaks desktop protocol ${protocol}, ` +
-      `this desktop speaks ${desktop} — refusing to pin an incompatible baseline. ` +
-      `Ship a core that matches nexusDesktopProtocol first.`,
+      `nexus-coder@${target} serves desktop protocol ${range.min}–${range.max}, ` +
+      `but this desktop speaks ${desktop} — refusing to pin an incompatible baseline. ` +
+      `Ship a core whose range covers it first.`,
     );
   }
   return desktop;

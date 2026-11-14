@@ -19,7 +19,7 @@
 import Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { isAbsolute, normalize, resolve as resolvePath } from 'node:path';
-import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
+import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/desktop-api.js';
 import type { ToolResult, ToolContext } from './types.js';
 
 export type { ToolResult as SqliteToolResult, ToolContext as SqliteToolContext };

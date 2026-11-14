@@ -23,7 +23,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { registerExtractor, hasExtractor } from 'nexus-coder/dist/src/vault/extract/registry.js';
+import { registerExtractor, hasExtractor } from 'nexus-coder/dist/src/desktop-api.js';
 import { logger } from '../shared/logger.js';
 
 /**

@@ -45,8 +45,8 @@ const BUILTIN_TOOL_COUNTS: Record<string, number> = {
 // nexus-coder exports ClientManager (src/mcp/client-manager.js) and
 // ConfigManager (src/config/index.js). Both are plain JS classes with no
 // native bindings; safe to import in the main (Electron) process.
-import { ClientManager } from 'nexus-coder/dist/src/mcp/client-manager.js';
-import { ConfigManager } from 'nexus-coder/dist/src/config/index.js';
+import { ClientManager } from 'nexus-coder/dist/src/desktop-api.js';
+import { ConfigManager } from 'nexus-coder/dist/src/desktop-api.js';
 
 const log = (msg: string): void => logger.info(`[mcp-hub] ${msg}`);
 const warn = (msg: string): void => logger.warn(`[mcp-hub] ${msg}`);

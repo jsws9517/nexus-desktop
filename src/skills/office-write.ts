@@ -16,8 +16,8 @@ import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { authorizePath } from 'nexus-coder/dist/src/security/path-authorizer.js';
-import { revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
+import { authorizePath } from 'nexus-coder/dist/src/desktop-api.js';
+import { revalidateSymlinkGuard } from 'nexus-coder/dist/src/desktop-api.js';
 import type { ToolDef, ToolResult, ToolContext } from '../tools/types.js';
 import { toArtifactContent, type Artifact } from '../shared/artifact.js';
 

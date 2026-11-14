@@ -19,11 +19,12 @@
 import { createHash, sign as cryptoSign } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 import { createReadStream } from 'node:fs';
 import { execSync } from 'node:child_process';
+import { builtinModules } from 'node:module';
 import { tmpdir } from 'node:os';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
@@ -133,11 +134,177 @@ function readDesktopPackage() {
   }
 }
 
-function readDesktopProtocol() {
-  const pkg = readDesktopPackage();
-  return Number.isInteger(pkg.nexusDesktopProtocol) && pkg.nexusDesktopProtocol >= 0
-    ? pkg.nexusDesktopProtocol
-    : 1;
+/**
+ * Normalize a core `nexusDesktopProtocol` declaration into a range:
+ *   - integer N           -> { min: N, max: N } (legacy exact-match shape)
+ *   - { min, max } object -> the range
+ *   - anything else       -> null (undeclared / malformed)
+ */
+function parseProtocolRange(raw) {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0) {
+    return { min: raw, max: raw };
+  }
+  if (
+    raw && typeof raw === 'object'
+    && Number.isInteger(raw.min) && Number.isInteger(raw.max)
+    && raw.min >= 0 && raw.max >= raw.min
+  ) {
+    return { min: raw.min, max: raw.max };
+  }
+  return null;
+}
+
+// ── §2.5 dependency-neutrality check ────────────────────────────────────────
+//
+// The overlay ships ONLY the core's dist. Bare specifiers in those files
+// resolve from the BASE app's node_modules (bootstrap/resolve-hook.ts), so a
+// core patch that starts importing an npm package the desktop does not
+// install blows up at runtime with ERR_MODULE_NOT_FOUND — after the user
+// updated. This static gate refuses to publish such a core.
+//
+// Baseline = the desktop's own package.json dependency keys (the stable
+// contract) + CORE_BUNDLE_ALLOWLIST below (packages the core manages itself:
+// transitive installs under the desktop's node_modules, or dependencies
+// bundled by the office-native skill package, which carries its own
+// node_modules when it ships).
+const CORE_BUNDLE_ALLOWLIST = [
+  // Installed transitively under the desktop's node_modules via the
+  // nexus-coder dependency (npm hoists them next to the desktop's own deps):
+  '@anthropic-ai/sdk',
+  '@huggingface/transformers',
+  '@larksuiteoapi/node-sdk',
+  '@modelcontextprotocol/sdk',
+  'openai',
+  'tiktoken',
+  // Core-owned / CLI-side packages that appear in dist but never on the
+  // desktop's runtime path (statically present, not import-reachable from
+  // the desktop entry points):
+  'chalk',
+  'commander',
+  'https-proxy-agent',
+  'qrcode',
+  'zod',
+  // Bundled by the office-native skill package (its own node_modules):
+  'docx',
+  'pdf-parse',
+  'pdfkit',
+  'pptxgenjs',
+];
+
+/** Top-level package name of a bare specifier (`@scope/pkg/x` -> `@scope/pkg`). */
+function topOf(specifier) {
+  return specifier.startsWith('@')
+    ? specifier.split('/').slice(0, 2).join('/')
+    : specifier.split('/')[0];
+}
+
+/**
+ * Collect the bare import specifiers a set of dist files reference.
+ *
+ * A small state machine instead of a regex: a bare `require('pdf-parse')`
+ * inside a STRING LITERAL (the office-write skill scripts are shipped as
+ * template strings in dist/src/config/native.js) must not count, while a
+ * real import statement must. The machine tracks string/template/comment
+ * state and captures a literal only when the code just before it ends in
+ * `from`, `import(` or `require(`.
+ */
+export function collectBareSpecifiers(files) {
+  const found = new Map(); // top-level package -> first file that imports it
+  for (const file of files) {
+    const src = fs.readFileSync(file, 'utf8');
+    let state = 'code'; // code | sq | dq | tpl | lc | bc
+    let tplDepth = 0;
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      const n = src[i + 1];
+      if (state === 'code') {
+        if (c === '/' && n === '/') { state = 'lc'; i++; continue; }
+        if (c === '/' && n === '*') { state = 'bc'; i++; continue; }
+        if (c === "'") {
+          if (/[^A-Za-z0-9_$](from|import\s*\(|require\s*\()\s*$/.test(src.slice(Math.max(0, i - 24), i))) {
+            const strEnd = src.indexOf("'", i + 1);
+            if (strEnd !== -1) {
+              const spec = src.slice(i + 1, strEnd);
+              if (spec && !spec.startsWith('.') && !spec.startsWith('/') && !spec.startsWith('node:')) {
+                const top = topOf(spec);
+                if (/^(@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z][a-z0-9._-]*)$/.test(top)) {
+                  if (!found.has(top)) found.set(top, file);
+                }
+              }
+              i = strEnd;
+              continue;
+            }
+          }
+          state = 'sq'; continue;
+        }
+        if (c === '"') {
+          if (/[^A-Za-z0-9_$](from|import\s*\(|require\s*\()\s*$/.test(src.slice(Math.max(0, i - 24), i))) {
+            const strEnd = src.indexOf('"', i + 1);
+            if (strEnd !== -1) {
+              const spec = src.slice(i + 1, strEnd);
+              if (spec && !spec.startsWith('.') && !spec.startsWith('/') && !spec.startsWith('node:')) {
+                const top = topOf(spec);
+                if (/^(@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z][a-z0-9._-]*)$/.test(top)) {
+                  if (!found.has(top)) found.set(top, file);
+                }
+              }
+              i = strEnd;
+              continue;
+            }
+          }
+          state = 'dq'; continue;
+        }
+        if (c === '`') { state = 'tpl'; tplDepth = 0; continue; }
+      } else if (state === 'sq') {
+        if (c === '\\') i++;
+        else if (c === "'") state = 'code';
+      } else if (state === 'dq') {
+        if (c === '\\') i++;
+        else if (c === '"') state = 'code';
+      } else if (state === 'tpl') {
+        if (c === '\\') i++;
+        else if (c === '$' && n === '{') { tplDepth++; i++; state = 'code'; }
+        else if (c === '}' && tplDepth > 0) { tplDepth--; state = tplDepth > 0 ? 'code' : 'tpl'; }
+        else if (c === '`') state = 'code';
+      } else if (state === 'lc') {
+        if (c === '\n') state = 'code';
+      } else if (state === 'bc') {
+        if (c === '*' && n === '/') { state = 'code'; i++; }
+      }
+    }
+  }
+  return found;
+}
+
+/** Recursively list the .js/.mjs/.cjs files under dir. */
+function listJsFiles(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listJsFiles(p));
+    else if (/\.(js|mjs|cjs)$/.test(entry.name)) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * §2.5 gate: every bare import in the overlay's dist must be resolvable from
+ * the base app. Returns a list of offending `pkg (first file)` strings;
+ * an empty list means the core is dependency-neutral.
+ */
+export function dependencyNeutralityOffenders(distDir) {
+  const desktopPkg = readDesktopPackage();
+  const baseline = new Set([
+    ...Object.keys(desktopPkg.dependencies ?? {}),
+    ...Object.keys(desktopPkg.devDependencies ?? {}),
+    ...CORE_BUNDLE_ALLOWLIST,
+    // node: builtins also appear in dist without the prefix (older ESM).
+    ...builtinModules,
+  ]);
+  const found = collectBareSpecifiers(listJsFiles(distDir));
+  return [...found.entries()]
+    .filter(([top]) => !baseline.has(top))
+    .map(([top, file]) => `${top} (first seen in ${path.relative(distDir, file)})`);
 }
 
 /**
@@ -200,22 +367,48 @@ async function main() {
     return;
   }
 
-  // Resolve the protocol this core is compatible with. The core's own
-  // declaration wins (an independently released core); otherwise the companion
-  // desktop's protocol is used (this CI publishes them together). The value is
-  // written both into the artifact's package.json (so the client's activation
-  // and boot gates can read it) and into the manifest.
+  // Resolve the protocol range this core serves. The core's own declaration
+  // is the single source of truth — there is deliberately no fallback to the
+  // desktop's protocol: an unstamped artifact would parse as "legacy /
+  // allowed" on the client and mask a real contract mismatch, so a core that
+  // does not declare the range fails the publish instead of shipping blind.
+  // The range is written both into the artifact's package.json (so the
+  // client's activation and boot gates can read it) and into the manifest.
   const corePkgRaw = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
-  const declaredProtocol = Number.isInteger(corePkgRaw.nexusDesktopProtocol)
-    && corePkgRaw.nexusDesktopProtocol >= 0 ? corePkgRaw.nexusDesktopProtocol : null;
-  const envProtocol = parseInt(process.env.NEXUS_CORE_PROTOCOL ?? '', 10);
-  const coreProtocol = declaredProtocol
-    ?? (Number.isInteger(envProtocol) ? envProtocol : readDesktopProtocol());
+  const declaredRange = parseProtocolRange(corePkgRaw.nexusDesktopProtocol);
+  if (!declaredRange) {
+    console.error(
+      `[publish-core] nexus-coder@${version} does not declare nexusDesktopProtocol ` +
+        `(integer or {min,max}); refusing to publish an unstamped core artifact. ` +
+        'Declare the range in the core repo first.',
+    );
+    process.exit(1);
+  }
 
   if (!fs.existsSync(srcDist)) {
     skip(`source dist missing: ${srcDist}; no core artifact published.`);
     return;
   }
+
+  // §2.5 dependency neutrality: the overlay ships ONLY the core's dist and the
+  // resolve hook resolves its bare imports from the base app's node_modules.
+  // A package the baseline does not cover is a runtime ERR_MODULE_NOT_FOUND
+  // for every user who updates — refuse the publish instead of shipping it.
+  const offenders = dependencyNeutralityOffenders(srcDist);
+  if (offenders.length > 0) {
+    console.error(
+      `[publish-core] dependency-neutrality violation: ${path.basename(srcDist)} imports ` +
+        `bare packages the desktop baseline does not cover:\n  ` +
+        offenders.join('\n  ') +
+        '\nEither add the package to the desktop package.json dependencies, or to ' +
+        `CORE_BUNDLE_ALLOWLIST in this script with a justification — then re-run.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `[publish-core] dependency check: all bare imports in ${path.basename(srcDist)} ` +
+      `covered by the desktop baseline.`,
+  );
 
   const outFileName = `core-${version}.tar.gz`;
   const outPath = path.join(outDir, outFileName);
@@ -248,7 +441,7 @@ async function main() {
     // Write patched package.json at staging root.
     const rawPkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
     rawPkg.version = version;
-    rawPkg.nexusDesktopProtocol = coreProtocol;
+    rawPkg.nexusDesktopProtocol = declaredRange; // range object: the canonical shape
     fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify(rawPkg, null, 2));
 
     // Pack tar.gz.
@@ -287,8 +480,15 @@ async function main() {
         `size: ${sz}`,
         `url: https://github.com/jsws9517/nexus-desktop/releases/download/${releaseTag}/${outFileName}`,
         `timestamp: ${isoNow}`,
-        `protocol: ${coreProtocol}`,
+        `protocolMin: ${declaredRange.min}`,
+        `protocolMax: ${declaredRange.max}`,
       ];
+      // Legacy exact-match line for pre-range clients: they only read
+      // `protocol:` and treat an absent/malformed field as legacy-allowed, so
+      // only emit it when the range collapses to a single version.
+      if (declaredRange.min === declaredRange.max) {
+        yamlLines.push(`protocol: ${declaredRange.min}`);
+      }
       // NOTE: no blank lines in the manifest. The client parser treats a blank
       // line as the end of the entry block, so `signed: true` after a blank
       // line would land in an unparsed orphan block and silently disable the
@@ -338,7 +538,12 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(`[publish-core] failed: ${e.message}`);
-  process.exitCode = 1;
-});
+// Run as a script (node scripts/publish-core.mjs) but NOT when imported for
+// unit tests, which import the exported helpers above.
+const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isDirectRun) {
+  main().catch((e) => {
+    console.error(`[publish-core] failed: ${e.message}`);
+    process.exitCode = 1;
+  });
+}

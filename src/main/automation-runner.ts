@@ -20,9 +20,15 @@ import { mcpHub } from './mcp-hub.js';
 import { logger } from '../shared/logger.js';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Automation, AutomationRun, MissPolicy } from 'nexus-coder/dist/src/automation/types.js';
-import type { AutomationRunner, RunnerEvent, AutomationPreflight } from 'nexus-coder/dist/src/automation/runner.js';
-import type { AutomationStore } from 'nexus-coder/dist/src/automation/store.js';
+// Type-only: erased at compile time, so the facade carries no runtime cost
+// here. The VALUE loads below stay on the deep dynamic paths on purpose —
+// `AutomationStore` drags in native better-sqlite3, and the main process must
+// keep booting (and degrade to "no automations") when that binding is
+// unusable. Loading the whole facade graph just to isolate that one native
+// module would couple every facade consumer to it.
+import type { Automation, AutomationRun, MissPolicy } from 'nexus-coder/dist/src/desktop-api.js';
+import type { AutomationRunner, RunnerEvent, AutomationPreflight } from 'nexus-coder/dist/src/desktop-api.js';
+import type { AutomationStore } from 'nexus-coder/dist/src/desktop-api.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 

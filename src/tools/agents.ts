@@ -38,7 +38,7 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { getAuthorizedRoots, getSandboxRoots } from 'nexus-coder/dist/src/security/path-authorizer.js';
+import { getAuthorizedRoots, getSandboxRoots } from 'nexus-coder/dist/src/desktop-api.js';
 import type { ToolDef, ToolResult } from './types.js';
 
 /** Marker delimiters used by AgentService for constitution prompt decoration. */

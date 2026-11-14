@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, Menu, nativeImage, nativeTheme, Notification, Tray } from 'electron';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerHost } from './worker-host.js';
 import { RestartSupervisor } from './restart-supervisor.js';
 import { prepareLaunch, markHealthy, disableActiveCore, readState, coreDirFor } from '../bootstrap/overlay.js';
-import { isProtocolCompatible, desktopProtocol, readCoreDirProtocol } from '../core-overlay/protocol.js';
+import { protocolMismatch, readCoreDirProtocol } from '../core-overlay/protocol.js';
 import { Updater } from './updater.js';
 import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { ResourceMonitor } from './resource-monitor.js';
@@ -532,9 +532,9 @@ function startWorker(): void {
   // declares a newer protocol) disables it here, before any worker starts.
   if (launch.version) {
     const coreProto = readCoreDirProtocol(coreDirFor(coreOverlayRoot(), launch.version));
-    if (!isProtocolCompatible(coreProto)) {
-      const msg = `core overlay ${launch.version} speaks protocol ${coreProto}, ` +
-        `this desktop speaks ${desktopProtocol()}; reverted to base copy`;
+    const mismatch = protocolMismatch(coreProto, launch.version);
+    if (mismatch) {
+      const msg = `${mismatch}; reverted to base copy`;
       logger.error(msg);
       send(CHANNELS.log, { level: 'error', message: msg });
       try { disableActiveCore(coreOverlayRoot()); } catch {}
@@ -543,6 +543,23 @@ function startWorker(): void {
       } catch {
         launch = { version: null, disabledNow: [], env: {} };
       }
+    }
+  }
+  // Integrity gate (boot-time): this desktop imports the core through the
+  // `desktop-api` facade. The resolve-hook falls back to the base copy for
+  // any file the overlay lacks, so an overlay without the facade would
+  // silently run the base core — the overlay dies without an error ever
+  // surfacing. (Undeclared-protocol overlays pass the range gate as legacy;
+  // this check is what stops them from quietly degrading a protocol-4 app.)
+  if (launch.version && !existsSync(join(coreDirFor(coreOverlayRoot(), launch.version), 'dist', 'src', 'desktop-api.js'))) {
+    const msg = `core overlay ${launch.version} is missing dist/src/desktop-api.js (the desktop-api facade); reverted to base copy`;
+    logger.error(msg);
+    send(CHANNELS.log, { level: 'error', message: msg });
+    try { disableActiveCore(coreOverlayRoot()); } catch {}
+    try {
+      launch = prepareLaunch(coreOverlayRoot(), app.getAppPath());
+    } catch {
+      launch = { version: null, disabledNow: [], env: {} };
     }
   }
   const overlayActive = launch.version !== null;
@@ -943,6 +960,9 @@ if (gotLock) {
       setAllowBetaUpdates: desktopState.setAllowBetaUpdates,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
+      getSpendMode: desktopState.getSpendMode,
+      setSpendModeDefault: desktopState.setSpendModeDefault,
+      setProviderSpendMode: desktopState.setProviderSpendMode,
        rateLimitRegistry,
        coreUpdater,
        coreOverlayRoot,

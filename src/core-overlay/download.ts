@@ -37,8 +37,14 @@ export interface CoreUpdateInfo {
   urls?: string[];
   /** ISO-8601 timestamp of the release. */
   timestamp: string;
-  /** nexusDesktopProtocol the core was built against (null when undeclared). */
-  protocol: number | null;
+  /**
+   * Protocol range the core was built to serve: `protocolMin <= desktop <=
+   * protocolMax`. A pre-range manifest carries only the legacy `protocol:`
+   * line, which the parser folds into min=max=N; an unstamped entry keeps
+   * both null (legacy → the client gate allows it).
+   */
+  protocolMin: number | null;
+  protocolMax: number | null;
 }
 
 export interface StagedCoreMeta {
@@ -69,8 +75,13 @@ export interface ManifestEntry {
   /** Alternate URLs for the same artifact+hash (manifest merge). */
   urls?: string[];
   timestamp: string;
-  /** nexusDesktopProtocol the core was built against (null when undeclared). */
-  protocol: number | null;
+  /**
+   * Protocol range the core was built to serve (see `CoreUpdateInfo`). The
+   * legacy `protocol:` manifest line is folded into min=max=N at parse time
+   * so pre-range artifacts keep their exact-match semantics.
+   */
+  protocolMin: number | null;
+  protocolMax: number | null;
   /** Present when the manifest was signed at publish time. */
   signed?: boolean;
   offset: 0;
@@ -119,7 +130,8 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
     if (current.version && current.sha512 && current.size != null) {
       entries.push({ version: current.version, sha512: current.sha512, size: current.size,
         url: current.url ?? '', timestamp: current.timestamp ?? '',
-        protocol: current.protocol ?? null, signed: current.signed, offset: 0 });
+        protocolMin: current.protocolMin ?? null, protocolMax: current.protocolMax ?? null,
+        signed: current.signed, offset: 0 });
     }
   };
   for (const line of lines) {
@@ -140,9 +152,21 @@ export function parseCoreManifest(text: string): ManifestEntry[] {
     else if (key === 'size') current.size = Number(val);
     else if (key === 'url') current.url = val;
     else if (key === 'timestamp') current.timestamp = val;
-    else if (key === 'protocol') {
+    else if (key === 'protocolMin') {
       const n = Number(val);
-      current.protocol = Number.isInteger(n) && n >= 0 ? n : null;
+      current.protocolMin = Number.isInteger(n) && n >= 0 ? n : null;
+    } else if (key === 'protocolMax') {
+      const n = Number(val);
+      current.protocolMax = Number.isInteger(n) && n >= 0 ? n : null;
+    } else if (key === 'protocol') {
+      // Legacy exact-match line (pre-range publisher): fold it into the range
+      // boundaries only where they are still unfilled, so a new manifest that
+      // carries both the range lines and a min===max legacy line stays coherent.
+      const n = Number(val);
+      if (Number.isInteger(n) && n >= 0) {
+        if (current.protocolMin == null) current.protocolMin = n;
+        if (current.protocolMax == null) current.protocolMax = n;
+      }
     } else if (key === 'signed') {
       const b = val === 'true';
       current.signed = b ? true : undefined;

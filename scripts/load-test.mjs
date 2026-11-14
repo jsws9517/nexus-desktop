@@ -65,7 +65,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync, existsSy
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { aliasFamilyOf } from 'nexus-coder/dist/src/mcp/tool-aliases.js';
+import { aliasFamilyOf } from 'nexus-coder/dist/src/desktop-api.js';
 
 // ---------------------------------------------------------------------------
 // Paths / constants

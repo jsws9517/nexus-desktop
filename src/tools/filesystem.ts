@@ -17,7 +17,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, normalize, resolve as resolvePath } from 'node:path';
-import { authorizePath, getAuthorizedRoots, getSandboxRoots, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
+import { authorizePath, getAuthorizedRoots, getSandboxRoots, revalidateSymlinkGuard } from 'nexus-coder/dist/src/desktop-api.js';
 import type { ToolDef, ToolResult, ToolContext } from './types.js';
 
 const MIME_BY_EXT: Record<string, string> = {

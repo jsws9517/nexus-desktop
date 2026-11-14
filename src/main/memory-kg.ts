@@ -17,7 +17,7 @@ import {
   MEMORY_TOOL_DEFS,
   callMemoryTool,
   KnowledgeGraphManager,
-} from 'nexus-coder/dist/src/mcp/memory-kg.js';
+} from 'nexus-coder/dist/src/desktop-api.js';
 
 export { INTERNAL_MEMORY_TOOLS, MEMORY_WRITE_TOOLS, MEMORY_TOOL_DEFS, callMemoryTool };
 

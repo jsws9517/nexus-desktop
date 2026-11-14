@@ -84,7 +84,8 @@ test('published artifact installs end to end through the update feed', async () 
   // The manifest must point at the desktop release tag that hosts the asset.
   const manifest = fs.readFileSync(path.join(out, 'latest-core.yml'), 'utf8');
   assert.match(manifest, new RegExp(`releases/download/v9\\.9\\.9/${tarball.replace(/[.]/g, '\\.')}`));
-  assert.match(manifest, /^protocol: \d+$/m, 'manifest carries the protocol stamp');
+  assert.match(manifest, /^protocolMin: \d+$/m, 'manifest carries the protocol range');
+  assert.match(manifest, /^protocolMax: \d+$/m, 'manifest carries the protocol range max');
   assert.ok(fs.existsSync(path.join(out, 'latest-core.yml.sig')), 'manifest is signed');
 
   const feed = await serveFeed(out, tarball);
@@ -112,7 +113,10 @@ test('published artifact installs end to end through the update feed', async () 
     assert.equal(state.activeCore, version, 'state.json points at the overlay');
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'core', version, 'package.json'), 'utf8'));
     assert.equal(pkg.version, version);
-    assert.equal(typeof pkg.nexusDesktopProtocol, 'number');
+    assert.ok(
+      pkg.nexusDesktopProtocol != null,
+      'artifact carries a declared protocol range (number or {min,max})',
+    );
     assert.equal(fs.existsSync(path.join(root, 'staged', `core-${version}.zip`)), false,
       'staged payload is released after activation');
   } finally {

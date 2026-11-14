@@ -1,6 +1,6 @@
 /** Config masking for the config view (never ship live API keys over IPC). */
 
-import type { Config } from 'nexus-coder/dist/src/config/types.js';
+import type { Config } from 'nexus-coder/dist/src/desktop-api.js';
 import { KEY_MASK } from '../shared/constants.js';
 
 function maskKey(value: unknown): string {

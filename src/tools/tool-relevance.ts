@@ -37,7 +37,7 @@ import type { ToolDef } from './types.js';
 import {
   TOOL_ALIAS_FAMILIES as CORE_TOOL_ALIAS_FAMILIES,
   aliasFamilyOf as coreAliasFamilyOf,
-} from 'nexus-coder/dist/src/mcp/tool-aliases.js';
+} from 'nexus-coder/dist/src/desktop-api.js';
 
 /**
  * Language-agnostic similarity, lifted from the core's ACP intent matcher

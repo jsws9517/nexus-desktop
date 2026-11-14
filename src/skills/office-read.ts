@@ -21,8 +21,8 @@
  */
 import { stat } from 'node:fs/promises';
 import { extname, isAbsolute, normalize, resolve as resolvePath } from 'node:path';
-import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/security/path-authorizer.js';
-import { extractForRag, hasExtractor } from 'nexus-coder/dist/src/vault/extract/registry.js';
+import { authorizePath, revalidateSymlinkGuard } from 'nexus-coder/dist/src/desktop-api.js';
+import { extractForRag, hasExtractor } from 'nexus-coder/dist/src/desktop-api.js';
 import { loadExtractorPackages } from '../agent/extractor-loader.js';
 import type { ToolDef, ToolResult, ToolContext } from '../tools/types.js';
 

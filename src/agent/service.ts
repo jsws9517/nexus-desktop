@@ -11,22 +11,29 @@
  */
 
 import { isWorkerPrompt, KEY_MASK, PROVIDER_CATEGORIES, stripProtocolXml } from '../shared/constants.js';
-import { classifyToolFailure } from 'nexus-coder/dist/src/hooks/debug-intent.js';
+import {
+  classifyToolFailure,
+  JobWatcher,
+  buildWakePrompt,
+  createProvider,
+  createEmbeddingProvider,
+} from 'nexus-coder/dist/src/desktop-api.js';
+import type {
+  Agent,
+  JobWakePolicy,
+  WakeTurnRequest,
+  WakeKind,
+  JobManager,
+  EmbeddingProvider,
+  Config,
+  ProviderConfig,
+  Session,
+} from 'nexus-coder/dist/src/desktop-api.js';
 import type { StoredRow } from '../session-db.js';
 import { deleteAllSessionMessages, getLastUserMessageId, setSessionBinding, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
 import type { SlashLogEntry } from '../slash-log.js';
 import { cleanupSessionCaches, registerCacheFile } from '../main/cache-cleanup.js';
-import type { Agent } from 'nexus-coder/dist/src/agent.js';
-import { JobWatcher } from 'nexus-coder/dist/src/jobs/job-watcher.js';
-import type { JobWakePolicy, WakeTurnRequest, WakeKind } from 'nexus-coder/dist/src/jobs/job-watcher.js';
-import type { JobManager } from 'nexus-coder/dist/src/jobs/manager.js';
-import { buildWakePrompt } from 'nexus-coder/dist/src/jobs/wake-prompt.js';
-import { createProvider } from 'nexus-coder/dist/src/llm/provider.js';
-import { createEmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/index.js';
-import type { EmbeddingProvider } from 'nexus-coder/dist/src/vault/embed/types.js';
-import type { Config, ProviderConfig } from 'nexus-coder/dist/src/config/types.js';
-import type { Session } from 'nexus-coder/dist/src/session/types.js';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -59,6 +66,20 @@ import { GIT_WRITE_TOOLS } from '../main/git-internal.js';
 import { logger } from '../shared/logger.js';
 import type { AgentEvent, PermissionRequest, ProviderInfo, RateLimitStatus } from './types.js';
 import { RateLimiter, inferProviderFamily } from './rate-limiter.js';
+import {
+  resolveSpendPolicy,
+  SPEND_MODE_LABEL,
+  describeSpendPolicy,
+  type SpendMode,
+  type SpendPolicy,
+} from '../shared/spend-policy.js';
+import {
+  readSpendModeState,
+  resolveSpendMode,
+  hostOf,
+  suggestForHost,
+  writeProviderMode,
+} from './spend-mode-store.js';
 import type { SubTask } from './types.js';
 import { extractTopic } from './topic.js';
 import { planFanoutClauses, shouldUseFanout } from './fanout.js';
@@ -87,7 +108,7 @@ import {
   type DeliverableContract,
   type TranscriptEntry,
 } from './deliverable-contract.js';
-import { configForTaskKind, loadCorrectionConfig, type CorrectionConfig } from './correction-config.js';
+import { configForTaskKind, loadCorrectionConfig, applySpendScale, type CorrectionConfig } from './correction-config.js';
 import { redactConfig } from './config-read.js';
 import {
   ingestAttachments as ragIngest,
@@ -481,16 +502,26 @@ export class AgentService {
 
     const providerName = this.getActiveProvider();
     const providerCfg = this.agent.config.getProvider(providerName);
+    const spend = this.getSpendContext();
     const family = inferProviderFamily(providerCfg?.baseUrl);
-    const rpm = this.rateLimiter.getEffectiveRpm(family);
+    const rpm = spend.policy.rpm;
 
     await this.rateLimiter.acquire(family, rpm);
 
     try {
-      return await this.agent.provider.complete(messages);
+      const out = await this.agent.provider.complete(messages);
+      // A successful call clears the consecutive-429 counter so it can't
+      // accumulate across turns and trip the retry budget spuriously.
+      this.rateLimiter.resetBackoff(family);
+      return out;
     } catch (err: any) {
       if (err?.status === 429 || err?.isRateLimited) {
-        this.rateLimiter.markRateLimited(family);
+        this.rateLimiter.markRateLimited(family, spend.policy.backoffBaseMs, spend.policy.backoffCapMs);
+        // Honor the tier's retry budget; past it, surface the error instead of
+        // burning further tokens chasing a 429.
+        if (this.rateLimiter.getConsecutive429(family) > spend.policy.retryBudget) {
+          throw err;
+        }
         const waitMs = this.rateLimiter.getBackoffMs(family);
         if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
         return this.callLlm(options);
@@ -934,7 +965,7 @@ export class AgentService {
       }
     }
 
-    const { Agent } = await import('nexus-coder/dist/src/agent.js');
+    const { Agent } = await import('nexus-coder/dist/src/desktop-api.js');
     this.agent = new Agent();
 
     // Desktop host: background-job wake turns (auto-continue). The CLI wires
@@ -1134,7 +1165,7 @@ export class AgentService {
     // path authorization (read_text_file etc.) use this single bridge. The CLI
     // wires the same via setPermissionPrompter; without it the path prompter
     // falls back to a dead stdin readline inside the worker and instantly denies.
-    const { setPermissionPrompter } = await import('nexus-coder/dist/src/security/path-authorizer.js');
+    const { setPermissionPrompter } = await import('nexus-coder/dist/src/desktop-api.js');
     setPermissionPrompter((question: string) => this.askPermission(question));
 
     // The audit manager (remember tool / user_info / dangerous-command gates) also
@@ -1630,7 +1661,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   private beginCorrectionTurn(input: string): void {
     const taskKind = inferTaskKind(input);
     const base = loadCorrectionConfig();
-    const cfg = configForTaskKind(base, taskKind);
+    const cfg = applySpendScale(configForTaskKind(base, taskKind), this.getSpendContext().policy.correctionScale);
     this.correctionConfig = cfg;
 
     this.activeLedger = new ProgressLedger({
@@ -2019,7 +2050,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   private async runTurn(input: string): Promise<TurnUsage> {
     const agent = this.agent;
     if (!agent) throw new Error('Agent not initialized');
-    const monitor = new TurnMonitor();
+    const spend = this.getSpendContext();
+    const monitor = new TurnMonitor({
+      maxRepeat: spend.policy.maxRepeat,
+      idleThinkingTokens: spend.policy.idleThinkingTokens,
+    });
     monitor.setPromptBaseline(agent.context?.getTokenCount?.() ?? 0);
     this.activeMonitor = monitor;
     this.activeRepMonitor = new RepetitionMonitor();
@@ -2031,7 +2066,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const providerName = this.getActiveProvider();
     const providerCfg = agent.config.getProvider(providerName);
     const family = inferProviderFamily(providerCfg?.baseUrl);
-    const rpm = this.rateLimiter.getEffectiveRpm(family);
+    const rpm = spend.policy.rpm;
     await this.rateLimiter.acquire(family, rpm);
 
     try {
@@ -2582,7 +2617,12 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const parts = planFanoutClauses(prompt);
     if (parts.length === 0) return single;
 
-    return Promise.all(parts.map(async (part, index) => ({
+    // Frugal spend tiers cap parallel sub-tasks (each burns tokens): keep only
+    // the leading clauses, in priority order.
+    const cap = this.getSpendContext().policy.fanoutCap;
+    const capped = cap > 0 ? parts.slice(0, cap) : parts;
+
+    return Promise.all(capped.map(async (part, index) => ({
       id: `task_${index + 1}`,
       description: await this.generateTaskDescription(part, index + 1, isZh),
       prompt: part,
@@ -2696,6 +2736,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         '  /chcwd [path]        Temporarily switch runtime working directory (not persisted)\n' +
         '  /setdir [path]       (desktop) also switches the worker now (core records only projectDir)\n' +
         '  /rename-project <name>  Rename project across dirs, DB, and metadata (lowercase+hyphens)\n' +
+        '  /billing [mode]      Set how this provider bills: token | coding | free | status | auto\n' +
         '  /compact             Compress the current context (summarize/truncate) to free window space\n' +
         '  Scheduled automations: no slash command — ask in-session ("create a scheduled task: …")\n' +
         '    and the agent calls automation_create; run-now / enable / history live in the sidebar\n' +
@@ -2853,6 +2894,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (cmd === 'provider' || cmd === 'providers') {
       return this.handleProviderSlash(args);
     }
+    if (cmd === 'billing' || cmd === 'spend') {
+      return this.handleBillingSlash(args);
+    }
     return false;
   }
 
@@ -2910,6 +2954,73 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       this.emitText(`Model: ${model}\n`);
     } catch (err) {
       this.emitText(`Switch failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    return true;
+  }
+
+  /**
+   * Desktop `/billing [status|token|coding|free|auto]` (alias `/spend`).
+   *
+   * Declares how the CURRENT provider bills so the harness can pace it. This is
+   * the only place the spend mode is written — the model never sets it. Status
+   * shows the effective mode + its source (manual/default) + the live policy;
+   * `auto` clears the per-provider override and falls back to the global
+   * default. The per-provider memory is persisted in `~/.nexus/desktop.json`
+   * and remembered across sessions.
+   */
+  private async handleBillingSlash(args: string[]): Promise<boolean> {
+    const spend = this.getSpendContext();
+    const sub = (args[0] || 'status').toLowerCase();
+
+    if (sub === 'status' || sub === '') {
+      const lines: string[] = [
+        `Provider: ${spend.provider}`,
+        `Spend mode: ${spend.mode} (${SPEND_MODE_LABEL[spend.mode]}) — ${spend.source === 'manual' ? 'manual' : 'default'}`,
+        `Policy: ${describeSpendPolicy(spend.mode)}`,
+      ];
+      if (spend.hostChanged) {
+        lines.push(
+          'Note: this provider\'s baseUrl changed; its saved mode was ignored. Re-confirm with /billing <mode>.',
+        );
+      }
+      this.emitText(lines.join('\n') + '\n');
+      this.onEvent?.({
+        type: 'spend_mode',
+        provider: spend.provider,
+        mode: spend.mode,
+        source: spend.source,
+        // Set only when a manual entry exists but its host no longer matches:
+        // the UI can then show the fallback explicitly instead of a stale tier.
+        hostChanged: spend.hostChanged,
+      });
+      return true;
+    }
+
+    if (sub === 'auto') {
+      const res = writeProviderMode(spend.provider, spend.host, null);
+      this.emitText(
+        res.ok
+          ? `Spend mode for "${spend.provider}" reset to the global default.\n`
+          : `Failed to reset spend mode: ${res.error}\n`,
+      );
+      this.onEvent?.({ type: 'spend_mode', provider: spend.provider, mode: null, source: 'default' });
+      return true;
+    }
+
+    const valid: SpendMode[] = ['token', 'coding', 'free'];
+    if (!valid.includes(sub as SpendMode)) {
+      this.emitText(`Unknown spend mode "${sub}". Valid: ${valid.join(' | ')} (or "auto" to reset).\n`);
+      return true;
+    }
+    const mode = sub as SpendMode;
+    const res = writeProviderMode(spend.provider, spend.host, mode);
+    if (res.ok) {
+      this.emitText(
+        `Spend mode for "${spend.provider}" set to ${SPEND_MODE_LABEL[mode]} (${describeSpendPolicy(mode)}).\n`,
+      );
+      this.onEvent?.({ type: 'spend_mode', provider: spend.provider, mode, source: 'manual' });
+    } else {
+      this.emitText(`Failed to set spend mode: ${res.error}\n`);
     }
     return true;
   }
@@ -4059,6 +4170,41 @@ private resetAttachmentRagRoundCache(): void {
   }
 
   /**
+   * Resolve the active provider's spend mode + policy for the current call. The
+   * store is mtime-cached so this is one stat; it follows the session's
+   * provider override (getActiveProvider returns it), so a per-tab provider
+   * switch re-resolves automatically. Drives RPM / backoff / idle / fan-out /
+   * correction budgets. Never written by the model — only the /billing slash
+   * command and the settings page write it.
+   */
+  getSpendContext(): {
+    provider: string;
+    host: string;
+    mode: SpendMode;
+    source: 'manual' | 'default';
+    hostChanged?: boolean;
+    policy: SpendPolicy;
+  } {
+    const provider = this.getActiveProvider() || 'default';
+    let baseUrl: string | undefined;
+    try {
+      baseUrl = this.agent?.config?.getProvider(provider)?.baseUrl;
+    } catch {
+      baseUrl = undefined;
+    }
+    const host = hostOf(baseUrl) || provider;
+    const resolved = resolveSpendMode(readSpendModeState(), provider, host);
+    return {
+      provider,
+      host,
+      mode: resolved.mode,
+      source: resolved.source,
+      hostChanged: resolved.hostChanged,
+      policy: resolveSpendPolicy(resolved.mode),
+    };
+  }
+
+  /**
    * Resolve the declared capability for the active model (modelCapabilities
    * map in config.json). Backs the compression-warning upgrade (P0, §5.3).
    */
@@ -4472,6 +4618,24 @@ reloadConfig(): { ok: boolean } {
       next.apiKey = fields.apiKey;
     }
     cfg.setProvider(name, next as Parameters<typeof cfg.setProvider>[1]);
+
+    // Suggest a spend mode for a (newly) configured provider — never auto-write.
+    // Only nags when this provider has no manual override yet.
+    try {
+      const host = hostOf(next.baseUrl as string | undefined) || name;
+      const suggested = suggestForHost(host);
+      if (suggested && !readSpendModeState().providers?.[name]) {
+        this.onEvent?.({
+          type: 'spend_mode_suggest',
+          provider: name,
+          host,
+          suggested,
+          reason: 'vendor',
+        });
+      }
+    } catch {
+      /* best-effort — a failed suggestion must never block a provider save */
+    }
   }
 
   async resolvePermission(id: string, answer: string): Promise<void> {
