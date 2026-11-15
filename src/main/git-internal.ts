@@ -282,7 +282,13 @@ function gitRun(argv: string[], cwd: string, timeoutMs = EXEC_TIMEOUT_MS): Promi
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout: Buffer.concat(chunks).toString('utf-8'), stderr, exitCode: code ?? 1 });
+      const exitCode = code ?? 1;
+      // Some git failures report on stdout only (e.g. `git commit` with no
+      // staged changes prints "no changes added to commit" / "nothing to
+      // commit" on stdout and exits non-zero). Fall back to stdout so the
+      // error payload stays diagnosable instead of surfacing an empty string.
+      const stderrText = stderr.trim() || Buffer.concat(chunks).toString('utf-8');
+      resolve({ stdout: Buffer.concat(chunks).toString('utf-8'), stderr: stderrText, exitCode });
     });
   });
 }
