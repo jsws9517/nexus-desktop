@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { WORKER_MARKERS } from './shared/constants.js';
 import { boundedSet } from './shared/bounded.js';
+import { logger } from './shared/logger.js';
 
 /**
  * Desktop-only direct access to the core session DB (better-sqlite3).
@@ -58,13 +59,35 @@ const REQUIRED_COLUMNS = ['id', 'session_id', 'role', 'content'];
  */
 let sharedRead: Database.Database | null = null;
 let messagesSchemaOk = false;
+// L4: one-shot diagnostics — the first open failure prints WHY (an ABI
+// mismatch in dev mode vs. anything else) instead of every call silently
+// degrading to no-op.
+let openFailureWarned = false;
 
 function openDb(readonly = true): Database.Database | null {
   if (readonly && sharedRead) return sharedRead;
   let db: Database.Database;
   try {
     db = new Database(dbPath(), { readonly });
-  } catch {
+  } catch (err) {
+    if (!openFailureWarned) {
+      openFailureWarned = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      // In dev, node_modules' better-sqlite3 is built for the SYSTEM Node ABI
+      // while the Electron main process needs the Electron ABI — the load
+      // throws and every main-side DB call silently no-op'd, making dev
+      // behave differently from the packaged app. Detect that specific cause
+      // and say so explicitly; the degradation itself is kept by design.
+      const abiMismatch =
+        /NODE_MODULE_VERSION|different version of Node|was compiled against|incompatible ABI|Invalid module identifier/i.test(msg);
+      if (abiMismatch) {
+        logger.warn(
+          `session-db: better-sqlite3 ABI mismatch (dev: module built for system Node, not the Electron runtime) — main-side session DB operations are NO-OP (reads return empty, deletes are skipped). Rebuild the native module: \`npm run rebuild:electron\`.`,
+        );
+      } else {
+        logger.warn(`session-db: unable to open ${dbPath()}: ${msg} — main-side DB operations are NO-OP until this is fixed.`);
+      }
+    }
     return null;
   }
   try {

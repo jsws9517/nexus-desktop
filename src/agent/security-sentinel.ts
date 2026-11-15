@@ -79,6 +79,9 @@ const READ_TOOL_RE = /(^|_)(read|list|glob|grep|search|status|get|show|view|insp
 const EXEC_TOOL_RE = /(^|_)(exec|execute|shell|bash|command|run|spawn|terminal|powershell|cmd)(_|$)/i;
 const NETWORK_TOOL_RE = /(^|_)(fetch|http|https|request|download|browse|crawl|web|url|curl|wget)(_|$)/i;
 const MEMORY_WRITE_TOOL_RE = /^(remember|user_info|memory_write|kg_write)$/i;
+/** M15: git-family tools (core git-internal) — their bare `cwd` arg is a
+ *  working directory, never a write target. */
+const GIT_TOOL_RE = /^git_/i;
 
 /** Binaries / verbs that constitute a privilege escalation attempt. */
 const PRIVILEGE_PATTERNS: Array<{ re: RegExp; label: string }> = [
@@ -167,8 +170,40 @@ export class SecuritySentinel {
     // Only *writes* are checked here: reading the constitution/rules is
     // something the agent is explicitly allowed to do.
     const writeTargets = pathsIn(req.args);
+    // M15: for git_* tools a bare working-directory arg (cwd/root) is NOT a
+    // write target — git operates ON a directory, and matching that directory
+    // name against the immutable globs FATAL'd legitimate git work in any
+    // layout that happens to collide with one of them. What a git operation
+    // can actually TOUCH inside the repo are the policy zones (checkout /
+    // reset can restore tracked files), so those derived paths are the
+    // check targets instead.
+    let immutableTargets = writeTargets;
+    if (GIT_TOOL_RE.test(req.tool) && category === 'fs_write') {
+      const excluded = new Set<string>();
+      for (const key of ['cwd', 'root']) {
+        const v = req.args?.[key];
+        if (typeof v === 'string') excluded.add(v);
+      }
+      const derived: string[] = [];
+      const cwd = typeof req.args?.cwd === 'string' ? req.args.cwd : undefined;
+      if (cwd !== undefined) {
+        const repoDir = normalizePath(resolve(this.root, cwd));
+        // The root-level policy zones (.git/hooks, .nexus/rules, .nexus/config)
+        // are only at risk when the REPO IS THE ROOT: git checkout/reset can
+        // restore tracked policy files that live directly under the root. A
+        // repo nested below the root never touches those zones, so it is not
+        // frozen by them (loose threshold: a name-colliding layout like
+        // <root>/src/agent/myrepo must stay git-able).
+        if (repoDir === normalizePath(this.root)) {
+          for (const zone of ['.git/hooks', '.nexus/rules', '.nexus/config']) {
+            derived.push(`${repoDir}/${zone}`);
+          }
+        }
+      }
+      immutableTargets = [...writeTargets.filter((p) => !excluded.has(p)), ...derived];
+    }
     if (category === 'fs_write') {
-      for (const p of writeTargets) {
+      for (const p of immutableTargets) {
         if (this.isImmutable(p)) {
           evidence.push(`target in immutable zone: ${p}`);
           return this.fatal('policy_write', 'policy_write', 'write to harness/policy zone is forbidden', evidence);
@@ -303,9 +338,22 @@ export class SecuritySentinel {
     const rel = normalizePath(relative(this.root, abs));
     for (const { glob, re } of this.immutable) {
       const g = normalizePath(glob);
-      // Match the relative form (normal case) and the absolute form (config
-      // may list an absolute path).
-      if (re.test(rel) || re.test(abs) || re.test(normalizePath(p))) return true;
+      if (isAbsolute(g)) {
+        // M15: an absolute pattern may only match the absolute form of the
+        // target. (The raw `p` form is honoured too when it is itself
+        // absolute — same path, different spelling.)
+        if (re.test(abs) || (isAbsolute(p) && re.test(normalizePath(p)))) return true;
+        // A bare directory prefix (no glob chars) still protects everything
+        // below it, exactly like the relative case.
+        if (!g.includes('*') && (abs === g || abs.startsWith(`${g}/`))) return true;
+        continue;
+      }
+      // M15: a relative pattern is "relative to root" by contract, so it is
+      // anchored: ONLY the root-relative form is tested. The old code also
+      // matched the pattern against the absolute and raw-argument forms,
+      // which let any project layout that merely contained e.g. a directory
+      // named `src/agent` trip the FATAL.
+      if (re.test(rel)) return true;
       // A bare directory prefix (e.g. ".nexus/rules") protects everything below.
       if (!g.includes('*') && (rel === g || rel.startsWith(`${g}/`))) return true;
       if (POLICY_GUARDED.has(g) && (rel === g || rel.startsWith(`${g}/`))) return true;
@@ -337,6 +385,9 @@ const PATH_KEYS = [
   'root',
   'output',
   'filename',
+  // M15: a list of file paths (git tools: `git_checkout`/`git_reset` restore
+  // exactly these) — plain-string values are path targets.
+  'files',
 ];
 
 export function pathsIn(args: Record<string, unknown>): string[] {
@@ -352,6 +403,14 @@ export function pathsIn(args: Record<string, unknown>): string[] {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (typeof v === 'string' && PATH_KEYS.includes(k)) {
         out.push(v);
+      } else if (Array.isArray(v) && PATH_KEYS.includes(k)) {
+        // M15: a list of path values under a path key (git tools: `files:
+        // [\"a.ts\", ...]`). String items are paths; object items keep the
+        // nested-key walk.
+        for (const item of v) {
+          if (typeof item === 'string') out.push(item);
+          else visit(item, depth + 1);
+        }
       } else if (typeof v === 'object') {
         visit(v, depth + 1);
       }

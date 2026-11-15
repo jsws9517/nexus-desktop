@@ -406,6 +406,12 @@ export class AgentService {
   private jobWatcher: JobWatcher | undefined;
   /** Re-entrancy guard: at most one wake turn in flight at a time. */
   private wakeTurnRunning = false;
+  /** M10: handle of the in-flight wake turn so a new user message can preempt it
+   *  and await its completion instead of queueing behind it forever. */
+  private wakeTurnPromise: Promise<void> | null = null;
+  /** M10: set when chat() aborts an in-flight wake turn to preempt it; runWakeTurn
+   *  then logs it as a preemption, not a failure. */
+  private wakeTurnPreempted = false;
   /**
    * One-shot flag preventing the debug-discipline override from being prepended
    * multiple times. Must live on the instance rather than relying on message-
@@ -2176,12 +2182,25 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   private async runWakeTurn(req: WakeTurnRequest): Promise<void> {
     if (this.wakeTurnRunning) return;
     this.wakeTurnRunning = true;
+    this.wakeTurnPreempted = false;
+    const run = (async () => {
+      try {
+        await this.runTurn(buildWakePrompt(req));
+      } catch (err) {
+        if (this.wakeTurnPreempted) {
+          this.onLog?.('info', 'Wake turn preempted by a new user message');
+        } else {
+          this.onLog?.('warn', `Wake turn failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } finally {
+        this.wakeTurnRunning = false;
+      }
+    })();
+    this.wakeTurnPromise = run;
     try {
-      await this.runTurn(buildWakePrompt(req));
-    } catch (err) {
-      this.onLog?.('warn', `Wake turn failed: ${err instanceof Error ? err.message : String(err)}`);
+      await run;
     } finally {
-      this.wakeTurnRunning = false;
+      if (this.wakeTurnPromise === run) this.wakeTurnPromise = null;
     }
   }
 
@@ -2218,6 +2237,19 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
   async chat(input: string): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
+
+    // M10: a background-job wake turn holds the session, and user messages used
+    // to queue behind it forever ("Queued (n)" with no escape). A NEW user
+    // message preempts the wake turn instead: abort it as a user interrupt
+    // (H7 attribution) and await its unwinding before starting the user's
+    // turn. The wake prompt still lands in context (abort keeps the partial
+    // turn), so no job result is lost.
+    if (this.wakeTurnRunning && this.wakeTurnPromise) {
+      this.wakeTurnPreempted = true;
+      this.onLog?.('info', 'New user message preempting the in-flight wake turn');
+      this.agent.abort('user');
+      await this.wakeTurnPromise;
+    }
 
     if (this.agent.isBusy()) throw new Error('Agent is busy');
 

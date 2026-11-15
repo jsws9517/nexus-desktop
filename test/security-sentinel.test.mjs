@@ -169,3 +169,51 @@ describe('arg extraction helpers', () => {
     assert.ok(!globToRegExp('.nexus/rules/**').test('.nexus/skills/a.md'));
   });
 });
+
+describe('M15: anchored globs + git tool semantics', () => {
+  it('a bare cwd that name-collides with a harness glob is not a write target', () => {
+    const s = sentinel();
+    // A sub-repo living under <root>/src/agent/… collides with the default
+    // `src/agent/**` glob when the bare cwd directory is matched as a target.
+    // git operates ON a directory; the only things a git op can touch inside
+    // the repo are the policy zones, which are derived and checked instead.
+    const d = s.evaluate({
+      tool: 'git_commit',
+      args: { cwd: join(ROOT, 'src/agent/myrepo'), message: 'feat: x', files: ['a.ts'] },
+    });
+    assert.equal(d.fatal, false, 'a bare cwd name-collision must not be fatal');
+    assert.equal(d.ok, true);
+  });
+
+  it('git writes that actually target a policy zone stay fatal', () => {
+    const s = sentinel();
+    const d = s.evaluate({
+      tool: 'git_checkout',
+      args: { cwd: ROOT, files: ['.nexus/rules/NEXUS.md'] },
+    });
+    assert.equal(d.fatal, true);
+    assert.equal(d.category, 'policy_write');
+  });
+
+  it('relative globs are anchored at the project root', () => {
+    const s = sentinel({ immutablePaths: ['rel/**'] });
+    // Root-adjacent layout that merely CONTAINS a "rel" directory: anchored
+    // `rel/**` must not match it.
+    const nested = s.evaluate({ tool: 'write_file', args: { path: join(ROOT, 'other/rel/x.txt'), content: 'x' } });
+    assert.equal(nested.fatal, false, 'a name-colliding sibling layout must not trip the glob');
+    // A root-relative target still matches.
+    const direct = s.evaluate({ tool: 'write_file', args: { path: 'rel/x.txt', content: 'x' } });
+    assert.equal(direct.fatal, true, 'the root-relative form must still be fatal');
+  });
+
+  it('absolute globs match the absolute form only', () => {
+    const s = sentinel({ immutablePaths: [join(ROOT, 'policy')] });
+    const insideAbs = s.evaluate({ tool: 'write_file', args: { path: join(ROOT, 'policy/x.txt'), content: 'x' } });
+    assert.equal(insideAbs.fatal, true, 'an absolute pattern must protect the absolute path');
+    // A relative path whose SEGMENTS merely contain the absolute glob's tail
+    // (here: a directory named "policy" under root) is not matched by an
+    // absolute pattern…
+    const insideRoot = s.evaluate({ tool: 'write_file', args: { path: join(ROOT, 'other/policy/x.txt'), content: 'x' } });
+    assert.equal(insideRoot.fatal, false);
+  });
+});
