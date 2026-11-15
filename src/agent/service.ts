@@ -33,9 +33,11 @@ import type { StoredRow } from '../session-db.js';
 import { deleteAllSessionMessages, getLastUserMessageId, setSessionBinding, updateTaskGraphProjectName } from '../session-db.js';
 import { appendSlashLog, readSlashLog, slashLogPath } from '../slash-log.js';
 import type { SlashLogEntry } from '../slash-log.js';
-import { cleanupSessionCaches, registerCacheFile } from '../main/cache-cleanup.js';
+import { cleanupSessionCaches, registerCacheFile, toolResultSpillDir } from '../main/cache-cleanup.js';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
   INTERNAL_TOOLS,
@@ -80,6 +82,7 @@ import {
   suggestForHost,
   writeProviderMode,
 } from './spend-mode-store.js';
+import { readPermissionTimeoutMs } from './desktop-config.js';
 import type { SubTask } from './types.js';
 import { extractTopic } from './topic.js';
 import { planFanoutClauses, shouldUseFanout } from './fanout.js';
@@ -95,6 +98,8 @@ import { CorrectionController, type CorrectionAction, type ToolPolicy } from './
 import {
   SecuritySentinel,
   pathsIn,
+  injectionFeatureHits,
+  hitsLookLikeInjection,
   type SentinelDecision,
 } from './security-sentinel.js';
 import {
@@ -169,6 +174,38 @@ const TOOL_RESULT_TRUNCATED =
   '\n… [output truncated: original %d chars; showing head %d + tail %d. Use targeted tools (grep/head/tail/SQL aggregation) for specific parts] …\n';
 
 /**
+ * L3: results above this many chars (~1MB of ASCII) are SPILLED to a temp
+ * file instead of the lossy 30K truncation — the model gets the path plus a
+ * head/tail preview, so the full output stays recoverable via read_file/grep
+ * without re-running (and re-paying for) the tool call. Loose on purpose:
+ * normal verbose results (bash logs, big diffs) still truncate at 30K as
+ * before; only genuinely huge outputs change shape.
+ */
+const SPILL_TOOL_RESULT_CHARS = 1_000_000;
+/** How much of a spilled result to inline as a preview around the path. */
+const SPILL_PREVIEW_HEAD_CHARS = 4_000;
+const SPILL_PREVIEW_TAIL_CHARS = 2_000;
+
+/**
+ * L3: write a large tool result to a file and return its path.
+ * Best-effort: any I/O failure returns null so the caller falls back to the
+ * normal 30K truncation — a broken data dir must never break the turn.
+ * The dir itself (`~/.nexus/tool-results/`, always sandbox-allowed) and its
+ * age-based reaping live in main/cache-cleanup.ts.
+ */
+export async function spillLargeToolResult(content: string): Promise<string | null> {
+  try {
+    const dir = toolResultSpillDir();
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, `${Date.now()}-${randomBytes(4).toString('hex')}.txt`);
+    await writeFile(file, content, 'utf8');
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Tools that leave the machine — spawn a process, open a socket, hand work to
  * another agent. Their outcome earns a log line even on success: a delegation
  * that silently failed looks identical to one that was never attempted, and
@@ -230,6 +267,22 @@ function stringifyToolContent(content: unknown): string {
 }
 
 /**
+ * M8: is this a git timeout (`git-slow`) result?
+ *
+ * Primary signal: the in-process git engine stamps `gitSlow:true` on its error
+ * payload (git-internal.ts). Fallback (loose): a git tool whose error text is
+ * the engine's own timeout message. Either way the class is ENVIRONMENT
+ * slowness — the command is fine — so it must stay out of the fail_seq storm
+ * counter and get a one-time hint instead.
+ */
+export function isGitSlowResult(name: string, content: string): boolean {
+  const isGitTool = name.startsWith('git_') || name.startsWith('git__');
+  if (!isGitTool) return false;
+  if (content.includes('"gitSlow":true') || content.includes('"gitSlow": true')) return true;
+  return /Git command timed out/i.test(content);
+}
+
+/**
  * Coarse task-kind classification used to pick correction thresholds.
  * Coding is the default because it has the strongest "progress" definition.
  */
@@ -278,15 +331,33 @@ function isReadOnlyTool(name: string): boolean {
   return READ_ONLY_TOOL_RE.test(name);
 }
 
-function capToolResult<T>(res: T): T {
+export async function capToolResult<T>(res: T): Promise<T> {
   if (!res || typeof res !== 'object') return res;
   const r = res as { content?: unknown; isError?: boolean; kind?: string };
   if (typeof r.content !== 'string') return res;
   const content = r.content;
-  if (content.length <= MAX_TOOL_RESULT_CHARS) return res;
   // Never truncate binary image data (data URI markdown) — the provider needs
-  // the full payload and the vision path handles it separately.
+  // the full payload and the vision path handles it separately. The exemption
+  // holds at ANY size: a media embedding is a value, not a verbose log.
   if (content.slice(0, 300).includes('data:image/')) return res;
+  // L3: a huge result is spilled to a temp file — the model gets the path
+  // plus a head/tail preview instead of a lossy 30K truncation, so the full
+  // output stays recoverable (read_file/grep on the path). On I/O failure
+  // fall through to the classic truncation below; the turn must not break.
+  if (content.length > SPILL_TOOL_RESULT_CHARS) {
+    const file = await spillLargeToolResult(content);
+    if (file) {
+      const head = content.slice(0, SPILL_PREVIEW_HEAD_CHARS);
+      const tail = content.slice(-SPILL_PREVIEW_TAIL_CHARS);
+      const note =
+        `\n… [output too large (${content.length} chars) — full result saved to ${file}. ` +
+        `Read specific parts with read_file/grep/head on that path instead of re-running the tool. ` +
+        `Preview: head ${SPILL_PREVIEW_HEAD_CHARS} + tail ${SPILL_PREVIEW_TAIL_CHARS} chars] …\n` +
+        `--- head ---\n${head}\n--- preview ---\n${tail}\n--- tail ---\n`;
+      return { ...res, content: note };
+    }
+  }
+  if (content.length <= MAX_TOOL_RESULT_CHARS) return res;
   const head = content.slice(0, TOOL_RESULT_HEAD_CHARS);
   const tail = content.slice(-TOOL_RESULT_TAIL_CHARS);
   const marker = TOOL_RESULT_TRUNCATED
@@ -343,6 +414,12 @@ export class AgentService {
   private stopRequested = false;
   private mcpEnabled = true;
   private pendingPermissions = new Map<string, (answer: string) => void>();
+  /**
+   * H2: auto-deny timers, keyed by the SAME id as `pendingPermissions`. An
+   * unanswered permission card cannot hold a turn forever — after the
+   * (configurable) `permissionTimeoutMs` it resolves as a timed-out deny.
+   */
+  private permissionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private nextPermissionId = 1;
   /** Set by a bare `/revise`; the next plain (non-slash) message is the fix
    *  for the revise dialogue instead of a normal chat turn. */
@@ -387,7 +464,21 @@ export class AgentService {
   private stepOutcomes: ToolOutcome[] = [];
   private stepResultTexts: string[] = [];
   private stepWriteTargets: string[] = [];
-  private stepUntrusted = false;
+  /**
+   * H5: taint source for the current step — the untrusted result that actually
+   * looked like an injection attempt (injection-feature hit, see
+   * security-sentinel). A plain data fetch leaves this null: following a
+   * content read with a legitimate privileged action must not FATAL.
+   */
+  private stepTaintSource: string | null = null;
+  /**
+   * M8: git-slow is an independent failure class — a git TIMEOUT is an
+   * environment slowness (remote/network/lock), not a broken command. It is
+   * deliberately excluded from the fail_seq storm counter (retrying a slow
+   * op never fixes it) and instead gets ONE hint per turn. This flag tracks
+   * whether the hint already fired, so a timeout storm cannot spam steer.
+   */
+  private gitSlowHinted = false;
   private touchedFiles = new Map<string, { mtimeMs: number; size: number }>();
   private turnTranscript: TranscriptEntry[] = [];
   /** Input of the current turn (contract + anti-cheat context). */
@@ -440,6 +531,30 @@ export class AgentService {
    /** Per-process rate limiter keyed by provider family (zhipu / agnes / unknown).
     *  Cross-session aggregation is handled by the main-process RateLimitRegistry. */
    private rateLimiter = new RateLimiter();
+
+   /**
+    * M9: the moment a request starts WAITING in the limiter (429 backoff or a
+    *  full RPM window) the UI is told via a `rate_limit_queued` event — a
+    *  hidden queue is exactly the "sudden interrupt" the user sees as a hang.
+    *  The status snapshot is re-reported too, so the sidebar's queuedMs does
+    *  not lag until the next LLM call. (Field initializers run in order, so
+    *  `rateLimiter` is already assigned; the arrow IIFE captures `this`.)
+    */
+   private readonly _m9QueueWaitWired: boolean = (() => {
+     const rl = this.rateLimiter;
+     rl.onQueueWait = (info) => {
+       this.onEvent?.({
+         type: 'rate_limit_queued',
+         family: info.family,
+         waitMs: info.waitMs,
+         queuedMs: info.queuedMs,
+         reason: info.reason,
+       });
+       const status = rl.getStatus(info.family);
+       if (status) this.onRateLimitReport?.(status);
+     };
+     return true;
+   })();
 
    /** Called after every callLlm() completes (success or failure) so the main
     *  process can aggregate per-family counters across all session workers. */
@@ -639,7 +754,9 @@ export class AgentService {
     // distinguish gate-blocked from exec-failed without reading the full
     // error text in the worker log.
     const failClass = failed
-      ? classifyToolFailure({ content: String(r?.content ?? ''), kind: r?.kind as 'ok' | 'exec_error' | 'tool_error' })
+      ? isGitSlowResult(name, String(r?.content ?? ''))
+        ? 'git-slow'
+        : classifyToolFailure({ content: String(r?.content ?? ''), kind: r?.kind as 'ok' | 'exec_error' | 'tool_error' })
       : 'ok';
     const line = `[tool-${failed ? 'error' : 'ok'}] ${name}${target}${failed ? ` [${failClass}]` : ''} -> ${outcomeLine(result)}`;
     if (failed) logger.warn(line);
@@ -1386,6 +1503,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.agent = null;
     this.jobWatcher = undefined;
     this.wakeTurnRunning = false;
+    // H2: worker recycle / tab close — release any pending permission cards so
+    // the (possibly re-used) UI tab never shows a card whose worker is gone.
+    this.releasePendingPermissions([...this.pendingPermissions.keys()], 'shutdown');
   }
 
   /**
@@ -1512,7 +1632,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           const decision = sentinel.evaluate({
             tool: toolName,
             args: toolArgs,
-            hasUntrustedSource: this.stepUntrusted,
+            hasUntrustedSource: this.stepTaintSource !== null,
+            taintSource: this.stepTaintSource ?? undefined,
           });
           this.sentinelDecisions.set(sentinelDecisionKey(toolName, toolArgs), decision);
           this.handleSentinelDecision(decision);
@@ -1533,14 +1654,29 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           this.stepResultTexts.push(resultContent);
           this.turnTranscript.push({ role: 'tool', text: resultContent.slice(0, 200) });
         }
-        // Mark the step tainted when it consumed a network / external MCP
-        // result. A privileged action after that is treated as fatal.
+        // H5: taint source = "injection-feature hit". A network / external MCP
+        // result only taints the step when its CONTENT looks like an injection
+        // attempt (executable material + instructional phrasing, or a classic
+        // marker). A plain data fetch stays a data source: a privileged action
+        // following it must not be treated as fatal. When it does hit, record
+        // WHICH result and features so the FATAL copy can list the source.
         if (this.activeSentinel) {
           const category = this.activeSentinel.classify(
             resultName,
             (event.args ?? {}) as Record<string, unknown>,
           );
-          if (category === 'network' || resultName.includes('__')) this.stepUntrusted = true;
+          if (
+            !this.stepTaintSource &&
+            resultContent &&
+            (category === 'network' || resultName.includes('__'))
+          ) {
+            const hits = injectionFeatureHits(resultContent);
+            if (hitsLookLikeInjection(hits)) {
+              this.stepTaintSource = `${resultName} result [features: ${[
+                ...new Set(hits.map((h) => h.key)),
+              ].join(', ')}]`;
+            }
+          }
           if (!resultIsError) this.activeSentinel.notifyAllowed(category);
         }
         // Capture the post-write file state for the progress fingerprint.
@@ -1589,13 +1725,31 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           // tool is broken). The core owns the gate-block backstop (consecutive
           // blocks) and the escalating steer. exec-failed and arg-invalid keep
           // their class-level / arg-digest kill semantics for real recoverable loops.
+          // M8: git-slow (a git TIMEOUT) is an independent class too: the
+          // environment is slow, the command is fine, and retrying it in a loop
+          // never helps — so it is EXCLUDED from the fail_seq storm counter
+          // (a slow remote must not hard-kill an otherwise healthy turn) and
+          // gets ONE model-facing hint per turn instead.
+          const gitSlow = isError && isGitSlowResult(name, content);
           const rv =
-            cls === 'gate-blocked' ? null : rep.noteToolOutcome(name, isError, failureKey);
+            cls === 'gate-blocked' || gitSlow
+              ? null
+              : rep.noteToolOutcome(name, isError, failureKey);
           if (rv?.stalled) this.handleRepetitionGuard(rv);
+          if (gitSlow) {
+            this.onLog?.('warn', `[git-slow] ${name} timed out (class git-slow; excluded from fail_seq)`);
+            if (!this.gitSlowHinted) {
+              this.gitSlowHinted = true;
+              this.agent?.enqueueSteer?.(
+                '[hint] A git operation just timed out (class git-slow: slow environment, not a broken command). Do not retry it in a tight loop — prefer a read-only or narrower git tool, or move on and retry later.',
+              );
+            }
+          }
         }
       } else if (event.type === 'turn_start') {
         rep?.reset();
         this.toolCallsAcc = [];
+        this.gitSlowHinted = false;
         this.resetCorrectionStep();
       } else if (event.type === 'turn_end') {
         if (rep && this.toolCallsAcc.length > 0) {
@@ -1628,10 +1782,15 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   private handleThinkingStall(stall: ThinkingStall): void {
     const model = this.getActiveModel() || 'active model';
     if (stall.reason === 'loop') {
+      const detail =
+        stall.loopKind === 'prefix'
+          ? // M11: no new content growth after a prefix — the model re-emits the
+            // same idea with surface variation instead of advancing.
+            `kept re-emitting the same thinking (~${stall.thinkingTokens} tokens) without new content`
+          : `repeated the same thinking block ${stall.repeatCount} times (~${stall.thinkingTokens} tokens)`;
       this.onLog?.(
         'warn',
-        `[thinking-guard] model "${model}" repeated the same thinking block ` +
-          `${stall.repeatCount} times (~${stall.thinkingTokens} tokens) with no progress — ` +
+        `[thinking-guard] model "${model}" ${detail} with no progress — ` +
           `aborting this turn to stop the token burn.`,
       );
       this.onEvent?.({
@@ -1639,6 +1798,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         reason: stall.reason,
         thinkingTokens: stall.thinkingTokens,
         repeatCount: stall.repeatCount,
+        loopKind: stall.loopKind,
         aborting: this.abortOnThinkingLoop,
       });
       // H7: a thinking-loop verdict is a harness watchdog kill, not a user keypress.
@@ -1741,7 +1901,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.stepOutcomes = [];
     this.stepResultTexts = [];
     this.stepWriteTargets = [];
-    this.stepUntrusted = false;
+    this.stepTaintSource = null;
     this.touchedFiles.clear();
     this.sentinelDecisions.clear();
   }
@@ -3204,6 +3364,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.stopRequested = true;
     // H7: the desktop Stop button is a user-initiated stop, not a keypress.
     this.agent?.abort?.('user');
+    // H2: stopping must not leave dangling permission cards — an orphaned
+    // card would outlive the aborted turn (and its unref'd timer could fire
+    // into the NEXT turn, auto-denying a prompt the user never saw). Release
+    // every pending card as 'aborted' so the UI closes them with the reason.
+    this.releasePendingPermissions([...this.pendingPermissions.keys()], 'aborted', 'aborted');
   }
 
   /**
@@ -4703,6 +4868,9 @@ reloadConfig(): { ok: boolean } {
     const resolve = this.pendingPermissions.get(id);
     if (resolve) {
       this.pendingPermissions.delete(id);
+      const timer = this.permissionTimers.get(id);
+      if (timer) clearTimeout(timer);
+      this.permissionTimers.delete(id);
       resolve(answer);
     } else {
       this.onLog?.('warn', `resolvePermission: no pending prompt for id=${id}`);
@@ -4715,7 +4883,46 @@ reloadConfig(): { ok: boolean } {
       const id = String(this.nextPermissionId++);
       this.pendingPermissions.set(id, resolve);
       this.onPermission?.({ id, question: cleanQuestion(question) });
+      // H2: an unanswered card auto-denies after the configurable timeout
+      // (default 10 min, loose-clamped to 10 s–1 h). The deny carries the
+      // reason so the UI closes the card and the audit log records WHY.
+      const timeoutMs = readPermissionTimeoutMs();
+      const timer = setTimeout(() => {
+        // Only fire if the card is still genuinely pending (the user may have
+        // answered, or abort()/shutdown() may have already released it).
+        if (!this.pendingPermissions.has(id)) return;
+        this.releasePendingPermissions([id], 'timeout');
+      }, timeoutMs);
+      // Do not let a dangling card pin the worker's event loop: once every
+      // other work is done, an orphaned timer must not hold the process open.
+      (timer as unknown as { unref?: () => void }).unref?.();
+      this.permissionTimers.set(id, timer);
     });
+  }
+
+  /**
+   * H2: release pending permission cards, resolving each as a deny. `reason`
+   * is surfaced to the UI (which closes the card and shows why) and the audit
+   * log — a silent hang is exactly what this whole item exists to kill.
+   */
+  private releasePendingPermissions(ids: string[], reason: string, resolveValue = 'n'): void {
+    const released: string[] = [];
+    for (const id of ids) {
+      const resolve = this.pendingPermissions.get(id);
+      if (!resolve) continue;
+      this.pendingPermissions.delete(id);
+      const timer = this.permissionTimers.get(id);
+      if (timer) clearTimeout(timer);
+      this.permissionTimers.delete(id);
+      // 'aborted' / 'n' both read as a deny at every caller (only 'y'/'a'
+      // allow), but the distinct value keeps the audit trail honest about
+      // WHICH path released the card.
+      resolve(resolveValue);
+      released.push(id);
+    }
+    if (released.length === 0) return;
+    this.onLog?.('warn', `permission card(s) released (${reason}): ${released.join(', ')}`);
+    this.onEvent?.({ type: 'permission_resolved', ids: released, reason });
   }
 }
 

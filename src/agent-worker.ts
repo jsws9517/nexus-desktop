@@ -6,6 +6,7 @@ import { AgentService } from './agent-service.js';
 import type { AgentEvent } from './agent-service.js';
 import { logger } from './shared/logger.js';
 import { loadExtractorPackages } from './agent/extractor-loader.js';
+import { SideServiceCache, historyBeforeLastUser } from './agent/side-service.js';
 import { EARLY_METHODS } from './shared/constants.js';
 import { validateWorkerParams } from './shared/ipc-validation.js';
 import type { WorkerMethod } from './ipc/channels.js';
@@ -133,6 +134,12 @@ function resolveMcpResult(msg: {
 }
 
 const service = new AgentService();
+// L5: one lazily-created side service per worker, reused across sideChat
+// requests instead of a fresh AgentService + full init() per message.
+const sideServiceCache = new SideServiceCache(
+  () => new AgentService(),
+  (s) => s.init(),
+);
 service.onEvent = (event: AgentEvent) => send({ type: 'event', event });
 service.onPermission = (req) => { tracePerm(`askPermission id=${req.id}`); send({ type: 'permission', ...req }); };
 service.onLog = (level, message) => send({ type: 'log', level, message });
@@ -238,23 +245,30 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     return res ? { restored: res.restored } : null;
   },
   sideChat: async (req: WorkerRequest & { method: 'sideChat' }) => {
-    // Isolated scratch conversation: a fresh AgentService per request, seeded
-    // with the renderer-held transcript. It never touches the session store,
-    // the main worker's context, or its busy state — side chat stays usable
-    // while the real session is mid-turn and can never pollute it.
+    // Isolated scratch conversation on the worker's shared side service (L5):
+    // one lazily-init'd AgentService per worker, never the owning session
+    // service. It doesn't touch the session store, the owning service's
+    // context or busy state — side chat stays usable while the real session
+    // is mid-turn and can never pollute it.
     //
-    // Unlike the previous callLlm() path (which was a bare provider.complete()
-    // with zero tools), we now call init() so the full tool system (skills,
-    // MCP proxy, builtin tools) is wired up, then run through the normal
-    // agent.chat() loop so tool calls are actually executed.
+    // Unlike the previous callLlm() path (bare provider.complete() with zero
+    // tools), this runs through the full agent.chat() loop so tool calls are
+    // actually executed. The renderer replays the whole transcript each
+    // request, so re-seed the reused side context from it — that is what
+    // gives side chat multi-turn memory (the old per-request service saw
+    // only the last user message).
     const messages = req.params.messages.map((m) => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content }));
-    const tempService = new AgentService();
-    await tempService.init();
+    const side = await sideServiceCache.get();
+    const history = historyBeforeLastUser(messages);
+    const ctx = (side as any).agent?.context;
+    if (history.length > 0 && typeof ctx?.setMessages === 'function') {
+      ctx.setMessages(history);
+    }
     // Wire an event collector so we can extract the final assistant text
     // without forwarding events to the main UI (side chat is isolated).
     const collected: string[] = [];
-    const prevOnEvent = tempService['onEvent'];
-    (tempService as any)['onEvent'] = (event: unknown) => {
+    const prevOnEvent = (side as any)['onEvent'];
+    (side as any)['onEvent'] = (event: unknown) => {
       if (event && typeof event === 'object' && (event as { type: string }).type === 'text') {
         const text = (event as { text: string }).text;
         if (text) collected.push(text);
@@ -265,9 +279,9 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
       // transcript is held by the renderer and replayed each request.
       const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
       const input = lastUserMsg ? lastUserMsg.content : '';
-      await tempService.chat(input);
+      await side.chat(input);
     } finally {
-      (tempService as any)['onEvent'] = prevOnEvent;
+      (side as any)['onEvent'] = prevOnEvent;
     }
     const reply = collected.join('');
     return { reply };

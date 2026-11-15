@@ -25,6 +25,7 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ResourceMonitor } from './resource-monitor.js';
+import { clampPermissionTimeoutMs } from '../shared/permission-timeout.js';
 
 // Resolved at call time so tests can point NEXUS_CONFIG_DIR at a temp dir.
 function configDir(): string {
@@ -64,6 +65,10 @@ interface DesktopStateData {
     default?: string;
     providers?: Record<string, { mode?: string; host?: string; updatedAt?: string }>;
   };
+  // H2: how long an unanswered permission card may wait (ms) before it
+  // auto-denies. Read by the worker (src/agent/desktop-config.ts) with an
+  // mtime cache; written here from the settings UI. Absent = 10-minute default.
+  permissionTimeoutMs?: number;
   // Namespaced sections absorbed from former top-level files.
   modelBlacklist?: Record<string, Record<string, string>>;
 }
@@ -119,6 +124,9 @@ export interface DesktopStateAccess {
   };
   setSpendModeDefault(mode: string): void;
   setProviderSpendMode(provider: string, host: string, mode: string | null): void;
+  /** H2: permission-card timeout (ms); absent/invalid → 10-minute default. */
+  getPermissionTimeoutMs(): number;
+  setPermissionTimeoutMs(ms: number): void;
 }
 
 /** Full store: the 20 IPC accessors plus the app-bootstrap helpers. */
@@ -275,6 +283,12 @@ export function createDesktopState(): DesktopStateStore {
     return v !== false;
   };
 
+  /** H2: permission-card timeout; a hand-edited/absent value clamps to the default. */
+  const getPermissionTimeoutMs = (): number => clampPermissionTimeoutMs(read().permissionTimeoutMs);
+  const setPermissionTimeoutMs = (ms: number): void => {
+    write({ permissionTimeoutMs: clampPermissionTimeoutMs(ms) });
+  };
+
   return {
     getDeferMcp(): boolean {
       return read().deferMcp === true;
@@ -348,6 +362,8 @@ export function createDesktopState(): DesktopStateStore {
     setAllowBetaUpdates(enabled: boolean): void {
       write({ allowBetaUpdates: enabled });
     },
+    getPermissionTimeoutMs,
+    setPermissionTimeoutMs,
     getModelBlacklist(): Record<string, Record<string, string>> {
       const bl = read().modelBlacklist;
       return bl && typeof bl === 'object' && !Array.isArray(bl) ? bl : {};

@@ -116,5 +116,7 @@ export interface RateLimitStatus {
   rpm: number;
   recentRequests: number;
   backoffMs: number;
+  /** M9: cumulative queue-wait since the last success (set by the worker limiter). */
+  queuedMs?: number;
   status: 'normal' | 'warning' | 'throttled';
 }

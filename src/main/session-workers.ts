@@ -24,6 +24,15 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 const RESTART_RPC_TIMEOUT_MS = 20_000;
 
 /**
+ * H6: crash-respawn budget per session (loose cap). A worker that dies
+ * unexpectedly is re-spawned and re-bound up to this many times in a row;
+ * beyond it we fall back to the pre-H6 behaviour (drop the row) so a
+ * pathological crash loop cannot spawn forever. A successful re-bind resets
+ * the budget.
+ */
+const MAX_RESPAWN_ATTEMPTS = 3;
+
+/**
  * session-db is loaded lazily: it pulls in native better-sqlite3, and the main
  * process must keep booting even when that binding is unusable (the sidebar's
  * `nexus:listSessions` already degrades to the worker path for the same reason).
@@ -90,6 +99,17 @@ export class SessionWorkers {
    * worker the renderer had just been handed).
    */
   private restarting: Promise<void> | null = null;
+
+  /**
+   * H6: session ids the user explicitly closed (close / closeAll). When such a
+   * worker exits we must NOT auto-respawn — every other still-bound exit is a
+   * crash and gets respawned instead.
+   */
+  private readonly closedByUser = new Set<string>();
+  /** H6: single-flight guard — at most one respawn attempt in flight per session. */
+  private readonly respawning = new Set<string>();
+  /** H6: consecutive crash-respawn attempts since the last successful (re)bind. */
+  private readonly respawnCounts = new Map<string, number>();
 
   /** True while a pre-warmed (session-unbound) spare process exists. */
   get hasSpare(): boolean {
@@ -188,12 +208,72 @@ export class SessionWorkers {
     };
     w.onExit = (code: number | null) => {
       this.onLog?.('warn', `Session worker exited (sessionId=${bound.sessionId}, code=${code})`);
-      if (this.map.get(bound.sessionId) === bound) {
+      // A replaced row (intentional close, core hot-restart swap, re-bind) never
+      // sees its exit — only the row still in the map can act on it.
+      if (this.map.get(bound.sessionId) !== bound) return;
+      if (this.closedByUser.has(bound.sessionId)) {
+        // Explicit close: drop the row as before, no respawn.
+        this.map.delete(bound.sessionId);
+        this.rateLimitRegistry?.forget(bound.sessionId);
+        this.onChange?.(this.tabs());
+        return;
+      }
+      // H6: unexpected exit = crash. If a turn was in flight, it was just lost —
+      // tell the UI so it can offer continue/rollback instead of a stuck
+      // "running" chip.
+      if (bound.busy || bound.fanout) {
+        this.onEvent?.(bound.sessionId, {
+          type: 'turn_lost',
+          sessionId: bound.sessionId,
+          reason: 'worker_exited',
+        } as AgentEvent);
+      }
+      // H6: auto-respawn with a loose cap (global/session isolation: only THIS
+      // session's worker is replaced — the global worker and every other tab
+      // are untouched). Rebinding goes through open(), so the tab survives the
+      // crash instead of silently vanishing from the bar.
+      const attempts = this.respawnCounts.get(bound.sessionId) ?? 0;
+      if (attempts < MAX_RESPAWN_ATTEMPTS && !this.respawning.has(bound.sessionId)) {
+        this.respawnCounts.set(bound.sessionId, attempts + 1);
+        this.respawning.add(bound.sessionId);
+        this.onLog?.(
+          'warn',
+          `Session worker auto-respawn (sessionId=${bound.sessionId}, attempt=${attempts + 1})`,
+        );
+        void this.respawnSession(bound).finally(() => {
+          this.respawning.delete(bound.sessionId);
+        });
+      } else {
+        // Budget exhausted: fall back to the pre-H6 behaviour so the user can
+        // reopen the tab manually instead of looping forever.
+        this.onLog?.('error', `Session worker respawn exhausted (sessionId=${bound.sessionId})`);
         this.map.delete(bound.sessionId);
         this.rateLimitRegistry?.forget(bound.sessionId);
         this.onChange?.(this.tabs());
       }
     };
+  }
+
+  /**
+   * H6: rebind a crashed session's worker through the normal open() path so the
+   * tab survives the crash. open() awaits any in-flight core hot-restart
+   * (global/session isolation) and re-applies the session binding. A successful
+   * re-bind resets the crash budget; a failure leaves no row (open() removes
+   * it), which matches the pre-H6 reopen-from-sessions behaviour.
+   */
+  private async respawnSession(bound: BoundWorker): Promise<void> {
+    try {
+      // rearm:false — a respawn is NOT a user open: it must not clear the
+      // "user closed" marker (a close() racing the rebind has to win) nor reset
+      // the crash budget (so consecutive crashes actually accrue toward the cap).
+      // A failure leaves no row — the user reopens from the session list.
+      await this.open(bound.sessionId, { cwd: bound.cwd ?? undefined, rearm: false });
+    } catch (err) {
+      this.onLog?.(
+        'error',
+        `Session worker respawn failed (sessionId=${bound.sessionId}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -311,8 +391,13 @@ export class SessionWorkers {
     bound.model = target.model;
   }
 
-  /** Spawn + bind a worker to `sessionId`. Resolves once the session is loaded. */
-  async open(sessionId: string, opts?: { cwd?: string }): Promise<OpenTabInfo> {
+  /**
+   * Spawn + bind a worker to `sessionId`. Resolves once the session is loaded.
+   * `rearm: false` (crash respawn) must NOT clear the "user closed" marker or
+   * the crash budget: a close() racing the rebind has to win, or the tab would
+   * resurrect after the user closed it.
+   */
+  async open(sessionId: string, opts?: { cwd?: string; rearm?: boolean }): Promise<OpenTabInfo> {
     // A core hot-restart is rebinding every live tab right now. Wait for it to
     // settle before deciding whether this session still needs a fresh worker;
     // otherwise an open() racing the restart spawns a duplicate process and the
@@ -375,6 +460,16 @@ export class SessionWorkers {
       bound.busy = !!status.busy;
       await this.applySessionBinding(bound);
       this.map.set(bound.sessionId, bound);
+      // H6: a MANUAL open re-arms crash auto-respawn for this session (clears
+      // any stale "user closed" marker + resets the budget), so a later crash
+      // of this live tab still respawns rather than vanishes. A RE-SPAWN must
+      // NOT re-arm: the crash budget only grows across consecutive crash
+      // respawns, and is only reset by a deliberate user open — otherwise a
+      // worker that dies young would respawn forever (attempts never accrues).
+      if (opts?.rearm !== false) {
+        this.closedByUser.delete(bound.sessionId);
+        this.respawnCounts.delete(bound.sessionId);
+      }
       this.onChange?.(this.tabs());
       // Keep one spare warm for the next open (gated on resource health).
       void this.warmSpare();
@@ -566,6 +661,11 @@ export class SessionWorkers {
       const model = bound.model;
       const fanout = bound.fanout;
       const old = bound.worker;
+      // M13: a turn in flight on this tab dies with the process swap below —
+      // the rebind starts a FRESH worker, and the lost turn does not survive.
+      // Tell the UI now (the H6 handler releases the stuck "running" hold and
+      // shows the continue card) so a restart never looks like a hang.
+      this.noteRestartLoss(bound);
       try {
         old.stop();
       } catch {}
@@ -631,9 +731,28 @@ export class SessionWorkers {
     this.onChange?.(this.tabs());
   }
 
+  /**
+   * M13: tell the UI that a session's in-flight turn just died because its
+   * worker was hot-swapped (a core restart rebinds every tab on the new core).
+   * The renderer's `turn_lost` handler (added in H6) releases the stuck
+   * "running" hold and shows the continue card. Idle tabs emit nothing — there
+   * is no turn to lose. Exposed as a small public seam so the restart path can
+   * be tested without spawning a real worker process.
+   */
+  noteRestartLoss(bound: { sessionId: string; busy: boolean; fanout: boolean }): void {
+    if (!(bound.busy || bound.fanout)) return;
+    this.onEvent?.(bound.sessionId, {
+      type: 'turn_lost',
+      sessionId: bound.sessionId,
+      reason: 'worker_restarted',
+    } as AgentEvent);
+  }
+
   close(sessionId: string): void {
     const b = this.map.get(sessionId);
     if (!b) return;
+    // H6: an explicit close must not trigger the crash auto-respawn on exit.
+    this.closedByUser.add(sessionId);
     this.map.delete(sessionId);
     try {
       b.worker.stop();

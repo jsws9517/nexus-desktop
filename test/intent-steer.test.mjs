@@ -88,6 +88,8 @@ function bareAgent({ messages = [], stored = [], busy = true } = {}) {
   agent.steerQueue = [];
   agent.toolErrorCount = new Map();
   agent.toolExactFailCount = new Map();
+  agent.exactBreakerState = new Map();
+  agent.argWindowGeneration = 0;
   agent.toolClassStreak = new Map();
   agent.lastStuckClassKey = undefined;
   agent.events = [];

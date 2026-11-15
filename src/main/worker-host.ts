@@ -13,8 +13,14 @@ const diag = (s: string): void => {
   logger.debug(s);
 };
 
-/** Cap the agent worker's V8 heap (~2GB default is far above what one session needs). */
-const WORKER_V8_FLAG = '--max-old-space-size=1024';
+/**
+ * Cap the agent worker's V8 heap. H6: 2GB. The old 1GB cap was below what a
+ * long session with heavy tool output + accumulated context needs, and the
+ * resulting OOM kill was the single most common *sudden* worker death. 2GB is
+ * still far below what one interactive session needs to pressure the host, so
+ * a real OOM at this cap is now a genuine fault, not a config one.
+ */
+const WORKER_V8_FLAG = '--max-old-space-size=2048';
 /** Grace period between sending 'shutdown' RPC and force-killing the worker. */
 const SHUTDOWN_TIMEOUT_MS = 3000;
 

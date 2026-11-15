@@ -389,6 +389,23 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
     'zh-CN': '侧边栏与文件浏览器在停止操作多久后自动折叠（5–300 秒，默认 10 秒）',
     en: 'How long after inactivity the sidebar and file browser auto-collapse (5–300 s, default 10)',
   },
+  permTimeoutLabel: { 'zh-CN': '权限卡片超时 (分钟)', en: 'Permission card timeout (min)' },
+  permTimeoutHint: {
+    'zh-CN': '权限卡片无人应答多久后自动拒绝（1–60 分钟，默认 10 分钟；对下一张卡片生效）',
+    en: 'How long an unanswered permission card waits before auto-denying (1–60 min, default 10; applies to the next card)',
+  },
+  permTimeoutToast: {
+    'zh-CN': '权限卡片已自动拒绝（超时未应答）',
+    en: 'Permission card auto-denied (timed out with no answer)',
+  },
+  turnLost: {
+    'zh-CN': '该回合因工作进程意外退出而中断；进度已保留，工作进程已自动重启，可继续输入。',
+    en: 'This turn was interrupted by an unexpected worker exit; progress is kept and the worker restarted automatically — you can continue.',
+  },
+  turnLostRestart: {
+    'zh-CN': '该回合因内核重启而中断；进度已保留，会话已在新内核上重新绑定，可继续输入。',
+    en: 'This turn was interrupted by a core restart; progress is kept and the session was re-bound on the new core — you can continue.',
+  },
 
   // Multi-tab (per-session worker) UI.
   tabsEmpty: { 'zh-CN': '无打开的会话标签', en: 'No open session tabs' },
@@ -416,6 +433,10 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   sidebarSubAgents: { 'zh-CN': '子级代理', en: 'Sub-Agents' },
   rateLimitLabel: { 'zh-CN': 'RPM 用量', en: 'RPM Usage' },
   rateLimitThrottled: { 'zh-CN': '限流中', en: 'Throttled' },
+  rateLimitQueued: {
+    'zh-CN': '⏳ 请求因限流排队中，已等待约 {n} 秒…（配额恢复后自动继续）',
+    en: '⏳ Request queued by rate limiting, waited ~{n}s… (continues automatically once quota frees up)',
+  },
   summaryCount: { 'zh-CN': '摘要次数', en: 'Summaries' },
   compressBudgetLeft: { 'zh-CN': '下次摘要预算', en: 'Next summary budget' },
   compressStats: { 'zh-CN': '压缩统计', en: 'Compressions' },

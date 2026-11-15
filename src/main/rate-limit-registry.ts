@@ -38,34 +38,62 @@ export class RateLimitRegistry {
     this.onChange?.(this.buildSnapshot());
   }
 
-  /** Aggregate: for each family, take the max backoffMs and max recentRequests. */
+  /**
+   * Aggregate across open tabs.
+   *
+   * M9 — shared-quota merge: a provider's RPM budget is ONE pool for the whole
+   * account, not a per-tab budget. Two tabs on the same provider draw from the
+   * same pool, so the pool's recent usage is the SUM of every tab's requests
+   * (taking the max, as before, would under-report a busy account). Backoff
+   * stays the max (the most restrictive signal wins) and the tightest rpm the
+   * minimum. Status is recomputed against the summed usage, not merged.
+   */
   getAggregated(): RateLimitStatus[] {
-    const merged = new Map<string, RateLimitStatus>();
+    // Pool key = family + baseUrl: same provider account ⇒ shared pool.
+    const pools = new Map<string, RateLimitStatus[]>();
     for (const familyMap of this.snapshots.values()) {
       for (const status of familyMap.values()) {
-        const existing = merged.get(status.family);
-        if (!existing) {
-          merged.set(status.family, { ...status });
-          continue;
+        const key = `${status.family}|${status.baseUrl || ''}`;
+        let list = pools.get(key);
+        if (!list) {
+          list = [];
+          pools.set(key, list);
         }
-        // Merge: keep the most restrictive signal.
-        merged.set(status.family, {
-          ...existing,
-          recentRequests: Math.max(existing.recentRequests, status.recentRequests),
-          backoffMs: Math.max(existing.backoffMs, status.backoffMs),
-          status: this.mergeStatus(existing.status, status.status),
-        });
+        list.push(status);
       }
     }
-    return [...merged.values()];
+    const out: RateLimitStatus[] = [];
+    for (const list of pools.values()) {
+      if (list.length === 1) {
+        out.push({ ...list[0] });
+        continue;
+      }
+      const base = list[0];
+      const recentRequests = list.reduce((n, s) => n + s.recentRequests, 0);
+      const backoffMs = Math.max(...list.map((s) => s.backoffMs));
+      const queuedMs = Math.max(...list.map((s) => s.queuedMs ?? 0));
+      const rpm = Math.min(...list.map((s) => s.rpm));
+      out.push({
+        ...base,
+        rpm,
+        recentRequests,
+        backoffMs,
+        queuedMs,
+        status: statusFromUsage(recentRequests, rpm, backoffMs),
+      });
+    }
+    return out;
   }
 
   private buildSnapshot(): RateLimitSnapshot {
     return { providers: this.getAggregated() };
   }
+}
 
-  private mergeStatus(a: RateLimitStatus['status'], b: RateLimitStatus['status']): RateLimitStatus['status'] {
-    const order: RateLimitStatus['status'][] = ['normal', 'warning', 'throttled'];
-    return order[Math.max(order.indexOf(a), order.indexOf(b))] ?? 'normal';
-  }
+/** Recompute a pool status from summed usage (mirrors RateLimiter.getStatus). */
+function statusFromUsage(recent: number, rpm: number, backoffMs: number): RateLimitStatus['status'] {
+  if (backoffMs > 0) return 'throttled';
+  if (rpm > 0 && recent >= rpm) return 'throttled';
+  if (rpm > 0 && recent >= rpm * 0.7) return 'warning';
+  return 'normal';
 }

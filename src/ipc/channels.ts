@@ -134,6 +134,8 @@ export const CHANNELS = {
   setLinuxClipboard: 'nexus:setLinuxClipboard',
   getAllowBetaUpdates: 'nexus:getAllowBetaUpdates',
   setAllowBetaUpdates: 'nexus:setAllowBetaUpdates',
+  getPermissionTimeoutMs: 'nexus:getPermissionTimeoutMs',
+  setPermissionTimeoutMs: 'nexus:setPermissionTimeoutMs',
   getResourceState: 'nexus:getResourceState',
 
   // Spend mode: per-provider billing tier + global default (desktop.json).

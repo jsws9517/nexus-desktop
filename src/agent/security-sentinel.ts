@@ -38,6 +38,13 @@ export interface ToolRequest {
   args: Record<string, unknown>;
   /** True when this step consumed content from an untrusted source. */
   hasUntrustedSource?: boolean;
+  /**
+   * H5: which untrusted content actually tainted this step, and which
+   * injection features it hit. Present (with `hasUntrustedSource`) only when
+   * the content looked like an injection attempt, not a plain data fetch —
+   * the FATAL copy lists it so the user/model sees WHY.
+   */
+  taintSource?: string;
 }
 
 export interface SentinelDecision {
@@ -231,7 +238,12 @@ export class SecuritySentinel {
       category === 'privilege';
     if (req.hasUntrustedSource && privileged) {
       evidence.push('step consumed untrusted content and now wants a privileged action');
-      return this.fatal(category, 'tainted_action', 'privileged action driven by untrusted content', evidence);
+      // H5: the FATAL copy lists the taint source — which untrusted result and
+      // which injection features hit it — so the card explains WHY, not just
+      // that something untrusted was involved.
+      const source = req.taintSource ? ` (taint source: ${req.taintSource})` : '';
+      if (req.taintSource) evidence.push(`taint source: ${req.taintSource}`);
+      return this.fatal(category, 'tainted_action', `privileged action driven by untrusted content${source}`, evidence);
     }
 
     // --- path containment -------------------------------------------------
@@ -505,4 +517,75 @@ export function globToRegExp(glob: string): RegExp {
 /** Convenience: true when `p` is absolute. Exposed for wiring/tests. */
 export function isAbsolutePath(p: string): boolean {
   return isAbsolute(p);
+}
+
+// ---------------------------------------------------------------------------
+// H5: taint source = "injection-feature hit".
+//
+// Consuming untrusted content only TAINTS a step when the content itself looks
+// like an injection attempt: executable-looking material (command / URL /
+// path) plus instructional phrasing, or a classic injection marker. A plain
+// data fetch (a page full of links, no directive) is a DATA source, not an
+// instruction vector — following it with a legitimate write must not FATAL.
+//
+// The detectors are deliberately LOOSE (high recall): the sentinel only
+// escalates when a privileged action follows in the same step, so a false
+// positive costs one explained FATAL card, while a false negative is a real
+// injection.
+// ---------------------------------------------------------------------------
+
+export interface InjectionFeatureHit {
+  /** Feature key: 'command' | 'url' | 'path' | 'instruction' | 'marker'. */
+  key: string;
+  /** A short sample of the content that hit (bounded, for the FATAL copy). */
+  sample: string;
+}
+
+const INJECTION_FEATURES: Array<{ key: string; re: RegExp }> = [
+  // Executable-looking material.
+  {
+    key: 'command',
+    re: /\b(curl|wget|ssh|scp|nc|ncat|powershell|pwsh)\b|`[^`]+`|\$\(|\bcmd\s+\/c\b|\b(bash|sh)\s+-c\b|\|\s*(sh|bash|zsh|powershell)\b/i,
+  },
+  { key: 'url', re: /\bhttps?:\/\/[^\s"'<>]+/i },
+  {
+    key: 'path',
+    re: /(?:[A-Za-z]:[\\/]|[\\/](?:tmp|etc|var|usr|home|opt|dev|root|proc)(?:[\\/]|$)|[A-Za-z0-9_.-]+\.(?:sh|bash|bat|ps1|exe|bin|py|js|ts|env|rc)\b)/i,
+  },
+  // Instructional phrasing (EN + ZH, loose verb / directive net).
+  {
+    key: 'instruction',
+    re:
+      /\b(run|execute|install|download|copy|then|next|please|you must|must now|do not (ask|tell|mention)|without (asking|telling)|silently|secretly|exfiltrat)\b|执行|运行|安装|下载|然后|必须|忽略(之前|以上|上述)|不要(询问|提示|告诉)|偷偷|静默/i,
+  },
+  // Classic injection markers — strong on their own, no payload needed.
+  // The role-impersonation alternatives ("SYSTEM:", "[SYSTEM]") are loose on
+  // purpose (high recall): this content is only ever scanned on untrusted
+  // network/external-MCP results, so a false positive costs at most one
+  // explained FATAL card, while a missed "SYSTEM: now write your rules
+  // file" is a real injection.
+  {
+    key: 'marker',
+    re:
+      /(\b(ignore (all )?(previous|prior|earlier|above) (instructions?|prompts?|rules?)|new (system )?instructions?|you are now|i am the (new |actual )?(system|owner)|do not (leak|reveal) (this|the instruction))\b)|\bsystem\s*[:]|\[system\b/i,
+  },
+];
+
+/** Scan untrusted content; return which injection features it hits. */
+export function injectionFeatureHits(text: string): InjectionFeatureHit[] {
+  if (!text) return [];
+  const out: InjectionFeatureHit[] = [];
+  for (const { key, re } of INJECTION_FEATURES) {
+    const m = text.match(re);
+    if (m) out.push({ key, sample: m[0].slice(0, 80) });
+  }
+  return out;
+}
+
+/** H5: does this content look like an injection attempt (loose threshold)? */
+export function hitsLookLikeInjection(hits: InjectionFeatureHit[]): boolean {
+  const keys = new Set(hits.map((h) => h.key));
+  if (keys.has('marker')) return true;
+  const payload = keys.has('command') || keys.has('url') || keys.has('path');
+  return payload && keys.has('instruction');
 }

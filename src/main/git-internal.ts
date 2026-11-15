@@ -235,10 +235,16 @@ interface GitResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** M8: the command was killed by the exec timeout — an environment slowness, not a broken command. */
+  timedOut?: boolean;
 }
 
 const EXEC_TIMEOUT_MS = 300_000;
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
+/** M8: loose 1MB threshold — bigger successful payloads are summarized (head+tail), not shipped whole. */
+const LARGE_RESULT_BYTES = 1_000_000;
+const SUMMARY_HEAD_BYTES = 24_000;
+const SUMMARY_TAIL_BYTES = 8_000;
 
 /** Run git with an argv array (no shell). cwd must already be in a repo. */
 function gitRun(argv: string[], cwd: string, timeoutMs = EXEC_TIMEOUT_MS): Promise<GitResult> {
@@ -257,7 +263,7 @@ function gitRun(argv: string[], cwd: string, timeoutMs = EXEC_TIMEOUT_MS): Promi
       if (settled) return;
       settled = true;
       child.kill();
-      resolve({ stdout: Buffer.concat(chunks).toString('utf-8'), stderr: 'Git command timed out', exitCode: 1 });
+      resolve({ stdout: Buffer.concat(chunks).toString('utf-8'), stderr: 'Git command timed out', exitCode: 1, timedOut: true });
     }, timeoutMs);
     child.stdout.on('data', (d: Buffer) => {
       if (chunks.reduce((n, c) => n + c.length, 0) + d.length > MAX_OUTPUT_BYTES) {
@@ -306,12 +312,33 @@ function formatGitError(error: string): string {
   return error;
 }
 
-function okJson(payload: Record<string, unknown>, command: string): GitToolResult {
-  return { content: JSON.stringify({ ...payload, command }, null, 2), isError: false };
+export function okJson(payload: Record<string, unknown>, command: string): GitToolResult {
+  const full = JSON.stringify({ ...payload, command }, null, 2);
+  // M8: >1MB loose threshold — a git payload this big (unbounded log/blame/diff
+  // output) would blow the model context for little signal. Ship a summary:
+  // head + tail + size, with a hint to narrow the query for specifics.
+  if (full.length <= LARGE_RESULT_BYTES) return { content: full, isError: false };
+  const content =
+    `[output truncated: ${full.length} bytes, limit ${LARGE_RESULT_BYTES}]\n` +
+    `--- head ---\n${full.slice(0, SUMMARY_HEAD_BYTES)}\n` +
+    `--- tail ---\n${full.slice(-SUMMARY_TAIL_BYTES)}\n` +
+    'The middle of this git output was omitted; narrow the query (count/range/paths) to see specific records.';
+  return { content, isError: false };
 }
 
-function errJson(stderr: string, command: string): GitToolResult {
-  return { content: JSON.stringify({ success: false, error: formatGitError(stderr.trim()), command }, null, 2), isError: true };
+export function errJson(stderr: string, command: string): GitToolResult {
+  const trimmed = stderr.trim();
+  const payload: Record<string, unknown> = { success: false, error: formatGitError(trimmed), command };
+  // M8: a git timeout is its own class (`git-slow`): the command itself is
+  // fine, the environment (network/remote/repo lock) is slow. Mark it in the
+  // payload so the agent's failure monitor can tell it apart from a broken
+  // command — retrying a slow op in a tight loop never helps.
+  const slow = trimmed.includes('Git command timed out');
+  if (slow) {
+    payload.gitSlow = true;
+    payload.hint = 'This git operation timed out (slow environment, not a broken command). Prefer a read-only or narrower git tool, and do not retry it in a tight loop.';
+  }
+  return { content: JSON.stringify(payload, null, 2), isError: true };
 }
 
 function caughtJson(err: unknown): GitToolResult {

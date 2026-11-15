@@ -32,6 +32,21 @@ interface Bucket {
   consecutive429: number;
 }
 
+/** One queue-wait notification, fired the moment a request starts waiting. */
+export interface QueueWaitInfo {
+  family: string;
+  /** How long THIS wait will be (ms). */
+  waitMs: number;
+  /**
+   * M9: cumulative time this family has spent queued since the last
+   * successful call. The UI shows a hint when this crosses a loose
+   * (e.g. 60s) threshold — one slow remote is normal; a minute of waiting
+   * deserves a visible notice.
+   */
+  queuedMs: number;
+  reason: 'backoff' | 'window';
+}
+
 export interface RateLimitStatus {
   providerName: string;
   baseUrl: string;
@@ -39,12 +54,18 @@ export interface RateLimitStatus {
   rpm: number;
   recentRequests: number;
   backoffMs: number;
+  /** M9: cumulative queue-wait since the last success (0 when not queued). */
+  queuedMs?: number;
   status: 'normal' | 'warning' | 'throttled';
 }
 
 export class RateLimiter {
   private readonly buckets = new Map<string, Bucket>();
   private readonly customRpm = new Map<string, number>();
+  /** M9: cumulative queue-wait per family since the last successful call. */
+  private readonly queuedMs = new Map<string, number>();
+  /** M9: fired the moment a request begins waiting (backoff or full window). */
+  onQueueWait?: (info: QueueWaitInfo) => void;
 
   getEffectiveRpm(family: string): number {
     return this.customRpm.get(family) ?? DEFAULT_RPM[family] ?? DEFAULT_RPM.unknown;
@@ -52,6 +73,19 @@ export class RateLimiter {
 
   setCustomRpm(family: string, rpm: number): void {
     this.customRpm.set(family, rpm);
+  }
+
+  /** M9: cumulative queue-wait since the last success (exposed for status/UI). */
+  getQueuedMs(family: string): number {
+    return this.queuedMs.get(family) ?? 0;
+  }
+
+  /** Record a wait and fire the queued event (loose: additive, never throws). */
+  private noteWait(family: string, waitMs: number, reason: QueueWaitInfo['reason']): void {
+    if (waitMs <= 0) return;
+    const queued = (this.queuedMs.get(family) ?? 0) + waitMs;
+    this.queuedMs.set(family, queued);
+    this.onQueueWait?.({ family, waitMs, queuedMs: queued, reason });
   }
 
   async acquire(family: string, rpm?: number): Promise<void> {
@@ -67,6 +101,7 @@ export class RateLimiter {
     // Enforce any active backoff first.
     if (bucket.backoffUntil > now) {
       const waitMs = bucket.backoffUntil - now;
+      this.noteWait(family, waitMs, 'backoff');
       await this.sleep(waitMs);
       // Re-check after waking — backoff may have expired.
       if (bucket.backoffUntil <= Date.now()) {
@@ -86,6 +121,7 @@ export class RateLimiter {
       const oldest = bucket.timestamps[0];
       const waitMs = oldest + WINDOW_MS - Date.now();
       if (waitMs > 0) {
+        this.noteWait(family, waitMs, 'window');
         await this.sleep(waitMs);
       }
       // Re-prune and re-check after waking.
@@ -96,7 +132,10 @@ export class RateLimiter {
         // Spinning wait (rare): keep pruning until a slot opens.
         while (bucket.timestamps.length >= limit) {
           const w = bucket.timestamps[0] + WINDOW_MS - Date.now();
-          if (w > 0) await this.sleep(w);
+          if (w > 0) {
+            this.noteWait(family, w, 'window');
+            await this.sleep(w);
+          }
           const now3 = Date.now();
           const c3 = now3 - WINDOW_MS;
           bucket.timestamps = bucket.timestamps.filter((t) => t > c3);
@@ -133,6 +172,9 @@ export class RateLimiter {
       bucket.backoffUntil = 0;
       bucket.consecutive429 = 0;
     }
+    // A success is the natural reset point for the cumulative queue wait, so
+    // the next burst starts the 60s hint clock from zero again.
+    this.queuedMs.delete(family);
   }
 
   getStatus(family: string, baseUrl?: string): RateLimitStatus | null {
@@ -145,6 +187,7 @@ export class RateLimiter {
         rpm: this.getEffectiveRpm(family),
         recentRequests: 0,
         backoffMs: 0,
+        queuedMs: this.getQueuedMs(family),
         status: 'normal',
       };
     }

@@ -577,6 +577,15 @@ export function registerIpc(ctx: IpcContext): void {
     return { ok: true };
   });
 
+  // H2: permission-card timeout (desktop.json `permissionTimeoutMs`). Takes
+  // effect on the NEXT card (the worker mtime-caches the value), no restart.
+  ipcMain.handle(CHANNELS.getPermissionTimeoutMs, (): number => ctx.getPermissionTimeoutMs());
+  ipcMain.handle(CHANNELS.setPermissionTimeoutMs, (_e, ms: unknown): { ok: boolean } => {
+    if (!isFiniteNumber(ms)) return { ok: false };
+    ctx.setPermissionTimeoutMs(ms);
+    return { ok: true };
+  });
+
   // Resource / session governance (desktop.json + live resource watchdog).
   ipcMain.handle(CHANNELS.getMaxTabs, (): number => ctx.getMaxTabs());
   ipcMain.handle(CHANNELS.setMaxTabs, (_e, n: unknown): { ok: boolean } => {

@@ -22,6 +22,7 @@ import {
   hasEnabledAutomations,
 } from './automation-runner.js';
 import { createDesktopState } from './desktop-state.js';
+import { cleanupStaleToolResultSpills } from './cache-cleanup.js';
 import type { AgentEvent } from '../agent-service.js';
 import { logger } from '../shared/logger.js';
 import { configureGpuForEnvironment } from './gpu-guard.js';
@@ -99,6 +100,14 @@ const rateLimitRegistry = new RateLimitRegistry();
 // Desktop-only settings store (~/.nexus/desktop.json). Single owner of the
 // read/write cache; IPC handlers and the bootstrap share this same instance.
 const desktopState = createDesktopState();
+// L3: reap spilled tool-result files older than 7 days (a few statSync calls;
+// best-effort — a failure here must not block the app).
+try {
+  const removed = cleanupStaleToolResultSpills();
+  if (removed > 0) logf(`reaped ${removed} stale spilled tool result(s)`);
+} catch {
+  /* best-effort */
+}
 sessionWorkers.rateLimitRegistry = rateLimitRegistry;
 rateLimitRegistry.setOnChange((snapshot) => send(CHANNELS.rateLimitUpdate, snapshot));
 const updater = new Updater();
@@ -958,6 +967,8 @@ if (gotLock) {
       setLinuxClipboard: desktopState.setLinuxClipboard,
       getAllowBetaUpdates: desktopState.getAllowBetaUpdates,
       setAllowBetaUpdates: desktopState.setAllowBetaUpdates,
+      getPermissionTimeoutMs: desktopState.getPermissionTimeoutMs,
+      setPermissionTimeoutMs: desktopState.setPermissionTimeoutMs,
       getModelBlacklist: desktopState.getModelBlacklist,
       setModelBlacklist: desktopState.setModelBlacklist,
       getSpendMode: desktopState.getSpendMode,

@@ -230,6 +230,9 @@ const api = {
   getAllowBetaUpdates: () => ipcRenderer.invoke('nexus:getAllowBetaUpdates') as Promise<boolean>,
   setAllowBetaUpdates: (enabled: boolean) =>
     ipcRenderer.invoke('nexus:setAllowBetaUpdates', enabled) as Promise<{ ok: boolean }>,
+  getPermissionTimeoutMs: () => ipcRenderer.invoke('nexus:getPermissionTimeoutMs') as Promise<number>,
+  setPermissionTimeoutMs: (ms: number) =>
+    ipcRenderer.invoke('nexus:setPermissionTimeoutMs', ms) as Promise<{ ok: boolean }>,
   getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
   getRateLimitStatus: () => ipcRenderer.invoke('nexus:getRateLimitStatus'),
 
@@ -304,7 +307,7 @@ const api = {
   onTabsChanged: (cb: (tabs: Array<{ sessionId: string; provider: string; model: string; busy: boolean }>) => void) => {
     ipcRenderer.on('nexus:tabsChanged', (_e, tabs) => cb(tabs));
   },
-  onRateLimitUpdate: (cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }) => void) => {
+  onRateLimitUpdate: (cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; queuedMs?: number; status: string }> }) => void) => {
     ipcRenderer.on('nexus:rateLimitUpdate', (_e, data) => cb(data));
   },
   onUpdateState: (cb: (state: Record<string, unknown>) => void) => {

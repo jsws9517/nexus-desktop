@@ -55,7 +55,7 @@ interface StatusInfo {
   summaryThreshold?: number;
   lastSummaryTokens?: number;
   strategyCounts?: { summarize: number; truncate: number; snapshot: number };
-  rateLimit?: { family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: 'normal' | 'warning' | 'throttled' };
+  rateLimit?: { family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; queuedMs?: number; status: 'normal' | 'warning' | 'throttled' };
 }
 
 interface PermissionsInfo {
@@ -209,6 +209,18 @@ type AgentEvent =
   // and both dropdowns repaint from the event instead of re-pulling getStatus.
   | { type: 'model_changed'; sessionId: string; provider: string; model: string }
   | { type: 'context_cleared'; sessionId: string }
+  // H2: a pending permission card was released by the worker (auto-deny on
+  // timeout, or abort/shutdown flush). `ids` are the released card ids; `reason`
+  // tells the UI why it closed (so a timeout can toast, not just vanish).
+  | { type: 'permission_resolved'; ids: string[]; reason: string }
+  // H6: the worker behind this tab died with a turn still in flight. The
+  // progress is kept in the transcript; the worker is auto-respawned, so the
+  // card just explains the interruption and the user continues by typing.
+  | { type: 'turn_lost'; sessionId: string; reason: string }
+  // M9: a request in THIS worker's rate limiter just started waiting (429
+  // backoff or a full RPM window). Informational — the turn continues once a
+  // slot opens; the UI hints only when the cumulative wait crosses 60s.
+  | { type: 'rate_limit_queued'; family: string; waitMs: number; queuedMs: number; reason: 'backoff' | 'window' }
   | { type: 'slash_start'; command: string; anchorId?: number }
   | { type: 'slash'; text: string }
   | { type: 'slash_end'; anchorId?: number; command: string }
@@ -426,6 +438,8 @@ declare global {
       setLinuxClipboard(enabled: boolean): Promise<{ ok: boolean }>;
       getAllowBetaUpdates(): Promise<boolean>;
       setAllowBetaUpdates(enabled: boolean): Promise<{ ok: boolean }>;
+      getPermissionTimeoutMs(): Promise<number>;
+      setPermissionTimeoutMs(ms: number): Promise<{ ok: boolean }>;
       getResourceState(): Promise<ResourceStateInfo>;
       getUpdateState(): Promise<Record<string, unknown>>;
       getCurrentVersion(): Promise<string>;
@@ -445,7 +459,7 @@ declare global {
       onTabsChanged(cb: (tabs: TabInfo[]) => void): void;
       onUpdateState(cb: (state: Record<string, unknown>) => void): void;
       getRateLimitStatus(): Promise<{ providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }>;
-      onRateLimitUpdate(cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; status: string }> }) => void): void;
+      onRateLimitUpdate(cb: (data: { providers: Array<{ family: string; providerName: string; baseUrl: string; rpm: number; recentRequests: number; backoffMs: number; queuedMs?: number; status: string }> }) => void): void;
       // Spend mode: per-provider billing tier + global default.
       getSpendMode(): Promise<{ default: string; providers: Record<string, { mode: string; host?: string; updatedAt?: string }> }>;
       setSpendModeDefault(mode: string): Promise<{ ok: boolean }>;
@@ -1868,6 +1882,11 @@ function addFileChip(file: Extract<AgentEvent, { type: 'file_ready' }>): void {
   scrollToBottom();
 }
 
+/** M9: cumulative rate-limit queue wait (ms) that earns a visible toast hint. */
+const RATE_QUEUED_HINT_MS = 60_000;
+/** M9: last `rate_limit_queued` cumulative wait for this tab (crossing guard). */
+let rateQueuedLastMs = 0;
+
 function handleEvent(event: AgentEvent): void {
   switch (event.type) {
     case 'session_start':
@@ -1974,6 +1993,51 @@ function handleEvent(event: AgentEvent): void {
         void refreshSessionStats();
       }
       break;
+    case 'permission_resolved':
+      // H2: the worker already released this card (timeout / abort / shutdown)
+      // and auto-denied it. Drop it from the pending batch so the overlay
+      // closes instead of hanging, and show WHY for a timeout.
+      {
+        const ids: string[] = Array.isArray(event.ids)
+          ? (event.ids as unknown[]).filter((x): x is string => typeof x === 'string')
+          : [];
+        if (ids.length > 0) {
+          if (permTimer !== null) { clearTimeout(permTimer); permTimer = null; }
+          for (let i = permBatch.length - 1; i >= 0; i--) {
+            if (ids.includes(permBatch[i].id)) permBatch.splice(i, 1);
+          }
+          if (permBatch.length === 0) permOverlay.classList.add('hidden');
+          else flushPermBatch();
+        }
+        if (event.reason === 'timeout') {
+          showToast(t('permTimeoutToast'), 'warning', 4000);
+        }
+      }
+      break;
+    case 'turn_lost':
+      // H6/M13: this tab's worker died mid-turn — either an unexpected crash
+      // (reason 'worker_exited', main auto-respawned it) or a core hot-restart
+      // swap (reason 'worker_restarted', the session re-bound on the new core).
+      // Either way the in-flight turn is gone; the partial progress is already
+      // in the transcript, so explain the interruption per reason and hand the
+      // composer back to the user — "continue" is one keystroke.
+      if (event.sessionId === currentSessionId) {
+        addSystem(event.reason === 'worker_restarted' ? t('turnLostRestart') : t('turnLost'));
+        inputEl.focus();
+      }
+      break;
+    case 'rate_limit_queued': {
+      // M9: a request just started waiting in the provider's rate limiter
+      // (429 backoff or full RPM window). One toast per burst, only when the
+      // CUMULATIVE wait crosses the loose 60s threshold — short waits are
+      // normal and not worth a toast. The crossing guard uses the last
+      // reported value, reset when the sidebar status shows queuedMs back at 0.
+      if (event.queuedMs >= RATE_QUEUED_HINT_MS && rateQueuedLastMs < RATE_QUEUED_HINT_MS) {
+        showToast(t('rateLimitQueued', { n: Math.round(event.queuedMs / 1000) }), 'warning', 4000);
+      }
+      rateQueuedLastMs = event.queuedMs;
+      break;
+    }
     case 'model_changed':
       // The session's (provider, model) pair just moved. Without this the
       // sidebar rows and both toolbar dropdowns are pull-only and stay on the
@@ -4200,6 +4264,13 @@ function applyTabEvent(sessionId: string, event: AgentEvent): void {
     // Per-sub-task heartbeat: keep the batch's stuck-detector alive and flip
     // the shared task status so scoped sidebar cards track progress live.
     handleFanoutTaskProgress(sessionId, event.taskId, event.status);
+  } else if (event.type === 'turn_lost') {
+    // H6: the tab's worker died mid-turn. Release the live-turn + fan-out
+    // holds so the chip doesn't stay stuck on "running" (the respawned
+    // worker's next turn_start re-lights it).
+    fanoutBatches.delete(sessionId);
+    tabTurnLive.delete(sessionId);
+    syncTabBusy(sessionId);
   }
   // Fan out EVERY tab event to sidebar pages (Jobs/Sub-Agents) so background
   // tabs' job lifecycle still updates the panel — handleEvent stays active-tab
@@ -4222,7 +4293,8 @@ function applyTabEvent(sessionId: string, event: AgentEvent): void {
     }
   }
   const touchesBusy = event.type === 'turn_start' || event.type === 'session_end'
-    || event.type === 'fanout_start' || event.type === 'fanout_end' || event.type === 'fanout_error';
+    || event.type === 'fanout_start' || event.type === 'fanout_end' || event.type === 'fanout_error'
+    || event.type === 'turn_lost';
   if (sessionId === activeTabId) {
     handleEvent(event);
   } else if (touchesBusy) {
@@ -4572,6 +4644,11 @@ function renderRateLimit(rl: StatusInfo['rateLimit']): void {
   const zh = getUiLang() === 'zh-CN';
   if (rl.backoffMs > 0) {
     rsideRateLimit.textContent = `${zh ? '退避中' : 'Backoff'} ${Math.round(rl.backoffMs / 1000)}s`;
+    rsideRateLimit.title = `${rl.family} · ${rl.baseUrl}`;
+  } else if ((rl.queuedMs ?? 0) > 0) {
+    // M9: requests are waiting in the rate-limiter queue — show how long the
+    // cumulative wait has been so a slow start isn't mistaken for a hang.
+    rsideRateLimit.textContent = `${zh ? '排队' : 'Queued'} ${Math.round((rl.queuedMs ?? 0) / 1000)}s`;
     rsideRateLimit.title = `${rl.family} · ${rl.baseUrl}`;
   } else if (rl.recentRequests >= rl.rpm) {
     rsideRateLimit.textContent = zh ? '已满 (429)' : 'Full (429)';
@@ -6336,6 +6413,19 @@ function buildResourceSection(container?: HTMLElement): void {
       return window.nexusDesktop.setPanelIdleMs(v * 1000);
     },
   ));
+
+  // H2: how long a permission card may wait before it auto-denies (minutes,
+  // 1–60; absent/invalid → the 10-minute default). Applies to the NEXT card.
+  target.appendChild(buildNumberRow(
+    t('permTimeoutLabel'),
+    t('permTimeoutHint'),
+    1,
+    60,
+    window.nexusDesktop.getPermissionTimeoutMs().then((ms) => Math.round(ms / 60000)),
+    (v) => {
+      return window.nexusDesktop.setPermissionTimeoutMs(v * 60000);
+    },
+  ));
 }
 
 /**
@@ -8009,6 +8099,9 @@ window.nexusDesktop.onRateLimitUpdate((data) => {
   if (!primary) return;
   // Use aggregated data to re-render the sidebar rate-limit indicator.
   renderRateLimit(primary as StatusInfo['rateLimit']);
+  // M9: the queue cleared (cumulative wait reset to 0 after a success) — let
+  // the next burst's 60s crossing fire the hint toast again.
+  if ((primary.queuedMs ?? 0) === 0) rateQueuedLastMs = 0;
 });
 
 // When the full config Web UI closes it may have rewritten config.json

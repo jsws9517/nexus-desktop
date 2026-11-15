@@ -63,6 +63,8 @@ export interface ThinkingStall {
   thinkingTokens: number;
   /** Current consecutive-identical-delta count. */
   repeatCount: number;
+  /** M11: which loop kind fired (exact repeated delta vs. prefix re-emission). */
+  loopKind?: 'exact' | 'prefix';
 }
 
 export interface TurnMonitorOptions {
@@ -74,13 +76,34 @@ export interface TurnMonitorOptions {
   /** Minimum non-whitespace ratio a thinking delta must carry to be considered
    *  informative (lower allows more noise through). */
   minInfoRatio?: number;
+  /**
+   * M11: estimated thinking tokens in the current no-progress span before the
+   *  prefix-loop check is even considered. Kept LOOSE (lower than idle) so a
+   *  spinning prefix is caught before it burns a full idle budget.
+   */
+  loopMinTokens?: number;
+  /**
+   * M11: "no new content growth after a prefix". The span's thinking deltas are
+   *  bucketed by their 64-char normalized head; when a few heads dominate the
+   *  span's deltas (top-3 share ≥ this fraction), the model is re-emitting the
+   *  same thought(s) with surface variation instead of advancing. Loose on
+   *  purpose: genuinely advancing reasoning keeps adding new heads, so its
+   *  dominance stays low.
+   */
+  loopHeadDominance?: number;
 }
 
 const DEFAULTS: Required<TurnMonitorOptions> = {
   maxRepeat: 6,
   idleThinkingTokens: 2500,
   minInfoRatio: 0.5,
+  loopMinTokens: 400,
+  loopHeadDominance: 0.7,
 };
+
+/** M11: the prefix-loop check needs a floor of buckets — 3 long distinct
+ *  thoughts are not a loop. */
+const LOOP_MIN_DELTAS = 8;
 
 export class TurnMonitor {
   private opts: Required<TurnMonitorOptions>;
@@ -92,6 +115,14 @@ export class TurnMonitor {
   private repeatCount = 1;
   private sinceProgressChars = 0;
   private stallFired = false;
+  /**
+   * M11: the thought-head (64-char normalized head) of each thinking delta
+   * since the last progress. The prefix-loop detector buckets deltas on these:
+   * a span dominated by the same few heads is re-voicing, not growing.
+   */
+  private spanHeads: string[] = [];
+  /** M11: bucket cap — older heads drop off; a loop reuses the same few. */
+  private static readonly SPAN_HEADS_CAP = 512;
 
   constructor(opts: TurnMonitorOptions = {}) {
     this.opts = { ...DEFAULTS, ...opts };
@@ -127,6 +158,13 @@ export class TurnMonitor {
       this.lastNorm = norm;
       this.repeatCount = 1;
     }
+    // M11: prefix-loop tracking — bucket the delta's thought head; a span
+    // dominated by the same few heads means the model re-voices the same
+    // thought instead of growing new content past it.
+    if (norm) {
+      this.spanHeads.push(norm);
+      if (this.spanHeads.length > TurnMonitor.SPAN_HEADS_CAP) this.spanHeads.shift();
+    }
   }
 
   /** Record a streamed text delta; any text is real progress. */
@@ -141,6 +179,8 @@ export class TurnMonitor {
     this.sinceProgressChars = 0;
     this.repeatCount = 1;
     this.lastNorm = '';
+    // M11: real progress starts a fresh thinking span (clears the loop memory).
+    this.spanHeads = [];
   }
 
   /**
@@ -150,15 +190,35 @@ export class TurnMonitor {
    */
   checkStall(): ThinkingStall {
     const thinkingTokens = estimateTokens(this.sinceProgressChars);
-    const loop = this.repeatCount >= this.opts.maxRepeat;
+    const exactLoop = this.repeatCount >= this.opts.maxRepeat;
+    // M11: "no new content growth after a prefix" — the span is long enough to
+    // matter AND its deltas are dominated by the same few thought-heads,
+    // i.e. the model keeps re-emitting the same idea with surface variation.
+    let prefixLoop = false;
+    if (
+      !exactLoop &&
+      thinkingTokens >= this.opts.loopMinTokens &&
+      this.spanHeads.length >= LOOP_MIN_DELTAS
+    ) {
+      const counts = new Map<string, number>();
+      for (const h of this.spanHeads) counts.set(h, (counts.get(h) ?? 0) + 1);
+      const top3 = [...counts.values()].sort((a, b) => b - a).slice(0, 3);
+      const share =
+        ((top3[0] ?? 0) + (top3[1] ?? 0) + (top3[2] ?? 0)) / this.spanHeads.length;
+      prefixLoop = share >= this.opts.loopHeadDominance;
+    }
+    const loop = exactLoop || prefixLoop;
     const idle =
       !loop && this.sinceProgressChars > 0 && thinkingTokens >= this.opts.idleThinkingTokens;
-    return {
-      stalled: (loop || idle) && !this.stallFired,
+    const stalled = (loop || idle) && !this.stallFired;
+    const verdict: ThinkingStall = {
+      stalled,
       reason: loop ? 'loop' : idle ? 'idle' : 'none',
       thinkingTokens,
       repeatCount: this.repeatCount,
     };
+    if (loop) verdict.loopKind = exactLoop ? 'exact' : 'prefix';
+    return verdict;
   }
 
   /** Mark this turn's stall as handled (so it fires exactly once). */

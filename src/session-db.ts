@@ -50,8 +50,10 @@ const REQUIRED_COLUMNS = ['id', 'session_id', 'role', 'content'];
  * journal_mode=WAL, so many processes can read concurrently and writers only
  * take a transient writer lock.
  *
- * Deletions keep a fresh short-lived writer connection (rare, and busy_timeout
- * lets them wait out another process holding the WAL writer lock).
+ * L5: writes use a capped reusable pool (borrowWriter/returnWriter, up to
+ * WRITER_POOL_MAX idle handles) instead of an open+close per call; every
+ * writer handle carries busy_timeout so a lock held by another process is
+ * waited out, not dropped.
  *
  * Schema verification is itself cached: the messages columns can only change on
  * a core upgrade, which restarts this process. A failed check is re-verified on
@@ -64,38 +66,15 @@ let messagesSchemaOk = false;
 // degrading to no-op.
 let openFailureWarned = false;
 
-function openDb(readonly = true): Database.Database | null {
-  if (readonly && sharedRead) return sharedRead;
+function openDb(): Database.Database | null {
+  if (sharedRead) return sharedRead;
   let db: Database.Database;
   try {
-    db = new Database(dbPath(), { readonly });
+    db = new Database(dbPath(), { readonly: true });
   } catch (err) {
-    if (!openFailureWarned) {
-      openFailureWarned = true;
-      const msg = err instanceof Error ? err.message : String(err);
-      // In dev, node_modules' better-sqlite3 is built for the SYSTEM Node ABI
-      // while the Electron main process needs the Electron ABI — the load
-      // throws and every main-side DB call silently no-op'd, making dev
-      // behave differently from the packaged app. Detect that specific cause
-      // and say so explicitly; the degradation itself is kept by design.
-      const abiMismatch =
-        /NODE_MODULE_VERSION|different version of Node|was compiled against|incompatible ABI|Invalid module identifier/i.test(msg);
-      if (abiMismatch) {
-        logger.warn(
-          `session-db: better-sqlite3 ABI mismatch (dev: module built for system Node, not the Electron runtime) — main-side session DB operations are NO-OP (reads return empty, deletes are skipped). Rebuild the native module: \`npm run rebuild:electron\`.`,
-        );
-      } else {
-        logger.warn(`session-db: unable to open ${dbPath()}: ${msg} — main-side DB operations are NO-OP until this is fixed.`);
-      }
-    }
+    warnOpenFailure(err);
     return null;
   }
-  try {
-    // WAL is already enabled by the core; setting busy_timeout makes desktop
-    // writes (deleteMessagesFrom) block briefly instead of erroring when another
-    // session worker holds the writer lock.
-    db.pragma('busy_timeout = 5000');
-  } catch {}
   try {
     if (!messagesSchemaOk) {
       const cols = db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
@@ -110,8 +89,134 @@ function openDb(readonly = true): Database.Database | null {
     db.close();
     return null;
   }
-  if (readonly) sharedRead = db;
+  sharedRead = db;
   return db;
+}
+
+/** L4: print the cause of the first open failure exactly once (both paths). */
+function warnOpenFailure(err: unknown): void {
+  if (openFailureWarned) return;
+  openFailureWarned = true;
+  const msg = err instanceof Error ? err.message : String(err);
+  // In dev, node_modules' better-sqlite3 is built for the SYSTEM Node ABI
+  // while the Electron main process needs the Electron ABI — the load
+  // throws and every main-side DB call silently no-op'd, making dev
+  // behave differently from the packaged app. Detect that specific cause
+  // and say so explicitly; the degradation itself is kept by design.
+  const abiMismatch =
+    /NODE_MODULE_VERSION|different version of Node|was compiled against|incompatible ABI|Invalid module identifier/i.test(msg);
+  if (abiMismatch) {
+    logger.warn(
+      `session-db: better-sqlite3 ABI mismatch (dev: module built for system Node, not the Electron runtime) — main-side session DB operations are NO-OP (reads return empty, deletes are skipped). Rebuild the native module: \`npm run rebuild:electron\`.`,
+    );
+  } else {
+    logger.warn(`session-db: unable to open ${dbPath()}: ${msg} — main-side DB operations are NO-OP until this is fixed.`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// L5: capped, reusable writer-connection pool.
+//
+// Every desktop write (deleteMessagesFrom / deleteAllSessionMessages /
+// setSessionBinding / updateTaskGraphProjectName) used to pay a fresh
+// better-sqlite3 open()+close() — a few ms of ABI + disk work each time, with
+// no bound on how many handles a burst of concurrent writes could hold. Now
+// a small pool of idle writer handles (capped at WRITER_POOL_MAX) is reused
+// across calls, and a burst beyond the cap falls back to a transient open
+// (the old behavior) instead of degrading writes.
+//
+// Each handle carries busy_timeout = WRITER_BUSY_TIMEOUT_MS, so a writer that
+// loses the WAL writer lock to another process (main + N session workers)
+// WAITS it out instead of erroring — the silent no-op drop that reads as a
+// "sudden interrupt" (a binding update / /clear that just… didn't happen).
+// ---------------------------------------------------------------------------
+const WRITER_POOL_MAX = 2;
+const WRITER_BUSY_TIMEOUT_MS = 5000;
+let writerPool: Database.Database[] = [];
+/** Open writer handles in this process (pooled + checked out). */
+let writerHandles = 0;
+
+/** Open (or reuse) a writer handle. Returns null when the DB is unopenable. */
+function openWriterDb(): Database.Database | null {
+  const idle = writerPool.pop();
+  if (idle) return idle;
+  let db: Database.Database;
+  try {
+    db = new Database(dbPath(), { readonly: false });
+  } catch (err) {
+    warnOpenFailure(err);
+    return null;
+  }
+  try {
+    db.pragma(`busy_timeout = ${WRITER_BUSY_TIMEOUT_MS}`);
+  } catch {
+    /* pragma failure must not kill the write path */
+  }
+  writerHandles++;
+  return db;
+}
+
+/** Borrow a writer handle (fresh open only when the pool is empty). */
+export function borrowWriter(): Database.Database | null {
+  const db = openWriterDb();
+  if (!db) return null;
+  // Same soft schema gate as the read path: a core schema rename degrades
+  // writes to no-ops, and the check re-runs on every borrow until it passes.
+  try {
+    if (!messagesSchemaOk) {
+      const cols = db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+      const names = new Set(cols.map((c) => c.name));
+      messagesSchemaOk = REQUIRED_COLUMNS.every((c) => names.has(c));
+      if (!messagesSchemaOk) {
+        returnWriter(db);
+        return null;
+      }
+    }
+    return db;
+  } catch {
+    returnWriter(db);
+    return null;
+  }
+}
+
+/**
+ * Return a borrowed handle: to the pool when under the cap (stays open,
+ * zero-cost next borrow), otherwise closed. The cap keeps a long-lived
+ * worker from pinning more than WRITER_POOL_MAX writer handles.
+ */
+function returnWriter(db: Database.Database): void {
+  if (writerPool.length < WRITER_POOL_MAX) {
+    writerPool.push(db);
+  } else {
+    writerHandles = Math.max(0, writerHandles - 1);
+    try {
+      db.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/** L5 test/debug seam: how many writer handles this process holds. */
+export function writerPoolStats(): { pooled: number; open: number; cap: number } {
+  return { pooled: writerPool.length, open: writerHandles, cap: WRITER_POOL_MAX };
+}
+
+/** L5 test seam: the effective busy_timeout on a pooled writer handle (ms). */
+export function writerBusyTimeoutMs(): number {
+  const db = borrowWriter();
+  if (!db) return 0;
+  let v = 0;
+  try {
+    // better-sqlite3's read pragma reports the value under the column `timeout`.
+    const row = (db.pragma('busy_timeout') as Array<{ timeout?: number; busy_timeout?: number }>)[0];
+    v = Number(row?.timeout ?? row?.busy_timeout ?? 0);
+  } catch {
+    /* pragma read failure reports 0 */
+  } finally {
+    returnWriter(db);
+  }
+  return v;
 }
 
 function rowOf(r: { id: number; session_id: string; role: StoredRow['role']; content: string; thinking?: string | null; tool_calls?: string | null; tool_call_id?: string | null }): StoredRow {
@@ -431,7 +536,7 @@ export function recordTokenBaseline(
 
 /** Delete the target message and everything after it for a session (inclusive). */
 export function deleteMessagesFrom(sessionId: string, fromId: number): { deleted: number } {
-  const db = openDb(false);
+  const db = borrowWriter();
   if (!db) return { deleted: 0 };
   try {
     const info = db
@@ -444,7 +549,7 @@ export function deleteMessagesFrom(sessionId: string, fromId: number): { deleted
   } catch {
     return { deleted: 0 };
   } finally {
-    db.close();
+    returnWriter(db);
   }
 }
 
@@ -457,7 +562,7 @@ export function deleteMessagesFrom(sessionId: string, fromId: number): { deleted
  * /clear was supposed to fix. Clearing the rows makes the clear durable.
  */
 export function deleteAllSessionMessages(sessionId: string): { deleted: number } {
-  const db = openDb(false);
+  const db = borrowWriter();
   if (!db) return { deleted: 0 };
   try {
     const info = db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
@@ -466,7 +571,7 @@ export function deleteAllSessionMessages(sessionId: string): { deleted: number }
   } catch {
     return { deleted: 0 };
   } finally {
-    db.close();
+    returnWriter(db);
   }
 }
 
@@ -680,13 +785,15 @@ export function listSessions(
  * Used by /rename-project to sync the DB after renaming directories.
  */
 export function updateTaskGraphProjectName(graphId: string, newName: string): void {
-  const db = openDb(false);
+  const db = borrowWriter();
   if (!db) return;
   try {
     db.prepare('UPDATE task_graphs SET project_name = ?, updated_at = ? WHERE id = ?')
       .run(newName, Date.now(), graphId);
   } catch {
     // table may not exist yet on fresh install
+  } finally {
+    returnWriter(db);
   }
 }
 
@@ -730,7 +837,7 @@ export function setSessionBinding(
   model: string,
 ): { provider: string; model: string } | null {
   if (!sessionId || !provider || !model) return null;
-  const db = openDb(false);
+  const db = borrowWriter();
   if (!db) return null;
   try {
     const info = db
@@ -742,6 +849,6 @@ export function setSessionBinding(
     // sessions table missing or schema drift — the in-memory override still works
     return null;
   } finally {
-    db.close();
+    returnWriter(db);
   }
 }
