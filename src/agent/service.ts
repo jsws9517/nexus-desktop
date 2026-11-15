@@ -1577,7 +1577,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
               : cls === 'exec-failed' || cls === 'gate-blocked'
                 ? `${name}:${cls}`
                 : `${name}:${argsDigest}`;
-          const rv = rep.noteToolOutcome(name, isError, failureKey);
+          // H1: a gate block is a policy DENIAL, not a broken tool — the model
+          // may be legitimately re-attacking the gate while it asks the user for
+          // permission. It does NOT trip the hard-kill fail_seq (which assumes a
+          // tool is broken). The core owns the gate-block backstop (consecutive
+          // blocks) and the escalating steer. exec-failed and arg-invalid keep
+          // their class-level / arg-digest kill semantics for real recoverable loops.
+          const rv =
+            cls === 'gate-blocked' ? null : rep.noteToolOutcome(name, isError, failureKey);
           if (rv?.stalled) this.handleRepetitionGuard(rv);
         }
       } else if (event.type === 'turn_start') {
@@ -1628,7 +1635,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         repeatCount: stall.repeatCount,
         aborting: this.abortOnThinkingLoop,
       });
-      if (this.abortOnThinkingLoop) this.agent?.abort?.();
+      // H7: a thinking-loop verdict is a harness watchdog kill, not a user keypress.
+      if (this.abortOnThinkingLoop) this.agent?.abort?.('watchdog');
     } else {
       this.onLog?.(
         'warn',
@@ -1663,7 +1671,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       repeatCount: rv.repeatCount,
       repr: rv.repr,
     });
-    this.agent?.abort?.();
+    // H7: a repetition verdict is a harness watchdog kill, not a user keypress.
+    this.agent?.abort?.('watchdog');
   }
 
   // -------------------------------------------------------------------------
@@ -1704,7 +1713,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         setToolPolicy: (policy) => {
           this.toolPolicy = policy;
         },
-        abort: () => this.agent?.abort?.(),
+        // H7: a correction-controller abort is a harness watchdog kill, not a user keypress.
+        abort: () => this.agent?.abort?.('watchdog'),
         emit: (event) => this.onEvent?.(event as AgentEvent),
       },
     });
@@ -2018,7 +2028,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         decision.evidence,
       );
     } else {
-      this.agent?.abort?.();
+      // H7: a security-sentinel FATAL is a security-layer kill, not a user keypress.
+      this.agent?.abort?.('security');
     }
   }
 
@@ -3159,7 +3170,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
   abort(): void {
     this.stopRequested = true;
-    this.agent?.abort?.();
+    // H7: the desktop Stop button is a user-initiated stop, not a keypress.
+    this.agent?.abort?.('user');
   }
 
   /**

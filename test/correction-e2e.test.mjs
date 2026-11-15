@@ -269,3 +269,48 @@ test('e2e: the coding tier raises the fail_seq threshold (6) so a 5× same-class
     invalidateSpendModeCache();
   }
 });
+
+// ===========================================================================
+// H1: a gate block is a policy denial, not a broken tool — it must NOT trip
+// the hard-kill fail_seq. The model may legitimately keep re-attacking a gate
+// while it asks the user for permission; the core owns the gate-block backstop
+// and the escalating steer, so the desktop only observes it, never aborts it.
+// ===========================================================================
+function gateBlockedCall() {
+  return [
+    { type: 'tool_call_start', name: 'exec_command', args: { command: 'python -c "probe()"' } },
+    {
+      type: 'tool_result',
+      name: 'exec_command',
+      args: { command: 'python -c "probe()"' },
+      content: 'unattended mode blocked file mutation: a git checkpoint is required',
+      isError: true,
+    },
+  ];
+}
+
+test('e2e: repeated gate blocks do NOT trip fail_seq (H1 exclusion)', async () => {
+  // Six identical gate blocks in one turn. Under the pre-H1 code the frugal
+  // tier (failSeqMax 3) aborted on the 3rd block; now gate-blocked is excluded
+  // from the fail_seq keying entirely, so the turn survives all six.
+  const script = [
+    { type: 'turn_start', turn: 1 },
+    ...gateBlockedCall(),
+    ...gateBlockedCall(),
+    ...gateBlockedCall(),
+    ...gateBlockedCall(),
+    ...gateBlockedCall(),
+    ...gateBlockedCall(),
+    { type: 'turn_end', turn: 1 },
+  ];
+  const { svc, fake, emitted } = makeService(script);
+
+  await svc.runTurn('运行探针脚本');
+
+  assert.equal(
+    emitted.filter((e) => e.type === 'repetition_stall').length,
+    0,
+    'gate blocks must not be read as a repetition spin',
+  );
+  assert.equal(fake.aborted, 0, 'the turn must survive repeated gate blocks (core owns the backstop)');
+});
