@@ -18,6 +18,9 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = join(__dirname, '..', 'dist');
 const { AgentService } = await import(pathToFileURL(join(dist, 'agent', 'service.js')));
+const { writeProviderMode, invalidateSpendModeCache } = await import(
+  pathToFileURL(join(dist, 'agent', 'spend-mode-store.js'))
+);
 
 function makeFakeAgent() {
   const agent = {};
@@ -159,4 +162,110 @@ test('e2e: an untrusted network result taints the next privileged action', async
   assert.equal(probes[0].fatal, true);
   assert.equal(probes[0].probe, 'tainted_action');
   assert.equal(fake.aborted, 1);
+});
+
+// ===========================================================================
+// fail_seq spin guard: keying (args-dependent arg-invalid) + tier threshold
+// ===========================================================================
+// All three failures land in ONE model turn (turn_start … turn_end) because
+// the monitor resets its fail counters on every turn_start. The fail key for
+// arg-invalid carries the arg digest, so the model "repairing its args" (each
+// attempt a different path) must NOT be read as a spin — that was the
+// coding-mode false kill. The sandbox provider resolves to the frugal tier
+// (failSeqMax 3) unless a test explicitly re-points it to `coding` (failSeqMax 6).
+
+function argInvalidCall(path) {
+  return [
+    { type: 'tool_call_start', name: 'read_media_file', args: { path } },
+    {
+      type: 'tool_result',
+      name: 'read_media_file',
+      args: { path },
+      content: `[tool arguments invalid] cannot parse media path "${path}"`,
+      isError: true,
+    },
+  ];
+}
+
+test('e2e: arg-invalid failures with DIFFERENT args are repair attempts, not a spin', async () => {
+  // Four parallel media reads, each with its own typo. Under the old
+  // args-independent keying this aborted on the 3rd failure; the args-bearing
+  // key gives each attempt its own counter (all stay at 1).
+  const script = [
+    { type: 'turn_start', turn: 1 },
+    ...argInvalidCall('media/a.mp4'),
+    ...argInvalidCall('media/b.mp4'),
+    ...argInvalidCall('media/c.mp4'),
+    ...argInvalidCall('media/d.mp4'),
+    { type: 'turn_end', turn: 1 },
+  ];
+  const { svc, fake, emitted } = makeService(script);
+
+  await svc.runTurn('修复视频剪辑工具的参数');
+
+  assert.equal(
+    emitted.filter((e) => e.type === 'repetition_stall').length,
+    0,
+    'varying-args repair loop must not trip fail_seq',
+  );
+  assert.equal(fake.aborted, 0, 'the turn must survive a varying-args repair loop');
+});
+
+test('e2e: the SAME bad args failing 3× in one turn still trips fail_seq (frugal tier)', async () => {
+  const script = [
+    { type: 'turn_start', turn: 1 },
+    ...argInvalidCall('media/broken.mp4'),
+    ...argInvalidCall('media/broken.mp4'),
+    ...argInvalidCall('media/broken.mp4'),
+    { type: 'turn_end', turn: 1 },
+  ];
+  const { svc, fake, emitted } = makeService(script);
+
+  await svc.runTurn('修复视频剪辑工具的参数');
+
+  const stalls = emitted.filter((e) => e.type === 'repetition_stall');
+  assert.equal(stalls.length, 1, 'one fail_seq stall for one same-args storm');
+  assert.equal(stalls[0].kind, 'fail_seq');
+  assert.match(stalls[0].repr, /read_media_file:arg-invalid:/);
+  assert.equal(fake.aborted, 1, 'same-args failure storm still aborts the turn');
+});
+
+test('e2e: the coding tier raises the fail_seq threshold (6) so a 5× same-class storm survives', async () => {
+  writeProviderMode('e2e', 'localhost', 'coding');
+  try {
+    const execFail = [
+      { type: 'tool_call_start', name: 'exec_command', args: { command: 'npm test' } },
+      {
+        type: 'tool_result',
+        name: 'exec_command',
+        args: { command: 'npm test' },
+        content: 'exec failed: exited with code 1',
+        isError: true,
+        kind: 'exec_error',
+      },
+    ];
+    const script = [
+      { type: 'turn_start', turn: 1 },
+      ...execFail,
+      ...execFail,
+      ...execFail,
+      ...execFail,
+      ...execFail,
+      { type: 'turn_end', turn: 1 },
+    ];
+    const { svc, fake, emitted } = makeService(script);
+
+    await svc.runTurn('修复解析器');
+
+    assert.equal(
+      emitted.filter((e) => e.type === 'repetition_stall').length,
+      0,
+      'the coding tier tolerates 5 same-class failures (threshold 6)',
+    );
+    assert.equal(fake.aborted, 0);
+  } finally {
+    // Restore the frugal-tier sandbox state for the remaining tests.
+    writeProviderMode('e2e', 'localhost', null);
+    invalidateSpendModeCache();
+  }
 });

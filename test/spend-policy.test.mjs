@@ -55,6 +55,7 @@ test('tier table: all three tiers present, token is the safe default', () => {
     assert.ok(p.rpm > 0 && p.backoffBaseMs > 0 && p.backoffCapMs >= p.backoffBaseMs);
     assert.ok(p.maxRepeat >= 1 && p.idleThinkingTokens > 0);
     assert.ok(p.fanoutCap >= 1 && p.retryBudget >= 0 && p.correctionScale > 0);
+    assert.ok(p.failSeqMax >= 1, 'fail_seq storm threshold stays ≥ 1 (guard on, never off)');
   }
 });
 
@@ -62,6 +63,10 @@ test('tier ordering: free is tightest on RPM, coding is the most generous', () =
   assert.ok(SPEND_POLICIES.free.rpm < SPEND_POLICIES.token.rpm);
   assert.ok(SPEND_POLICIES.token.rpm < SPEND_POLICIES.coding.rpm);
   assert.equal(SPEND_POLICIES.coding.correctionScale, 1.0);
+  // The coding plan tolerates longer failure storms before the spin guard aborts;
+  // the safe/free tiers stop early.
+  assert.ok(SPEND_POLICIES.coding.failSeqMax > SPEND_POLICIES.token.failSeqMax);
+  assert.equal(SPEND_POLICIES.token.failSeqMax, SPEND_POLICIES.free.failSeqMax);
 });
 
 test('isSpendMode / resolveSpendPolicy: unknown input falls back to the safe default', () => {
@@ -78,6 +83,8 @@ test('describeSpendPolicy: one-line summary carries the tier knobs', () => {
   assert.match(line, /RPM 5/);
   assert.match(line, /fan-out ≤ 2/);
   assert.match(line, /retry ≤ 1/);
+  assert.match(line, /fail-seq ≥ 3/);
+  assert.match(describeSpendPolicy('coding'), /fail-seq ≥ 6/);
 });
 
 // ===========================================================================

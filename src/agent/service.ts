@@ -1036,6 +1036,7 @@ export class AgentService {
                 '   - On Windows: use `fs.truncateSync()` or `echo. > file` in cmd\n' +
                 '   - On Unix: `cp /dev/null file` or `> file` or `truncate -s 0 file`\n' +
                 '   - Preferred universal method: write a one-line script `require("fs").truncateSync("path", 0)` and run it\n' +
+                '3. Tool-call budget discipline: each response has a limited output-token budget. Issue at most 2 tool calls per response and NEVER batch 3+ parallel calls in one response — large parallel batches (e.g. several read_media_file / read_text_file calls at once) overflow that budget and get their JSON arguments cut off mid-stream, which breaks the whole turn. Do one or two per response and continue in the next response.\n' +
                 '\nDesktop-specific tools (not in core):\n' +
                 '  - sequentialthinking: Structured reasoning tool for complex problems (thought branches, revisions, hypotheses)\n' +
                 '  - query: Read-only SQL queries on SQLite databases\n' +
@@ -1515,8 +1516,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         }
       } else if (event.type === 'tool_result') {
         // P2 fail_seq: feed the repetition monitor with the failure class so a
-        // same-class 3-consecutive-failure pattern aborts the turn even when
-        // the model keeps varying the exact args.
+        // same-key failure storm aborts the turn. The storm threshold is a
+        // spend-tier knob (SpendPolicy.failSeqMax); arg-invalid keys carry the
+        // arg digest so a repair loop with varying args is NOT a storm.
         const resultName = String(event.name ?? '');
         const resultContent = stringifyToolContent(event.content);
         const resultIsError = event.isError === true;
@@ -1560,10 +1562,21 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           });
           // The failure key mirrors the core's normalizeToolErrorKey shape:
           // args-independent classes use `tool:cls`; others use `tool:args`.
+          // `arg-invalid` is the one RECOVERABLE class: the model repairs it by
+          // retrying with DIFFERENT args, so counting any arg-invalid failure of
+          // the tool as the same spin would abort legitimate repair loops (the
+          // classic coding-mode false kill: three parallel media reads, each
+          // with its own typo). Its key therefore carries the arg digest — only
+          // the SAME bad args failing repeatedly counts as spin. exec-failed /
+          // gate-blocked stay args-independent: a class-level refusal is a spin
+          // no matter how the args vary.
+          const argsDigest = JSON.stringify(event.args ?? {}).slice(0, 80);
           const failureKey =
-            cls === 'exec-failed' || cls === 'gate-blocked' || cls === 'arg-invalid'
-              ? `${name}:${cls}`
-              : `${name}:${JSON.stringify(event.args ?? {}).slice(0, 80)}`;
+            cls === 'arg-invalid'
+              ? `${name}:arg-invalid:${argsDigest}`
+              : cls === 'exec-failed' || cls === 'gate-blocked'
+                ? `${name}:${cls}`
+                : `${name}:${argsDigest}`;
           const rv = rep.noteToolOutcome(name, isError, failureKey);
           if (rv?.stalled) this.handleRepetitionGuard(rv);
         }
@@ -2057,7 +2070,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     });
     monitor.setPromptBaseline(agent.context?.getTokenCount?.() ?? 0);
     this.activeMonitor = monitor;
-    this.activeRepMonitor = new RepetitionMonitor();
+    // The fail_seq storm threshold is a spend-tier knob: frugal tiers stop a
+    // same-class failure storm early; the coding plan tolerates longer storms
+    // so a model repairing bad args (or probing a flaky tool) doesn't get cut
+    // off mid-repair.
+    this.activeRepMonitor = new RepetitionMonitor({ maxFailSeq: spend.policy.failSeqMax });
     this.beginCorrectionTurn(input);
 
     // Rate-limit the main chat path (distinct from callLlm which handles

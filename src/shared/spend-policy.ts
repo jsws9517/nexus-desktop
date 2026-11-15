@@ -40,6 +40,13 @@ export interface SpendPolicy {
   retryBudget: number;
   /** Multiplier applied to the correction-loop budgets (L1–L4) per turn. */
   correctionScale: number;
+  /**
+   * Consecutive same-class tool failures (RepetitionMonitor `fail_seq`) before
+   * the spin guard aborts the turn. A pacing knob: generous tiers tolerate
+   * longer failure storms (a model repairing bad args or probing a flaky
+   * tool) before the harness calls it a spin; frugal tiers stop early.
+   */
+  failSeqMax: number;
 }
 
 export const SPEND_MODES: readonly SpendMode[] = ['token', 'coding', 'free'] as const;
@@ -57,6 +64,8 @@ export const SPEND_POLICIES: Record<SpendMode, SpendPolicy> = {
     fanoutCap: 2,
     retryBudget: 1,
     correctionScale: 0.6,
+    // = today's RepetitionMonitor default; the safe tier must stay zero-regression.
+    failSeqMax: 3,
   },
   coding: {
     rpm: 30,
@@ -67,6 +76,9 @@ export const SPEND_POLICIES: Record<SpendMode, SpendPolicy> = {
     fanoutCap: 6,
     retryBudget: 3,
     correctionScale: 1.0,
+    // Subscription backstop: tolerate longer same-class failure storms (a model
+    // repairing bad args or probing a flaky tool) before the spin guard aborts.
+    failSeqMax: 6,
   },
   free: {
     rpm: 3,
@@ -77,6 +89,8 @@ export const SPEND_POLICIES: Record<SpendMode, SpendPolicy> = {
     fanoutCap: 3,
     retryBudget: 2,
     correctionScale: 0.9,
+    // Rate-limited tier: stop a failure storm early, same as the safe default.
+    failSeqMax: 3,
   },
 };
 
@@ -108,5 +122,6 @@ export function describeSpendPolicy(mode: SpendMode): string {
     `idle ≥ ${p.idleThinkingTokens}t`,
     `fan-out ≤ ${p.fanoutCap}`,
     `retry ≤ ${p.retryBudget}`,
+    `fail-seq ≥ ${p.failSeqMax}`,
   ].join(' · ');
 }
