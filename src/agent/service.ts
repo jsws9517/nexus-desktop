@@ -4140,6 +4140,7 @@ private resetAttachmentRagRoundCache(): void {
       providerConfig.options,
       name,
       providerConfig.depth,
+      providerConfig.maxTokens,
     );
     this.agent.provider = p;
     this.agent.context?.setProvider(p);
@@ -4178,6 +4179,7 @@ private resetAttachmentRagRoundCache(): void {
       providerConfig.options,
       providerName,
       providerConfig.depth,
+      providerConfig.maxTokens,
     );
     this.agent.provider = p;
     this.agent.context?.setProvider(p);
@@ -4212,6 +4214,7 @@ private resetAttachmentRagRoundCache(): void {
       providerConfig.options,
       providerName,
       depth as Parameters<typeof createProvider>[6],
+      providerConfig.maxTokens,
     );
     this.agent.provider = p;
     this.agent.context?.setProvider(p);
