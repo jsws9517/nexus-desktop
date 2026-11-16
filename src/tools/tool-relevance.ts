@@ -76,6 +76,37 @@ const W_SIMILARITY = 0.8;
  * usage, above raw similarity.
  */
 const W_MENTION = 0.5;
+/** Small boost for Windows log/status observation intent to prefer bg_job/read tools. */
+const W_WIN32_OBS = 0.15;
+
+function isWin32LogIntent(inputLower: string): boolean {
+  if (process.platform !== 'win32') return false;
+  if (!inputLower) return false;
+  return /日志|log|tail|status|进度|卡住|还在跑|running|完成了吗|结束了吗|后台任务|background job/.test(inputLower);
+}
+
+/**
+ * B-2: prompt asks for the CONTENT of a file, not the status of a job.
+ * Deliberately overlaps `isWin32LogIntent` on "read the .log file": both signals
+ * fire there, and without a dedicated read weight `bg_job` (which owns
+ * 日志/log as status keywords) would outrank the reader that actually opens the
+ * file. A bare extension mention counts, because "看下 build.log" is a read.
+ */
+function isFileReadIntent(inputLower: string): boolean {
+  if (!inputLower) return false;
+  if (/读取|读一下|读文件|读日志|查看文件|打开文件|文件内容|日志内容|read (the )?(file|log|text)/.test(inputLower)) return true;
+  return /\.(log|txt|md|csv|json|jsonl|ts|tsx|js|py|yaml|yml|ini|conf)\b/.test(inputLower);
+}
+
+/** Tools that return a file's content (B-2 read intent target). */
+const FILE_READER_TOOLS: ReadonlySet<string> = new Set([
+  'read_text_file',
+  'file_read',
+  'read_multiple_files',
+]);
+
+/** Read-intent weight: must exceed W_WIN32_OBS so the reader wins the tie. */
+const W_FILE_READ = 0.25;
 
 /**
  * Bigram overlap required to keep a tool on similarity alone.
@@ -249,6 +280,12 @@ export function scoreTool(
   if (opts.used.has(def.name)) score += W_MEMORY;
   if (opts.force?.has(def.name)) score += W_KEYWORD;
   if (familyMention(def, lower)) score += W_MENTION;
+  if (isWin32LogIntent(lower) && (def.name === 'bg_job' || def.name === 'read_text_file' || def.name === 'file_read')) {
+    score += W_WIN32_OBS;
+  }
+  // B-2: a read-content prompt ranks the reader above bg_job even though both
+  // matched the log keywords.
+  if (isFileReadIntent(lower) && FILE_READER_TOOLS.has(def.name)) score += W_FILE_READ;
 
   const sim = similarity(def, inputBigrams);
   score += W_SIMILARITY * sim;

@@ -129,6 +129,25 @@ const POSTGRES_ROUTING: Record<string, ToolRouting> = {
 const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   // filesystem
   read_media_file: { group: 'media', readOnly: true, keywords: ['image', '图片', '看图', '截图', 'png', 'jpg', 'photo', '图片预览', 'video', '视频', 'audio', '音频', 'mp4', 'mp3', 'media', '媒体'] },
+  // B-2: the core's text readers shipped with English-only descriptions and no
+  // routing keywords, so a pure "read this log file" prompt ranked bg_job first
+  // (it owns 日志/log). Give the readers the file/log terms; the dedicated
+  // read-intent weight in tool-relevance.ts settles the tie in their favour.
+  read_text_file: {
+    group: 'fs',
+    readOnly: true,
+    keywords: ['read', '读取', '读文件', '读取文件', '查看文件', '打开文件', '文件内容', '日志文件', '日志内容', 'log file', '日志', 'log'],
+  },
+  file_read: {
+    group: 'fs',
+    readOnly: true,
+    keywords: ['read', '读取', '读文件', '读取文件', '查看文件', '打开文件', '文件内容', '日志文件', '日志内容', 'log file', '日志', 'log'],
+  },
+  read_multiple_files: {
+    group: 'fs',
+    readOnly: true,
+    keywords: ['read', '读取', '批量读取', '多文件', '多个文件', '日志文件', 'log file', '日志'],
+  },
   list_directory_with_sizes: { group: 'fs', readOnly: true, keywords: ['list', '目录', '文件夹', '大小', 'size', '占用'] },
   list_allowed_directories: { group: 'fs', readOnly: true, keywords: ['allowed', '授权', '允许', '目录边界', 'sandbox'] },
   sequentialthinking: { group: 'meta', readOnly: true, keywords: ['think', '思考', '推理', 'reason', '分析步骤'] },
@@ -224,7 +243,14 @@ const AGENT_LAYER_ROUTING: Record<string, ToolRouting> = {
   spawn_committer: { group: 'task', keywords: ['commit', '提交', '提交代码', 'git commit'] },
   spawn_skill_fixer: { group: 'task', keywords: ['skill', '技能', '修复技能', '修技能', '自动修复'] },
   query_tasks: { group: 'task', readOnly: true, keywords: ['task', '任务状态', '任务进度', '进度'] },
-  bg_job: { group: 'exec', keywords: ['background', '后台', 'job', '后台任务', '异步任务'] },
+  bg_job: {
+    group: 'exec',
+    keywords: [
+      'background', '后台', 'job', '后台任务', '异步任务',
+      // 观测/排障：看日志、查进度、是否卡住（Windows 下应优先 bg_job/read_text_file，而非拼 shell 读日志）
+      '日志', 'log', 'tail', 'status', '进度', '卡住', '还在跑', 'running', '完成了吗', '结束了吗',
+    ],
+  },
 
   // media analysis
   analyze_image: { group: 'media', readOnly: true, keywords: ['image', '图片', '看图', '分析图', '这张图', '截图'] },

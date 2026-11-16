@@ -812,3 +812,31 @@ test('a Chinese widening intent resolves to the agent-layer media tools', () => 
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// B-2: on a pure "read this log file" prompt, bg_job used to outrank the reader
+// that actually opens the file (bg_job owns 日志/log as status keywords).
+// read_text_file now carries file/log keywords AND a dedicated read-intent
+// weight; a job-status prompt must still keep bg_job first.
+// ---------------------------------------------------------------------------
+test('B-2 log-read prompt ranks read_text_file above bg_job', () => {
+  const candidates = applyRouting([def('bg_job', { group: 'exec' }), def('read_text_file')]);
+  const out = selectTools(candidates, {
+    input: '读取 D:\\tmp\\build.log 最后 20 行，日志太大了，只看日志末尾',
+    used: new Set(),
+  });
+  const n = names(out);
+  const reader = n.indexOf('read_text_file');
+  const job = n.indexOf('bg_job');
+  assert.ok(reader !== -1 && job !== -1, `both tools must survive: ${n.join(', ')}`);
+  assert.ok(reader < job, `read_text_file should lead on a read prompt: ${n.join(', ')}`);
+});
+
+test('B-2 a job-status prompt still ranks bg_job first', () => {
+  const candidates = applyRouting([def('bg_job', { group: 'exec' }), def('read_text_file')]);
+  const out = selectTools(candidates, {
+    input: '后台任务完成了吗？还在跑还是要 kill 掉',
+    used: new Set(),
+  });
+  assert.equal(names(out)[0], 'bg_job');
+});
