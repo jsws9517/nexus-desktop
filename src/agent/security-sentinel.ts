@@ -113,7 +113,10 @@ const POLICY_GUARDED = new Set([
 ]);
 
 export class SecuritySentinel {
-  private readonly root: string;
+  // Mutable: the active project root can move on disk mid-session. The host
+  // rebases it on the core `projectLocationChanged` event so writes into the
+  // relocated tree are not silently denied (session 47f9e6c7, problem ④).
+  private root: string;
   private readonly immutable: Array<{ glob: string; re: RegExp }>;
   private readonly networkAllowlist: Set<string>;
   private readonly probeCountToFreeze: number;
@@ -140,6 +143,22 @@ export class SecuritySentinel {
     this.frozenAt.clear();
   }
 
+  /**
+   * Rebase the security boundary onto a new project directory. Called when the
+   * core reports `set_project_location` / directory consolidation (session
+   * 47f9e6c7, problem ④). Without this, a relocated project's writes keep
+   * landing outside the old root, hit `write_outside_root`, and freeze the
+   * fs_write category on the second attempt. Mode-independent by design.
+   */
+  setRoot(root: string): void {
+    const next = resolve(root || process.cwd());
+    if (next === this.root) return;
+    this.root = next;
+    // Old-root denials/freezes no longer apply to the new boundary. Clear them
+    // so the relocated tree starts with a clean slate.
+    this.reset();
+  }
+
   isFrozen(category?: CapabilityCategory): boolean {
     if (!category) return this.frozen.size > 0;
     return this.frozen.has(category);
@@ -152,6 +171,14 @@ export class SecuritySentinel {
   /** Public classification, useful for tests and for the UI. */
   classify(tool: string, args: Record<string, unknown> = {}): CapabilityCategory {
     const name = tool.toLowerCase();
+    // `set_project_location` carries a `path`/`projectDir` argument. Without
+    // this special case the arg-based fallback below labels it `fs_write` and
+    // the newly chosen directory — which is OUTSIDE the OLD root — is treated
+    // as `write_outside_root`, freezing fs_write on the second relocation
+    // (session 47f9e6c7, problem ④, §6.5). The core grants + rebase the root on
+    // this event; the sentinel must not fight it. Defense-in-depth only — the
+    // primary fix is `grantProjectRoot` + the `projectLocationChanged` rebase.
+    if (name === 'set_project_location') return 'unknown';
     if (MEMORY_WRITE_TOOL_RE.test(name)) return 'memory_write';
     if (EXEC_TOOL_RE.test(name)) return 'exec';
     if (NETWORK_TOOL_RE.test(name)) return 'network';

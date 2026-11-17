@@ -54,9 +54,18 @@ export const DEFAULT_CORRECTION_CONFIG: CorrectionConfig = {
   budget: { l1PerTurn: 2, l2PerTurn: 1, l3PerTurn: 1, coolDownStepsAfterL1: 2 },
   session: {
     maxSteps: 0,
+    // Wall clock is the hard watchdog for long unattended coding runs: keep it
+    // at 6h. It is the ONLY budget that must survive the turn relaxation
+    // (session 47f9e6c7, §6.6/§8) — a genuine infinite loop must still be
+    // killed eventually.
     maxWallClockMs: 6 * 60 * 60 * 1000,
-    maxNoProgressSteps: 15,
-    maxRepeatProbes: 6,
+    // No-progress / repeat-probe counters were the SECOND budget silently
+    // killing legitimate long multi-sub-task work (NLP projects, fanout,
+    // spawn_subagent): a genuine repair loop emits more than 15 non-progress
+    // steps. Relax them generously but keep them finite so a stuck agent is
+    // still terminated well before the 6h wall-clock cap.
+    maxNoProgressSteps: 40,
+    maxRepeatProbes: 20,
   },
   deescalation: { progressRequired: 2 },
   thresholds: {

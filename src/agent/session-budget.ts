@@ -63,9 +63,13 @@ export function formatBudgetSteer(breach: BudgetBreach): string {
 
 const DEFAULTS: Required<Omit<SessionBudgetOptions, 'now'>> = {
   maxSteps: 0,
+  // Wall-clock stays the hard watchdog (session 47f9e6c7, §6.6/§8). The
+  // no-progress / repeat counters are relaxed for long unattended coding runs;
+  // production always overrides these via CorrectionConfig.session, but keep
+  // the fallback consistent with DEFAULT_CORRECTION_CONFIG.
   maxWallClockMs: 6 * 60 * 60 * 1000,
-  maxNoProgressSteps: 15,
-  maxRepeatProbes: 6,
+  maxNoProgressSteps: 40,
+  maxRepeatProbes: 20,
 };
 
 export class SessionBudget {

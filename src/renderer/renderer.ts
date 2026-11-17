@@ -2519,15 +2519,31 @@ function handleEvent(event: AgentEvent): void {
       break;
     }
     case 'decision_request': {
+      // Render as a prominent card (same visual weight as a hard security
+      // block) so a policy denial is not lost among subtle system messages
+      // (session 47f9e6c7, §5 item 5). Display-only — the mode/policy decision
+      // that produced this event is unchanged.
       const zh = getUiLang() === 'zh-CN';
+      const wrap = document.createElement('div');
+      wrap.className = 'msg security-blocked';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      const title = document.createElement('div');
+      title.className = 'security-blocked-title';
+      title.textContent = `⛔ ${zh ? '需要你决定' : 'Decision needed'}: ${event.tool}${event.command ? ` (${event.command})` : ''}`;
+      const body = document.createElement('div');
+      body.className = 'security-blocked-body';
       const opts = (event.options ?? []).map((o) => o.label).join(' / ');
-      addSystem(
-        (zh
-          ? `⛔ 需要你决定：${event.tool}${event.command ? ` 的 ${event.command}` : ''} 被策略拦截。`
-          : `⛔ Decision needed: ${event.tool}${event.command ? ` (${event.command})` : ''} was blocked by policy.`) +
-          (opts ? `\n${zh ? '可选' : 'Options'}: ${opts}` : '') +
-          (event.note ? `\n${event.note}` : ''),
-      );
+      body.textContent =
+        (zh ? '该操作被策略拦截。' : 'was blocked by policy.') +
+        (opts ? `\n${zh ? '可选' : 'Options'}: ${opts}` : '') +
+        (event.reason ? `\n${event.reason}` : '') +
+        (event.note ? `\n${event.note}` : '');
+      bubble.appendChild(title);
+      bubble.appendChild(body);
+      wrap.appendChild(bubble);
+      messagesEl.appendChild(wrap);
+      scrollToBottom();
       break;
     }
     case 'spin_break': {

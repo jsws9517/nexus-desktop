@@ -17,6 +17,10 @@ import {
   buildWakePrompt,
   createProvider,
   createEmbeddingProvider,
+  resolveBypassArg,
+  applyPermissionMode,
+  BYPASS_USAGE,
+  BYPASS_HELP_LINES,
 } from 'nexus-coder/dist/src/desktop-api.js';
 import type {
   Agent,
@@ -311,6 +315,15 @@ function inferTaskKind(input: string): 'coding' | 'research' | 'ops' | 'chat' {
   return 'chat';
 }
 
+// --- Temporary turn relaxation for unattended coding (session 47f9e6c7, §3.4
+// mechanism 1+2, §6.6, §8). Only applied when unattended + coding spend +
+// coding task; always restored in `finally`. The 6h SessionBudget wall-clock
+// watchdog stays in force as the real upper bound — relaxing turns is NOT
+// removing safety nets.
+const RELAXED_UNATTENDED_MAX_TURNS = 200;
+const RELAXED_SUBAGENT_FLOOR_TURNS = 60;
+const RELAXABLE_SUBAGENT_ROLES = ['general', 'tester', 'committer', 'skill-fixer', 'office', 'tdd'];
+
 /** Return shape of the desktop completion gate (subset of core's TurnEndVerdict). */
 interface CompletionGateVerdict {
   verdict: 'continue';
@@ -601,7 +614,11 @@ export class AgentService {
   private overrideName = '';
   private overrideModel = '';
   private overrideDepth = '';
-  private overrideMode = '';
+  // NOTE: no `overrideMode`. Permission mode has a single source of truth —
+  // core config (`agent.config.getPermissions().mode`). A separate override
+  // used to drift from core (especially after /go's temporary unattended
+  // switch), producing mode-dependent behavior differences (session 47f9e6c7,
+  // §7.1). All mode reads go through getActiveMode().
 
   /**
    * Track compression events per session so we can warn the user when
@@ -1324,7 +1341,15 @@ export class AgentService {
     // wires the same via setPermissionPrompter; without it the path prompter
     // falls back to a dead stdin readline inside the worker and instantly denies.
     const { setPermissionPrompter } = await import('nexus-coder/dist/src/desktop-api.js');
-    setPermissionPrompter((question: string) => this.askPermission(question));
+    // Only prompt mode may surface a path card. auto/unattended are
+    // non-interactive: an out-of-scope path is denied with no UI prompt
+    // (session 47f9e6c7, §7.8). Project roots the user chose are pre-authorized
+    // in core via grantProjectRoot, so legitimate work never reaches the
+    // prompter in the first place.
+    setPermissionPrompter(
+      (question: string) => this.askPermission(question),
+      () => this.getActiveMode() === 'prompt',
+    );
 
     // The audit manager (remember tool / user_info / dangerous-command gates) also
     // ships an askUser bridge, but the CLI is the only path that wires it. Without
@@ -1632,6 +1657,24 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       if (!clean) return; // pure protocol residue — nothing user-visible
       if (clean !== event.text) event = { ...event, text: clean };
     }
+
+    // The core moved the active project directory (set_project_location /
+    // consolidateProjectDir). Rebase the security boundary + cwd onto it so
+    // subsequent writes in the relocated tree aren't silently denied
+    // (session 47f9e6c7, problem ④). Mode-independent: no card, no branch.
+    if (event.type === 'projectLocationChanged') {
+      const dir = typeof event.projectDir === 'string' ? event.projectDir : '';
+      if (dir) {
+        this.activeSentinel?.setRoot(dir);
+        try {
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          process.chdir(dir);
+        } catch { /* non-fatal rebase */ }
+        this.onLog?.('info', `Project location changed to ${dir}; security boundary rebased.`);
+      }
+      return;
+    }
+
     const mon = this.activeMonitor;
     const rep = this.activeRepMonitor;
     if (mon) {
@@ -2568,9 +2611,38 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const rpm = spend.policy.rpm;
     await this.rateLimiter.acquire(family, rpm);
 
+    // Temporarily relax turn budgets for unattended coding runs (§3.4/§8).
+    // Save BOTH the parent chat budget (agent.maxTurns) and the per-role
+    // sub-agent budgets, then restore unconditionally in the finally below —
+    // the core resets `currentTurn` each chat cycle but NOT `maxTurns`, so a
+    // leak here would poison every later task and post-abort session.
+    const relaxTurns = this.shouldRelaxTurns(input);
+    const originalMaxTurns = agent.maxTurns;
+    let restoreSubAgentTurns: (() => void) | null = null;
+    if (relaxTurns) {
+      agent.maxTurns = Math.max(originalMaxTurns, RELAXED_UNATTENDED_MAX_TURNS);
+      try {
+        const snapshot = agent.config.getSubAgentMaxTurnsSnapshot(RELAXABLE_SUBAGENT_ROLES);
+        const relaxed: Record<string, number> = {};
+        for (const [role, turns] of Object.entries(snapshot)) {
+          relaxed[role] = Math.max(turns, RELAXED_SUBAGENT_FLOOR_TURNS);
+        }
+        agent.config.setSubAgentMaxTurnsInMemory(relaxed);
+        restoreSubAgentTurns = () => agent.config.setSubAgentMaxTurnsInMemory(snapshot);
+      } catch (err) {
+        this.onLog?.('warn', `turn relaxation: sub-agent budget override failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     try {
       await agent.chat(input);
     } finally {
+      // Restore turn budgets FIRST so no nested / follow-up path can inherit
+      // the relaxed values. Unconditional — even on abort or chat() throwing.
+      if (relaxTurns) {
+        agent.maxTurns = originalMaxTurns;
+        try { restoreSubAgentTurns?.(); } catch { /* never block cleanup */ }
+      }
       this.finalizeCorrectionTurn(input);
       this.activeMonitor = null;
       this.activeRepMonitor = null;
@@ -3360,6 +3432,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       if (cmd === 'setdir') {
         // /setdir — explicit, permanent counter to the transient folder-button
         // switch (which never rebinds a session that already owns a project).
+        // Rebase the sentinel directly too (the core event handler does the
+        // same) so this path is safe even before/without an emitted event.
+        this.activeSentinel?.setRoot(target);
         this.agent.setProjectLocation?.(target, { projectDir: target });
         // Persist projectDir into session metadata so the desktop renderer's
         // sidebar project row and a later resume / resolveProjectDir can read it
@@ -3375,21 +3450,24 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       return true;
     }
     if (cmd === 'bypass') {
-      // /bypass | /bypass auto | /bypass off
-      const sub = (args[0] || '').toLowerCase();
-      if (!sub || sub === 'status') {
+      // Aliases / preset / persistence rules come from the same core helper the
+      // CLI and slash registry use — the three entry points cannot drift
+      // (session 47f9e6c7, §7.9).
+      const resolution = resolveBypassArg(args[0]);
+      if (resolution.kind === 'help') {
+        this.emitText(`${BYPASS_USAGE}\n`);
+        for (const line of BYPASS_HELP_LINES) this.emitText(`${line}\n`);
+      } else if (resolution.kind === 'status') {
+        const perms = this.agent?.config?.getPermissions?.();
         this.emitText(`Permission mode: ${this.getActiveMode()}\n`);
-      } else if (sub === 'auto') {
-        await this.setPermissionsOverride('auto');
-        this.emitText('Bypass ON: whitelist active, tools run without prompting.\n');
-      } else if (sub === 'unattended') {
-        await this.setPermissionsOverride('unattended');
-        this.emitText('Unattended mode ON: auto-approve with safety gate (destructive ops hard-blocked).\n');
-      } else if (sub === 'off' || sub === 'prompt') {
-        await this.setPermissionsOverride('prompt');
-        this.emitText('Bypass OFF: reverted to prompt mode (each tool asks).\n');
+        this.emitText(`Allowlist (${perms?.allowlist?.length ?? 0}): ${(perms?.allowlist ?? []).join(', ')}\n`);
+      } else if (resolution.kind === 'invalid') {
+        this.emitText(`${BYPASS_USAGE}\n`);
       } else {
-        this.emitText('Usage: /bypass [auto|unattended|off|status]\n');
+        await this.setPermissionsOverride(resolution.mode);
+        if (resolution.mode === 'auto') this.emitText('Bypass ON: whitelist active, tools run without prompting.\n');
+        else if (resolution.mode === 'unattended') this.emitText('Unattended mode ON: auto-approve with safety gate (destructive ops hard-blocked).\n');
+        else this.emitText('Bypass OFF: reverted to prompt mode (each tool asks).\n');
       }
       return true;
     }
@@ -3632,11 +3710,33 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       this.emitText(`Resuming ? ${completed} done, ${failed} failed, ${pending} remaining.\n`);
     }
     this.emitText('Executing plan...\n');
+    // §7.7: /go --loop, /commit and bare /revise bypass runTurn(), so without a
+    // locally installed sentinel the security boundary is disabled for those
+    // paths (activeSentinel=null → guardToolExecution always allows). Install
+    // one for the duration of plan execution so the same function family has
+    // the same security policy as a plain /go. No mode branch — identical in
+    // prompt/auto/unattended (session 47f9e6c7).
+    const ownsSentinel = !this.activeSentinel;
+    if (ownsSentinel) {
+      const base = loadCorrectionConfig();
+      const cfg = applySpendScale(
+        configForTaskKind(base, inferTaskKind(args.join(' '))),
+        this.getSpendContext().policy.correctionScale,
+      );
+      this.activeSentinel = new SecuritySentinel({
+        root: this.getCwd(),
+        immutablePaths: cfg.immutablePaths,
+        networkAllowlist: cfg.networkAllowlist,
+        probeCountToFreeze: cfg.thresholds.safety.probeCountToFreeze,
+      });
+    }
     try {
       const result = await this.runPlanWithLoop(args);
       this.emitText(`? ${result}\n`);
     } catch (err) {
       this.emitText(`? Execution failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    } finally {
+      if (ownsSentinel) this.activeSentinel = null;
     }
     // executePlan() stamped metadata.projectDir with the sandbox outputs dir;
     // finish the implicit setdir: chdir the worker, sync agent project state and
@@ -4366,6 +4466,7 @@ private resetAttachmentRagRoundCache(): void {
       try {
         this.setSessionMetadata(sid, { projectDir: newOutputsPath });
         await this.setCwd(newOutputsPath);
+        this.activeSentinel?.setRoot(newOutputsPath);
         this.agent?.setProjectLocation?.(newOutputsPath, { projectDir: newOutputsPath });
         this.onEvent?.({ type: 'cwdChanged', cwd: newOutputsPath, sessionId: sid });
       } catch (err) {
@@ -4547,20 +4648,34 @@ private resetAttachmentRagRoundCache(): void {
   }
 
   /**
-   * Per-session permissions-mode override (in-memory ONLY). Uses the core's
-   * setPermissionsInMemory so it never touches the shared config.json.
+   * Per-session permissions-mode override (in-memory ONLY). Uses the shared
+   * core /bypass helper so the desktop, CLI and slash entry points apply the
+   * exact same mode + preset + persistence rules (session 47f9e6c7, §7.9).
+   * Persist=false keeps it off the shared config.json.
    */
   async setPermissionsOverride(mode: string): Promise<{ mode: string }> {
     if (!this.agent) throw new Error('Agent not initialized');
-    const valid = ['prompt', 'auto', 'unattended'];
-    if (!valid.includes(mode)) throw new Error(`Invalid mode: ${mode}`);
-    this.agent.config.setPermissionsInMemory({ mode: mode as 'auto' | 'prompt' | 'unattended' });
-    this.overrideMode = mode;
-    return { mode };
+    const resolution = resolveBypassArg(mode);
+    if (resolution.kind !== 'mode') throw new Error(`Invalid mode: ${mode}`);
+    applyPermissionMode(this.agent.config, resolution.mode, { persist: false });
+    return { mode: resolution.mode };
   }
 
+  /** Single source of truth for the active permission mode (core config). */
   getActiveMode(): string {
-    return this.overrideMode || this.agent?.config?.getPermissions?.()?.mode || 'prompt';
+    return this.agent?.config?.getPermissions?.()?.mode || 'prompt';
+  }
+
+  /**
+   * Whether to temporarily relax per-chat + per-sub-agent turn budgets for this
+   * run. Narrow on purpose (session 47f9e6c7, §8): only unattended coding work
+   * that the model itself classified as coding. Interactive / research / ops
+   * turns keep the stock limits, and every relaxation is restored in `finally`.
+   */
+  private shouldRelaxTurns(input: string): boolean {
+    return this.getActiveMode() === 'unattended'
+      && this.getSpendContext().mode === 'coding'
+      && inferTaskKind(input) === 'coding';
   }
 
   async setCwd(cwd: string): Promise<void> {
@@ -4597,6 +4712,7 @@ private resetAttachmentRagRoundCache(): void {
     if (liveCwd === projectDir) return;
     try {
       await this.setCwd(projectDir);
+      this.activeSentinel?.setRoot(projectDir);
       this.agent?.setProjectLocation?.(projectDir, { projectDir });
     } catch (err) {
       this.onLog?.('warn', `applyPlanProjectDir chdir failed: ${err instanceof Error ? err.message : String(err)}`);

@@ -21,6 +21,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = join(__dirname, '..', 'dist');
 const { AgentService } = await import(pathToFileURL(join(dist, 'agent', 'service.js')));
+const { DEFAULT_CORRECTION_CONFIG } = await import(
+  pathToFileURL(join(dist, 'agent', 'correction-config.js'))
+);
 
 let seq = 0;
 function makeFixture(manifest) {
@@ -66,6 +69,10 @@ function makeService(script, sessionId = `scenario-${seq++}`, opts = {}) {
   const fake = makeFakeAgent(sessionId, opts);
   fake.script = script;
   svc.agent = fake;
+  // These scenarios test event-bridge semantics, not throttling. A low rpm
+  // spend tier would otherwise make the many-turn reverse cases sleep through
+  // the RateLimiter's 60s sliding window.
+  svc.rateLimiter.acquire = async () => {};
   fake.onEvent = (event) => svc.handleAgentEvent(event);
   return { svc, fake, emitted };
 }
@@ -252,7 +259,14 @@ test('scenario D: the same probe across user turns is caught by the session budg
     const probe = 'dir face /b';
     const { svc, fake, emitted } = makeService([], 'scenario-cross-turn');
 
-    for (let turn = 0; turn < 3; turn += 1) {
+    // Session budgets are deliberately relaxed for long unattended coding runs
+    // (session 47f9e6c7). Drive enough identical probes to cross the HARD repeat
+    // threshold (2× maxRepeatProbes) so this reverse case still proves a true
+    // across-turn spin is terminated — not coupled to a hardcoded threshold.
+    const turnsToHardBreach = Math.ceil(
+      (DEFAULT_CORRECTION_CONFIG.session.maxRepeatProbes * 2) / perTurn,
+    );
+    for (let turn = 0; turn < turnsToHardBreach; turn += 1) {
       fake.script = Array.from({ length: perTurn }, (_, i) =>
         probeStep(turn * perTurn + i, probe),
       ).flat();
