@@ -168,6 +168,62 @@ type AgentEvent =
       repeatCount: number;
       repr: string;
     }
+  // Evidence-based terminal verdict for the finished turn. `unclaimed` is
+  // filtered out by the renderer; every other status is visible so a turn can
+  // never end looking successful when the harness could not verify it.
+  | {
+      type: 'turn_verdict';
+      status: string;
+      claimed: boolean;
+      reason: string;
+      failed?: string[];
+      skipped?: string[];
+      blocked?: string[];
+      evidence?: string[];
+    }
+  // A correction was applied by the controller (L1 steer .. L4 abort). These
+  // used to be emitted with no consumer, so the user never learned that the
+  // harness had intervened.
+  | {
+      type: 'correction';
+      level: number;
+      kind: string;
+      reason: string;
+      evidence?: string[];
+      steer?: string;
+      aborted?: boolean;
+      step?: number;
+    }
+  | {
+      type: 'contract_verdict';
+      passed: boolean;
+      checked: number;
+      failed?: unknown[];
+      skipped?: unknown[];
+      findings?: unknown[];
+      source?: string;
+    }
+  | {
+      type: 'security_probe';
+      category?: string;
+      probe?: string;
+      reason?: string;
+      fatal?: boolean;
+      evidence?: string[];
+    }
+  // Capability denial -> the user must decide. Deliberately carries no
+  // "try another spelling" option.
+  | {
+      type: 'decision_request';
+      tool: string;
+      command?: string;
+      reason: string;
+      options?: Array<{ id: string; label: string }>;
+      note?: string;
+    }
+  | { type: 'spin_break'; kind: string; severity: string; evidence?: string[] }
+  | { type: 'wake_skipped'; reason: string; jobId?: string }
+  | { type: 'contract_manifest_error'; error: string }
   | {
       type: 'task_graph';
       graphId: string;
@@ -2394,6 +2450,107 @@ function handleEvent(event: AgentEvent): void {
           : `⚠️ Detected ${event.kind} repetition ${event.repeatCount}× — aborted this turn to stop the spin.`) +
           (event.repr ? ` (repr: ${event.repr})` : ''),
       );
+      break;
+    }
+    case 'turn_verdict': {
+      // The verdict is the terminal truth of the turn. `unclaimed` stays quiet
+      // (a plain informational turn asserts nothing); everything else is shown
+      // so "looks done" and "is verified" cannot diverge again.
+      const zh = getUiLang() === 'zh-CN';
+      if (event.status === 'unclaimed') break;
+      if (event.status === 'passed') {
+        if (event.claimed) addSystem(zh ? '✅ 本轮完成声明已由可复核证据支持。' : '✅ Completion claim backed by verifiable evidence.');
+        break;
+      }
+      if (event.status === 'unverified') {
+        addSystem(
+          zh
+            ? '⚠️ 模型声称完成，但本轮没有可机器复核的证据——已标记为“未验证”，不要当作成功。'
+            : '⚠️ Completion was claimed but no machine-checkable evidence exists — marked UNVERIFIED, not a success.',
+        );
+        break;
+      }
+      if (event.status === 'blocked') {
+        addSystem(
+          zh
+            ? '⛔ 本轮有操作被策略拦截：被拦截动作所产生的结果并不存在，模型对它的“已完成”描述一律无效。等待你决定如何处理。'
+            : '⛔ A capability action was blocked this turn: whatever it would have produced does not exist, so any "done" narration about it is void. Your decision is needed.',
+        );
+        break;
+      }
+      // failed
+      const lines = (event.failed ?? []).slice(0, 3).map((f) => `• ${f}`);
+      addSystem(
+        (zh ? '❌ 本轮完成校验失败：' : '❌ Completion check failed:') +
+          (lines.length ? `\n${lines.join('\n')}` : '') +
+          (event.reason ? `\n(${event.reason})` : ''),
+      );
+      break;
+    }
+    case 'correction': {
+      const zh = getUiLang() === 'zh-CN';
+      const head = zh
+        ? `⛭ 纠偏 L${event.level}（${event.kind}）：${event.reason}`
+        : `⛭ Correction L${event.level} (${event.kind}): ${event.reason}`;
+      const ev = (event.evidence ?? []).slice(0, 2).map((e) => `• ${e}`);
+      addSystem(head + (ev.length ? `\n${ev.join('\n')}` : '') + (event.aborted ? (zh ? '\n（已中止本轮）' : '\n(aborted this turn)') : ''));
+      break;
+    }
+    case 'contract_verdict': {
+      if (event.passed) break;
+      const zh = getUiLang() === 'zh-CN';
+      const failed = Array.isArray(event.failed) ? event.failed.length : 0;
+      const skipped = Array.isArray(event.skipped) ? event.skipped.length : 0;
+      addSystem(
+        zh
+          ? `❌ 交付契约未通过：${failed} 项不满足，${skipped} 项已声明但未观测。`
+          : `❌ Deliverable contract not met: ${failed} failed, ${skipped} declared but never observed.`,
+      );
+      break;
+    }
+    case 'security_probe': {
+      if (!event.fatal) break;
+      const zh = getUiLang() === 'zh-CN';
+      addSystem(
+        zh
+          ? `⛔ 安全边界拦截（${event.probe ?? event.category ?? 'probe'}）：${event.reason ?? ''}`
+          : `⛔ Security boundary (${event.probe ?? event.category ?? 'probe'}): ${event.reason ?? ''}`,
+      );
+      break;
+    }
+    case 'decision_request': {
+      const zh = getUiLang() === 'zh-CN';
+      const opts = (event.options ?? []).map((o) => o.label).join(' / ');
+      addSystem(
+        (zh
+          ? `⛔ 需要你决定：${event.tool}${event.command ? ` 的 ${event.command}` : ''} 被策略拦截。`
+          : `⛔ Decision needed: ${event.tool}${event.command ? ` (${event.command})` : ''} was blocked by policy.`) +
+          (opts ? `\n${zh ? '可选' : 'Options'}: ${opts}` : '') +
+          (event.note ? `\n${event.note}` : ''),
+      );
+      break;
+    }
+    case 'spin_break': {
+      const zh = getUiLang() === 'zh-CN';
+      addSystem(
+        zh
+          ? `⏱ 会话级空转熔断（${event.kind} / ${event.severity}）：已停止继续试错。`
+          : `⏱ Session-level spin brake (${event.kind} / ${event.severity}): stopped further trial-and-error.`,
+      );
+      break;
+    }
+    case 'wake_skipped': {
+      const zh = getUiLang() === 'zh-CN';
+      addSystem(
+        zh
+          ? `⏸ 后台任务已结束，但上一轮结论未被验证，自动续跑已跳过：${event.reason}`
+          : `⏸ Background job finished, but the previous turn was unverified — auto-continue skipped: ${event.reason}`,
+      );
+      break;
+    }
+    case 'contract_manifest_error': {
+      const zh = getUiLang() === 'zh-CN';
+      addSystem(zh ? `⚠️ 检查清单无法解析：${event.error}` : `⚠️ Check manifest unreadable: ${event.error}`);
       break;
     }
     case 'steer_applied':

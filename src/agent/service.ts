@@ -93,7 +93,7 @@ import {
   type TurnUsage,
 } from './turn-monitor.js';
 import { RepetitionMonitor } from './repetition-monitor.js';
-import { ProgressLedger, type LedgerSignal, type ToolOutcome } from './progress-ledger.js';
+import { ProgressLedger, type LedgerSignal, type Outcome, type ToolOutcome, hashText } from './progress-ledger.js';
 import { CorrectionController, type CorrectionAction, type ToolPolicy } from './correction-controller.js';
 import {
   SecuritySentinel,
@@ -105,14 +105,25 @@ import {
 import {
   antiCheatChecks,
   claimsCompletion,
+  describeAcceptance,
   formatContractCorrection,
   parseContract,
   verifyContract,
   type CheatFinding,
   type ContractVerdict,
   type DeliverableContract,
+  type ObservedRun,
   type TranscriptEntry,
 } from './deliverable-contract.js';
+import { loadManifest, manifestExists, type ContractManifest } from './contract-manifest.js';
+import { deriveTurnVerdict, summarizeVerdict, type TurnVerdict, type VerdictStatus } from './task-verdict.js';
+import { SessionBudget, formatBudgetSteer, type BudgetBreach } from './session-budget.js';
+import {
+  buildBlockedSteer,
+  buildDecisionRequest,
+  classifyToolResult,
+  describeBlocked,
+} from './capability-gate.js';
 import { configForTaskKind, loadCorrectionConfig, applySpendScale, type CorrectionConfig } from './correction-config.js';
 import { redactConfig } from './config-read.js';
 import {
@@ -485,6 +496,29 @@ export class AgentService {
   private currentTurnInput = '';
   /** Completion-gate rejections applied in this turn. */
   private completionGateAttempts = 0;
+  /**
+   * Tool runs observed in this turn (command + exit + output). This is the
+   * ONLY evidence source used to satisfy declared checks: the harness never
+   * runs a shell on its own, so "the agent ran the check and it passed" is
+   * provable, while "the agent says it ran the check" is not.
+   */
+  private stepObservations: ObservedRun[] = [];
+  /** Capability denials seen this turn — sticky for the final verdict. */
+  private blockedActions: string[] = [];
+  private blockedCommandSeen = new Set<string>();
+  private blockedSteerSent = false;
+  /** Last manifest read error, so a broken checks file is surfaced once. */
+  private manifestReadError = '';
+  /** Session-scoped counters: they survive turn_end by design. */
+  private sessionBudgets = new Map<string, SessionBudget>();
+  private sessionVerdictCounts = new Map<
+    string,
+    { total: number; passed: number; failed: number; blocked: number; unverified: number; unclaimed: number }
+  >();
+  /** Verdict of the most recently finished turn (drives auto-advance gating). */
+  private lastTurnVerdict: TurnVerdict | null = null;
+  /** Session whose budget object is currently active (avoid cross-session bleed). */
+  private sessionBudgetKey = '';
   /**
    * Sentinel verdicts captured on `tool_call_start` (before the permission
    * bridge) and consumed by the core `preToolUse` hook (before execution).
@@ -1649,6 +1683,29 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         const resultName = String(event.name ?? '');
         const resultContent = stringifyToolContent(event.content);
         const resultIsError = event.isError === true;
+        const resultArgs = (event.args ?? {}) as Record<string, unknown>;
+        const observedCmd =
+          typeof resultArgs.command === 'string'
+            ? resultArgs.command
+            : typeof resultArgs.cmd === 'string'
+              ? resultArgs.cmd
+              : '';
+        if (observedCmd) {
+          this.stepObservations.push({
+            cmd: observedCmd,
+            exitCode:
+              typeof event.exitCode === 'number'
+                ? event.exitCode
+                : resultIsError
+                  ? 1
+                  : 0,
+            output: resultContent,
+            at: Date.now(),
+          });
+        }
+        if (classifyToolResult(resultIsError, resultContent) === 'blocked') {
+          this.noteBlockedAction(resultName, observedCmd, resultContent);
+        }
         this.stepOutcomes.push({ tool: resultName, ok: !resultIsError });
         if (resultContent) {
           this.stepResultTexts.push(resultContent);
@@ -1860,7 +1917,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       lowEntropyRatio: cfg.thresholds.dilution.zlibRatio,
     });
 
-    this.activeContract = parseContract(input);
+    this.activeContract = this.buildContract(input);
     this.activeSentinel = new SecuritySentinel({
       root: this.getCwd(),
       immutablePaths: cfg.immutablePaths,
@@ -1892,6 +1949,153 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.currentTurnInput = input;
     this.completionGateAttempts = 0;
     this.lastCorrectionAction = null;
+    this.stepObservations = [];
+    this.blockedActions = [];
+    this.blockedCommandSeen.clear();
+    this.blockedSteerSent = false;
+    this.lastTurnVerdict = null;
+    this.getSessionBudget(cfg);
+  }
+
+  // -------------------------------------------------------------------------
+  // Contract + verdict plumbing
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build the turn contract: declarative manifest first, request text second.
+   * Re-read on demand so a manifest the agent writes mid-turn takes effect
+   * without waiting for the next user message.
+   */
+  private buildContract(input: string): DeliverableContract {
+    const root = this.getCwd();
+    let manifest: ContractManifest | null = null;
+    let manifestPath: string | undefined;
+    try {
+      const res = loadManifest(root);
+      if (res.loaded) {
+        manifest = res.loaded.manifest;
+        manifestPath = res.loaded.path;
+      }
+      if (res.error && res.error !== this.manifestReadError) {
+        this.manifestReadError = res.error;
+        this.onLog?.('warn', `[contract] check manifest unreadable: ${res.error}`);
+        this.onEvent?.({ type: 'contract_manifest_error', error: res.error });
+      }
+    } catch (err) {
+      this.onLog?.('warn', `[contract] manifest load failed: ${(err as Error).message}`);
+    }
+    const contract = parseContract(input, '', manifest);
+    if (manifestPath) contract.manifestPath = manifestPath;
+    return contract;
+  }
+
+  /** Rebuild the active contract from the workspace (mid-turn manifest writes). */
+  private refreshActiveContract(): DeliverableContract | null {
+    if (!this.activeContract) return null;
+    // A contract built from a different request was injected deliberately
+    // (tests, fan-out child contexts): leave it alone.
+    if (this.activeContract.raw.trim() !== this.currentTurnInput.trim()) return this.activeContract;
+    const rebuilt = this.buildContract(this.currentTurnInput);
+    // Keep the strongest source: if the turn started with a manifest and the
+    // file is now unreadable, do not silently downgrade to an empty contract.
+    if (this.activeContract.source === 'declared_manifest' && rebuilt.source !== 'declared_manifest') {
+      return this.activeContract;
+    }
+    this.activeContract = rebuilt;
+    return rebuilt;
+  }
+
+  /** Verify the active contract against observed tool runs (never a shell). */
+  private verifyActiveContract(contract: DeliverableContract): ContractVerdict | null {
+    const root = this.getCwd();
+    try {
+      return verifyContract(contract, {
+        exists: (p) => existsSync(resolve(root, p)),
+        size: (p) => {
+          try {
+            return statSync(resolve(root, p)).size;
+          } catch {
+            return 0;
+          }
+        },
+        read: (p) => {
+          try {
+            return readFileSync(resolve(root, p), 'utf8');
+          } catch {
+            return null;
+          }
+        },
+        observations: this.stepObservations,
+        manifestPresent: manifestExists(root),
+      });
+    } catch (err) {
+      this.onLog?.('warn', `[contract] verification failed: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Contract progress for the ledger: how many items are satisfied, and
+   * whether the task still has open (unmet/unobserved) items. Those two facts
+   * are what turn "novel output" into "no progress".
+   */
+  private contractProgress(contract: DeliverableContract | null): {
+    satisfied: number;
+    total: number;
+    unresolved: number;
+    openItems: string[];
+    testStatus: 'pass' | 'fail' | 'unknown';
+  } {
+    const total = contract?.items.length ?? 0;
+    if (!contract || total === 0) {
+      return { satisfied: 0, total, unresolved: 0, openItems: [], testStatus: this.testStatusFromObservations() };
+    }
+    const verdict = this.verifyActiveContract(contract);
+    if (!verdict) {
+      return { satisfied: 0, total, unresolved: total, openItems: [], testStatus: 'unknown' };
+    }
+    const unresolved = verdict.failed.length + verdict.skipped.length;
+    const openItems = [
+      ...verdict.failed.map((f) => `${describeAcceptance(f.item)}: ${f.why}`),
+      ...verdict.skipped.map((s) => `${describeAcceptance(s.item)}: ${s.why}`),
+    ].slice(0, 12);
+    const satisfied = Math.max(0, verdict.checked - unresolved);
+    return {
+      satisfied,
+      total,
+      unresolved,
+      openItems,
+      testStatus: this.testStatusFromObservations(),
+    };
+  }
+
+  /** Last observed test/build outcome in this turn, if any. */
+  private testStatusFromObservations(): 'pass' | 'fail' | 'unknown' {
+    const testRe = /\b(npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+test|bun\s+test|node\s+--test|pytest|python\s+-m\s+pytest|go\s+test|cargo\s+test|jest|vitest)\b/i;
+    for (let i = this.stepObservations.length - 1; i >= 0; i -= 1) {
+      const o = this.stepObservations[i]!;
+      if (!testRe.test(o.cmd)) continue;
+      return o.exitCode === 0 ? 'pass' : 'fail';
+    }
+    return 'unknown';
+  }
+
+  private sessionKey(): string {
+    try {
+      return this.agent?.getCurrentSessionId?.() || 'no-session';
+    } catch {
+      return 'no-session';
+    }
+  }
+
+  private getSessionBudget(cfg: CorrectionConfig): SessionBudget {
+    const key = this.sessionKey();
+    const existing = this.sessionBudgets.get(key);
+    if (existing && this.sessionBudgetKey === key) return existing;
+    const budget = existing ?? new SessionBudget({ ...cfg.session });
+    if (!existing) this.sessionBudgets.set(key, budget);
+    this.sessionBudgetKey = key;
+    return budget;
   }
 
   private resetCorrectionStep(): void {
@@ -1916,6 +2120,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const touched = [...this.touchedFiles.entries()].map(([path, v]) => ({ path, ...v }));
     // A failed write records {mtimeMs:0,size:0}: it must not count as progress.
     const diffNonEmpty = touched.some((f) => f.mtimeMs > 0 || f.size > 0);
+    // Goal-relative progress: the contract (declared manifest + parsed items)
+    // decides what counts, not how novel this step's stdout looked.
+    const contract = this.refreshActiveContract();
+    const cp = this.contractProgress(contract);
     const step = ledger.recordStep({
       model: this.getActiveModel(),
       actions: this.stepActions,
@@ -1925,8 +2133,13 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       touchedFiles: touched,
       toolResultTexts: this.stepResultTexts,
       diffNonEmpty,
-      openTodoItems: [],
+      openTodoItems: cp.openItems,
+      acceptanceSatisfied: cp.satisfied,
+      goalStrict: cp.total > 0 && cp.unresolved > 0,
+      testStatus: cp.testStatus === 'unknown' ? undefined : cp.testStatus,
     });
+
+    this.noteSessionProgress(step.outcome, step.seq);
 
     const signals: LedgerSignal[] = ledger.signals(step, thinking);
     if (mode === 'act') {
@@ -1955,6 +2168,64 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       });
     }
     this.resetCorrectionStep();
+  }
+
+  /**
+   * Feed the session-scoped budget. Unlike every per-turn guard, this counter
+   * survives turn_end, so "one more probe" on the 9th turn is still the 9th
+   * probe. Soft breach -> steer; hard breach -> terminate with evidence.
+   */
+  private noteSessionProgress(outcome: Outcome, stepSeq: number): void {
+    const cfg = this.correctionConfig;
+    if (!cfg) return;
+    const probeKeys = this.stepActions.map(
+      (a) => `${a.tool}:${hashText(JSON.stringify(a.args ?? {}))}`,
+    );
+    const breaches = this.getSessionBudget(cfg).noteStep({ outcome, probeKeys });
+    for (const breach of breaches) this.handleBudgetBreach(breach, stepSeq);
+  }
+
+  private handleBudgetBreach(breach: BudgetBreach, stepSeq: number): void {
+    this.onLog?.(
+      'warn',
+      `[session-budget] ${breach.severity} ${breach.kind}: ${breach.evidence.join(' | ')}`,
+    );
+    this.onEvent?.({
+      type: 'spin_break',
+      kind: breach.kind,
+      severity: breach.severity,
+      evidence: breach.evidence,
+    });
+    if (breach.severity === 'hard') {
+      this.activeCorrection?.forceTerminate(
+        'loop_no_progress',
+        `session budget exhausted: ${breach.kind}`,
+        breach.evidence,
+        stepSeq,
+      );
+      return;
+    }
+    this.agent?.enqueueSteer?.(formatBudgetSteer(breach));
+  }
+
+  /**
+   * Record a policy denial. It is sticky for the turn: a completion claim made
+   * after a blocked action can never be `passed`, because the thing the model
+   * says it produced was refused by the harness itself.
+   */
+  private noteBlockedAction(tool: string, cmd: string, content: string): void {
+    const label = `${tool}: ${describeBlocked(cmd || content)}`;
+    if (!this.blockedActions.includes(label)) this.blockedActions.push(label);
+    const key = cmd || label;
+    if (!this.blockedCommandSeen.has(key)) {
+      this.blockedCommandSeen.add(key);
+      this.onEvent?.({ ...buildDecisionRequest(tool, cmd, content) });
+    }
+    if (!this.blockedSteerSent) {
+      this.blockedSteerSent = true;
+      this.agent?.enqueueSteer?.(buildBlockedSteer(this.blockedActions));
+    }
+    this.onLog?.('warn', `[capability-gate] blocked: ${label}`);
   }
 
   /**
@@ -1992,29 +2263,14 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    *    additionally caps total gate rejections per chat cycle).
    */
   private evaluateCompletionGate(assistantText: string): CompletionGateVerdict | undefined {
-    const contract = this.activeContract;
+    const contract = this.refreshActiveContract();
     const cfg = this.correctionConfig;
     if (!contract || contract.items.length === 0 || !cfg) return undefined;
     if (!assistantText.trim() || !claimsCompletion(assistantText)) return undefined;
     if (this.completionGateAttempts >= cfg.thresholds.contract.maxAntiCheatRetries) return undefined;
 
-    const root = this.getCwd();
-    let verdict: ContractVerdict | null = null;
-    try {
-      verdict = verifyContract(contract, {
-        exists: (p) => existsSync(resolve(root, p)),
-        size: (p) => {
-          try {
-            return statSync(resolve(root, p)).size;
-          } catch {
-            return 0;
-          }
-        },
-      });
-    } catch (err) {
-      this.onLog?.('warn', `[completion-gate] verification failed: ${(err as Error).message}`);
-      return undefined;
-    }
+    const verdict = this.verifyActiveContract(contract);
+    if (!verdict) return undefined;
 
     const findings = antiCheatChecks({
       userRequest: this.currentTurnInput,
@@ -2026,16 +2282,37 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       ],
     });
     const blocking = findings.filter((f) => f.severity === 'high');
-    const failed = verdict?.failed ?? [];
-    if (failed.length === 0 && blocking.length === 0) return undefined;
+    const failed = verdict.failed;
+    const unverified = verdict.skipped;
+    // "Nothing observed" is a rejection too: a contract with items that were
+    // never checked (no observed run of the declared command) cannot be
+    // satisfied by prose. This is the hole that let "修复成功！" through.
+    const noEvidence = verdict.checked === 0 || unverified.length > 0;
+    const blocked = this.blockedActions.length > 0;
+    if (failed.length === 0 && blocking.length === 0 && !noEvidence && !blocked) {
+      return undefined;
+    }
 
     this.completionGateAttempts += 1;
-    const steer = formatContractCorrection(verdict, blocking);
+    const steer = formatContractCorrection(verdict, [
+      ...blocking,
+      ...(blocked
+        ? [
+            {
+              id: 'claimed_action_blocked' as const,
+              severity: 'high' as const,
+              evidence: `completion claimed after a blocked action: ${this.blockedActions[0]}`,
+            },
+          ]
+        : []),
+    ]);
     return {
       verdict: 'continue',
       reason:
         `completion rejected: ${failed.length} acceptance item(s) unmet, ` +
-        `${blocking.length} high-severity anti-cheat finding(s)`,
+        `${unverified.length} declared check(s) not observed, ` +
+        `${blocking.length} high-severity anti-cheat finding(s)` +
+        (blocked ? `, ${this.blockedActions.length} blocked action(s)` : ''),
       steer: steer || undefined,
       gate: 'deliverable_contract',
     };
@@ -2094,35 +2371,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
   /** Verify the deliverable contract and run anti-cheat at turn end. */
   private finalizeCorrectionTurn(input: string): void {
-    const contract = this.activeContract;
+    const contract = this.refreshActiveContract() ?? this.activeContract;
     if (!contract) return;
 
-    let verdict: ContractVerdict | null = null;
-    try {
-      const root = this.getCwd();
-      verdict = verifyContract(contract, {
-        exists: (p) => existsSync(resolve(root, p)),
-        size: (p) => {
-          try {
-            return statSync(resolve(root, p)).size;
-          } catch {
-            return 0;
-          }
-        },
-        read: (p) => {
-          try {
-            return readFileSync(resolve(root, p), 'utf8');
-          } catch {
-            return null;
-          }
-        },
-        // Command execution is deliberately not wired here: the correction
-        // loop must never run a shell on its own. Tests are executed by the
-        // agent (and observed as tool results), not by the verifier.
-      });
-    } catch (err) {
-      this.onLog?.('warn', `[correction] contract verification failed: ${(err as Error).message}`);
-    }
+    const verdict = this.verifyActiveContract(contract);
 
     // No trustworthy workspace diff is available in the worker, so diff-derived
     // anti-cheat checks are skipped rather than guessed. The transcript checks
@@ -2134,7 +2386,20 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       transcript: this.turnTranscript,
     });
 
-    const passed = (verdict?.passed ?? true) && findings.length === 0;
+    const lastAssistant =
+      [...this.turnTranscript].reverse().find((t) => t.role === 'assistant')?.text ?? '';
+    const turnVerdict = deriveTurnVerdict({
+      contract,
+      verdict,
+      findings,
+      lastAssistantText: lastAssistant,
+      blockedActions: this.blockedActions,
+      sawToolActivity: this.turnTranscript.some((t) => t.role === 'tool'),
+    });
+    this.lastTurnVerdict = turnVerdict;
+    this.recordVerdict(turnVerdict);
+
+    const passed = turnVerdict.status === 'passed' || turnVerdict.status === 'unclaimed';
     if (verdict) {
       this.onEvent?.({
         type: 'contract_verdict',
@@ -2146,19 +2411,59 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         source: contract.source,
       });
     }
+    // Always emitted: the renderer decides what is worth showing, but the
+    // verdict itself must exist for every turn so "which turn was unverified"
+    // is answerable from telemetry instead of re-reading the transcript.
+    this.onEvent?.({
+      type: 'turn_verdict',
+      status: turnVerdict.status,
+      claimed: turnVerdict.claimed,
+      reason: turnVerdict.reason,
+      failed: turnVerdict.failed,
+      skipped: turnVerdict.skipped,
+      blocked: turnVerdict.blockedActions,
+      evidence: turnVerdict.evidence,
+    });
 
     if (!passed) {
       const hint = formatContractCorrection(verdict, findings);
       this.onLog?.(
         'warn',
-        `[correction] deliverable contract not met for this turn ` +
-          `(${verdict?.failed.length ?? 0} acceptance, ${findings.length} anti-cheat)`,
+        `[correction] turn verdict ${summarizeVerdict(turnVerdict)} ` +
+          `(${verdict?.failed.length ?? 0} acceptance, ${verdict?.skipped.length ?? 0} unobserved, ` +
+          `${findings.length} anti-cheat, ${this.blockedActions.length} blocked)`,
       );
       // Best effort: if the agent is still busy (fan-out / follow-up round),
       // this lands at the next safe point. If the turn already ended it is
-      // dropped and only the event/log remain — never a silent success.
+      // dropped — which is why the verdict above is the authoritative signal.
       if (hint) this.agent?.enqueueSteer?.(hint);
     }
+  }
+
+  /** Per-session verdict counters (surfaced by getSessionStats). */
+  private recordVerdict(verdict: TurnVerdict): void {
+    const key = this.sessionKey();
+    const c =
+      this.sessionVerdictCounts.get(key) ??
+      { total: 0, passed: 0, failed: 0, blocked: 0, unverified: 0, unclaimed: 0 };
+    c.total += 1;
+    c[verdict.status] += 1;
+    this.sessionVerdictCounts.set(key, c);
+  }
+
+  /** Latest turn verdict, for the UI/status surface and automation gating. */
+  getLastTurnVerdict(): TurnVerdict | null {
+    return this.lastTurnVerdict;
+  }
+
+  /** True when the previous turn ended without evidence of success. */
+  private autoAdvanceBlockedReason(): string | null {
+    const v = this.lastTurnVerdict;
+    if (!v) return null;
+    if (v.status === 'failed' || v.status === 'blocked' || v.status === 'unverified') {
+      return `previous turn verdict: ${v.status} (${v.reason})`;
+    }
+    return null;
   }
 
   /** Map a sentinel verdict onto the correction + permission pipeline. */
@@ -2345,6 +2650,19 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.wakeTurnPreempted = false;
     const run = (async () => {
       try {
+        // A finished background job is not an invitation to keep going after a
+        // turn that ended without evidence. Auto-advance resumes when the user
+        // speaks again; until then the job result is just data.
+        const blocked = this.autoAdvanceBlockedReason();
+        if (blocked) {
+          this.onLog?.('info', `Wake turn skipped — ${blocked}`);
+          this.onEvent?.({
+            type: 'wake_skipped',
+            reason: blocked,
+            jobId: req.job?.id,
+          });
+          return;
+        }
         await this.runTurn(buildWakePrompt(req));
       } catch (err) {
         if (this.wakeTurnPreempted) {
@@ -4785,12 +5103,44 @@ reloadConfig(): { ok: boolean } {
    *  scan only new rows are tokenized (provider change invalidates the cache
    *  via the provider/model cache key). Falls back to the core's char/4
    *  heuristic when the active provider has no countTokens. */
-  async getSessionStats(sessionId: string): Promise<{ tokenEstimate: number; messageCount: number }> {
+  async getSessionStats(sessionId: string): Promise<{
+    tokenEstimate: number;
+    messageCount: number;
+    /** Turn verdict counters (evidence-based success accounting). */
+    verdicts?: {
+      total: number;
+      passed: number;
+      failed: number;
+      blocked: number;
+      unverified: number;
+      unclaimed: number;
+    };
+    /** Session-scoped progress counters (survive turn_end). */
+    steps?: number;
+    progressSteps?: number;
+    topProbe?: { key: string; count: number };
+  }> {
     if (!this.agent?.session) return { tokenEstimate: 0, messageCount: 0 };
     const { estimateSessionTokensCached } = await loadSessionDb();
     const provider = this.agent.provider;
     const cacheKey = provider ? `${provider.name}/${provider.model}` : 'fallback';
-    return estimateSessionTokensCached(sessionId, cacheKey, this.sessionTokenEstimator(provider), 500);
+    const base = await estimateSessionTokensCached(
+      sessionId,
+      cacheKey,
+      this.sessionTokenEstimator(provider),
+      500,
+    );
+    const key = sessionId || this.sessionKey();
+    const verdicts = this.sessionVerdictCounts.get(key) ?? this.sessionVerdictCounts.get(this.sessionKey());
+    const budget = this.sessionBudgets.get(key) ?? this.sessionBudgets.get(this.sessionKey());
+    if (!verdicts && !budget) return base;
+    const snap = budget?.snapshot();
+    return {
+      ...base,
+      ...(verdicts ? { verdicts } : {}),
+      ...(snap ? { steps: snap.steps, progressSteps: snap.progressSteps } : {}),
+      ...(snap?.topProbe ? { topProbe: snap.topProbe } : {}),
+    };
   }
 
   /** Build the per-session token estimator matching the active provider (or the

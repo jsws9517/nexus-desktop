@@ -28,6 +28,9 @@ export type TaskKind = 'coding' | 'research' | 'ops' | 'chat';
 
 export type Outcome = 'progress' | 'neutral' | 'regress';
 
+/** What actually justified a `progress` verdict — reported in evidence. */
+export type ProgressSource = 'acceptance' | 'test' | 'diff' | 'novelty' | 'none';
+
 export type SignalKind =
   | 'thinking_dilution'
   | 'loop_no_progress'
@@ -78,6 +81,13 @@ export interface LedgerStepInput {
   openTodoItems?: string[];
   /** Number of deliverable-contract items satisfied this step. */
   acceptanceSatisfied?: number;
+  /**
+   * True when the task has declared, still-unmet acceptance items. In that
+   * state "I saw output I have not seen before" is NOT progress: every probe
+   * prints something new. Only a satisfied item, a passing test transition or
+   * a workspace diff counts.
+   */
+  goalStrict?: boolean;
 }
 
 export interface LedgerStep {
@@ -87,6 +97,8 @@ export interface LedgerStep {
   fingerprint: string;
   actions: Array<{ tool: string; argsHash: string }>;
   outcome: Outcome;
+  /** Why the outcome was chosen (never empty for progress/regress). */
+  progressSource: ProgressSource;
   evidence: string[];
   thinkingTokens: number;
   textTokens: number;
@@ -114,6 +126,13 @@ export interface ProgressLedgerOptions {
   minNewInfoRate?: number;
   /** gzip ratio above this is *supporting* evidence only (never a trigger alone). */
   lowEntropyRatio?: number;
+  /**
+   * How many steps may be credited as progress purely for producing output the
+   * harness has not seen before. Exploration is legitimate; unbounded
+   * exploration is what a spin looks like from the inside. 0 disables novelty
+   * credit entirely.
+   */
+  noveltyProgressBudget?: number;
 }
 
 const DEFAULTS: Required<ProgressLedgerOptions> = {
@@ -124,6 +143,7 @@ const DEFAULTS: Required<ProgressLedgerOptions> = {
   minThinkingTokens: 800,
   minNewInfoRate: 0.3,
   lowEntropyRatio: 0.85,
+  noveltyProgressBudget: 8,
 };
 
 /** Task-kind overrides for the loop threshold only. Dilution is task-agnostic. */
@@ -222,6 +242,9 @@ export class ProgressLedger {
   private lastFingerprint = '';
   private frozenSteps = 0;
   private lastTestStatus: 'pass' | 'fail' | 'unknown' = 'unknown';
+  private lastAcceptanceSatisfied = 0;
+  private noveltyProgressSteps = 0;
+  private strictNoProgress = 0;
   private seq = 0;
 
   constructor(opts: ProgressLedgerOptions = {}) {
@@ -258,7 +281,15 @@ export class ProgressLedger {
     this.lastFingerprint = '';
     this.frozenSteps = 0;
     this.lastTestStatus = 'unknown';
+    this.lastAcceptanceSatisfied = 0;
+    this.noveltyProgressSteps = 0;
+    this.strictNoProgress = 0;
     this.seq = 0;
+  }
+
+  /** Consecutive goal-strict steps with no acceptance/diff/test delta. */
+  get currentStrictNoProgress(): number {
+    return this.strictNoProgress;
   }
 
   /**
@@ -282,35 +313,51 @@ export class ProgressLedger {
   }
 
   /**
-   * Classify a step. Progress is deliberately narrow: new information,
-   * a state transition, or a satisfied acceptance item. Reading the same
-   * content again is neutral no matter how many tokens it burns.
+   * Classify a step. Progress is deliberately narrow: a satisfied acceptance
+   * item, a test that turned green, or a real workspace diff. Novel output is
+   * only a *bounded* fallback for tasks with no declared acceptance — once the
+   * task has open items, or the exploration budget is spent, a new-looking
+   * probe is neutral no matter how many tokens it burns.
    */
-  classifyOutcome(input: LedgerStepInput): Outcome {
+  classifyStep(input: LedgerStepInput): { outcome: Outcome; source: ProgressSource } {
     const actions = input.actions ?? [];
     const outcomes = input.toolOutcomes ?? [];
+    const satisfied = input.acceptanceSatisfied ?? 0;
 
-    if (
-      input.diffNonEmpty === true ||
-      input.acceptanceSatisfied !== undefined && input.acceptanceSatisfied > 0 ||
-      (input.testStatus === 'pass' && this.lastTestStatus !== 'pass')
-    ) {
-      return 'progress';
+    if (satisfied > this.lastAcceptanceSatisfied) {
+      return { outcome: 'progress', source: 'acceptance' };
+    }
+    if (input.testStatus === 'pass' && this.lastTestStatus !== 'pass') {
+      return { outcome: 'progress', source: 'test' };
+    }
+    if (input.diffNonEmpty === true) {
+      return { outcome: 'progress', source: 'diff' };
     }
 
-    // A tool result that has never been seen before is new information.
-    const texts = input.toolResultTexts ?? [];
-    for (const text of texts) {
-      const h = hashText(text);
-      if (text.trim() && !this.seenResultHashes.has(h)) return 'progress';
+    // A step where every action failed is a regression, even if the error text
+    // is new. Novelty must not launder a failure into progress.
+    const allFailed =
+      actions.length > 0 && outcomes.length === actions.length && outcomes.every((o) => !o.ok);
+    if (allFailed) return { outcome: 'regress', source: 'none' };
+
+    const strict = input.goalStrict === true;
+    const noveltyAllowed =
+      !strict && this.noveltyProgressSteps < this.opts.noveltyProgressBudget;
+    if (noveltyAllowed) {
+      for (const text of input.toolResultTexts ?? []) {
+        const h = hashText(text);
+        if (text.trim() && !this.seenResultHashes.has(h)) {
+          return { outcome: 'progress', source: 'novelty' };
+        }
+      }
     }
 
-    // Every action in this step failed and nothing changed: regression.
-    if (actions.length > 0 && outcomes.length === actions.length && outcomes.every((o) => !o.ok)) {
-      return 'regress';
-    }
+    return { outcome: 'neutral', source: 'none' };
+  }
 
-    return 'neutral';
+  /** Back-compat: the outcome half of `classifyStep`. */
+  classifyOutcome(input: LedgerStepInput): Outcome {
+    return this.classifyStep(input).outcome;
   }
 
   recordStep(input: LedgerStepInput): LedgerStep {
@@ -328,7 +375,7 @@ export class ProgressLedger {
       testStatus: input.testStatus,
     });
 
-    const outcome = this.classifyOutcome(input);
+    const { outcome, source } = this.classifyStep(input);
     const evidence: string[] = [];
 
     // Process tool-result novelty *after* classification so the current step's
@@ -349,9 +396,32 @@ export class ProgressLedger {
     if (thinking) {
       evidence.push(`thinking ${estimateTokensFromChars(thinking.length)} tok`);
     }
-    if (outcome === 'progress') evidence.push('state advanced');
+    if (outcome === 'progress') {
+      evidence.push(
+        source === 'acceptance'
+          ? 'acceptance item advanced'
+          : source === 'test'
+            ? 'test suite turned green'
+            : source === 'diff'
+              ? 'workspace diff produced'
+              : 'novel output (bounded exploration credit)',
+      );
+      if (source === 'novelty') this.noveltyProgressSteps += 1;
+    }
     if (outcome === 'regress') evidence.push('all tool calls failed');
-    if (outcome === 'neutral') evidence.push('no state change');
+    if (outcome === 'neutral') {
+      evidence.push(
+        input.goalStrict === true
+          ? 'no acceptance/diff/test delta (goal-strict)'
+          : 'no state change',
+      );
+    }
+
+    // Consecutive non-progress steps under a declared goal. The fingerprint
+    // cannot see this: novel output changes the fingerprint by definition, so
+    // a "keeps probing" spin looks like motion to it.
+    if (outcome === 'progress') this.strictNoProgress = 0;
+    else if (input.goalStrict === true) this.strictNoProgress += 1;
 
     // Freeze counter: unchanged fingerprint with real actions.
     if (actions.length > 0 && fingerprint === this.lastFingerprint) {
@@ -367,6 +437,9 @@ export class ProgressLedger {
 
     this.lastFingerprint = fingerprint;
     if (input.testStatus) this.lastTestStatus = input.testStatus;
+    if (input.acceptanceSatisfied !== undefined) {
+      this.lastAcceptanceSatisfied = input.acceptanceSatisfied;
+    }
 
     const step: LedgerStep = {
       seq: ++this.seq,
@@ -375,6 +448,7 @@ export class ProgressLedger {
       fingerprint,
       actions: actions.map((a) => ({ tool: a.tool, argsHash: hashArgs(a.args) })),
       outcome,
+      progressSource: source,
       evidence,
       thinkingTokens: estimateTokensFromChars(thinking.length),
       textTokens: estimateTokensFromChars(text.length),
@@ -437,6 +511,24 @@ export class ProgressLedger {
           `workspace fingerprint unchanged for ${this.frozenSteps} steps (${step.fingerprint})`,
           `tool calls executed: ${step.actions.map((a) => a.tool).join(', ') || 'none'}`,
           `outcome: ${step.outcome}`,
+        ],
+      });
+    } else if (this.strictNoProgress >= this.opts.frozenSteps) {
+      // Goal-strict spin: the workspace may be changing in irrelevant ways
+      // (new temp scripts, new probe output) while no acceptance item, diff or
+      // test moves. Fingerprint-based detection cannot see this by design.
+      const overrun = this.strictNoProgress - this.opts.frozenSteps;
+      const severity = clamp01(0.55 + overrun * 0.12);
+      signals.push({
+        kind: 'loop_no_progress',
+        severity,
+        confidence: this.strictNoProgress >= this.opts.frozenSteps + 3 ? 'high' : 'medium',
+        evidence: [
+          `${this.strictNoProgress} consecutive steps with no acceptance/diff/test delta`,
+          `tool calls executed: ${step.actions.map((a) => a.tool).join(', ') || 'none'}`,
+          `last progress source: ${
+            [...this.steps].reverse().find((s) => s.outcome === 'progress')?.progressSource ?? 'none'
+          }`,
         ],
       });
     }

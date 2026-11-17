@@ -19,6 +19,17 @@ export interface BudgetConfig {
   coolDownStepsAfterL1: number;
 }
 
+/**
+ * Session-scoped limits. `per-turn` budgets reset 18 times in an 8-hour
+ * session; these do not. 0 disables a dimension.
+ */
+export interface SessionBudgetConfig {
+  maxSteps: number;
+  maxWallClockMs: number;
+  maxNoProgressSteps: number;
+  maxRepeatProbes: number;
+}
+
 export interface ThresholdConfig {
   loop: { frozenSteps: number; hard: number };
   dilution: { newInfoRate: number; minThinkingTokens: number; zlibRatio: number };
@@ -28,6 +39,8 @@ export interface ThresholdConfig {
 
 export interface CorrectionConfig {
   budget: BudgetConfig;
+  /** Limits that span the whole session, not one user message. */
+  session: SessionBudgetConfig;
   deescalation: { progressRequired: number };
   thresholds: ThresholdConfig;
   taskKindDefaults: Record<TaskKind, { frozenSteps?: number; disabled?: boolean }>;
@@ -39,6 +52,12 @@ export interface CorrectionConfig {
 
 export const DEFAULT_CORRECTION_CONFIG: CorrectionConfig = {
   budget: { l1PerTurn: 2, l2PerTurn: 1, l3PerTurn: 1, coolDownStepsAfterL1: 2 },
+  session: {
+    maxSteps: 0,
+    maxWallClockMs: 6 * 60 * 60 * 1000,
+    maxNoProgressSteps: 15,
+    maxRepeatProbes: 6,
+  },
   deescalation: { progressRequired: 2 },
   thresholds: {
     loop: { frozenSteps: 4, hard: 10 },
@@ -91,6 +110,29 @@ export function mergeCorrectionConfig(
         base.budget.coolDownStepsAfterL1,
         0,
         20,
+      ),
+    };
+  }
+  if (patch.session) {
+    out.session = {
+      maxSteps: clampInt(patch.session.maxSteps, base.session.maxSteps, 0, 100_000),
+      maxWallClockMs: clampInt(
+        patch.session.maxWallClockMs,
+        base.session.maxWallClockMs,
+        0,
+        72 * 60 * 60 * 1000,
+      ),
+      maxNoProgressSteps: clampInt(
+        patch.session.maxNoProgressSteps,
+        base.session.maxNoProgressSteps,
+        1,
+        500,
+      ),
+      maxRepeatProbes: clampInt(
+        patch.session.maxRepeatProbes,
+        base.session.maxRepeatProbes,
+        1,
+        500,
       ),
     };
   }
@@ -206,6 +248,7 @@ export function applySpendScale(base: CorrectionConfig, scale: number): Correcti
 function cloneConfig(c: CorrectionConfig): CorrectionConfig {
   return {
     budget: { ...c.budget },
+    session: { ...c.session },
     deescalation: { ...c.deescalation },
     thresholds: {
       loop: { ...c.thresholds.loop },
