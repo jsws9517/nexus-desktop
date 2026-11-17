@@ -37,6 +37,7 @@ function makeAgent({ mode = 'unattended' } = {}) {
   a.context = { getTokenCount: () => 200 };
   a.provider = { model: 'm' };
   a.config = {
+    getMaxTurns: () => a.maxTurns,
     getPermissions: () => ({ mode, allowlist: [], mcpAllowlist: [] }),
     getActiveProvider: () => 'scenario',
     getProvider: () => ({ baseUrl: 'http://localhost:9999', model: 'm' }),
@@ -92,6 +93,19 @@ test('turn budgets are restored even when chat() throws', async () => {
 
   assert.equal(agent.maxTurns, 25, 'parent maxTurns restored after throw');
   assert.deepEqual(agent.subTurns, original, 'sub-agent budgets restored after throw');
+});
+
+test('configured maxTurns above the 200 floor is not lowered by relaxation', async () => {
+  // A user-configured baseline above the temporary-relaxation floor must be
+  // preserved — relaxation is a floor, never a ceiling.
+  const agent = makeAgent({ mode: 'unattended' });
+  agent.maxTurns = 350;
+  const svc = makeService(agent);
+
+  await svc.runTurn(CODING_INPUT);
+
+  assert.equal(agent.maxTurnsDuringChat, 350, 'configured 350 preserved during chat (not clamped to 200)');
+  assert.equal(agent.maxTurns, 350, 'configured 350 restored after chat');
 });
 
 test('prompt mode does not relax any turn budget', async () => {

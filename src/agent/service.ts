@@ -2620,7 +2620,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const originalMaxTurns = agent.maxTurns;
     let restoreSubAgentTurns: (() => void) | null = null;
     if (relaxTurns) {
-      agent.maxTurns = Math.max(originalMaxTurns, RELAXED_UNATTENDED_MAX_TURNS);
+      // The baseline comes from top-level `maxTurns` (read into agent.maxTurns
+      // in the core Agent constructor). Read it defensively too so a configured
+      // value above the 200 floor is never lowered by this temporary relaxation.
+      const configuredMaxTurns = agent.config.getMaxTurns?.() ?? originalMaxTurns;
+      agent.maxTurns = Math.max(configuredMaxTurns, originalMaxTurns, RELAXED_UNATTENDED_MAX_TURNS);
       try {
         const snapshot = agent.config.getSubAgentMaxTurnsSnapshot(RELAXABLE_SUBAGENT_ROLES);
         const relaxed: Record<string, number> = {};
