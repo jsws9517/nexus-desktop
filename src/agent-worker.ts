@@ -56,8 +56,8 @@ type WorkerRequest =
   | { id: number; method: 'setModelOverride'; params: { modelId: string } }
   | { id: number; method: 'setDepthOverride'; params: { level: string } }
   | { id: number; method: 'getActiveDepth' }
-  | { id: number; method: 'setPermissionsOverride'; params: { mode: string } }
-  | { id: number; method: 'getActiveMode' }
+  | { id: number; method: 'setPermissionsOverride'; params: { mode: string; sessionId?: string } }
+  | { id: number; method: 'getActiveMode'; params?: { sessionId?: string } }
   | { id: number; method: 'getModels'; params?: { providerName?: string } }
   | { id: number; method: 'saveProvider'; params: { name: string; fields: Record<string, unknown> } }
   | { id: number; method: 'setCwd'; params: { cwd: string } }
@@ -351,7 +351,7 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   setModelOverride: (req: WorkerRequest & { method: 'setModelOverride' }) => service.setModelOverride(req.params.modelId),
   setDepthOverride: (req: WorkerRequest & { method: 'setDepthOverride' }) => service.setDepthOverride(req.params.level),
   getActiveDepth: () => service.getActiveDepth(),
-  setPermissionsOverride: (req: WorkerRequest & { method: 'setPermissionsOverride' }) => service.setPermissionsOverride(req.params.mode),
+  setPermissionsOverride: (req: WorkerRequest & { method: 'setPermissionsOverride' }) => service.setPermissionsOverride(req.params.mode, req.params.sessionId),
   getActiveMode: () => service.getActiveMode(),
   getModels: (req: WorkerRequest & { method: 'getModels' }) => service.getModels(req.params?.providerName),
   saveProvider: (req: WorkerRequest & { method: 'saveProvider' }) => {

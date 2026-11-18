@@ -363,6 +363,35 @@ export class SessionWorkers {
     bound: BoundWorker,
     want?: { provider: string; model: string },
   ): Promise<void> {
+    // Session-scoped permission mode: a fresh worker boots from the global config
+    // default, so replay the "last bind" kept in session.metadata.permissionMode
+    // onto THIS worker. Sessions with no bind inherit the global default (nothing
+    // is written). setPermissionsOverride uses persist:false, so the global
+    // config.json is never touched — this is strictly a per-worker mem overlay.
+    try {
+      const meta = (await withTimeout(
+        bound.worker.request('getSessionMetadata', { sessionId: bound.sessionId }),
+        RESTART_RPC_TIMEOUT_MS,
+        'getSessionMetadata(permissionMode)',
+      )) as Record<string, unknown> | undefined;
+      const boundMode = meta?.permissionMode;
+      if (boundMode === 'prompt' || boundMode === 'auto' || boundMode === 'unattended') {
+        await withTimeout(
+          bound.worker.request('setPermissionsOverride', {
+            mode: boundMode,
+            sessionId: bound.sessionId,
+          }),
+          RESTART_RPC_TIMEOUT_MS,
+          'setPermissionsOverride(restore)',
+        );
+      }
+    } catch (err) {
+      this.onLog?.(
+        'warn',
+        `restore permission mode failed (sessionId=${bound.sessionId}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     let target = want;
     if (!target) {
       try {

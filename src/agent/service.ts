@@ -4656,12 +4656,25 @@ private resetAttachmentRagRoundCache(): void {
    * core /bypass helper so the desktop, CLI and slash entry points apply the
    * exact same mode + preset + persistence rules (session 47f9e6c7, §7.9).
    * Persist=false keeps it off the shared config.json.
+   *
+   * The chosen mode is bound to the session in `session.metadata.permissionMode`
+   * (the "last bind"), so a reopened tab / restarted worker re-applies it. The
+   * metadata write is session-scoped — never the global config. An event is
+   * emitted so the input-toolbar picker stays in sync even when the change came
+   * from the in-session `/bypass` slash command instead of the toolbar.
    */
-  async setPermissionsOverride(mode: string): Promise<{ mode: string }> {
+  async setPermissionsOverride(mode: string, sessionId?: string): Promise<{ mode: string }> {
     if (!this.agent) throw new Error('Agent not initialized');
     const resolution = resolveBypassArg(mode);
     if (resolution.kind !== 'mode') throw new Error(`Invalid mode: ${mode}`);
     applyPermissionMode(this.agent.config, resolution.mode, { persist: false });
+    const sid = sessionId || this.agent.getCurrentSessionId?.() || '';
+    if (sid) {
+      try {
+        this.setSessionMetadata(sid, { permissionMode: resolution.mode });
+      } catch { /* metadata bind is best-effort; the in-memory override already applied */ }
+      this.onEvent?.({ type: 'permission_mode_changed', sessionId: sid, mode: resolution.mode });
+    }
     return { mode: resolution.mode };
   }
 

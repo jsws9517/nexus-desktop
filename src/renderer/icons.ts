@@ -45,6 +45,8 @@ const ICONS = {
   'zoom-out': '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6"/>',
   'fit-window': '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
   fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 8h.01M11 12h1v4h1"/>',
 } as const;
 
 export type IconName = keyof typeof ICONS;

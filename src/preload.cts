@@ -123,8 +123,10 @@ const api = {
   setLastOpenTabs: (ids: string[]) => ipcRenderer.invoke('nexus:setLastOpenTabs', ids),
   setDepthOverride: (level: string) => ipcRenderer.invoke('nexus:setDepthOverride', { level }),
   getActiveDepth: () => ipcRenderer.invoke('nexus:getActiveDepth') as Promise<string>,
-  setPermissionsOverride: (mode: string) => ipcRenderer.invoke('nexus:setPermissionsOverride', { mode }),
-  getActiveMode: () => ipcRenderer.invoke('nexus:getActiveMode') as Promise<string>,
+  setPermissionsOverride: (mode: string, opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:setPermissionsOverride', { mode, ...(opts ?? {}) }),
+  getActiveMode: (opts?: { sessionId?: string }) =>
+    ipcRenderer.invoke('nexus:getActiveMode', opts ?? {}) as Promise<string>,
   getInputRows: () => ipcRenderer.invoke('nexus:getInputRows'),
   setInputRows: (rows: number) => ipcRenderer.invoke('nexus:setInputRows', rows),
   readRecentLogs: (maxLines?: number) => ipcRenderer.invoke('nexus:readRecentLogs', maxLines),

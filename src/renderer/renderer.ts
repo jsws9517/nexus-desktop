@@ -264,6 +264,10 @@ type AgentEvent =
   // /provider, or auto-remediation. Carries the pair explicitly so the panel
   // and both dropdowns repaint from the event instead of re-pulling getStatus.
   | { type: 'model_changed'; sessionId: string; provider: string; model: string }
+  // Session-scoped permission-mode picker (input toolbar) and in-session /bypass
+  // both funnel through service.setPermissionsOverride, which emits this so the
+  // picker + sidebar repaint from the worker's authoritative value.
+  | { type: 'permission_mode_changed'; sessionId: string; mode: string }
   | { type: 'context_cleared'; sessionId: string }
   // H2: a pending permission card was released by the worker (auto-deny on
   // timeout, or abort/shutdown flush). `ids` are the released card ids; `reason`
@@ -467,8 +471,8 @@ declare global {
       setLastOpenTabs(ids: string[]): Promise<{ ok: boolean }>;
       setDepthOverride(level: string): Promise<{ depth: string }>;
       getActiveDepth(): Promise<string>;
-      setPermissionsOverride(mode: string): Promise<{ mode: string }>;
-      getActiveMode(): Promise<string>;
+      setPermissionsOverride(mode: string, opts?: { sessionId?: string }): Promise<{ mode: string }>;
+      getActiveMode(opts?: { sessionId?: string }): Promise<string>;
       getInputRows(): Promise<number>;
       setInputRows(rows: number): Promise<{ ok: boolean }>;
       readRecentLogs(maxLines?: number): Promise<string[]>;
@@ -782,6 +786,12 @@ const mcpBoxEl = $('#mcp-box');
 const mcpServersBtn = $('#mcp-servers-btn');
 const mcpPopoverEl = $('#mcp-popover');
 const mcpServersEl = $('#mcp-servers');
+
+// Permission-mode picker (input toolbar, next to MCP selector). Session-scoped.
+const permBoxEl = $('#perm-box') as HTMLElement | null;
+const permTriggerEl = $('#perm-trigger') as HTMLButtonElement | null;
+const permPopoverEl = $('#perm-popover') as HTMLElement | null;
+const permNameEl = $('#perm-name') as HTMLElement | null;
 
 const rsideProvider = $('#rside-provider');
 const rsideModel = $('#rside-model');
@@ -2104,6 +2114,14 @@ function handleEvent(event: AgentEvent): void {
       if (!event.sessionId || event.sessionId === currentSessionId) {
         applyModelChanged(event.provider, event.model);
         refreshSpendModeChip();
+      }
+      break;
+    case 'permission_mode_changed':
+      // Toolbar pick, in-session /bypass, or a main-side restore replay — all
+      // funnel through the worker's authoritative value. Ignore other tabs so a
+      // batch restart cannot repaint the active tab with a foreign session's mode.
+      if (!event.sessionId || event.sessionId === currentSessionId) {
+        applyPermModeUI(event.mode);
       }
       break;
     case 'spend_mode': {
@@ -4327,6 +4345,10 @@ async function switchTab(sessionId: string): Promise<void> {
   refreshProviderSelect();
   refreshModelSelect();
   renderTabBar();
+  // Re-apply this tab's bound permission mode before the sidebar reads back its
+  // effective value: a reopened/respawned worker boots from the global default,
+  // so without the replay the picker + sidebar would briefly show the wrong mode.
+  await refreshPermMode(sessionId);
   void refreshSidebarSession();
   void refreshSessionStats();
   void refreshSessions(sessionId);
@@ -4634,6 +4656,87 @@ function permLabel(mode: string): string {
   return mode || '—';
 }
 
+/** ---- Session-scoped permission-mode picker (input toolbar, next to MCP) ---- */
+
+function permPopoverOpen(): boolean {
+  return !!permPopoverEl && !permPopoverEl.classList.contains('hidden');
+}
+
+function setPermPopover(open: boolean): void {
+  if (!permPopoverEl || !permTriggerEl) return;
+  permPopoverEl.classList.toggle('hidden', !open);
+  permTriggerEl.classList.toggle('open', open);
+  permTriggerEl.setAttribute('aria-expanded', String(open));
+}
+
+/**
+ * Paint every surface that reflects the session's effective permission mode:
+ * the toolbar trigger (mode tint + name), the popover's selected option and the
+ * sidebar permission row. Purely presentational — callers decide where the value
+ * came from (a worker event, a bound-metadata replay, or an explicit pick).
+ */
+function applyPermModeUI(mode: string): void {
+  const valid = mode === 'prompt' || mode === 'auto' || mode === 'unattended' ? mode : 'prompt';
+  if (permBoxEl) permBoxEl.dataset.mode = valid;
+  if (permNameEl) permNameEl.textContent = valid;
+  permPopoverEl?.querySelectorAll<HTMLElement>('.perm-option').forEach((opt) => {
+    const selected = opt.dataset.mode === valid;
+    opt.classList.toggle('selected', selected);
+    opt.setAttribute('aria-selected', String(selected));
+  });
+  rsidePerm.textContent = permLabel(valid);
+}
+
+/**
+ * Show the effective mode for `sessionId` and re-apply its session bind when the
+ * worker's in-memory overlay diverged — a fresh worker / reopened tab / crash
+ * respawn all boot from the global config default and lose the overlay.
+ *
+ * `session.metadata.permissionMode` is the "last bind" and the source of truth;
+ * a session with no bind simply shows the worker's current active mode, i.e. it
+ * inherits the global setting — no metadata is written for such sessions. A
+ * bound `prompt` is applied explicitly even when the global default is
+ * auto/unattended, so an explicit session override is never silently dropped.
+ */
+async function refreshPermMode(sessionId: string): Promise<void> {
+  if (!sessionId) {
+    applyPermModeUI(await window.nexusDesktop.getActiveMode().catch(() => 'prompt'));
+    return;
+  }
+  let bound = '';
+  try {
+    const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
+    const raw = meta?.permissionMode;
+    if (raw === 'prompt' || raw === 'auto' || raw === 'unattended') bound = raw;
+  } catch { /* no metadata / no bind → inherit the worker's global default */ }
+  let active = '';
+  try {
+    active = await window.nexusDesktop.getActiveMode({ sessionId });
+  } catch { /* fall back to bound or prompt below */ }
+  if (bound && bound !== active) {
+    try {
+      await window.nexusDesktop.setPermissionsOverride(bound, { sessionId });
+      applyPermModeUI(bound);
+      return;
+    } catch { /* replay failed — display whatever the worker reports */ }
+  }
+  applyPermModeUI(active || bound || 'prompt');
+}
+
+/** Handle a user pick from the toolbar popover. Session-scoped, never global. */
+async function choosePermMode(mode: string): Promise<void> {
+  setPermPopover(false);
+  try {
+    await window.nexusDesktop.setPermissionsOverride(mode, {
+      sessionId: currentSessionId || undefined,
+    });
+    applyPermModeUI(mode);
+    showToast(t('permChanged', { mode }), 'success');
+  } catch (err) {
+    showToast(t('permSetFailed', { error: errText(err) }), 'error');
+  }
+}
+
 /**
  * Repaint every surface that shows the session's (provider, model) pair from a
  * `model_changed` event: the two sidebar rows, the toolbar dropdowns, and the
@@ -4665,9 +4768,13 @@ function applyModelChanged(provider: string, model: string): void {
 }
 
 async function refreshSidebarSession(): Promise<void> {
-  const [st, perms, mcp] = await Promise.all([
+  // The permission row shows this SESSION's effective mode, not the global
+  // config value: a tab bound to auto/unattended (or an explicit prompt override)
+  // must read back what its worker actually runs, while an unbound session reads
+  // the global default through getActiveMode(). getPermissions() stays global-only.
+  const [st, activeMode, mcp] = await Promise.all([
     window.nexusDesktop.getStatus({ sessionId: currentSessionId || undefined }),
-    window.nexusDesktop.getPermissions(),
+    window.nexusDesktop.getActiveMode({ sessionId: currentSessionId || undefined }),
     window.nexusDesktop.getMcpStatus(),
   ]);
   status = st;
@@ -4686,7 +4793,7 @@ async function refreshSidebarSession(): Promise<void> {
   }
   rsideCwd.textContent = projDir ? abbreviatePath(projDir) : '';
   rsideCwd.title = projDir || '';
-  rsidePerm.textContent = permLabel(perms.mode);
+  rsidePerm.textContent = permLabel(activeMode);
   const connected = mcp.servers.filter((s) => s.status !== 'disconnected');
   rsideMcp.innerHTML = '';
   if (connected.length === 0) {
@@ -5594,11 +5701,37 @@ mcpToggle.addEventListener('change', async () => {
   await refreshMcpStatus();
   void refreshSidebarSession();
 });
+
+// Permission-mode picker: the trigger toggles the popover; each option switches
+// the mode for the session currently in view (keyboard included for a11y).
+permTriggerEl?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setPermPopover(!permPopoverOpen());
+});
+permPopoverEl?.querySelectorAll<HTMLElement>('.perm-option').forEach((opt) => {
+  const mode = opt.dataset.mode;
+  if (!mode) return;
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void choosePermMode(mode);
+  });
+  opt.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      void choosePermMode(mode);
+    }
+  });
+});
 document.addEventListener('click', (e) => {
-  if (mcpPopoverOpen() && !mcpBoxEl.contains(e.target as Node)) setMcpPopover(false);
+  const target = e.target as Node;
+  if (mcpPopoverOpen() && !mcpBoxEl.contains(target)) setMcpPopover(false);
+  if (permPopoverOpen() && permBoxEl && !permBoxEl.contains(target)) setPermPopover(false);
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && mcpPopoverOpen()) setMcpPopover(false);
+  if (e.key !== 'Escape') return;
+  if (mcpPopoverOpen()) setMcpPopover(false);
+  if (permPopoverOpen()) setPermPopover(false);
 });
 
 // ---------- send ----------
@@ -8382,18 +8515,18 @@ window.nexusDesktop.onTabsChanged((open) => {
     if (shouldRestore) {
       const savedTabs = await window.nexusDesktop.getLastOpenTabs();
       if (savedTabs.length > 0) {
-        // Check if global permissions is unattended — if so, inherit on all restored tabs.
-        let globalMode = '';
-        try { globalMode = (await window.nexusDesktop.getPermissions()).mode ?? ''; } catch {}
         for (let i = 0; i < savedTabs.length; i++) {
           await openTab(savedTabs[i]).catch(() => {});
         }
         const lastSid = savedTabs[savedTabs.length - 1];
         if (lastSid && tabs.has(lastSid)) await switchTab(lastSid);
-        if (globalMode === 'unattended') {
-          for (const sid of savedTabs) {
-            try { await window.nexusDesktop.setPermissionsOverride('unattended'); } catch {}
-          }
+        // Each restored tab carries its own bind in session.metadata.permissionMode.
+        // Main's applySessionBinding already replays it onto the fresh worker, and
+        // the active tab's refreshPermMode ran inside switchTab. Re-run for every
+        // tab as a cheap, idempotent fallback so a worker that missed the replay
+        // still converges to its bound mode (unbound tabs keep the global default).
+        for (const sid of savedTabs) {
+          if (tabs.has(sid)) await refreshPermMode(sid).catch(() => {});
         }
       }
     }
@@ -8403,6 +8536,9 @@ window.nexusDesktop.onTabsChanged((open) => {
     // When shouldRestore is false, stay on blank slate — no session created.
     await refreshSessions();
     await refreshSidebarSession();
+    // Seed the picker from the worker's authoritative mode even on a blank slate
+    // (no tab restored): an unbound view simply reflects the global default.
+    await refreshPermMode(currentSessionId || '');
     await syncOpenTabs();
     // P1: register built-in sidebar tabs (Sub-Agents + Jobs + Automation).
     // Side chat moved to the right 侧边对话 panel in PR2 (mountSideChatPage

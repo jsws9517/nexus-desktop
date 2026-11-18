@@ -129,6 +129,45 @@
                     <div id="mcp-servers"></div>
                   </div>
                 </div>
+                <div id="perm-box" class="perm-box" data-mode="prompt">
+                  <button id="perm-trigger" class="perm-trigger" data-i18n-title="permPickTitle" title="权限模式（仅当前会话）">
+                    <span class="perm-sigil" aria-hidden="true"></span>
+                    <span id="perm-name" class="perm-name">prompt</span>
+                    <span class="perm-caret" aria-hidden="true"><span class="icon-slot" data-icon="chevron-down"></span></span>
+                  </button>
+                  <div id="perm-popover" class="perm-popover hidden">
+                    <div class="perm-popover-title" data-i18n="permPopoverTitle">权限模式</div>
+                    <div class="perm-popover-sub" data-i18n="permPopoverSub">仅对当前会话生效，不修改全局设置。</div>
+                    <div class="perm-option" data-mode="prompt" role="button" tabindex="0">
+                      <span class="opt-sigil" aria-hidden="true"></span>
+                      <div class="opt-body">
+                        <div class="opt-name"><span data-i18n="permModePrompt">prompt</span><span class="perm-badge default" data-i18n="permBadgeDefault">默认</span></div>
+                        <div class="opt-desc" data-i18n="permDescPrompt">每次调用工具都询问确认。</div>
+                      </div>
+                      <span class="opt-check" aria-hidden="true"><span class="icon-slot" data-icon="check"></span></span>
+                    </div>
+                    <div class="perm-option" data-mode="auto" role="button" tabindex="0">
+                      <span class="opt-sigil" aria-hidden="true"></span>
+                      <div class="opt-body">
+                        <div class="opt-name"><span data-i18n="permModeAuto">auto</span></div>
+                        <div class="opt-desc" data-i18n="permDescAuto">自动放行工具调用，不再逐项询问。</div>
+                      </div>
+                      <span class="opt-check" aria-hidden="true"><span class="icon-slot" data-icon="check"></span></span>
+                    </div>
+                    <div class="perm-option" data-mode="unattended" role="button" tabindex="0">
+                      <span class="opt-sigil" aria-hidden="true"></span>
+                      <div class="opt-body">
+                        <div class="opt-name"><span data-i18n="permModeUnattended">unattended</span><span class="perm-badge caution" data-i18n="permBadgeGuard">安全门</span></div>
+                        <div class="opt-desc" data-i18n="permDescUnattended">自动放行，但破坏性操作被硬性拦截。</div>
+                      </div>
+                      <span class="opt-check" aria-hidden="true"><span class="icon-slot" data-icon="check"></span></span>
+                    </div>
+                    <div class="perm-popover-foot">
+                      <span class="icon-slot" data-icon="info"></span>
+                      <span data-i18n="permPopoverFoot">切换只绑定到你正在查看的会话；切换标签页会显示该会话生效的模式。</span>
+                    </div>
+                  </div>
+                </div>
               </div>
               <span class="input-hint" data-i18n="composerHint" aria-hidden="true">Enter 发送 · Shift+Enter 换行</span>
               <button id="btn-rollback" class="btn hidden" data-i18n-title="rollbackBtnTitle" title="丢弃上一条指令已产出的内容，并用这条消息重新开始">
