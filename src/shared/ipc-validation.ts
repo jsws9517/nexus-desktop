@@ -90,8 +90,8 @@ export const WORKER_METHODS = {
   // Undo a rollback from a backup written under ~/.nexus/trash/rollback/.
   restore: { fields: { backupPath: S.str(4096) } },
   sideChat: { fields: { messages: S.msg() } },
-  regenerate: { fields: { sessionId: S.str(), userIndex: S.num() } },
-  withdraw: { fields: { sessionId: S.str(), userIndex: S.num() } },
+  regenerate: { fields: { sessionId: S.str(), messageId: S.num() } },
+  withdraw: { fields: { sessionId: S.str(), messageId: S.num() } },
   abort: { fields: {} },
   startSession: {
     fields: { name: S.str(), sessionId: S.str(), metadata: S.obj(), prevSessionId: S.str() },

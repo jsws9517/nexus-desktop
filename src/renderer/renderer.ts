@@ -410,7 +410,7 @@ declare global {
       // Export an artifact payload (base64 bytes or text) via a save dialog.
       saveArtifact(defaultName: string, data: string, encoding?: 'base64' | 'text'): Promise<{ ok: boolean; path?: string; error?: string }>;
       getPathForFile(file: File): string;
-      regenerate(sessionId: string, userIndex: number): Promise<unknown>;
+      regenerate(sessionId: string, messageId: number): Promise<unknown>;
 
       // P0 preview subsystem (main-process owned).
       previewOpen(path: string): Promise<{
@@ -453,7 +453,7 @@ declare global {
           error?: string;
         }) => void,
       ): void;
-      withdraw(sessionId: string, userIndex: number): Promise<string>;
+      withdraw(sessionId: string, messageId: number): Promise<string>;
       respondPermission(id: string, answer: string, sessionId?: string): Promise<unknown>;
       setMcpEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
       getMcpStatus(): Promise<{ enabled: boolean; servers: McpServerStatus[] }>;
@@ -854,7 +854,9 @@ let activeTabId = '';
 const tabNames = new Map<string, string>();
 
 // 0-based sequence over the session's *displayable* user messages (worker
-// blocks are skipped), kept in sync with AgentService.regenerate(userIndex).
+// blocks are skipped). Diagnostic only now: transcript edits (withdraw /
+// regenerate) anchor on the persisted row id, never on this positional index,
+// because DB-only user rows (wake prompts / injected steer follow-ups) shift it.
 let userMessageSeq = 0;
 
 // Per-provider model list cache (filled from the provider API on demand).
@@ -1796,12 +1798,12 @@ function addUser(text: string, mid?: number): void {
   undoBtn.className = 'btn ghost small regen-btn undo-btn';
   undoBtn.textContent = t('undo');
   undoBtn.title = t('undoHint');
-  undoBtn.addEventListener('click', () => void undoAt(wrap, userIndex));
+  undoBtn.addEventListener('click', () => void undoAt(wrap));
   const regenBtn = document.createElement('button');
   regenBtn.className = 'btn ghost small regen-btn';
   regenBtn.textContent = t('regenerate');
   regenBtn.title = text;
-  regenBtn.addEventListener('click', () => void regenerateAt(wrap, userIndex));
+  regenBtn.addEventListener('click', () => void regenerateAt(wrap));
   const copyBtn = makeMsgCopyBtn(text);
   actions.appendChild(undoBtn);
   actions.appendChild(regenBtn);
@@ -6020,18 +6022,55 @@ async function handleNewCommand(): Promise<void> {
   await openTab(res.sessionId);
 }
 
+/** Resolve the persisted `messages.id` of the user message behind a rendered
+ *  bubble. History bubbles already carry `data-mid`. A live bubble is created by
+ *  `enqueue()` before `chat()` writes its row, so it has no id yet — re-pull the
+ *  freshest window and match its text from the tail (the just-sent prompt is the
+ *  newest user row). Never fall back to `userIndex` here: DB-only user rows
+ *  (background-job wake prompts, injected `<user_steer>` follow-ups) shift that
+ *  index, which used to make 撤回/重新生成 hit an earlier prompt and delete its
+ *  whole tail of turns. */
+async function resolveUserMessageId(wrap: HTMLElement): Promise<number | null> {
+  const mid = Number(wrap.dataset.mid);
+  if (Number.isFinite(mid) && mid > 0) return mid;
+  const content = wrap.querySelector('.bubble')?.textContent ?? '';
+  if (!content) return null;
+  await syncMsgCache(currentSessionId);
+  const needle = content.trim();
+  if (!needle) return null;
+  // Exact match first; then a prefix match for prompts whose `@`-mention
+  // expansion suffix was stripped when the row was persisted by the core.
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = msgItems.length - 1; i >= 0; i--) {
+      const m = msgItems[i];
+      if (m.role !== 'user' || isWorkerBlockText(needle)) continue;
+      const rowText = String(m.content ?? '').trim();
+      const hit = pass === 0
+        ? rowText === needle
+        : rowText.startsWith(needle.slice(0, 120)) || needle.startsWith(rowText.slice(0, 120));
+      if (hit && m.id != null) return m.id;
+    }
+  }
+  return null;
+}
+
 /** Undo a past user message: delete it and everything after it from the core
  *  context (no re-run), then paste the original prompt back into the input box
  *  so the user can fix typos/homophones and resubmit manually. */
-async function undoAt(wrap: HTMLElement, userIndex: number): Promise<void> {
+async function undoAt(wrap: HTMLElement): Promise<void> {
   // A jobs-only hold on this session must NOT block transcript editing; only
   // renderer-owned work (a serial turn, a parked head, queued follow-ups, or a
   // fan-out batch) does.
   if (ownsWork()) return;
+  const messageId = await resolveUserMessageId(wrap);
+  if (messageId == null) {
+    addSystem(`${t('error')}Withdraw: could not resolve the message id`);
+    return;
+  }
   const ok = await confirmDialog(t('undoAsk'));
   if (!ok) return;
   try {
-    const text = await window.nexusDesktop.withdraw(currentSessionId, userIndex);
+    const text = await window.nexusDesktop.withdraw(currentSessionId, messageId);
     // Rebuild the history window from the truncated DB so the regenerate/undo
     // user indices and message ordering stay consistent.
     await syncMsgCache(currentSessionId);
@@ -6051,11 +6090,16 @@ async function undoAt(wrap: HTMLElement, userIndex: number): Promise<void> {
  *  re-run that prompt (AgentService.regenerate reloads context from the DB).
  *  Runs through the same busy/serial scheduler as a normal send so Stop works
  *  and the queue stays consistent. */
-async function regenerateAt(wrap: HTMLElement, userIndex: number): Promise<void> {
+async function regenerateAt(wrap: HTMLElement): Promise<void> {
   // A jobs-only hold on this session must NOT block a transcript re-run; only
   // renderer-owned work (a serial turn, a parked head, queued follow-ups, or a
   // fan-out batch) does.
   if (ownsWork()) return;
+  const messageId = await resolveUserMessageId(wrap);
+  if (messageId == null) {
+    addSystem(`${t('error')}Regenerate: could not resolve the message id`);
+    return;
+  }
   // Remove the stale assistant/thinking/tool cards after the target message.
   let el = wrap.nextElementSibling;
   while (el) {
@@ -6069,7 +6113,7 @@ async function regenerateAt(wrap: HTMLElement, userIndex: number): Promise<void>
   running = true;
   setBusy(true);
   try {
-    await window.nexusDesktop.regenerate(currentSessionId, userIndex);
+    await window.nexusDesktop.regenerate(currentSessionId, messageId);
     await refreshSessions(currentSessionId);
     await syncMsgCache(currentSessionId);
   } catch (err) {

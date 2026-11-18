@@ -15,10 +15,10 @@ const api = {
   // throwaway AgentService — never the session's worker, never its context/db.
   sideChat: (messages: Array<{ role: string; content: string }>) =>
     ipcRenderer.invoke('nexus:sideChat', { messages }),
-  regenerate: (sessionId: string, userIndex: number) =>
-    ipcRenderer.invoke('nexus:regenerate', { sessionId, userIndex }),
-  withdraw: (sessionId: string, userIndex: number) =>
-    ipcRenderer.invoke('nexus:withdraw', { sessionId, userIndex }),
+  regenerate: (sessionId: string, messageId: number) =>
+    ipcRenderer.invoke('nexus:regenerate', { sessionId, messageId }),
+  withdraw: (sessionId: string, messageId: number) =>
+    ipcRenderer.invoke('nexus:withdraw', { sessionId, messageId }),
   abort: (opts?: { sessionId?: string }) => ipcRenderer.invoke('nexus:abort', opts ?? {}),
   startSession: (name?: string, sessionId?: string) =>
     ipcRenderer.invoke('nexus:startSession', { name, sessionId }),

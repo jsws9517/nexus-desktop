@@ -3794,8 +3794,16 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
-   * Regenerate the assistant turn that follows the user message at `userIndex`
-   * (0-based over persisted user messages, skipping sub-agent worker blocks).
+   * Regenerate the assistant turn that follows the user message with id
+   * `messageId` (the persisted `messages.id`, NOT a positional user index).
+   *
+   * The id is the stable anchor. A positional index was previously derived from
+   * the renderer's `userMessageSeq` and re-applied to a fresh DB read; any row
+   * that exists only in the DB (background-job wake prompts, `<user_steer>`
+   * follow-ups, auto-continues) shifts that index, so the wrong prompt could be
+   * targeted — and because the delete is an inclusive tail delete, several
+   * later turns went with it. Resolving by id makes transcript edits immune to
+   * index drift. Worker-block user rows are still rejected as targets.
    *
    * Desktop-only implementation — the core branch is untouched:
    *   1. read message rows directly from ~/.nexus/sessions.db,
@@ -3805,7 +3813,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    *   4. re-run the target prompt through chat() — which re-inserts the user
    *      message once, so the DB never accumulates a duplicate.
    */
-  async regenerate(sessionId: string, userIndex: number): Promise<void> {
+  async regenerate(sessionId: string, messageId: number): Promise<void> {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy())
       throw new Error('Agent is busy; wait for the current turn to finish');
@@ -3813,9 +3821,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       throw new Error('Session mismatch: target session is not the active one');
     }
     const { getMessageRows, deleteMessagesFrom } = await loadSessionDb();
-    const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerPrompt(r));
-    const target = userRows[userIndex];
-    if (!target) throw new Error(`Regenerate: no user message at index ${userIndex}`);
+    const target = getMessageRows(sessionId).find(
+      (r) => r.id === messageId && r.role === 'user' && !isWorkerPrompt(r),
+    );
+    if (!target) throw new Error(`Regenerate: no user message with id ${messageId}`);
     deleteMessagesFrom(sessionId, target.id);
     // NOTE: core signature is startSession(name?, sessionId?) — passing the id
     // in the first slot would CREATE a new session named after the id instead
@@ -3829,9 +3838,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    * session, then reload the agent's LLM context from the truncated DB — WITHOUT
    * re-running. Returns the withdrawn prompt text so the UI can paste it back
    * into the input box for the user to fix and resubmit. Mirrors regenerate()
-   * minus the chat() re-run.
+   * minus the chat() re-run. `messageId` is the persisted row id (see the
+   * regenerate() doc comment for why a positional index is unsafe here).
    */
-  async withdraw(sessionId: string, userIndex: number): Promise<string> {
+  async withdraw(sessionId: string, messageId: number): Promise<string> {
     if (!this.agent) throw new Error('Agent not initialized');
     if (this.agent.isBusy())
       throw new Error('Agent is busy; wait for the current turn to finish');
@@ -3839,9 +3849,10 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       throw new Error('Session mismatch: target session is not the active one');
     }
     const { getMessageRows, deleteMessagesFrom } = await loadSessionDb();
-    const userRows = getMessageRows(sessionId).filter((r) => r.role === 'user' && !isWorkerPrompt(r));
-    const target = userRows[userIndex];
-    if (!target) throw new Error(`Withdraw: no user message at index ${userIndex}`);
+    const target = getMessageRows(sessionId).find(
+      (r) => r.id === messageId && r.role === 'user' && !isWorkerPrompt(r),
+    );
+    if (!target) throw new Error(`Withdraw: no user message with id ${messageId}`);
     deleteMessagesFrom(sessionId, target.id);
     await this.agent.startSession(undefined, sessionId);
     return target.content;

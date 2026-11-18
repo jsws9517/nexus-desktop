@@ -20,8 +20,8 @@ type WorkerRequest =
   | { id: number; method: 'steer'; params: { input: string; rollback?: boolean } }
   | { id: number; method: 'restore'; params: { backupPath: string } }
   | { id: number; method: 'sideChat'; params: { messages: Array<{ role: string; content: string }> } }
-  | { id: number; method: 'regenerate'; params: { sessionId: string; userIndex: number } }
-  | { id: number; method: 'withdraw'; params: { sessionId: string; userIndex: number } }
+  | { id: number; method: 'regenerate'; params: { sessionId: string; messageId: number } }
+  | { id: number; method: 'withdraw'; params: { sessionId: string; messageId: number } }
   | { id: number; method: 'abort' }
   | { id: number; method: 'startSession'; params?: { name?: string; sessionId?: string; metadata?: Record<string, unknown>; prevSessionId?: string } }
   | { id: number; method: 'prepareParentMemory' }
@@ -287,9 +287,9 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     return { reply };
   },
   regenerate: async (req: WorkerRequest & { method: 'regenerate' }) => {
-    await service.regenerate(req.params.sessionId, req.params.userIndex);
+    await service.regenerate(req.params.sessionId, req.params.messageId);
   },
-  withdraw: async (req: WorkerRequest & { method: 'withdraw' }) => service.withdraw(req.params.sessionId, req.params.userIndex),
+  withdraw: async (req: WorkerRequest & { method: 'withdraw' }) => service.withdraw(req.params.sessionId, req.params.messageId),
   abort: () => {
     service.abort();
   },
