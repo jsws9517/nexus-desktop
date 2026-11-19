@@ -191,9 +191,13 @@
                     </div>
                   </div>
                 </div>
-                <button id="btn-compact" type="button" class="compact-btn" data-i18n-title="compactContext" title="压缩上下文" disabled>
+                <button id="btn-compact" type="button" class="compact-btn" data-i18n-title="compactContext" title="压缩上下文" aria-describedby="compact-caution-tip" disabled>
                   <span class="icon-slot" data-icon="compress"></span>
                   <span class="compact-label" data-i18n="compactContext">压缩上下文</span>
+                  <span class="compact-caution" id="compact-caution-tip" role="tooltip">
+                    <span class="icon-slot" data-icon="info"></span>
+                    <span data-i18n="compactCaution">谨慎操作：压缩会永久丢弃部分历史上下文，且不可恢复</span>
+                  </span>
                 </button>
               </div>
               <span class="input-hint" data-i18n="composerHint" aria-hidden="true">Enter 发送 · Shift+Enter 换行</span>

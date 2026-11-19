@@ -150,3 +150,25 @@ test('compact button lives in the composer action bar, not the sidebar', () => {
   const taskSection = html.slice(html.indexOf('data-i18n="taskProgress"'), html.indexOf('data-panel="files"'));
   assert.equal(taskSection.includes('btn-compact'), false);
 });
+
+// ── compact action is a guarded, lossy-operation control ────────────────────
+
+test('compact action is semi-hidden, danger-styled, and warns of data loss', () => {
+  const html = read('static/index.html');
+  const css = read('static/styles.css');
+  const i18n = read('src/renderer/i18n.ts');
+
+  // Semi-hidden by default; revealed only while the pointer is in the action bar.
+  assert.match(css, /\.input-left \.compact-btn \{[^}]*opacity:\s*0\.25/s);
+  assert.match(css, /\.input-left:hover \.compact-btn,\s*\.input-left \.compact-btn:focus-visible \{ opacity: 1; \}/);
+
+  // Bold danger-red label (the icon inherits currentColor from the button).
+  assert.match(css, /\.compact-label \{[^}]*color:\s*var\(--danger\)[^}]*font-weight:\s*700/s);
+
+  // A caution tooltip, hidden until the region is hovered, with a bilingual warning.
+  assert.match(html, /class="compact-caution" id="compact-caution-tip" role="tooltip"/);
+  assert.match(html, /<span data-i18n="compactCaution">/);
+  assert.match(i18n, /compactCaution:\s*\{ 'zh-CN': '[^']+', en: '[^']+' \}/);
+  assert.match(css, /\.compact-caution \{[^}]*visibility:\s*hidden/s);
+  assert.match(css, /\.input-left:hover \.compact-caution,[^}]*opacity: 1; visibility: visible/s);
+});

@@ -1771,22 +1771,56 @@ label.field-label[for="model-select"]     { width: 58px; }
 }
 
 /* Compact-context chip: a sibling of the mode selector in .input-left.
-   Mirrors .perm-trigger so the two controls read as one action group. */
+   Compaction is lossy, so the control stays semi-hidden until the pointer
+   enters the action-bar region, is rendered in bold danger-red, and reveals a
+   caution tooltip on hover/focus. */
 .input-left .compact-btn {
+  position: relative;
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 8px; border-radius: 8px;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  color: var(--text-dim); font-size: 11px; cursor: pointer; user-select: none;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger); font-size: 11px; font-weight: 700; cursor: pointer; user-select: none;
+  opacity: 0.25;
+  transition: opacity 0.18s, background 0.15s, border-color 0.15s;
 }
+.input-left:hover .compact-btn,
+.input-left .compact-btn:focus-visible { opacity: 1; }
 .input-left .compact-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
 }
-.input-left .compact-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.input-left .compact-btn:disabled { opacity: 0.18; cursor: not-allowed; }
+.input-left:hover .compact-btn:disabled { opacity: 0.6; }
 .input-left .compact-btn .icon-slot { display: inline-flex; }
 .input-left .compact-btn .icon-slot svg { width: 12px; height: 12px; }
-.compact-label { font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
+.compact-label {
+  color: var(--danger); font-weight: 700; letter-spacing: 0.01em; white-space: nowrap;
+}
+
+/* Lossy-operation warning: hidden until the action-bar region is hovered. */
+.compact-caution {
+  position: absolute; bottom: calc(100% + 8px); left: 50%;
+  display: flex; align-items: flex-start; gap: 6px;
+  width: max-content; max-width: 260px; padding: 7px 9px;
+  background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: 9px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  color: var(--danger); font-size: 11px; font-weight: 600; line-height: 1.45;
+  text-align: left; white-space: normal;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 0.15s, transform 0.15s, visibility 0.15s;
+  z-index: 60;
+}
+.compact-caution .icon-slot { flex: 0 0 auto; margin-top: 1px; }
+.compact-caution .icon-slot svg { width: 13px; height: 13px; }
+.input-left:hover .compact-caution,
+.input-left .compact-btn:focus-visible .compact-caution {
+  opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
+}
 
 .perm-popover {
   position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
