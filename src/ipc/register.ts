@@ -8,7 +8,7 @@
  * early/full-ready gating rules are unchanged.
  */
 
-import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import { BrowserWindow, app, clipboard, dialog, ipcMain, shell } from 'electron';
 import { access, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, sep } from 'node:path';
@@ -28,7 +28,8 @@ import {
   automationRuns,
   automationUpsert,
 } from '../main/automation-runner.js';
-import { globalRulesPath, ensureGlobalRules, resetGlobalRules } from '../tools/agents.js';
+import { globalRulesPath, ensureGlobalRules, resetGlobalRules, loadConstitutionBundle } from '../tools/agents.js';
+import { readState as readCoreOverlayState } from '../bootstrap/overlay.js';
 import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateWorkerParams } from '../shared/ipc-validation.js';
 import { CHANNELS } from './channels.js';
@@ -889,6 +890,51 @@ export function registerIpc(ctx: IpcContext): void {
       return err ? { ok: false, error: err } : { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // Active project rules for the info panel (T1-1). Reports the merged
+  // constitution files plus whether source-level dedup is actually in effect.
+  // No rule BODY is returned — the body is only ever injected as
+  // `[Project Constitution]` by AgentService, never re-sent to the renderer.
+  ipcMain.handle(CHANNELS.getActiveRules, async (event, params: unknown): Promise<{
+    ok: boolean;
+    files: Array<{ name: string; file: string; size: number; source: 'desktop-constitution'; authority: 'hard'; reason: string }>;
+    mergedBytes: number;
+    dedupActive: boolean;
+    reason: 'ok' | 'not-found' | 'partial';
+  }> => {
+    if (!isTrustedSender(event)) return { ok: false, files: [], mergedBytes: 0, dedupActive: false, reason: 'not-found' };
+    const p = (params && typeof params === 'object' ? params : {}) as { cwd?: unknown };
+    const cwd = typeof p.cwd === 'string' && p.cwd.length > 0 && p.cwd.length <= 4096
+      ? p.cwd : ctx.loadSavedCwd() ?? process.cwd();
+
+    let dedupActive = false;
+    try {
+      // Overlay active => the core is loaded from <overlayRoot>/core/<version>,
+      // whose project-context.js is NOT patched (only the bundled copy is).
+      const overlayActive = readCoreOverlayState(ctx.coreOverlayRoot()).activeCore !== null;
+      if (!overlayActive) {
+        const coreFile = join(app.getAppPath(), 'node_modules', 'nexus-coder', 'dist', 'src', 'context', 'project-context.js');
+        dedupActive = await readFile(coreFile, 'utf8')
+          .then((s) => s.includes('NEXUS_RULES_DEDUP_PATCH: project rules are injected once'))
+          .catch(() => false);
+      }
+    } catch {
+      dedupActive = false;
+    }
+
+    try {
+      const bundle = await loadConstitutionBundle(cwd);
+      return {
+        ok: true,
+        files: bundle.files,
+        mergedBytes: bundle.mergedBytes,
+        dedupActive,
+        reason: bundle.reason,
+      };
+    } catch (e) {
+      return { ok: false, files: [], mergedBytes: 0, dedupActive, reason: 'not-found' };
     }
   });
 

@@ -82,6 +82,14 @@ const api = {
     ipcRenderer.invoke('nexus:openExternalFile', path) as Promise<{ ok: boolean; error?: string }>,
   openInEditor: (path: string) =>
     ipcRenderer.invoke('nexus:openInEditor', path) as Promise<{ ok: boolean; error?: string }>,
+  getActiveRules: (cwd?: string) =>
+    ipcRenderer.invoke('nexus:getActiveRules', { cwd }) as Promise<{
+      ok: boolean;
+      files: Array<{ name: string; file: string; size: number; source: string; authority: string; reason: string }>;
+      mergedBytes: number;
+      dedupActive: boolean;
+      reason: string;
+    }>,
   getGitStatus: (root: string) =>
     ipcRenderer.invoke('nexus:getGitStatus', root) as Promise<{
       ok: boolean;

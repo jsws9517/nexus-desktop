@@ -50,8 +50,11 @@ export const GLOBAL_RULES_MARKER = '[Global Rules]';
 /** Filename of the user-level rules file, under `<data-dir>/rules/`. */
 export const GLOBAL_RULES_FILENAME = 'GLOBAL.md';
 
-/** Hard cap on constitution size — larger files are refused (no silent bloat). */
+/** Hard cap on a single rule file — larger files are refused (no silent bloat). */
 export const MAX_CONSTITUTION_BYTES = 32 * 1024;
+
+/** Hard cap on the merged constitution bundle (all rule files combined). */
+export const MAX_CONSTITUTION_BUNDLE_BYTES = 128 * 1024;
 
 /** Hard cap on a single tool result returned to the LLM. */
 const MAX_TOOL_RESULT_CHARS = 30_000;
@@ -104,6 +107,39 @@ export interface ConstitutionLoad {
   reason: 'ok' | 'not-found' | 'too-large' | 'unauthorized';
 }
 
+/** One resolved rule file in the merged constitution bundle. */
+export interface ConstitutionFileEntry {
+  name: string; // relative path from project root, e.g. ".nexus/rules/NEXUS.md"
+  file: string; // absolute path
+  size: number;
+  source: 'desktop-constitution';
+  authority: 'hard';
+  reason: 'ok' | 'too-large' | 'unauthorized';
+}
+
+/** Merged constitution: all project rule files concatenated under markers. */
+export interface ConstitutionBundle {
+  files: ConstitutionFileEntry[];
+  text: string | null;
+  mergedBytes: number;
+  reason: 'ok' | 'not-found' | 'partial';
+}
+
+/**
+ * Rule-file sources for the merged constitution, in precedence order.
+ * - scanDir: directory scanned for *.md/*.txt (sorted by relative path)
+ * - rootFile: single file at project root
+ * `.agents/rules` is legacy compatibility only. CLAUDE.md is intentionally
+ * absent — it does not exist in this ecosystem and is not a compat target.
+ */
+const CONSTITUTION_SOURCES: ReadonlyArray<{ scanDir?: string; rootFile?: string }> = [
+  { scanDir: '.nexus/rules' },
+  { scanDir: '.trae/rules' },
+  { rootFile: '.clinerules' },
+  { rootFile: 'AGENTS.md' },
+  { scanDir: '.agents/rules' },
+];
+
 function normalizeRoot(root: string): string {
   return resolve(root);
 }
@@ -147,6 +183,115 @@ export async function resolveConstitutionFile(root: string): Promise<string | nu
     // no rules dir
   }
   return null;
+}
+
+/**
+ * Resolve ALL constitution rule files for a project root, in deterministic
+ * precedence order. Replaces the old first-existing-wins semantics so a project
+ * with several rule files (e.g. NEXUS.md + style.md + .trae/rules/AGENTS.md) has
+ * every one of them honoured.
+ *
+ * Order: CONSTITUTION_SOURCES order (`.nexus/rules` first), then relative path
+ * lexicographic within each source. Duplicate absolute paths are removed.
+ */
+export async function resolveConstitutionFiles(root: string): Promise<string[]> {
+  const base = normalizeRoot(root);
+  const found: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (p: string) => {
+    const norm = normalizeRoot(p);
+    if (!seen.has(norm)) {
+      seen.add(norm);
+      found.push(norm);
+    }
+  };
+
+  for (const src of CONSTITUTION_SOURCES) {
+    if (src.rootFile) {
+      try {
+        const p = join(base, src.rootFile);
+        if ((await stat(p)).isFile()) add(p);
+      } catch {
+        // not present — continue
+      }
+    }
+    if (src.scanDir) {
+      try {
+        const dir = join(base, src.scanDir);
+        const entries = await readdir(dir, { withFileTypes: true });
+        const names = entries
+          .filter((e) => e.isFile() && (e.name.toLowerCase().endsWith('.md') || e.name.toLowerCase().endsWith('.txt')))
+          .map((e) => e.name)
+          .sort((a, b) => a.localeCompare(b));
+        for (const name of names) add(join(dir, name));
+      } catch {
+        // no such dir — continue
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Load the merged project constitution bundle: every rule file, each capped at
+ * MAX_CONSTITUTION_BYTES, the concatenation capped at MAX_CONSTITUTION_BUNDLE_BYTES.
+ * Oversize individual files are skipped (with a reason), not fatal; the rest
+ * still load. This is the single authoritative project-rule source injected as
+ * `[Project Constitution]` by AgentService.
+ */
+export async function loadConstitutionBundle(root: string): Promise<ConstitutionBundle> {
+  const base = normalizeRoot(root);
+  if (!isAuthorizedRoot(base)) {
+    return { files: [], text: null, mergedBytes: 0, reason: 'not-found' };
+  }
+  const paths = await resolveConstitutionFiles(base);
+  if (paths.length === 0) {
+    return { files: [], text: null, mergedBytes: 0, reason: 'not-found' };
+  }
+
+  const files: ConstitutionFileEntry[] = [];
+  const segments: string[] = [];
+  let mergedBytes = 0;
+  let anyLoaded = false;
+  let anySkipped = false;
+
+  for (const p of paths) {
+    const name = relative(base, p).split('\\').join('/');
+    let size: number;
+    try {
+      size = (await stat(p)).size;
+    } catch {
+      continue;
+    }
+    if (size > MAX_CONSTITUTION_BYTES) {
+      files.push({ name, file: p, size, source: 'desktop-constitution', authority: 'hard', reason: 'too-large' });
+      anySkipped = true;
+      continue;
+    }
+    if (mergedBytes + size > MAX_CONSTITUTION_BUNDLE_BYTES) {
+      files.push({ name, file: p, size, source: 'desktop-constitution', authority: 'hard', reason: 'too-large' });
+      anySkipped = true;
+      continue;
+    }
+    try {
+      const content = (await readFile(p, 'utf8')).trim();
+      segments.push(`<!-- source: ${name} -->\n${content}`);
+      mergedBytes += size;
+      files.push({ name, file: p, size, source: 'desktop-constitution', authority: 'hard', reason: 'ok' });
+      anyLoaded = true;
+    } catch {
+      // unreadable — skip
+      anySkipped = true;
+    }
+  }
+
+  return {
+    files,
+    text: anyLoaded ? segments.join('\n\n') : null,
+    mergedBytes,
+    reason: !anyLoaded ? 'not-found' : anySkipped ? 'partial' : 'ok',
+  };
 }
 
 /**

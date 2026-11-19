@@ -27,8 +27,16 @@ process.env.HOME = tmp;
 process.env.USERPROFILE = tmp;
 process.env.LLMA_DATA_DIR = tmp;
 
-const { AGENTS_TOOLS, AGENTS_TOOL_DEFS, loadConstitution, resolveConstitutionFile, indexAgents, callAgentsTool } =
-  await import(pathToFileURL(join(dist, 'tools', 'agents.js')));
+const {
+  AGENTS_TOOLS,
+  AGENTS_TOOL_DEFS,
+  loadConstitution,
+  resolveConstitutionFile,
+  resolveConstitutionFiles,
+  loadConstitutionBundle,
+  indexAgents,
+  callAgentsTool,
+} = await import(pathToFileURL(join(dist, 'tools', 'agents.js')));
 const {
   readModelCapabilities,
   getModelCapability,
@@ -245,4 +253,74 @@ test('buildVisionHint names the bridging tools', () => {
   assert.match(hint, /TEXT-ONLY/);
   assert.match(hint, /ocr_extract/);
   assert.match(hint, /analyze_image/);
+});
+
+// ===========================================================================
+// 5. Multi-file constitution bundle (T1-1)
+// ===========================================================================
+
+test('resolveConstitutionFiles collects all rule files in deterministic order', async () => {
+  const alt = mkdtempSync(join(tmpdir(), 'nexus-bundle-'));
+  mkdirSync(join(alt, '.nexus', 'rules'), { recursive: true });
+  mkdirSync(join(alt, '.trae', 'rules'), { recursive: true });
+  writeFileSync(join(alt, '.nexus', 'rules', 'NEXUS.md'), 'PRIMARY', 'utf8');
+  writeFileSync(join(alt, '.nexus', 'rules', 'style.md'), 'STYLE', 'utf8');
+  writeFileSync(join(alt, '.nexus', 'rules', 'notes.txt'), 'NOTES', 'utf8');
+  writeFileSync(join(alt, '.trae', 'rules', 'AGENTS.md'), 'TRAE', 'utf8');
+  process.chdir(alt);
+  const files = await resolveConstitutionFiles(alt);
+  assert.equal(files.length, 4);
+  const names = files.map((f) => f.slice(alt.length + 1).split('\\').join('/'));
+  assert.ok(names.includes('.nexus/rules/NEXUS.md'));
+  assert.ok(names.includes('.nexus/rules/style.md'));
+  assert.ok(names.includes('.nexus/rules/notes.txt'));
+  assert.ok(names.includes('.trae/rules/AGENTS.md'));
+  // .nexus/rules segment precedes .trae/rules
+  assert.ok(names.indexOf('.nexus/rules/style.md') < names.indexOf('.trae/rules/AGENTS.md'));
+  // within a segment, lexicographic
+  assert.ok(names.indexOf('.nexus/rules/NEXUS.md') < names.indexOf('.nexus/rules/style.md'));
+  rmWithCwdEscape(alt, __dirname);
+  process.chdir(root);
+});
+
+test('loadConstitutionBundle merges every file with source headers', async () => {
+  const alt = mkdtempSync(join(tmpdir(), 'nexus-bundle-merge-'));
+  mkdirSync(join(alt, '.nexus', 'rules'), { recursive: true });
+  writeFileSync(join(alt, '.nexus', 'rules', 'NEXUS.md'), 'BODY_A', 'utf8');
+  writeFileSync(join(alt, '.nexus', 'rules', 'style.md'), 'BODY_B', 'utf8');
+  process.chdir(alt);
+  const bundle = await loadConstitutionBundle(alt);
+  assert.equal(bundle.reason, 'ok');
+  assert.equal(bundle.files.length, 2);
+  assert.equal(bundle.text.split('<!-- source:').length - 1, 2);
+  assert.ok(bundle.text.includes('BODY_A') && bundle.text.includes('BODY_B'));
+  assert.ok(bundle.text.includes('.nexus/rules/NEXUS.md'));
+  rmWithCwdEscape(alt, __dirname);
+  process.chdir(root);
+});
+
+test('loadConstitutionBundle skips oversize single file but keeps the rest', async () => {
+  const alt = mkdtempSync(join(tmpdir(), 'nexus-bundle-cap-'));
+  mkdirSync(join(alt, '.nexus', 'rules'), { recursive: true });
+  writeFileSync(join(alt, '.nexus', 'rules', 'NEXUS.md'), 'x'.repeat(40_000), 'utf8');
+  writeFileSync(join(alt, '.nexus', 'rules', 'style.md'), 'KEEP_ME', 'utf8');
+  process.chdir(alt);
+  const bundle = await loadConstitutionBundle(alt);
+  assert.equal(bundle.reason, 'partial');
+  assert.equal(bundle.files.find((f) => f.name.endsWith('NEXUS.md')).reason, 'too-large');
+  assert.ok(bundle.text.includes('KEEP_ME'));
+  assert.ok(!bundle.text.includes('xxxx'));
+  rmWithCwdEscape(alt, __dirname);
+  process.chdir(root);
+});
+
+test('loadConstitutionBundle returns not-found for unauthorized root', async () => {
+  const foreign = mkdtempSync(join(tmpdir(), 'nexus-bundle-for-'));
+  mkdirSync(join(foreign, '.nexus', 'rules'), { recursive: true });
+  writeFileSync(join(foreign, '.nexus', 'rules', 'NEXUS.md'), 'FOREIGN', 'utf8');
+  process.chdir(root); // cwd is the authorized root
+  const bundle = await loadConstitutionBundle(foreign);
+  assert.equal(bundle.reason, 'not-found');
+  assert.equal(bundle.text, null);
+  rmWithCwdEscape(foreign, __dirname);
 });

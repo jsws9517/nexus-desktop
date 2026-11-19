@@ -58,7 +58,7 @@ import {
 import { applyRouting } from '../tools/routing.js';
 import { shouldHideVaultTools, inputNamesVaultTool, VAULT_TOOLS } from '../tools/attachment-rag.js';
 import type { ToolDef, ToolResult, AttachmentSearchRequest } from '../tools/types.js';
-import { loadConstitution, CONSTITUTION_MARKER, loadGlobalRules, ensureGlobalRules, GLOBAL_RULES_MARKER } from '../tools/agents.js';
+import { loadConstitutionBundle, CONSTITUTION_MARKER, loadGlobalRules, ensureGlobalRules, GLOBAL_RULES_MARKER } from '../tools/agents.js';
 import {
   readModelCapabilities,
   getModelCapability,
@@ -1267,19 +1267,18 @@ export class AgentService {
           }
 
           // --- Project constitution (P0, from Tolten Aegis) ---
-          // Inject the .nexus project constitution into EVERY model step,
-          // under a clearly delimited marker so it is strippable/auditable.
-          // Refused for unauthorized roots; size-capped internally (32 KB).
+          // Inject the MERGED .nexus/.trae project rule files into EVERY model
+          // step under a single `[Project Constitution]` marker so it is
+          // strippable/auditable. Every matched file is honoured (multi-file
+          // merge); oversize files are skipped with a warning. This is the sole
+          // authoritative project-rule injection — the core's loadRules() is
+          // patched to no-op so rules never appear twice (see scripts/patch-core-rules-dedup.mjs).
           try {
-            let text: string | null = null;
-            {
-              const constitution = await loadConstitution(projectDir ?? process.cwd());
-              if (constitution.reason === 'ok' && constitution.text) text = constitution.text;
-              else if (constitution.reason === 'too-large') {
-                this.onLog?.('warn', `Constitution at ${constitution.file} > 32 KB — refused (no silent context bloat)`);
-              } else if (constitution.reason === 'unauthorized') {
-                this.onLog?.('debug', 'Constitution skipped: project root not authorized');
-              }
+            const bundle = await loadConstitutionBundle(projectDir ?? process.cwd());
+            const text = bundle.reason !== 'not-found' ? bundle.text : null;
+            if (bundle.reason === 'partial') {
+              this.onLog?.('warn',
+                `Constitution bundle partially loaded: ${bundle.files.filter((f) => f.reason !== 'ok').map((f) => f.name).join(', ')} skipped / total cap reached`);
             }
             if (text) {
               if (!firstContent.includes(CONSTITUTION_MARKER)) {
@@ -1287,6 +1286,8 @@ export class AgentService {
                   `\n\n${CONSTITUTION_MARKER}\n${text}\n${CONSTITUTION_MARKER}\n`,
                 );
               }
+              this.onLog?.('debug',
+                `Constitution sources: ${bundle.files.map((f) => `${f.name}(${f.size})`).join(', ')}`);
             } else if (firstContent.includes(CONSTITUTION_MARKER)) {
               // Rule set removed / no longer resolvable — clear the block.
               ctx.replaceSystemByMarker(CONSTITUTION_MARKER, null);
@@ -1478,7 +1479,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       .catch(() => {});
     // 首次启动：若 ~/.nexus/provider-models.yaml 不存在则创建默认模板
     AgentService.ensureProviderModelsYaml();
-    // 首次启动：创建用户级全局规则 ~/.nexus/rules/GLOBAL.md（若缺失）。
+    // 首次启动：创建用户级全局规则 ~/.nexus/baseline/GLOBAL.md（若缺失）。
     // 不覆盖用户已编辑的内容；仅写入缺失的默认模板。
     ensureGlobalRules();
     this.initialized = true;

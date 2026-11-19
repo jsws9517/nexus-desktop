@@ -2148,6 +2148,22 @@ body {
   flex-shrink: 0;
 }
 
+/* Constraint sources (T1-1) */
+.rside-rules { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); }
+.rules-line { display: flex; align-items: baseline; gap: 4px; max-width: 100%; flex-wrap: wrap; }
+.rules-line-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rules-line-skip { color: var(--text-dim); text-decoration: line-through; }
+.rules-line-meta { color: var(--text-dim); font-size: 11px; flex-shrink: 0; }
+.rules-line-edit {
+  margin-left: auto; flex-shrink: 0; border: 0; background: transparent; cursor: pointer;
+  color: var(--accent, var(--text)); font-size: 11px; padding: 0 2px;
+}
+.rules-line-edit:hover { text-decoration: underline; }
+.rside-rules-warn {
+  margin-top: 6px; padding: 6px 8px; border-radius: 4px;
+  background: rgba(255, 165, 0, 0.12); color: #e8a33d; font-size: 11px; line-height: 1.4;
+}
+
 #task-list { display: flex; flex-direction: column; gap: 8px; }
 .task-item {
   display: flex;

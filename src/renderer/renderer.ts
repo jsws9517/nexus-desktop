@@ -400,6 +400,13 @@ declare global {
       listDirectory(root: string, path: string): Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }>;
       openExternalFile(path: string): Promise<{ ok: boolean; error?: string }>;
       openInEditor(path: string): Promise<{ ok: boolean; error?: string }>;
+      getActiveRules(cwd?: string): Promise<{
+        ok: boolean;
+        files: Array<{ name: string; file: string; size: number; source: string; authority: string; reason: string }>;
+        mergedBytes: number;
+        dedupActive: boolean;
+        reason: string;
+      }>;
       readImagePreview(path: string): Promise<string | undefined>;
       // Paste image from system clipboard (consistent with coder-core ALT+V).
       pasteImage(): Promise<{ path: string; preview: string } | null>;
@@ -799,6 +806,8 @@ const rsideSessionId = $('#rside-session-id');
 const rsideCwd = $('#rside-cwd');
 const rsidePerm = $('#rside-perm');
 const rsideMcp = $('#rside-mcp');
+const rsideRules = $('#rside-rules') as HTMLElement | null;
+const rsideRulesWarn = $('#rside-rules-dedup-warn') as HTMLElement | null;
 const rsideResourceEl = $('#rside-resource') as HTMLElement;
 const rsideToken = $('#rside-token');
 const rsideSummaryCount = $('#rside-summary-count');
@@ -4769,6 +4778,48 @@ function applyModelChanged(provider: string, model: string): void {
   refreshModelSelect(providerChanged);
 }
 
+/** Render the "Constraint Sources" block from nexus:getActiveRules (T1-1). */
+async function renderConstraintSources(projDir: string): Promise<void> {
+  if (!rsideRules) return;
+  try {
+    const res = await window.nexusDesktop.getActiveRules(projDir || undefined);
+    if (rsideRulesWarn) {
+      rsideRulesWarn.classList.toggle('hidden', res.ok && res.dedupActive);
+    }
+    rsideRules.innerHTML = '';
+    const files = Array.isArray(res.files) ? res.files : [];
+    if (files.length === 0) {
+      rsideRules.textContent = t('rulesNone');
+      return;
+    }
+    for (const f of files) {
+      const row = document.createElement('div');
+      row.className = 'rules-line';
+      const name = document.createElement('span');
+      name.className = `rules-line-name${f.reason !== 'ok' ? ' rules-line-skip' : ''}`;
+      name.textContent = f.name;
+      name.title = f.file;
+      const meta = document.createElement('span');
+      meta.className = 'rules-line-meta';
+      meta.textContent = ` (${Math.max(1, Math.round(f.size / 1024))} KB · ${t('constraintSources')})`;
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'rules-line-edit';
+      edit.textContent = t('rulesEdit');
+      edit.title = f.file;
+      edit.addEventListener('click', () => {
+        void window.nexusDesktop.openInEditor(f.file);
+      });
+      row.appendChild(name);
+      row.appendChild(meta);
+      row.appendChild(edit);
+      rsideRules.appendChild(row);
+    }
+  } catch {
+    rsideRules.textContent = t('rulesNone');
+  }
+}
+
 async function refreshSidebarSession(): Promise<void> {
   // The permission row shows this SESSION's effective mode, not the global
   // config value: a tab bound to auto/unattended (or an explicit prompt override)
@@ -4795,6 +4846,7 @@ async function refreshSidebarSession(): Promise<void> {
   }
   rsideCwd.textContent = projDir ? abbreviatePath(projDir) : '';
   rsideCwd.title = projDir || '';
+  void renderConstraintSources(projDir);
   rsidePerm.textContent = permLabel(activeMode);
   const connected = mcp.servers.filter((s) => s.status !== 'disconnected');
   rsideMcp.innerHTML = '';
@@ -6595,7 +6647,7 @@ function buildEditingSection(container?: HTMLElement): void {
 }
 
 /**
- * User-level (global) rules — `~/.nexus/rules/GLOBAL.md`. Applies to EVERY
+ * User-level (global) rules — `~/.nexus/baseline/GLOBAL.md`. Applies to EVERY
  * session regardless of the active project. Exposes the file location, an
  * "open in folder" action, and a reset-to-default (with backup).
  */
