@@ -504,7 +504,7 @@ test('built-in copy editor shows a "created copy" notice; the copy is editable, 
   container.remove();
 });
 
-test('copy row becomes a normal editable role; copy button still works from the preset card', async () => {
+test('copy row becomes a normal editable role; second copy picks the next free id', async () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const ctx = makeCtx('', 'en');
@@ -536,9 +536,9 @@ test('copy row becomes a normal editable role; copy button still works from the 
   assert.ok(copyRow.querySelector('[data-act="edit"]'), 'copy is a normal editable role');
   assert.ok(copyRow.querySelector('[data-act="delete"]'), 'copy is deletable');
 
-  // 2) Copy from the preset card works too and picks the next free id.
-  const card = [...container.querySelectorAll('.agent-preset')].find((c) => c.dataset.preset === 'code_reviewer');
-  card.querySelector('[data-act="preset-copy"]').click();
+  // 2) Second copy from the same built-in row picks the next free id.
+  const builtin2 = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer');
+  builtin2.querySelector('[data-act="copy"]').click();
   await tick();
   await tick();
   const ids = userCopies.map((c) => c.id).sort();
@@ -569,13 +569,13 @@ test('template, built-ins and an untouched editor follow the UI language', async
   await tick();
 
   assert.match(container.querySelector('.agent-template pre').textContent, /name: My Assistant/);
-  assert.match(container.textContent, /Built-in roles/);
+  assert.match(container.textContent, /Built-in/);
   assert.match(container.textContent, /Project Developer/);
 
   ctx.setUiLang('zh-CN');
   await tick();
   assert.match(container.querySelector('.agent-template pre').textContent, /name: 我的助手/);
-  assert.match(container.textContent, /内置角色/);
+  assert.match(container.textContent, /内置/);
   assert.match(container.textContent, /项目开发/);
 
   // Untouched new-role editor switches its prefilled fields with the language.
@@ -599,7 +599,7 @@ test('template, built-ins and an untouched editor follow the UI language', async
   container.remove();
 });
 
-test('built-in roles are auto-installed on first load; preset-use is a pure apply', async () => {
+test('built-in roles are auto-installed on first load and appear as rows in the list', async () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const saved = [];
@@ -627,15 +627,20 @@ test('built-in roles are auto-installed on first load; preset-use is a pure appl
   assert.equal(saved.length, 4, 'auto-install wrote all missing built-ins');
   const ids = saved.map((s) => s.id).sort();
   assert.deepEqual(ids, ['code_reviewer', 'creative_writer', 'office_assistant', 'project_developer']);
-  // The preset card now shows the "current" badge (the file is installed).
-  const card = [...container.querySelectorAll('.agent-preset')]
-    .find((c) => c.dataset.preset === 'code_reviewer');
-  assert.ok(card, 'built-in card rendered');
-  // Clicking "enable" applies the role to the session — no re-write.
-  card.querySelector('[data-act="preset-use"]').click();
+  // All four built-in rows are now visible in the "existing roles" list.
+  for (const b of allBuiltins) {
+    const row = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === b.id);
+    assert.ok(row, `built-in row ${b.id} rendered`);
+    assert.ok(row.querySelector('[data-act="apply"]'), 'built-in row has an apply button');
+    assert.ok(row.querySelector('[data-act="copy"]'), 'built-in row has a copy button');
+    assert.equal(row.querySelector('[data-act="delete"]')?.outerHTML ?? '', '', 'built-in row has no delete');
+  }
+  // Clicking "apply" on a built-in row applies the role to the session — no re-write.
+  const reviewerRow = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer');
+  reviewerRow.querySelector('[data-act="apply"]').click();
   await tick();
   assert.equal(applied.at(-1), 'code_reviewer');
-  assert.equal(saved.length, 4, 'preset-use does not re-write the file');
+  assert.equal(saved.length, 4, 'apply does not re-write the file');
 
   dispose();
   container.remove();

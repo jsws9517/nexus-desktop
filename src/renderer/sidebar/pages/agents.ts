@@ -518,26 +518,12 @@ export function mountAgentsPage(
         <button type="button" class="btn small" data-act="use-template">${esc(label('agentUseTemplate', lang()))}</button>
       </div></details>`);
 
-    const presetCards = AGENT_PRESETS.map((preset) => {
-      const spec = presetSpec(preset, lang());
-      const inUse = active === preset.id;
-      return `<div class="wb-card agent-preset ${inUse ? 'active' : ''}" data-preset="${esc(preset.id)}">
-        <div class="row1">
-          <span class="t">${esc(spec.name)}</span>
-          <span class="wb-badge builtin">${esc(label('agentBuiltInBadge', lang()))}</span>
-          ${inUse ? `<span class="wb-badge ok">${esc(label('agentCurrentBadge', lang()))}</span>` : ''}
-        </div>
-        <div class="wb-desc">${esc(spec.description)}</div>
-        <div class="agent-actions">
-          <button type="button" class="btn small ${inUse ? '' : 'primary'}" data-act="preset-use" ${inUse ? 'disabled' : ''}>${inUse ? esc(label('agentApplied', lang())) : esc(label('agentPresetUse', lang()))}</button>
-          <button type="button" class="btn ghost small" data-act="preset-copy">${esc(label('agentPresetSaveAs', lang()))}</button>
-        </div></div>`;
-    }).join('');
-    parts.push(`<div class="wb-title">${esc(label('agentBuiltInTitle', lang()))}</div>
-      <p class="wb-desc">${esc(label('agentBuiltInHint', lang()))}</p>
-      <div class="agent-presets">${presetCards}</div>`);
-
-    parts.push(`<div class="wb-title">${esc(label('agentExisting', lang(), { n: agents.length }))}</div>`);
+    // Built-in roles are auto-installed on first load (ensureBuiltinsInstalled)
+    // and appear as regular rows in the list below — each with Apply + Copy.
+    // No separate "preset cards" section; the "existing roles" list is the
+    // single source of truth for what's available.
+    parts.push(`<div class="wb-title">${esc(label('agentExisting', lang(), { n: agents.length }))}</div>
+      <p class="wb-desc">${esc(label('agentBuiltInHint', lang()))}</p>`);
     if (agents.length === 0) {
       parts.push(`<div class="wb-empty">${esc(label('agentEmpty', lang()))}</div>`);
     } else {
@@ -651,19 +637,6 @@ export function mountAgentsPage(
       case 'use-template':
         openEditor({ ...agentTemplate(lang()), _new: true });
         break;
-      case 'preset-use': {
-        // Built-in roles are pre-installed on first page load (see
-        // ensureBuiltinsInstalled()); the main-side handler protects the
-        // file from overwrite/delete, so this is a pure "apply to the
-        // current session" action — no filesystem write.
-        const card = el.closest('.agent-preset') as HTMLElement | null;
-        const preset = AGENT_PRESETS.find((p) => p.id === card?.dataset.preset);
-        if (!preset) break;
-        applyRole(preset.id);
-        render();
-        break;
-      }
-      case 'preset-copy':
       case 'copy': {
         await copyPreset(el, act === 'copy');
         break;
