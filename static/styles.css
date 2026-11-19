@@ -161,12 +161,26 @@
 }
 .agent-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .agent-row .agent-actions { margin-top: 7px; }
-.af-label { display: block; font-size: 11px; color: var(--text-dim); margin: 7px 0 3px; }
-.af-grid { display: flex; gap: 8px; }
-.af-grid > div { flex: 1; min-width: 0; }
-.agent-form input, .agent-form select, .agent-form textarea { width: 100%; }
-.agent-form textarea { min-height: 84px; resize: vertical; }
 .agent-err { color: var(--danger); font-size: 11px; min-height: 14px; margin-top: 4px; }
+
+/* Role editor modal — roomy form, decoupled from the narrow sidebar. */
+.overlay.agent-role-overlay { z-index: 120; }
+.modal.agent-role-modal {
+  width: 640px; max-width: 94vw; max-height: 88vh; overflow: auto;
+}
+.agent-role-modal .modal-head h3 { margin: 0; }
+.agent-role-modal .agent-err { min-height: 0; margin: 0; }
+.agent-role-modal .agent-err:empty { display: none; }
+.ar-fields { display: flex; flex-direction: column; gap: 12px; }
+.ar-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.ar-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.ar-field label { font-size: 11px; font-weight: 600; color: var(--text-dim); }
+.ar-field .modal-input { font-size: 13px; }
+.ar-field input[readonly] { opacity: 0.6; cursor: default; }
+.ar-field textarea { min-height: 150px; resize: vertical; line-height: 1.5; }
+.agent-role-modal .modal-actions { align-items: center; }
+.ar-hint { margin-right: auto; font-size: 11px; color: var(--text-dim); }
+@media (max-width: 560px) { .ar-grid { grid-template-columns: 1fr; } }
 
 /* ---- Sub-Agents page (flagship P1 use case) ---- */
 .sub-agents-page { padding: 10px; }

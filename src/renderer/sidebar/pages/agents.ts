@@ -3,15 +3,15 @@
  *
  * A single place for non-developers to see the config template, create/edit
  * roles through a structured form (no hand-written Markdown/YAML), and apply a
- * role to the CURRENT session. Roles live as Markdown files in
- * ~/.nexus/agents (user) or <cwd>/.nexus/agents (project); every filesystem
- * operation goes through main-process IPC — the renderer only sends validated
- * ids/fields, never a path.
+ * role to the CURRENT session. Creation and editing happen in a roomy modal
+ * dialog rather than an inline sidebar form, so the fields have space to breathe.
+ * Roles live as Markdown files in ~/.nexus/agents (user) or <cwd>/.nexus/agents
+ * (project); every filesystem operation goes through main-process IPC — the
+ * renderer only sends validated ids/fields, never a path.
  *
  * This view is mounted inside the unified "Workbench" panel as one of its
- * segmented sections (sub-agents / agents / automations / jobs / artifacts).
- * Dependency-injected like the other pages so the filter/form logic is unit
- * testable under happy-dom without Electron.
+ * segmented sections. Dependency-injected like the other pages so the filter,
+ * form and modal logic are unit testable under happy-dom without Electron.
  */
 
 import { STR } from '../../i18n.js';
@@ -135,42 +135,143 @@ export function mountAgentsPage(
   const lang = (): string => ctx.getUiLang?.() ?? opts.getUiLang?.() ?? 'en';
 
   let agents: AgentView[] = [];
-  let editing: (AgentSpec & { _new: boolean }) | null = null;
   let disposed = false;
+
+  // Modal editor state — kept separate from the sidebar list render so opening
+  // the editor never tears down the (idle-auto-hiding) workbench page.
+  let editorSpec: (AgentSpec & { _new: boolean }) | null = null;
+  let editorOverlay: HTMLElement | null = null;
+  let editorKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
   container.classList.add('agents-page');
 
-  function formHtml(): string {
-    if (!editing) return '';
-    const e = editing;
+  // ── Modal editor ──────────────────────────────────────────────────────────
+
+  function editorHtml(spec: AgentSpec & { _new: boolean }): string {
     return `
-      <div class="wb-card agent-form">
-        <div class="row1"><b>${esc(label(e._new ? 'agentNewRole' : 'agentEditRole', lang()))}</b>
-          <span class="wb-badge note">${esc(label('agentFormHint', lang()))}</span></div>
-        <div class="agent-err" data-role="err"></div>
-        <label class="af-label">${esc(label('agentId', lang()))}</label>
-        <input data-field="id" value="${esc(e.id)}" ${e._new ? '' : 'readonly'} placeholder="reviewer" />
-        <div class="af-grid">
-          <div><label class="af-label">${esc(label('agentName', lang()))}</label>
-            <input data-field="name" value="${esc(e.name)}" placeholder="${esc(label('agentName', lang()))}" /></div>
-          <div><label class="af-label">${esc(label('agentScope', lang()))}</label>
-            <select data-field="scope">
-              <option value="user" ${e.scope === 'user' ? 'selected' : ''}>${esc(label('agentScopeUser', lang()))}</option>
-              <option value="project" ${e.scope === 'project' ? 'selected' : ''}>${esc(label('agentScopeProject', lang()))}</option>
-            </select></div>
+      <div class="modal agent-role-modal" role="document" aria-labelledby="agent-role-modal-title">
+        <div class="modal-head">
+          <h3 id="agent-role-modal-title">${esc(label(spec._new ? 'agentNewRole' : 'agentEditRole', lang()))}</h3>
+          <button type="button" class="btn ghost small icon-only" data-act="close" aria-label="${esc(label('agentCancel', lang()))}">✕</button>
         </div>
-        <label class="af-label">${esc(label('agentDescription', lang()))}</label>
-        <input data-field="description" value="${esc(e.description)}" placeholder="${esc(label('agentDescription', lang()))}" />
-        <label class="af-label">${esc(label('agentTools', lang()))}</label>
-        <input data-field="tools" value="${esc(e.tools.join(', '))}" placeholder="read_text_file, git_status" />
-        <label class="af-label">${esc(label('agentPrompt', lang()))}</label>
-        <textarea data-field="systemPrompt" rows="6">${esc(e.systemPrompt)}</textarea>
-        <div class="agent-actions">
-          <button type="button" class="btn ghost small" data-act="cancel">${esc(label('agentCancel', lang()))}</button>
-          <button type="button" class="btn primary small" data-act="save">${esc(label('agentSave', lang()))}</button>
+        <div class="agent-err" data-role="err"></div>
+        <div class="ar-fields">
+          <div class="ar-grid">
+            <div class="ar-field"><label>${esc(label('agentId', lang()))}</label>
+              <input class="modal-input" data-field="id" value="${esc(spec.id)}" ${spec._new ? '' : 'readonly'} placeholder="reviewer" /></div>
+            <div class="ar-field"><label>${esc(label('agentName', lang()))}</label>
+              <input class="modal-input" data-field="name" value="${esc(spec.name)}" placeholder="${esc(label('agentName', lang()))}" /></div>
+          </div>
+          <div class="ar-field"><label>${esc(label('agentScope', lang()))}</label>
+            <select class="modal-input" data-field="scope">
+              <option value="user" ${spec.scope === 'user' ? 'selected' : ''}>${esc(label('agentScopeUser', lang()))}</option>
+              <option value="project" ${spec.scope === 'project' ? 'selected' : ''}>${esc(label('agentScopeProject', lang()))}</option>
+            </select></div>
+          <div class="ar-field"><label>${esc(label('agentDescription', lang()))}</label>
+            <input class="modal-input" data-field="description" value="${esc(spec.description)}" placeholder="${esc(label('agentDescription', lang()))}" /></div>
+          <div class="ar-field"><label>${esc(label('agentTools', lang()))}</label>
+            <input class="modal-input" data-field="tools" value="${esc(spec.tools.join(', '))}" placeholder="read_text_file, git_status" /></div>
+          <div class="ar-field"><label>${esc(label('agentPrompt', lang()))}</label>
+            <textarea class="modal-input" data-field="systemPrompt" rows="7">${esc(spec.systemPrompt)}</textarea></div>
+        </div>
+        <div class="modal-actions">
+          <span class="ar-hint">${esc(label('agentFormHint', lang()))}</span>
+          <button type="button" class="btn ghost" data-act="cancel">${esc(label('agentCancel', lang()))}</button>
+          <button type="button" class="btn primary" data-act="save">${esc(label('agentSave', lang()))}</button>
         </div>
       </div>`;
   }
+
+  function bindEditor(overlay: HTMLElement): void {
+    overlay.querySelector<HTMLElement>('[data-act="close"]')?.addEventListener('click', closeEditor);
+    overlay.querySelector<HTMLElement>('[data-act="cancel"]')?.addEventListener('click', closeEditor);
+    overlay.querySelector<HTMLElement>('[data-act="save"]')?.addEventListener('click', () => void saveEditor());
+    // Clicking the dimmed backdrop dismisses the editor.
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeEditor(); });
+  }
+
+  function trapEditorKeys(e: KeyboardEvent, overlay: HTMLElement): void {
+    if (e.key === 'Escape') { e.preventDefault(); closeEditor(); return; }
+    if (e.key !== 'Tab') return;
+    const focusables = Array.from(overlay.querySelectorAll<HTMLElement>('button, input, select, textarea'))
+      .filter((el) => !el.hasAttribute('disabled') && !el.hasAttribute('readonly'));
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+
+  function openEditor(spec: AgentSpec & { _new: boolean }): void {
+    closeEditor();
+    editorSpec = spec;
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay agent-role-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.innerHTML = editorHtml(spec);
+    document.body.appendChild(overlay);
+    editorOverlay = overlay;
+    bindEditor(overlay);
+    editorKeyHandler = (e) => trapEditorKeys(e, overlay);
+    document.addEventListener('keydown', editorKeyHandler, true);
+    // Focus the first editable field for immediate typing.
+    overlay.querySelector<HTMLElement>(spec._new ? '[data-field="id"]' : '[data-field="name"]')?.focus();
+  }
+
+  function closeEditor(): void {
+    if (editorKeyHandler) document.removeEventListener('keydown', editorKeyHandler, true);
+    editorOverlay?.remove();
+    editorOverlay = null;
+    editorKeyHandler = null;
+    editorSpec = null;
+  }
+
+  function readEditorFields(): FieldBag {
+    const out: FieldBag = {};
+    editorOverlay?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-field]')
+      .forEach((el) => { out[el.dataset.field as string] = el.value; });
+    return out;
+  }
+
+  function editorErr(msg: string): void {
+    const el = editorOverlay?.querySelector('.agent-err') as HTMLElement | null;
+    if (el) el.textContent = msg;
+  }
+
+  async function saveEditor(): Promise<void> {
+    if (!editorSpec) return;
+    const spec = specFromFields(readEditorFields());
+    if (!validRoleId(spec.id)) { editorErr(label('agentBadId', lang())); return; }
+    if (!spec.name) { editorErr(label('agentBadName', lang())); return; }
+
+    const saveBtn = editorOverlay?.querySelector<HTMLButtonElement>('[data-act="save"]');
+    if (saveBtn) saveBtn.disabled = true;
+    const res = await saveAgent(spec);
+    if (disposed) return;
+    if (!res.ok) {
+      if (saveBtn) saveBtn.disabled = false;
+      editorErr(res.error || label('agentSaveFailed', lang()));
+      return;
+    }
+    closeEditor();
+    await reload(true);
+    applyRole(spec.id);
+  }
+
+  /** Rebuild the open editor in a new language while preserving field values. */
+  function refreshEditor(): void {
+    if (!editorSpec || !editorOverlay) return;
+    const fields = readEditorFields();
+    const isNew = editorSpec._new;
+    editorSpec = { ...specFromFields(fields), _new: isNew };
+    const activeField = (document.activeElement as HTMLElement | null)?.dataset?.field;
+    editorOverlay.innerHTML = editorHtml(editorSpec);
+    bindEditor(editorOverlay);
+    if (activeField) editorOverlay.querySelector<HTMLElement>(`[data-field="${activeField}"]`)?.focus();
+  }
+
+  // ── Sidebar list render ───────────────────────────────────────────────────
 
   function render(): void {
     if (disposed) return;
@@ -189,8 +290,6 @@ export function mountAgentsPage(
       <div class="agent-actions">
         <button type="button" class="btn small" data-act="use-template">${esc(label('agentUseTemplate', lang()))}</button>
       </div></details>`);
-
-    parts.push(formHtml());
 
     parts.push(`<div class="wb-title">${esc(label('agentExisting', lang(), { n: agents.length }))}</div>`);
     if (agents.length === 0) {
@@ -220,31 +319,6 @@ export function mountAgentsPage(
     bind();
   }
 
-  function setErr(msg: string): void {
-    const el = container.querySelector('.agent-err') as HTMLElement | null;
-    if (el) el.textContent = msg;
-  }
-
-  function readFields(): FieldBag {
-    const out: FieldBag = {};
-    container.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-field]')
-      .forEach((el) => { out[el.dataset.field as string] = el.value; });
-    return out;
-  }
-
-  async function save(): Promise<void> {
-    if (!editing) return;
-    const spec = specFromFields(readFields());
-    if (!validRoleId(spec.id)) { setErr(label('agentBadId', lang())); return; }
-    if (!spec.name) { setErr(label('agentBadName', lang())); return; }
-    const res = await saveAgent(spec);
-    if (disposed) return;
-    if (!res.ok) { setErr(res.error || label('agentSaveFailed', lang())); return; }
-    editing = null;
-    await reload(true);
-    applyRole(spec.id);
-  }
-
   async function reload(refresh = false): Promise<void> {
     const res = await listAgents(refresh);
     if (disposed) return;
@@ -261,15 +335,7 @@ export function mountAgentsPage(
   async function onAction(act: string, el: HTMLElement): Promise<void> {
     switch (act) {
       case 'use-template':
-        editing = { ...AGENT_TEMPLATE_FIELDS, _new: true };
-        render();
-        break;
-      case 'cancel':
-        editing = null;
-        render();
-        break;
-      case 'save':
-        await save();
+        openEditor({ ...AGENT_TEMPLATE_FIELDS, _new: true });
         break;
       case 'clear':
         applyRole('');
@@ -284,12 +350,11 @@ export function mountAgentsPage(
         const row = el.closest('.agent-row') as HTMLElement | null;
         const a = agents.find((x) => x.id === row?.dataset.id);
         if (a) {
-          editing = {
+          openEditor({
             id: a.id, name: a.name, description: a.description,
             tools: a.tools ?? [], systemPrompt: a.systemPrompt,
             scope: a.source, _new: false,
-          };
-          render();
+          });
         }
         break;
       }
@@ -315,14 +380,20 @@ export function mountAgentsPage(
 
   void reload();
 
-  // Re-render when the UI language changes at runtime (same hook other pages use).
+  // Re-render the list AND any open editor when the UI language changes.
   const offLang = ctx.subscribe
-    ? ctx.subscribe((event) => { if ((event as { type?: string }).type === 'language_changed') render(); })
+    ? ctx.subscribe((event) => {
+        if ((event as { type?: string }).type === 'language_changed') {
+          render();
+          refreshEditor();
+        }
+      })
     : () => {};
 
   return () => {
     disposed = true;
     offLang();
+    closeEditor();
     container.innerHTML = '';
     container.classList.remove('agents-page');
   };

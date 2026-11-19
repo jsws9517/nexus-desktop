@@ -9182,24 +9182,11 @@ window.nexusDesktop.onTabsChanged((open) => {
     // (no tab restored): an unbound view simply reflects the global default.
     await refreshPermMode(currentSessionId || '');
     await syncOpenTabs();
-    // P1: register built-in sidebar tabs (Sub-Agents + Jobs + Automation).
-    // Side chat moved to the right 侧边对话 panel in PR2 (mountSideChatPage
-    // into #sidechat-panel, see the PR2 block above) — the left strip keeps
-    // only the session-scoped pages. The registry stays the extension surface.
-    sidebarRegistry.register({
-      id: SubAgentsPage.id,
-      title: SubAgentsPage.title,
-      titleKey: SubAgentsPage.titleKey,
-      icon: SubAgentsPage.icon,
-      mount: mountSubAgentsPage,
-    });
-    sidebarRegistry.register({
-      id: JobsPage.id,
-      title: JobsPage.title,
-      titleKey: JobsPage.titleKey,
-      icon: JobsPage.icon,
-      mount: mountJobsPage,
-    });
+    // Register workbench sections in display order: automation + roles first,
+    // then background jobs / sub-agents / artifacts. Side chat moved to the
+    // right 侧边对话 panel in PR2 (mountSideChatPage into #sidechat-panel, see
+    // the PR2 block above) — the left workbench keeps session-scoped pages.
+    // The registry stays the extension surface.
     sidebarRegistry.register({
       id: AutomationPage.id,
       title: AutomationPage.title,
@@ -9211,6 +9198,27 @@ window.nexusDesktop.onTabsChanged((open) => {
       }),
     });
     sidebarRegistry.register({
+      id: AgentsPage.id,
+      title: AgentsPage.title,
+      titleKey: AgentsPage.titleKey,
+      icon: AgentsPage.icon,
+      mount: (container, ctx) => mountAgentsPage(container, ctx, makeAgentsPageOptions()),
+    });
+    sidebarRegistry.register({
+      id: JobsPage.id,
+      title: JobsPage.title,
+      titleKey: JobsPage.titleKey,
+      icon: JobsPage.icon,
+      mount: mountJobsPage,
+    });
+    sidebarRegistry.register({
+      id: SubAgentsPage.id,
+      title: SubAgentsPage.title,
+      titleKey: SubAgentsPage.titleKey,
+      icon: SubAgentsPage.icon,
+      mount: mountSubAgentsPage,
+    });
+    sidebarRegistry.register({
       id: ArtifactsPage.id,
       title: ArtifactsPage.title,
       titleKey: ArtifactsPage.titleKey,
@@ -9219,15 +9227,6 @@ window.nexusDesktop.onTabsChanged((open) => {
         // "Open session" focuses an existing tab or opens the source session.
         openSession: (sessionId) => { void openTab(sessionId); },
       }),
-    });
-    // Unified workbench: Agent roles live as one section alongside the four
-    // session-scoped panels, all sharing the same segmented nav + card styles.
-    sidebarRegistry.register({
-      id: AgentsPage.id,
-      title: AgentsPage.title,
-      titleKey: AgentsPage.titleKey,
-      icon: AgentsPage.icon,
-      mount: (container, ctx) => mountAgentsPage(container, ctx, makeAgentsPageOptions()),
     });
     renderSidebarTabs();
     // Right-panel file browser: mounted once for the app lifetime; it handles

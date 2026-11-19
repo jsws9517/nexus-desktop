@@ -7,7 +7,8 @@
  *   - IPC validation of the new save/delete/refresh params,
  *   - the Agents page helpers (tools parsing, id grammar, spec normalization),
  *   - the mounted Agents view under happy-dom: template, role list, apply/clear,
- *     form validation, save + refresh, delete, and clean dispose.
+ *     modal form validation, save + refresh, delete, and clean dispose,
+ *   - workbench registration order (automation/roles before the rest).
  */
 import './sandbox-env.mjs';
 import { test, after } from 'node:test';
@@ -171,46 +172,100 @@ test('Agents page shows template + role list, and applies/clears roles', async (
   assert.equal(container.innerHTML, '');
 });
 
-test('Agents page validates the form and saves via the injected bridge', async () => {
+test('Agents page opens a modal editor, validates and saves via the injected bridge', async () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const saved = [];
+  const applied = [];
   let refreshSeen = false;
   const ctx = makeCtx('');
   const dispose = mountAgentsPage(container, ctx, {
     listAgents: async (refresh) => { refreshSeen = refreshSeen || refresh === true; return { ok: true, agents: [] }; },
     saveAgent: async (spec) => { saved.push(spec); return { ok: true }; },
-    applyRole: () => {},
+    applyRole: (id) => applied.push(id),
     getActiveRole: () => '',
   });
   await tick();
 
-  // "Use this template" opens a prefilled structured form (no Markdown writing).
+  // "Use this template" opens a roomy modal on <body>, not an inline form
+  // squeezed into the narrow sidebar container.
   container.querySelector('[data-act="use-template"]').click();
-  assert.ok(container.querySelector('.agent-form'));
-  const idField = container.querySelector('[data-field="id"]');
+  const overlay = document.querySelector('.agent-role-overlay');
+  assert.ok(overlay, 'modal overlay exists');
+  assert.ok(!container.contains(overlay), 'modal lives outside the sidebar container');
+  const modal = overlay.querySelector('.agent-role-modal');
+  assert.ok(modal, 'modal dialog exists');
+  const idField = modal.querySelector('[data-field="id"]');
   assert.equal(idField.value, 'my_assistant');
+  assert.ok(!idField.hasAttribute('readonly'), 'new roles allow choosing an id');
 
   // Invalid id → field error, no IPC call.
   idField.value = '../escape';
-  container.querySelector('[data-act="save"]').click();
+  modal.querySelector('[data-act="save"]').click();
   await tick();
   assert.equal(saved.length, 0);
-  assert.match(container.querySelector('.agent-err').textContent, /id/i);
+  assert.match(modal.querySelector('.agent-err').textContent, /id/i);
 
   // Fix the id and save → bridge receives a clean spec, list refreshes, role applied.
-  container.querySelector('[data-field="id"]').value = 'my_assistant';
-  container.querySelector('[data-field="name"]').value = 'My Assistant';
-  container.querySelector('[data-field="tools"]').value = 'read_text_file, git_status';
-  container.querySelector('[data-act="save"]').click();
+  modal.querySelector('[data-field="id"]').value = 'my_assistant';
+  modal.querySelector('[data-field="name"]').value = 'My Assistant';
+  modal.querySelector('[data-field="tools"]').value = 'read_text_file, git_status';
+  modal.querySelector('[data-act="save"]').click();
   await tick();
   await tick();
   assert.equal(saved.length, 1);
   assert.equal(saved[0].id, 'my_assistant');
   assert.deepEqual(saved[0].tools, ['read_text_file', 'git_status']);
   assert.equal(refreshSeen, true, 'reload(true) bypasses the scan cache after a write');
+  assert.equal(applied.at(-1), 'my_assistant');
+  assert.equal(document.querySelector('.agent-role-overlay'), null, 'modal closes after save');
 
   dispose();
+  container.remove();
+});
+
+test('Agents page modal locks the id when editing and supports Escape/backdrop/cancel', async () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const ctx = makeCtx('');
+  const dispose = mountAgentsPage(container, ctx, {
+    listAgents: async () => ({ ok: true, agents: TWO_ROLES }),
+    saveAgent: async () => ({ ok: true }),
+    applyRole: () => {},
+    getActiveRole: () => '',
+  });
+  await tick();
+
+  // Editing an existing role: fields prefilled, id locked (file name).
+  const reviewer = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'reviewer');
+  reviewer.querySelector('[data-act="edit"]').click();
+  let modal = document.querySelector('.agent-role-modal');
+  assert.ok(modal);
+  assert.match(modal.textContent, /Edit role/);
+  assert.equal(modal.querySelector('[data-field="id"]').value, 'reviewer');
+  assert.ok(modal.querySelector('[data-field="id"]').hasAttribute('readonly'));
+  assert.equal(modal.querySelector('[data-field="name"]').value, 'Code Reviewer');
+
+  // Escape dismisses the editor and unbinds its key handler.
+  modal.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(document.querySelector('.agent-role-overlay'), null);
+
+  // Backdrop click dismisses.
+  container.querySelector('[data-act="use-template"]').click();
+  document.querySelector('.agent-role-overlay').click();
+  assert.equal(document.querySelector('.agent-role-overlay'), null);
+
+  // Cancel button dismisses.
+  container.querySelector('[data-act="use-template"]').click();
+  document.querySelector('.agent-role-modal [data-act="cancel"]').click();
+  assert.equal(document.querySelector('.agent-role-overlay'), null);
+
+  // Disposing with an open editor tears the modal down too.
+  container.querySelector('[data-act="use-template"]').click();
+  assert.ok(document.querySelector('.agent-role-overlay'));
+  dispose();
+  assert.equal(document.querySelector('.agent-role-overlay'), null);
+
   container.remove();
 });
 
@@ -245,4 +300,11 @@ test('index.html exposes one workbench entry, not a crowded tab strip / role dro
   assert.match(html, /id="sidebar-tabs"/); // shared segmented nav lives inside the panel
   assert.ok(!html.includes('id="agent-role-select"'), 'toolbar role dropdown removed');
   assert.match(html, /data-i18n="workbenchEntry"/);
+});
+
+test('workbench sections register in the requested display order', () => {
+  const src = readFileSync(join(__dirname, '..', 'src', 'renderer', 'renderer.ts'), 'utf-8');
+  const order = [...src.matchAll(/sidebarRegistry\.register\(\{\s*id:\s*(\w+Page)\.id/g)]
+    .map((m) => m[1]);
+  assert.deepEqual(order, ['AutomationPage', 'AgentsPage', 'JobsPage', 'SubAgentsPage', 'ArtifactsPage']);
 });
