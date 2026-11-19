@@ -466,3 +466,57 @@ test('scenario H: a wake turn is skipped while the last verdict did not pass', a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * Scenario I — a media generation turn that produced a real artifact.
+ *
+ * Regression for session 6eb6232d: "已有交付件" (generate_image wrote a PNG)
+ * must become machine-checkable evidence. Without it the contract stayed empty
+ * and the turn ended `unverified` despite a delivered image.
+ */
+test('scenario I: a media artifact turns an unverified claim into a verified one', async () => {
+  const dir = makeFixture(null);
+  const prev = process.cwd();
+  process.chdir(dir);
+  const artifact = join(dir, 'output', 'flat-lay.png');
+  mkdirSync(join(dir, 'output'), { recursive: true });
+  writeFileSync(artifact, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  try {
+    const PNG = artifact;
+    const envelope = JSON.stringify({
+      ok: true,
+      task_id: 'mt_test',
+      status: 'succeeded',
+      kind: 'image',
+      files: [PNG],
+      image_path: PNG,
+    });
+    const script = [
+      { type: 'turn_start', turn: 1 },
+      { type: 'tool_call_start', name: 'generate_image', args: { prompt: 'flat lay' } },
+      {
+        type: 'tool_result',
+        name: 'generate_image',
+        args: { prompt: 'flat lay' },
+        content: envelope,
+      },
+      { type: 'text', text: '已生成图片。' },
+      { type: 'turn_end', turn: 1 },
+    ];
+    const { svc, emitted } = makeService(script);
+
+    await svc.runTurn('帮我生成一张俯视视角的桌面静物照');
+
+    const verdict = emitted.find((e) => e.type === 'turn_verdict');
+    assert.equal(verdict.status, 'passed');
+    assert.equal(verdict.claimed, true);
+
+    const contract = emitted.find((e) => e.type === 'contract_verdict');
+    assert.equal(contract.passed, true);
+    assert.ok(contract.failed.length === 0, 'no failed acceptance items expected');
+    assert.equal(svc.getLastTurnVerdict().status, 'passed');
+  } finally {
+    process.chdir(prev);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

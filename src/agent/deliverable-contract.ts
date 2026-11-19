@@ -18,6 +18,54 @@
 import { extname } from 'node:path';
 import type { ContractManifest, InvariantCheckSpec } from './contract-manifest.js';
 
+/**
+ * Extract file paths from a media tool result envelope. Media tools return
+ * plain JSON strings (or objects) that may carry `files[]`, `image_path`,
+ * `video_path`, or bare local paths. This is the only evidence a media turn
+ * has for its deliverable, so the harness turns it into a `file_exists`
+ * acceptance item.
+ */
+export function extractMediaArtifactPaths(content: string): string[] {
+  if (!content) return [];
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{')) return [];
+  let data: unknown;
+  try {
+    data = JSON.parse(trimmed);
+  } catch {
+    return [];
+  }
+  if (!data || typeof data !== 'object') return [];
+  const obj = data as Record<string, unknown>;
+  if (obj.ok === false || obj.status === 'failed') return [];
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const push = (p: unknown): void => {
+    if (typeof p === 'string' && p.trim()) {
+      const clean = p.trim().replace(/^["']|["']$/g, '');
+      if (clean && !seen.has(clean)) {
+        seen.add(clean);
+        paths.push(clean);
+      }
+    }
+  };
+  for (const key of ['files', 'outputs', 'artifacts']) {
+    const v = obj[key];
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        if (item && typeof item === 'object' && 'path' in item) push((item as Record<string, unknown>)['path']);
+        else push(item);
+      }
+    } else if (typeof v === 'string') {
+      push(v);
+    }
+  }
+  for (const key of ['image_path', 'video_path', 'audio_path', 'output', 'path']) {
+    if (key in obj) push(obj[key]);
+  }
+  return paths;
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance items
 // ---------------------------------------------------------------------------

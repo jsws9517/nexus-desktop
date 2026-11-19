@@ -13,6 +13,7 @@ const {
   verifyContract,
   antiCheatChecks,
   claimsCompletion,
+  extractMediaArtifactPaths,
   formatContractCorrection,
   requestImpliesImplementation,
 } = await import('../dist/agent/deliverable-contract.js');
@@ -239,5 +240,54 @@ describe('correction hint formatting', () => {
 
   it('returns an empty string when nothing failed', () => {
     assert.equal(formatContractCorrection(null, []), '');
+  });
+});
+
+describe('media artifact path extraction', () => {
+  const PNG = 'C:/Users/pgw/.nexus/caches/Overhead_flat_lay_photograph_1795077280502.png';
+
+  it('extracts image_path from the generate_image envelope', () => {
+    const envelope = JSON.stringify({
+      ok: true,
+      task_id: 'mt_test',
+      status: 'succeeded',
+      kind: 'image',
+      files: [PNG],
+      image_path: PNG,
+    });
+    assert.deepEqual(extractMediaArtifactPaths(envelope), [PNG]);
+  });
+
+  it('deduplicates files[] and image_path', () => {
+    const envelope = JSON.stringify({
+      ok: true,
+      files: [PNG, 'C:/Users/pgw/.nexus/caches/video.mp4'],
+      image_path: PNG,
+    });
+    assert.deepEqual(extractMediaArtifactPaths(envelope), [PNG, 'C:/Users/pgw/.nexus/caches/video.mp4']);
+  });
+
+  it('ignores non-JSON or failed results', () => {
+    assert.deepEqual(extractMediaArtifactPaths('plain text'), []);
+    assert.deepEqual(extractMediaArtifactPaths(JSON.stringify({ ok: false, files: [PNG] })), []);
+    assert.deepEqual(extractMediaArtifactPaths(JSON.stringify({ status: 'failed', files: [PNG] })), []);
+  });
+
+  it('turns a media artifact into a passing contract verdict', () => {
+    const paths = extractMediaArtifactPaths(
+      JSON.stringify({ ok: true, files: [PNG], image_path: PNG }),
+    );
+    const contract = {
+      items: paths.map((p) => ({ kind: 'file_exists', path: p, nonEmpty: true })),
+      source: 'derived_from_plan',
+      raw: '',
+    };
+    const v = verifyContract(contract, {
+      exists: (p) => p === PNG,
+      size: () => 1024,
+    });
+    assert.equal(v.passed, true);
+    assert.equal(v.failed.length, 0);
+    assert.equal(v.checked, 1);
   });
 });

@@ -120,6 +120,7 @@ import {
   antiCheatChecks,
   claimsCompletion,
   describeAcceptance,
+  extractMediaArtifactPaths,
   formatContractCorrection,
   parseContract,
   verifyContract,
@@ -487,6 +488,8 @@ export class AgentService {
   private activeCorrection: CorrectionController | null = null;
   private activeSentinel: SecuritySentinel | null = null;
   private activeContract: DeliverableContract | null = null;
+  /** Media generation results that should count as verifiable deliverables. */
+  private mediaArtifacts: Array<{ tool: string; paths: string[] }> = [];
   private correctionConfig: CorrectionConfig | null = null;
   private toolPolicy: ToolPolicy | null = null;
   private lastCorrectionAction: CorrectionAction | null = null;
@@ -1792,6 +1795,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
             at: Date.now(),
           });
         }
+        this.noteMediaArtifact(resultName, resultContent, resultIsError);
         if (classifyToolResult(resultIsError, resultContent) === 'blocked') {
           this.noteBlockedAction(resultName, observedCmd, resultContent);
         }
@@ -2007,6 +2011,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     });
 
     this.activeContract = this.buildContract(input);
+    this.mediaArtifacts = [];
     this.activeSentinel = new SecuritySentinel({
       root: this.getCwd(),
       immutablePaths: cfg.immutablePaths,
@@ -2041,6 +2046,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.stepObservations = [];
     this.blockedActions = [];
     this.blockedCommandSeen.clear();
+    this.mediaArtifacts = [];
     this.blockedSteerSent = false;
     this.lastTurnVerdict = null;
     this.getSessionBudget(cfg);
@@ -2458,10 +2464,39 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     return missing;
   }
 
+  /**
+   * When a media tool reports a generated file, remember it so the active
+   * contract can grow a machine-checkable `file_exists` acceptance item.
+   * Without this, a turn that only claims "image generated" leaves the
+   * contract empty and the harness has no evidence it can verify.
+   */
+  private noteMediaArtifact(tool: string, content: string, isError: boolean): void {
+    if (isError) return;
+    const name = tool.toLowerCase();
+    if (!name.includes('image') && !name.includes('video') && !name.includes('media')) return;
+    const paths = extractMediaArtifactPaths(content);
+    if (paths.length === 0) return;
+    const entry = { tool, paths };
+    if (!this.mediaArtifacts.some((e) => e.tool === tool && e.paths.length === paths.length && e.paths.every((p, i) => p === entry.paths[i]))) {
+      this.mediaArtifacts.push(entry);
+    }
+    this.onLog?.('info', `[contract] media artifact observed (${tool}); ${paths.length} path(s) recorded`);
+  }
+
   /** Verify the deliverable contract and run anti-cheat at turn end. */
   private finalizeCorrectionTurn(input: string): void {
     const contract = this.refreshActiveContract() ?? this.activeContract;
     if (!contract) return;
+
+    const mediaPaths = this.mediaArtifacts.flatMap((a) => a.paths);
+    const seen = new Set(contract.items.flatMap((i) => (i.kind === 'file_exists' || i.kind === 'artifact' ? [i.path] : [])));
+    const freshMedia = mediaPaths.filter((p) => !seen.has(p));
+    if (freshMedia.length > 0) {
+      for (const p of freshMedia) {
+        contract.items.push({ kind: 'file_exists', path: p, nonEmpty: true });
+      }
+      if (contract.source === 'inferred_baseline') contract.source = 'derived_from_plan';
+    }
 
     const verdict = this.verifyActiveContract(contract);
 
@@ -2701,6 +2736,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       this.activeCorrection = null;
       this.activeSentinel = null;
       this.activeContract = null;
+      this.mediaArtifacts = [];
       this.toolPolicy = null;
       this.resetCorrectionStep();
       const status = this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
