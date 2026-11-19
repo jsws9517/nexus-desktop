@@ -50,6 +50,15 @@ export async function openPath(path: string): Promise<boolean> {
   return dock.open(path);
 }
 
+/**
+ * Show synthetic content (e.g. a rendered `git diff`) in a stable doc tab.
+ * `key` dedupes repeat opens (typically the repo root) so the LRU strip keeps a
+ * single diff tab per repository. No-op when no dock is bound.
+ */
+export function openContent(key: string, title: string, html: string): void {
+  dock?.openContent(key, title, html);
+}
+
 /** Close the active document tab. No-op when none is open. */
 export function close(): void {
   dock?.closeActive();

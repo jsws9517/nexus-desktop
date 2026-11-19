@@ -2076,6 +2076,35 @@ body {
    playback position survive tab switches. */
 .doc-tab-stash { display: none; }
 
+/* T2-2: synthetic content tabs (git diff) shown in the document stage. */
+.doc-content-view {
+  align-self: stretch;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  font-family: var(--mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.doc-content-view .diff-truncated {
+  color: var(--warn);
+  background: rgba(255, 165, 0, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  font-family: inherit;
+}
+.doc-content-view .diff-empty {
+  color: var(--text-dim);
+  font-family: inherit;
+  padding: 12px 4px;
+}
+.doc-content-view .code-block pre { white-space: pre-wrap; word-break: break-word; }
+
 /* PR2 浏览器 panel (local iframe + main-side WebContentsView over the stage). */
 .browser-tab-root {
   display: flex;
@@ -2427,6 +2456,44 @@ body {
 .fb-git-tag.git-committed, .fb-git-dot.git-committed { color: var(--ok); }
 .fb-git-tag.git-modified,  .fb-git-dot.git-modified  { color: var(--warn); }
 .fb-git-tag.git-untracked, .fb-git-dot.git-untracked { color: var(--accent); }
+
+/* T2-2: file-browser AI git actions. */
+.filebrowser-git-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* T2-3: worktree manager modal list. */
+.worktree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow: auto;
+  margin: 8px 0;
+}
+.worktree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.worktree-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.worktree-empty {
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 12px 4px;
+}
 .fb-context-menu {
   position: fixed;
   z-index: 60;

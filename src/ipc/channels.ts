@@ -163,6 +163,12 @@ export const CHANNELS = {
   listProjectRules: 'nexus:listProjectRules',
   updatePermissionsConfig: 'nexus:updatePermissionsConfig',
   getGitStatus: 'nexus:getGitStatus',
+  // T2-2: controlled `git diff` text for the diff tab.
+  gitDiff: 'nexus:gitDiff',
+  // T2-3: controlled git worktree lifecycle (main-only, no worker round-trip).
+  worktreeCreate: 'nexus:worktreeCreate',
+  worktreeList: 'nexus:worktreeList',
+  worktreeRemove: 'nexus:worktreeRemove',
   readImagePreview: 'nexus:readImagePreview',
   pasteImage: 'nexus:pasteImage',
   writeClipboard: 'nexus:writeClipboard',

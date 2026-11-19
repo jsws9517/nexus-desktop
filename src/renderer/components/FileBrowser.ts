@@ -93,6 +93,11 @@ export interface FileBrowserContext {
    * context omits it.
    */
   previewPath?(path: string): Promise<boolean>;
+  /** T2-2: host-owned AI git actions. Buttons are disabled when the current
+   *  directory is not a git repository (driven by getGitStatus). */
+  onAiCommit?(): void;
+  onAiReview?(): void;
+  onViewDiff?(): void;
 }
 
 export interface FileBrowserMountOptions {
@@ -270,6 +275,27 @@ export function mountFileBrowser(
   toggleBtn.type = 'button';
   toggleBtn.className = 'btn ghost small filebrowser-toggle';
   head.appendChild(toggleBtn);
+
+  // T2-2: AI git actions. Kept in the head so they stay visible when collapsed.
+  const gitActions = document.createElement('div');
+  gitActions.className = 'filebrowser-git-actions';
+  const makeGitBtn = (key: string, onClick?: () => void): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn ghost small';
+    b.dataset.i18n = key;
+    b.dataset.i18nTitle = key;
+    b.textContent = str(key, getLang());
+    b.title = str(key, getLang());
+    b.disabled = true;
+    if (onClick) b.addEventListener('click', onClick);
+    gitActions.appendChild(b);
+    return b;
+  };
+  const aiCommitBtn = makeGitBtn('aiCommitMessage', () => ctx.onAiCommit?.());
+  const aiReviewBtn = makeGitBtn('aiReviewChanges', () => ctx.onAiReview?.());
+  const viewDiffBtn = makeGitBtn('viewDiff', () => ctx.onViewDiff?.());
+  head.appendChild(gitActions);
 
   const body = document.createElement('div');
   body.className = 'filebrowser-body';
@@ -453,6 +479,14 @@ export function mountFileBrowser(
     filterInput.placeholder = labels.filterPlaceholder;
     hiddenSpan.textContent = labels.hidden;
     untrackedSpan.textContent = labels.hideUntracked;
+    // T2-2: AI git actions are only meaningful inside a repository.
+    const gitReady = gitIsRepo;
+    aiCommitBtn.disabled = !gitReady || !ctx.onAiCommit;
+    aiReviewBtn.disabled = !gitReady || !ctx.onAiReview;
+    viewDiffBtn.disabled = !gitReady || !ctx.onViewDiff;
+    aiCommitBtn.textContent = str('aiCommitMessage', getLang());
+    aiReviewBtn.textContent = str('aiReviewChanges', getLang());
+    viewDiffBtn.textContent = str('viewDiff', getLang());
 
     const rows: RowItem[] = [];
     if (!projectDir) {

@@ -110,6 +110,26 @@ const api = {
       statuses?: Array<{ path: string; state: 'untracked' | 'modified' | 'ignored' }>;
       error?: string;
     }>,
+  // T2-2: controlled git diff text (renderer supplies only cwd + staged flag).
+  gitDiff: (cwd: string, staged?: boolean) =>
+    ipcRenderer.invoke('nexus:gitDiff', { cwd, staged }) as Promise<{
+      ok: boolean; text: string; truncated: boolean; root?: string; error?: string;
+    }>,
+  // T2-3: controlled git worktree lifecycle.
+  worktreeCreate: (cwd: string, name: string, branch?: string) =>
+    ipcRenderer.invoke('nexus:worktreeCreate', { cwd, name, branch }) as Promise<{
+      ok: boolean; path?: string; branch?: string; code?: string; error?: string;
+    }>,
+  worktreeList: (cwd: string) =>
+    ipcRenderer.invoke('nexus:worktreeList', { cwd }) as Promise<{
+      ok: boolean;
+      worktrees: Array<{ path: string; head: string; branch: string | null; bare: boolean; detached: boolean }>;
+      error?: string;
+    }>,
+  worktreeRemove: (cwd: string, name: string) =>
+    ipcRenderer.invoke('nexus:worktreeRemove', { cwd, name }) as Promise<{
+      ok: boolean; code?: string; error?: string;
+    }>,
   readImagePreview: (path: string) => ipcRenderer.invoke('nexus:readImagePreview', path),
   // Paste image from system clipboard (consistent with coder-core ALT+V).
   pasteImage: () => ipcRenderer.invoke('nexus:pasteImage') as Promise<{ path: string; preview: string } | null>,

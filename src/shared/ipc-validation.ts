@@ -7,6 +7,8 @@
  * letting malformed input reach the core.
  */
 
+import { ARTIFACT_TYPES } from './artifact.js';
+
 export type FieldSpec =
   | { kind: 'string'; maxLen?: number }
   | { kind: 'boolean' }
@@ -81,6 +83,31 @@ const MAIN_LOCAL_METHODS: Record<string, MethodSpec> = {
   // Paths are resolved main-side from the fixed rule-file whitelist; the only
   // renderer input is the current project cwd.
   listProjectRules: { fields: { cwd: S.str(4096) } },
+  // T2-2: controlled git diff text. Only the cwd and a staged flag cross IPC —
+  // git argv is built in the main process (src/main/git-shell.ts).
+  gitDiff: { fields: { cwd: S.str(4096), staged: S.bool() }, optional: ['staged'] },
+  // T2-3: worktree lifecycle. `name` is further restricted by
+  // sanitizeWorktreeName() in the handler; git argv is main-side only.
+  worktreeCreate: {
+    fields: { cwd: S.str(4096), name: S.str(80), branch: S.str(200) },
+    optional: ['branch'],
+  },
+  worktreeList: { fields: { cwd: S.str(4096) } },
+  worktreeRemove: { fields: { cwd: S.str(4096), name: S.str(80) } },
+  // T2-1: file-based custom agent roles (cwd-scoped scan).
+  listCustomAgents: { fields: { cwd: S.str(4096) } },
+  // T2-4: cross-session artifact index. All filters are optional and applied
+  // as parameterized SQL WHERE conditions in the main process.
+  listArtifacts: {
+    fields: {
+      limit: S.num(),
+      sessionId: S.str(200),
+      type: S.en(ARTIFACT_TYPES),
+      sinceMs: S.num(),
+    },
+    optional: ['limit', 'sessionId', 'type', 'sinceMs'],
+  },
+  getArtifact: { fields: { messageId: S.num() } },
 };
 
 export const WORKER_METHODS = {

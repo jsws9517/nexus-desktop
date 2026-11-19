@@ -57,6 +57,11 @@ export interface DocDockOptions {
 export interface DocDock {
   /** Open (or activate) a document. Resolves true when a tab now shows it. */
   open(path: string, opts?: { activate?: boolean }): Promise<boolean>;
+  /** Open (or refresh) a synthetic content tab that is NOT backed by a preview
+   *  token — e.g. a rendered `git diff`. `key` is a stable identifier (the repo
+   *  root) so repeat opens reuse the same tab inside the LRU strip instead of
+   *  creating duplicates. The host supplies already-escaped HTML. */
+  openContent(key: string, title: string, html: string): void;
   /** Close the active tab. No-op when none. */
   closeActive(): void;
   /** Close every tab (dispose all viewers + revoke tokens). */
@@ -229,6 +234,49 @@ export function mountDocDock(opts: DocDockOptions): DocDock {
     return true;
   }
 
+  /** Synthetic content tab (e.g. `git diff`) sharing the document strip + LRU.
+   *  The viewer node is a plain element holding escaped HTML; no preview token
+   *  or kernel viewer is involved, so dispose/fit are lightweight. */
+  function openContent(key: string, title: string, html: string): void {
+    if (!key || typeof key !== 'string') return;
+    const id = `content-${key.replace(/[\\/:*?"<>|]/g, '_').slice(-120)}`;
+    let rec = find(id);
+    if (!rec) {
+      rec = {
+        id, path: key, name: title,
+        kind: 'text', state: null, viewer: null,
+        loading: false, error: undefined,
+        chip: document.createElement('div'),
+      };
+      tabs.push(rec);
+      // LRU eviction: reuse the same MAX_DOC_TABS budget as file previews.
+      while (tabs.length > MAX_DOC_TABS) {
+        const victim = tabs[0];
+        if (victim.id === activeId) activeId = null;
+        disposeRec(victim);
+        tabs.shift();
+      }
+    } else {
+      touch(rec);
+    }
+    rec = find(id);
+    if (!rec) return;
+    rec.name = title;
+    rec.viewer?.dispose();
+    const root = document.createElement('div') as unknown as MountedViewer;
+    root.className = 'doc-content-view';
+    root.innerHTML = html;
+    root.fit = () => { root.scrollTop = 0; };
+    root.dispose = () => { root.replaceChildren(); };
+    rec.viewer = root;
+    rec.loading = false;
+    activeId = rec.id;
+    if (fullscreen) exitFullscreen();
+    renderStrip();
+    syncNodes();
+    opts.onNeedPanel?.();
+  }
+
   async function loadRec(rec: TabRec): Promise<void> {
     const res = await fetchPreview(rec.path);
     if (find(rec.id) !== rec) return; // tab was evicted / closed while loading
@@ -372,6 +420,7 @@ export function mountDocDock(opts: DocDockOptions): DocDock {
 
   return {
     open,
+    openContent,
     closeActive: () => closeTab(activeId ?? ''),
     closeAll: () => {
       for (const t of [...tabs]) disposeRec(t);

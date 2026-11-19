@@ -9,7 +9,7 @@
  */
 
 import { BrowserWindow, app, clipboard, dialog, ipcMain, shell } from 'electron';
-import { access, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, sep } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -21,6 +21,17 @@ import type { ResourceMonitor, ResourceState } from '../main/resource-monitor.js
 import { Updater } from '../main/updater.js';
 import { CoreUpdateManager } from '../core-overlay/manager.js';
 import { getRepoGitStatus, type RepoStatusResult } from '../main/git-internal.js';
+import {
+  getRepoDiff,
+  findRepoRoot,
+  worktreeRootFor,
+  addWorktree,
+  listWorktrees,
+  removeWorktree,
+  branchExists,
+} from '../main/git-shell.js';
+import { createHash } from 'node:crypto';
+import { sanitizeWorktreeName } from '../shared/worktree.js';
 import {
   automationDelete,
   automationList,
@@ -1037,6 +1048,125 @@ export function registerIpc(ctx: IpcContext): void {
       return await getRepoGitStatus(root);
     } catch (e) {
       return { ok: false, isRepo: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * T2-2 / T2-3 shared guard: canonicalize a renderer-supplied cwd, require it
+   * to sit inside an authorized root, and resolve it to a real git repo root
+   * (also authorized). The renderer can never pass an arbitrary git argument —
+   * only a directory it already has access to.
+   */
+  const resolveAuthorizedRepo = async (raw: unknown): Promise<{ ok: true; root: string } | { ok: false; error: string }> => {
+    if (!isNonEmptyString(raw) || raw.length > 4096) return { ok: false, error: 'invalid path' };
+    let real: string;
+    try { real = await realpath(raw); } catch { return { ok: false, error: 'path not found' }; }
+    const roots = await allowedRoots();
+    if (!roots.some((a) => isWithin(real, a))) return { ok: false, error: 'path outside allowed roots' };
+    const found = await findRepoRoot(real);
+    if (!found) return { ok: false, error: 'not a git repository' };
+    let rootReal: string;
+    try { rootReal = await realpath(found); } catch { rootReal = found; }
+    if (!roots.some((a) => isWithin(rootReal, a))) return { ok: false, error: 'repo outside allowed roots' };
+    return { ok: true, root: rootReal };
+  };
+
+  // T2-2: controlled `git diff` text for the diff tab. 200 KB cap (AC-5).
+  ipcMain.handle(CHANNELS.gitDiff, async (event, params: unknown): Promise<{
+    ok: boolean; text: string; truncated: boolean; root?: string; error?: string;
+  }> => {
+    const fail = (error: string) => ({ ok: false, text: '', truncated: false, error });
+    if (!isTrustedSender(event)) return fail('untrusted sender');
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('gitDiff', p);
+    if (vErr) return fail(vErr);
+    const repo = await resolveAuthorizedRepo(p.cwd);
+    if (!repo.ok) return fail(repo.error);
+    try {
+      const diff = await getRepoDiff(repo.root, p.staged === true, 200 * 1024);
+      return { ...diff, root: repo.root };
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  // T2-3: controlled git worktree lifecycle. Every path is derived from the
+  // authorized repo root + a strictly validated name; the renderer never
+  // supplies git flags or a free-form target path.
+  ipcMain.handle(CHANNELS.worktreeCreate, async (event, params: unknown): Promise<{
+    ok: boolean; path?: string; branch?: string;
+    code?: 'untrusted' | 'invalid' | 'exists' | 'failed'; error?: string;
+  }> => {
+    const fail = (code: 'untrusted' | 'invalid' | 'exists' | 'failed', error: string) => ({ ok: false, code, error });
+    if (!isTrustedSender(event)) return fail('untrusted', 'untrusted sender');
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('worktreeCreate', p);
+    if (vErr) return fail('invalid', vErr);
+    const name = sanitizeWorktreeName(p.name);
+    if (!name) return fail('invalid', 'invalid worktree name');
+    const branch = p.branch !== undefined ? sanitizeWorktreeName(p.branch) : name;
+    if (!branch) return fail('invalid', 'invalid branch name');
+    const repo = await resolveAuthorizedRepo(p.cwd);
+    if (!repo.ok) return fail('invalid', repo.error);
+    const wtRoot = worktreeRootFor(repo.root, nexusRoot());
+    const target = join(wtRoot, name);
+    if (!isWithin(target, wtRoot)) return fail('invalid', 'path outside worktree root');
+    try {
+      if (await access(target).then(() => true).catch(() => false)) return fail('exists', 'worktree already exists');
+      if (await branchExists(repo.root, branch)) return fail('exists', 'branch already exists');
+      await mkdir(wtRoot, { recursive: true });
+      const added = await addWorktree(repo.root, target, branch);
+      if (!added.ok) return fail('failed', added.error ?? 'worktree add failed');
+      // Re-check containment on the created path so a symlink cannot escape.
+      const [createdReal, rootReal] = await Promise.all([realpath(target), realpath(wtRoot)]);
+      if (!isWithin(createdReal, rootReal)) return fail('failed', 'worktree escaped its root');
+      return { ok: true, path: createdReal, branch };
+    } catch (e) {
+      return fail('failed', e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  ipcMain.handle(CHANNELS.worktreeList, async (event, params: unknown): Promise<{
+    ok: boolean; worktrees: Array<{ path: string; head: string; branch: string | null; bare: boolean; detached: boolean }>;
+    error?: string;
+  }> => {
+    const fail = (error: string) => ({ ok: false, worktrees: [], error });
+    if (!isTrustedSender(event)) return fail('untrusted sender');
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('worktreeList', p);
+    if (vErr) return fail(vErr);
+    const repo = await resolveAuthorizedRepo(p.cwd);
+    if (!repo.ok) return fail(repo.error);
+    return listWorktrees(repo.root);
+  });
+
+  ipcMain.handle(CHANNELS.worktreeRemove, async (event, params: unknown): Promise<{
+    ok: boolean; code?: 'untrusted' | 'invalid' | 'in-use' | 'failed'; error?: string;
+  }> => {
+    const fail = (code: 'untrusted' | 'invalid' | 'in-use' | 'failed', error: string) => ({ ok: false, code, error });
+    if (!isTrustedSender(event)) return fail('untrusted', 'untrusted sender');
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('worktreeRemove', p);
+    if (vErr) return fail('invalid', vErr);
+    const name = sanitizeWorktreeName(p.name);
+    if (!name) return fail('invalid', 'invalid worktree name');
+    const repo = await resolveAuthorizedRepo(p.cwd);
+    if (!repo.ok) return fail('invalid', repo.error);
+    const wtRoot = worktreeRootFor(repo.root, nexusRoot());
+    const target = join(wtRoot, name);
+    if (!isWithin(target, wtRoot)) return fail('invalid', 'path outside worktree root');
+    // AC-5: never remove a worktree that is still open in a tab.
+    if (sessionWorkers.cwds().some((cwd) => isWithin(cwd, target))) {
+      return fail('in-use', 'worktree is open in a tab');
+    }
+    try {
+      const [real, rootReal] = await Promise.all([realpath(target), realpath(wtRoot)]);
+      if (!isWithin(real, rootReal)) return fail('invalid', 'worktree escaped its root');
+      const removed = await removeWorktree(repo.root, real);
+      if (!removed.ok) return fail('failed', removed.error ?? 'worktree remove failed');
+      return { ok: true };
+    } catch (e) {
+      return fail('invalid', e instanceof Error ? e.message : String(e));
     }
   });
 

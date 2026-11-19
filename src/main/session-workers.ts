@@ -52,6 +52,8 @@ export interface OpenTabInfo {
   provider: string;
   model: string;
   busy: boolean;
+  /** Working directory of the tab (T2-3 worktree menus / removal guard). */
+  cwd?: string | null;
 }
 
 interface BoundWorker {
@@ -145,7 +147,7 @@ export class SessionWorkers {
   tabs(): OpenTabInfo[] {
     const out: OpenTabInfo[] = [];
     for (const b of this.map.values()) {
-      out.push({ sessionId: b.sessionId, provider: b.provider, model: b.model, busy: b.busy });
+      out.push({ sessionId: b.sessionId, provider: b.provider, model: b.model, busy: b.busy, cwd: b.cwd });
     }
     return out;
   }
@@ -165,7 +167,7 @@ export class SessionWorkers {
 
   get (sessionId: string): OpenTabInfo | undefined {
     const b = this.map.get(sessionId);
-    return b ? { sessionId: b.sessionId, provider: b.provider, model: b.model, busy: b.busy } : undefined;
+    return b ? { sessionId: b.sessionId, provider: b.provider, model: b.model, busy: b.busy, cwd: b.cwd } : undefined;
   }
 
   private wire(bound: BoundWorker): void {

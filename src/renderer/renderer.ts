@@ -19,7 +19,7 @@ import { AutomationPage, mountAutomationPage } from './sidebar/pages/automations
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
-import { openPath as previewOpenPath, close as previewClose, toggleFullscreen, getLiveHandle, bindDock } from './preview/open.js';
+import { openPath as previewOpenPath, openContent as previewOpenContent, close as previewClose, toggleFullscreen, getLiveHandle, bindDock } from './preview/open.js';
 import { mountDocDock } from './preview/dock.js';
 import { mountBrowserTabs, type BrowserTabs } from './browser-tab.js';
 import { mountRsideTabs, type RsideTabsHandle } from './rside-tabs.js';
@@ -424,6 +424,34 @@ declare global {
       // the native paste command into the focused composer (right-click paste).
       writeClipboard(text: string): Promise<{ ok: boolean }>;
       pasteClipboard(): Promise<{ ok: boolean }>;
+      // Git status (file-browser badges) + T2-2 controlled diff text.
+      getGitStatus(root: string): Promise<{
+        ok: boolean; isRepo: boolean; branch?: string;
+        statuses?: Array<{ path: string; state: 'untracked' | 'modified' | 'ignored' }>;
+        error?: string;
+      }>;
+      gitDiff(cwd: string, staged?: boolean): Promise<{ ok: boolean; text: string; truncated: boolean; root?: string; error?: string }>;
+      // T2-3: controlled git worktree lifecycle.
+      worktreeCreate(cwd: string, name: string, branch?: string): Promise<{ ok: boolean; path?: string; branch?: string; code?: string; error?: string }>;
+      worktreeList(cwd: string): Promise<{
+        ok: boolean;
+        worktrees: Array<{ path: string; head: string; branch: string | null; bare: boolean; detached: boolean }>;
+        error?: string;
+      }>;
+      worktreeRemove(cwd: string, name: string): Promise<{ ok: boolean; code?: string; error?: string }>;
+      // T2-1: file-based custom agent roles.
+      listCustomAgents(cwd: string): Promise<{
+        ok: boolean;
+        agents: Array<{ id: string; name: string; description: string; tools?: string[]; systemPrompt: string; source: 'user' | 'project'; path: string; error?: string }>;
+        reason: string;
+      }>;
+      // T2-4: cross-session artifact index + full payload.
+      listArtifacts(opts?: { limit?: number; sessionId?: string; type?: string; sinceMs?: number }): Promise<{
+        ok: boolean;
+        items: Array<{ id: number; sessionId: string; sessionName: string; type: string; title: string; createdAt: number; preview: string }>;
+        error?: string;
+      }>;
+      getArtifact(messageId: number): Promise<{ ok: boolean; content?: string }>;
       // Export an artifact payload (base64 bytes or text) via a save dialog.
       saveArtifact(defaultName: string, data: string, encoding?: 'base64' | 'text'): Promise<{ ok: boolean; path?: string; error?: string }>;
       getPathForFile(file: File): string;
@@ -588,6 +616,7 @@ interface TabInfo {
   provider: string;
   model: string;
   busy: boolean;
+  cwd?: string | null;
 }
 
 // ---------- element helpers ----------
@@ -4100,6 +4129,124 @@ function tabMenuSeparator(): HTMLElement {
   return sep;
 }
 
+// ---------- T2-3: git worktree task isolation ----------
+/** Resolve a tab's working directory for git/worktree operations. */
+async function worktreeTabCwd(sessionId: string): Promise<string> {
+  const known = tabs.get(sessionId)?.cwd;
+  if (known) return known;
+  try {
+    const st = await window.nexusDesktop.getTabStatus(sessionId);
+    if (st?.cwd) return st.cwd;
+  } catch { /* fall through to the active project dir */ }
+  return currentProjectDir();
+}
+
+/** "Open in New Worktree": create a worktree from the tab's repo, then branch a
+ *  new tab whose cwd is the worktree while inheriting project memory (FR-3.4). */
+async function createWorktreeFromTab(sessionId: string): Promise<void> {
+  const cwd = await worktreeTabCwd(sessionId);
+  if (!cwd) { showToast(t('fbNoProject'), 'warning'); return; }
+  const name = await promptDialog(t('worktreeNamePrompt'), '');
+  if (!name) return;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
+      || name.includes('..') || name.endsWith('.') || name.endsWith('.lock') || name.length > 80) {
+    showToast(t('worktreeExists'), 'error');
+    return;
+  }
+  // AC-4: creating from HEAD is safe with a dirty tree, but surface a hint.
+  try {
+    const st = await window.nexusDesktop.getGitStatus(cwd);
+    if (st.isRepo && (st.statuses?.length ?? 0) > 0) showToast(t('worktreeDirtyHint'), 'warning', 6000);
+  } catch { /* non-fatal */ }
+  const res = await window.nexusDesktop.worktreeCreate(cwd, name);
+  if (!res.ok || !res.path) {
+    showToast(res.code === 'exists' ? t('worktreeExists') : `${t('worktreeCreateFailed')}${res.error ?? ''}`, 'error');
+    return;
+  }
+  const opened = await window.nexusDesktop.openNewSession({ cwd: res.path, prevSessionId: sessionId });
+  if (!opened.ok || !opened.sessionId) {
+    showToast(`${t('tabsOpenFailed')}${opened.reason ?? ''}`, 'error');
+    return;
+  }
+  // startSession() inherits the parent's projectDir; override it with the
+  // worktree path so openTab binds the worker to the isolated workspace.
+  try { await window.nexusDesktop.setSessionMetadata(opened.sessionId, { projectDir: res.path }); } catch { /* best effort */ }
+  tabs.set(opened.sessionId, {
+    sessionId: opened.sessionId, provider: status.provider, model: status.model,
+    busy: false, cwd: res.path,
+  });
+  await openTab(opened.sessionId);
+  showToast(t('worktreeCreated'), 'success');
+}
+
+/** "Manage Worktrees": list the repo's worktrees and allow removing ones that
+ *  are no longer open in any tab (FR-3.5 / AC-5). */
+async function manageWorktreesForTab(sessionId: string): Promise<void> {
+  const cwd = await worktreeTabCwd(sessionId);
+  if (!cwd) { showToast(t('fbNoProject'), 'warning'); return; }
+  const res = await window.nexusDesktop.worktreeList(cwd);
+  if (!res.ok) { showToast(res.error ?? t('worktreeCreateFailed'), 'error'); return; }
+
+  const overlay = $('#worktree-overlay') as HTMLElement;
+  const list = $('#worktree-list') as HTMLElement;
+  const closeBtn = $('#worktree-close') as HTMLButtonElement;
+  const render = (entries: typeof res.worktrees): void => {
+    list.replaceChildren();
+    if (entries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'worktree-empty';
+      empty.textContent = t('worktreeEmpty');
+      list.appendChild(empty);
+      return;
+    }
+    const openCwds = new Set([...tabs.values()].map((tb) => tb.cwd).filter(Boolean) as string[]);
+    for (const wt of entries) {
+      const row = document.createElement('div');
+      row.className = 'worktree-row';
+      const info = document.createElement('div');
+      info.className = 'worktree-info';
+      const name = wt.branch ? wt.branch.replace(/^refs\/heads\//, '') : wt.path;
+      info.textContent = `${name} — ${wt.path}`;
+      info.title = wt.path;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'btn ghost small';
+      remove.textContent = t('worktreeRemoveBtn');
+      const inUse = [...openCwds].some((c) => c === wt.path || c.startsWith(wt.path.replace(/[\\/]+$/, '') + (wt.path.includes('\\') ? '\\' : '/')));
+      remove.disabled = inUse;
+      remove.title = inUse ? t('worktreeInUse') : '';
+      remove.addEventListener('click', () => {
+        void (async () => {
+          const r = await window.nexusDesktop.worktreeRemove(cwd, name);
+          if (!r.ok) {
+            showToast(r.code === 'in-use' ? t('worktreeInUse') : `${t('worktreeRemoveFailed')}${r.error ?? ''}`, 'error');
+            return;
+          }
+          showToast(t('worktreeRemoved'), 'success');
+          void manageWorktreesForTab(sessionId);
+        })();
+      });
+      row.appendChild(info);
+      row.appendChild(remove);
+      list.appendChild(row);
+    }
+  };
+  render(res.worktrees);
+  overlay.classList.remove('hidden');
+  trapFocus(overlay.querySelector('.modal') as HTMLElement);
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') cleanup();
+  };
+  const cleanup = (): void => {
+    overlay.classList.add('hidden');
+    document.removeEventListener('keydown', onKey, true);
+    const btn = overlay.querySelector('#worktree-close') as HTMLButtonElement | null;
+    if (btn) btn.replaceWith(btn.cloneNode(true));
+  };
+  closeBtn.addEventListener('click', cleanup, { once: true });
+  setTimeout(() => { if (!overlay.classList.contains('hidden')) document.addEventListener('keydown', onKey, true); }, 0);
+}
+
 /** Right-click menu for a session tab. "Close current" is an explicit single
  *  action and ignores the busy guard; the bulk items only ever touch idle tabs
  *  so a running turn is never silently hard-stopped (the worker dies with the
@@ -4127,6 +4274,10 @@ function openTabContextMenu(sessionId: string, ev: MouseEvent): void {
     menu.appendChild(item);
   };
 
+  // T2-3: worktree isolation lives at the top of the tab menu.
+  menu.appendChild(tabMenuItem(t('worktreeNew'), () => void createWorktreeFromTab(sessionId)));
+  menu.appendChild(tabMenuItem(t('worktreeManage'), () => void manageWorktreesForTab(sessionId)));
+  menu.appendChild(tabMenuSeparator());
   menu.appendChild(tabMenuItem(t('tabsMenuClose'), () => void closeTabs([sessionId])));
   menu.appendChild(tabMenuSeparator());
   // "Close others" always lands on the right-clicked tab (it is the only
@@ -4273,7 +4424,7 @@ async function openTab(
       // keep whatever the worker booted with
     }
   }
-  tabs.set(sessionId, { sessionId, provider, model, busy: tinfo.busy });
+  tabs.set(sessionId, { sessionId, provider, model, busy: tinfo.busy, cwd: tinfo.cwd });
   // Same seeding as syncOpenTabs: main's lit chip is a live-turn candidate
   // (its mirror tracks turns + fan-out batches, not jobs).
   if (tinfo.busy) tabTurnLive.add(sessionId);
@@ -4585,7 +4736,43 @@ function makeFileBrowserContext(): FileBrowserContext {
       // external-open fallback is reachable on failure / unsupported types.
       return openPreviewPath(path);
     },
+    // T2-2: AI Git actions — fixed, bilingual prompts through the normal chat
+    // composer (no separate AI panel); diff opens in a stable doc tab.
+    onAiCommit: () => sendFixedPrompt(t('aiCommitPrompt')),
+    onAiReview: () => sendFixedPrompt(t('aiReviewPrompt')),
+    onViewDiff: () => { void viewGitDiff(); },
   };
+}
+
+/** Put a fixed prompt in the composer and send it via the normal chat path. */
+function sendFixedPrompt(text: string): void {
+  inputEl.value = text;
+  autoGrowInput();
+  inputEl.focus();
+  void sendMessage();
+}
+
+/** Fetch the working-tree diff through the controlled IPC and render it in a
+ *  stable "文件" doc tab so it can be toggled/fullscreened like any preview. */
+async function viewGitDiff(): Promise<void> {
+  const cwd = await currentProjectDir();
+  if (!cwd) { showToast(t('fbNoProject'), 'warning'); return; }
+  let res: Awaited<ReturnType<typeof window.nexusDesktop.gitDiff>>;
+  try {
+    res = await window.nexusDesktop.gitDiff(cwd, false);
+  } catch (e) {
+    showToast(`${t('notGitRepo')} ${errText(e)}`, 'error');
+    return;
+  }
+  if (!res.ok) { showToast(res.error ?? t('notGitRepo'), 'error'); return; }
+  // t(...) strings are our own static translations (trusted); the diff body is
+  // escaped by renderBlocks' fenced-code renderer.
+  const notice = res.truncated ? `<div class="diff-truncated">⚠ ${t('diffTruncated')}</div>` : '';
+  const body = res.text
+    ? renderBlocks('```diff\n' + res.text + '\n```')
+    : `<div class="diff-empty">${t('diffEmpty')}</div>`;
+  previewOpenContent(`gitdiff-${res.root ?? cwd}`, t('diffTitle'), notice + body);
+  rsideTabs?.set('files');
 }
 
 function truncateId(id: string, maxLen = 8): string {
