@@ -20,8 +20,8 @@ const api = {
   withdraw: (sessionId: string, messageId: number) =>
     ipcRenderer.invoke('nexus:withdraw', { sessionId, messageId }),
   abort: (opts?: { sessionId?: string }) => ipcRenderer.invoke('nexus:abort', opts ?? {}),
-  startSession: (name?: string, sessionId?: string) =>
-    ipcRenderer.invoke('nexus:startSession', { name, sessionId }),
+  startSession: (name?: string, sessionId?: string, metadata?: Record<string, unknown>) =>
+    ipcRenderer.invoke('nexus:startSession', { name, sessionId, metadata }),
   listSessions: (options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean }) =>
     ipcRenderer.invoke('nexus:listSessions', options),
   getMessages: (sessionId: string, options?: { last?: number; limit?: number; offset?: number }) =>
@@ -114,6 +114,17 @@ const api = {
   gitDiff: (cwd: string, staged?: boolean) =>
     ipcRenderer.invoke('nexus:gitDiff', { cwd, staged }) as Promise<{
       ok: boolean; text: string; truncated: boolean; root?: string; error?: string;
+    }>,
+  // T2-1: file-based custom agent roles.
+  listCustomAgents: (cwd: string) =>
+    ipcRenderer.invoke('nexus:listCustomAgents', { cwd }) as Promise<{
+      ok: boolean;
+      agents: Array<{
+        id: string; name: string; description: string; tools?: string[];
+        systemPrompt: string; source: 'user' | 'project'; path: string; error?: string;
+      }>;
+      reason: string;
+      error?: string;
     }>,
   // T2-3: controlled git worktree lifecycle.
   worktreeCreate: (cwd: string, name: string, branch?: string) =>

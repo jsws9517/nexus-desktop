@@ -515,6 +515,13 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   worktreeEmpty: { 'zh-CN': '当前仓库没有 worktree', en: 'No worktrees for this repository' },
   worktreeManageTitle: { 'zh-CN': '管理 worktree', en: 'Manage Worktrees' },
   worktreeRemoveBtn: { 'zh-CN': '移除', en: 'Remove' },
+  // T2-1: custom agent role picker.
+  agentRoleLabel: { 'zh-CN': '角色', en: 'Role' },
+  agentRoleNone: { 'zh-CN': '无角色（默认）', en: 'No role (default)' },
+  agentRoleUser: { 'zh-CN': '用户', en: 'user' },
+  agentRoleProject: { 'zh-CN': '项目', en: 'project' },
+  agentRoleInvalid: { 'zh-CN': '配置有误', en: 'invalid' },
+  agentRoleTooMany: { 'zh-CN': '角色过多，已截断', en: 'Too many roles; list truncated' },
 
   // Sidebar (Sub-Agents / Side Chat) — strings follow the active UI language.
   sidebarSubAgents: { 'zh-CN': '子级代理', en: 'Sub-Agents' },

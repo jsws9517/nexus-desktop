@@ -337,7 +337,7 @@ declare global {
       restore(backupPath: string, opts?: { sessionId?: string }): Promise<{ restored: number } | null>;
       sideChat(messages: Array<{ role: string; content: string }>): Promise<{ reply: string }>;
       abort(opts?: { sessionId?: string }): Promise<unknown>;
-      startSession(name?: string, sessionId?: string): Promise<string>;
+      startSession(name?: string, sessionId?: string, metadata?: Record<string, unknown>): Promise<string>;
       listSessions(options?: { limit?: number; offset?: number; excludeMock?: boolean; excludeEmpty?: boolean; search?: string }): Promise<{ items: SessionInfo[]; total: number }>;
       getMessages(
         sessionId: string,
@@ -864,6 +864,8 @@ const tabBarEl = $('#tab-bar') as HTMLElement;
 
 // ---------- state ----------
 let currentSessionId = '';
+/** T2-1: role remembered for the NEXT new session (toolbar picker selection). */
+let selectedRoleId = '';
 let busy = false;
 let running = false;
 let stopRequested = false;
@@ -4341,7 +4343,11 @@ async function openNewTab(): Promise<void> {
   const inherit = currentSessionId ? { provider: status.provider, model: status.model } : undefined;
   let sid = '';
   try {
-    sid = await window.nexusDesktop.startSession();
+    sid = await window.nexusDesktop.startSession(
+      undefined,
+      undefined,
+      selectedRoleId ? { agentId: selectedRoleId } : undefined,
+    );
   } catch (err) {
     addSystem(`${t('tabsOpenFailed')}${errText(err)}`);
     return;
@@ -4462,10 +4468,65 @@ function withRpcTimeout<T>(promise: Promise<T>, ms: number, label: string): Prom
 /** History restore deadline: a dead worker must show an error, not a blank pane. */
 const HISTORY_LOAD_TIMEOUT_MS = 15_000;
 
+// ---------- T2-1: custom agent role picker ----------
+/** Populate the toolbar role selector from the user + project role files and
+ *  reflect the ACTIVE session's `agentId`. A role that no longer exists simply
+ *  falls back to "no role" (AC-6) without disturbing the session. */
+async function refreshRolePicker(): Promise<void> {
+  const sel = $('#agent-role-select') as HTMLSelectElement | null;
+  if (!sel) return;
+  let active = selectedRoleId;
+  try {
+    const meta = currentSessionId
+      ? await window.nexusDesktop.getSessionMetadata(currentSessionId)
+      : {};
+    if (typeof meta?.agentId === 'string' && meta.agentId) active = meta.agentId;
+  } catch { /* fall back to the remembered selection */ }
+
+  const noneLabel = t('agentRoleNone');
+  sel.replaceChildren();
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = noneLabel;
+  sel.appendChild(none);
+  try {
+    const res = await window.nexusDesktop.listCustomAgents(await currentProjectDir());
+    if (res.reason === 'too-many') none.textContent = `${noneLabel} — ${t('agentRoleTooMany')}`;
+    for (const agent of res.agents) {
+      const opt = document.createElement('option');
+      opt.value = agent.id;
+      const source = agent.source === 'project' ? t('agentRoleProject') : t('agentRoleUser');
+      opt.textContent = `${agent.name} (${source})${agent.error ? ' ⚠ ' + t('agentRoleInvalid') : ''}`;
+      opt.title = agent.description || agent.path;
+      sel.appendChild(opt);
+    }
+  } catch {
+    // A failed scan leaves just the "no role" option; never break the composer.
+  }
+  sel.value = active;
+  if (sel.value !== active) sel.value = ''; // vanished role → degrade (AC-6)
+}
+
+/** Bind the picker once. Selecting a role updates the current session's
+ *  metadata immediately so the next prompt carries the `[Agent Role]` block;
+ *  the choice is also remembered for the next new session. */
+function bindRolePicker(): void {
+  const sel = $('#agent-role-select') as HTMLSelectElement | null;
+  if (!sel) return;
+  sel.addEventListener('change', () => {
+    selectedRoleId = sel.value;
+    if (currentSessionId) {
+      void window.nexusDesktop.setSessionMetadata(currentSessionId, { agentId: selectedRoleId })
+        .catch(() => { /* best effort */ });
+    }
+  });
+}
+
 /** Activate `sessionId`, rendering its transcript as the visible conversation. */
 async function switchTab(sessionId: string): Promise<void> {
   activeTabId = sessionId;
   currentSessionId = sessionId;
+  void refreshRolePicker();
   // Scoped sidebar pages (e.g. Sub-Agents) re-bind to the new session now —
   // no need to wait for the next agent event.
   notifyActiveSessionChanged(sessionId);
@@ -6314,6 +6375,12 @@ async function handleNewCommand(): Promise<void> {
     else if (res.reason === 'overloaded') addSystem(t('tabsOverloaded'));
     else addSystem(`${t('tabsOpenFailed')}${res.reason ?? ''}`);
     return;
+  }
+  // T2-1: carry the picker's role into the new session's metadata before its
+  // first prompt, so the very first LLM call already sees [Agent Role].
+  if (selectedRoleId) {
+    try { await window.nexusDesktop.setSessionMetadata(res.sessionId, { agentId: selectedRoleId }); }
+    catch { /* best effort — the session still works without a role */ }
   }
   // openTab resolves the new session to the worker that openNewSession just
   // bound, so no second worker is spawned — it just focuses the new tab.
@@ -9045,6 +9112,8 @@ window.nexusDesktop.onTabsChanged((open) => {
     }
     refreshProviderSelect();
     refreshModelSelect();
+    bindRolePicker();
+    void refreshRolePicker().catch(() => {});
     cwdLabel.textContent = status.cwd || t('noProject');
     cwdLabel.title = status.cwd;
     const shouldRestore = await window.nexusDesktop.getRestoreSessionOnLaunch();

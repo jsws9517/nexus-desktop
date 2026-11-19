@@ -41,6 +41,7 @@ import {
 } from '../main/automation-runner.js';
 import { globalRulesPath, ensureGlobalRules, resetGlobalRules, loadConstitutionBundle, resolveConstitutionFiles } from '../tools/agents.js';
 import { buildProjectRuleEntries } from '../shared/project-rules.js';
+import { scanCustomAgents, userAgentsDir } from '../tools/custom-agents.js';
 import { readState as readCoreOverlayState } from '../bootstrap/overlay.js';
 import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateMainLocalParams, validateWorkerParams } from '../shared/ipc-validation.js';
@@ -998,6 +999,42 @@ export function registerIpc(ctx: IpcContext): void {
       const sizes = new Map(checked.filter((x) => x !== null).map((x) => [x.file, x.size]));
       const files = buildProjectRuleEntries(rootReal, verified, sizes);
       return { ok: true, files, reason: files.length > 0 ? 'ok' : 'not-found' };
+    } catch (e) {
+      return empty('invalid', e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  // T2-1: file-based custom Agent roles. Same trust + containment rules as
+  // listProjectRules; the renderer only supplies a cwd, never a file path.
+  ipcMain.handle(CHANNELS.listCustomAgents, async (event, params: unknown): Promise<{
+    ok: boolean;
+    agents: Array<{
+      id: string; name: string; description: string; tools?: string[];
+      systemPrompt: string; source: 'user' | 'project'; path: string; error?: string;
+    }>;
+    reason: 'ok' | 'too-many' | 'invalid';
+    error?: string;
+  }> => {
+    const empty = (reason: 'invalid', error?: string) =>
+      ({ ok: false, agents: [] as Array<never>, reason, error });
+    if (!isTrustedSender(event)) return empty('invalid', 'untrusted sender');
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('listCustomAgents', p);
+    if (vErr) return empty('invalid', vErr);
+    let rootReal: string;
+    try {
+      rootReal = await realpath(p.cwd as string);
+    } catch (e) {
+      return empty('invalid', e instanceof Error ? e.message : String(e));
+    }
+    if (!(await allowedRoots()).some((allowed) => isWithin(rootReal, allowed))) {
+      return empty('invalid', 'path outside allowed roots');
+    }
+    try {
+      return await scanCustomAgents({
+        userDir: userAgentsDir(),
+        projectDir: join(rootReal, '.nexus', 'agents'),
+      });
     } catch (e) {
       return empty('invalid', e instanceof Error ? e.message : String(e));
     }

@@ -50,12 +50,22 @@ import {
   callBuiltinTool,
   mergeCoreAgentTools,
   selectTools,
+  ESSENTIAL_TOOLS,
   skillHostFromAgent,
   skillToolNames,
   ToolRefreshQueue,
   AUTOMATION_OFFICE_PINS,
 } from '../tools/index.js';
 import { applyRouting } from '../tools/routing.js';
+import { aliasFamilyOf } from '../tools/tool-relevance.js';
+import {
+  scanCustomAgents,
+  userAgentsDir,
+  roleAllowsTool,
+  injectAgentRoleBlock,
+  stripAgentRoleBlock,
+  type CustomAgent,
+} from '../tools/custom-agents.js';
 import { shouldHideVaultTools, inputNamesVaultTool, VAULT_TOOLS } from '../tools/attachment-rag.js';
 import type { ToolDef, ToolResult, AttachmentSearchRequest } from '../tools/types.js';
 import { loadConstitutionBundle, CONSTITUTION_MARKER, loadGlobalRules, ensureGlobalRules, GLOBAL_RULES_MARKER } from '../tools/agents.js';
@@ -1045,7 +1055,20 @@ export class AgentService {
       // defs win on a clash, so INTERNAL_TOOLS shadowing and MCP aliases stay
       // authoritative.
       const agentLayer = mergeCoreAgentTools(pool, coreTools, hidden);
-      const candidates = applyRouting(agentLayer);
+      const routed = applyRouting(agentLayer);
+
+      // T2-1: a selected role narrows the candidate surface to its `tools`
+      // whitelist. ESSENTIAL_TOOLS (and their alias families) are exempt so the
+      // role can never strip the model's load-bearing capabilities — a role is
+      // a focus hint, not a new constraint file. Filtering happens here (before
+      // selectTools) so no extra LLM tokens are spent on tools the role forbids.
+      const roleTools = await this.currentRoleToolWhitelist();
+      const candidates = roleTools
+        ? routed.filter((t) =>
+            roleAllowsTool(t.name, roleTools) ||
+            ESSENTIAL_TOOLS.has(t.name) ||
+            aliasFamilyOf(t.name).some((m) => ESSENTIAL_TOOLS.has(m)))
+        : routed;
 
       // `refresh_tools` widening requests are natural-language intents, not tool
       // names. `selectTools` matches `force` against tool names, so an intent like
@@ -1292,6 +1315,28 @@ export class AgentService {
               // Rule set removed / no longer resolvable — clear the block.
               ctx.replaceSystemByMarker(CONSTITUTION_MARKER, null);
             }
+          } catch {
+            // Prompt decoration must never break a turn.
+          }
+
+          // --- Agent Role (T2-1) ---
+          // A selected role is injected under its OWN `[Agent Role]` marker,
+          // immediately after the constitution block. It is ADVISORY: the
+          // baseline system prompt, [Project Constitution] and [Global Rules]
+          // hard constraints always win (the role block says so explicitly).
+          //
+          // Idempotency: the marker lives INSIDE the first system message (that
+          // is where prependToSystem put every block above). Using
+          // replaceSystemByMarker here would delete that entire message, so we
+          // instead strip the old block by string and replace the first system
+          // message's content wholesale — safe even when the selected role
+          // changes or the role file is deleted between turns (AC-6).
+          try {
+            const role = await this.currentSessionRole();
+            const fresh = ctx.getMessages().find((m) => m.role === 'system')?.content ?? '';
+            const base = stripAgentRoleBlock(fresh);
+            const desired = role?.systemPrompt ? injectAgentRoleBlock(base, role) : base;
+            if (desired !== fresh) ctx.replaceFirstSystemContent(desired);
           } catch {
             // Prompt decoration must never break a turn.
           }
@@ -4773,6 +4818,38 @@ private resetAttachmentRagRoundCache(): void {
   setSessionMetadata(sessionId: string, metadata: Record<string, unknown>): void {
     if (!this.agent?.session) return;
     this.agent.session.updateMetadata(sessionId, metadata);
+  }
+
+  /**
+   * T2-1: resolve the custom role selected for the current session. Uses the
+   * same scanner as the renderer picker (short-lived cache), so a deleted role
+   * simply resolves to null — the session degrades to "no role" rather than
+   * failing (AC-6). Project roles override user roles of the same id.
+   */
+  async currentSessionRole(): Promise<CustomAgent | null> {
+    try {
+      const sid = this.agent?.getCurrentSessionId?.();
+      if (!sid) return null;
+      const meta = this.getSessionMetadata(sid);
+      const agentId = typeof meta.agentId === 'string' ? meta.agentId.trim() : '';
+      if (!agentId) return null;
+      const projectDir =
+        typeof meta.projectDir === 'string' && meta.projectDir ? meta.projectDir : process.cwd();
+      const result = await scanCustomAgents({
+        userDir: userAgentsDir(),
+        projectDir: join(projectDir, '.nexus', 'agents'),
+      });
+      return result.agents.find((a) => a.id === agentId) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Tool whitelist for the current role, or null when unrestricted. */
+  async currentRoleToolWhitelist(): Promise<Set<string> | null> {
+    const role = await this.currentSessionRole();
+    if (!role?.tools || role.tools.length === 0) return null;
+    return new Set(role.tools);
   }
 
   /**
