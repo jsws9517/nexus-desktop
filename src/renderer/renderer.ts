@@ -821,6 +821,8 @@ const rsideRateLimit = $('#rside-rate-limit');
 const rsideSpendMode = $('#rside-spend-mode');
 const taskListEl = $('#task-list');
 const taskEmptyEl = $('#task-empty');
+const taskSummaryEl = $('#task-summary') as HTMLElement | null;
+const btnCompact = $('#btn-compact') as HTMLButtonElement | null;
 const tabBarEl = $('#tab-bar') as HTMLElement;
 
 // ---------- state ----------
@@ -2670,6 +2672,7 @@ function setBusy(value: boolean): void {
   busyIndicator.classList.toggle('hidden', !value);
   updateSendButtonVisibility();
   updateRollbackButtonVisibility();
+  updateCompactButton();
   stopBtn.classList.toggle('hidden', !value);
   document.querySelectorAll('.regen-btn').forEach((b) => {
     (b as HTMLButtonElement).disabled = value;
@@ -4838,6 +4841,7 @@ async function refreshSidebarSession(): Promise<void> {
   rsideModel.textContent = st.model || '—';
   rsideSessionId.textContent = currentSessionId ? truncateId(currentSessionId) : '—';
   rsideSessionId.title = currentSessionId || '';
+  updateCompactButton();
   // Project Directory row reflects the session's recorded projectDir (the
   // canonical project field), left blank when the session has none.
   let projDir = '';
@@ -5000,6 +5004,15 @@ function renderRateLimit(rl: StatusInfo['rateLimit']): void {
 wireCopy(rsideSessionId, () => currentSessionId, () => t('copiedSessionId'));
 wireCopy(rsideCwd, () => rsideCwd.title || '', () => t('copiedProjectDir'));
 
+// Compact context (T1-5): reuse the normal composer/send path so /compact
+// behaves exactly as if the user typed it (same error feedback in chat).
+btnCompact?.addEventListener('click', () => {
+  if (!currentSessionId || ownsWork()) return;
+  inputEl.value = '/compact';
+  autoGrowInput();
+  void sendMessage();
+});
+
 let svConfig: SpeechVisionConfig = {
   activeSpeech: '',
   activeTts: '',
@@ -5048,6 +5061,7 @@ async function refreshSessionStats(): Promise<void> {
   } catch {
     rsideToken.textContent = '—';
   }
+  renderTaskSummary();
 }
 
 function renderTasks(): void {
@@ -5132,6 +5146,41 @@ function renderTasks(): void {
 
   taskListEl.innerHTML = '';
   taskListEl.appendChild(fragment);
+  renderTaskSummary();
+}
+
+/**
+ * Render the context-usage summary (T1-5) from the same data already shown in
+ * the session-info rows (rside-token / rside-summary-count), so it stays in
+ * lockstep without a second stats IPC.
+ */
+function renderTaskSummary(): void {
+  if (!taskSummaryEl) return;
+  const token = (rsideToken.textContent || '').trim() || '—';
+  const summary = (rsideSummaryCount.title || rsideSummaryCount.textContent || '').trim() || '—';
+  taskSummaryEl.innerHTML = '';
+  const heading = document.createElement('div');
+  heading.className = 'task-summary-label';
+  heading.textContent = t('contextUsage');
+  taskSummaryEl.appendChild(heading);
+  const tokenRow = document.createElement('div');
+  tokenRow.className = 'task-summary-line';
+  tokenRow.textContent = `${t('tokenUsage')}: ${token}`;
+  taskSummaryEl.appendChild(tokenRow);
+  const compactRow = document.createElement('div');
+  compactRow.className = 'task-summary-line';
+  compactRow.textContent = summary.split('\n').join(' · ');
+  taskSummaryEl.appendChild(compactRow);
+  taskSummaryEl.classList.remove('hidden');
+}
+
+/** Refresh the Compact button's enabled state from ownsWork()/session (AC-4). */
+function updateCompactButton(): void {
+  if (!btnCompact) return;
+  const noSession = !currentSessionId;
+  const busy = ownsWork();
+  btnCompact.disabled = noSession || busy;
+  btnCompact.title = noSession ? t('compactNoSession') : busy ? t('compactBusy') : t('compactHint');
 }
 
 function handleTaskEvent(event: Extract<AgentEvent, { type: `task_${string}` }>): void {
