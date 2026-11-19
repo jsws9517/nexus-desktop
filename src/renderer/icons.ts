@@ -47,6 +47,8 @@ const ICONS = {
   fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 8h.01M11 12h1v4h1"/>',
+  // Two arrows pointing inward — the compact-context action in the composer.
+  compress: '<path d="M8 7 3 12l5 5M3 12h6M16 7l5 5-5 5M21 12h-6"/>',
 } as const;
 
 export type IconName = keyof typeof ICONS;

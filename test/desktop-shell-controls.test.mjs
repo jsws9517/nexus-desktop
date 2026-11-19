@@ -116,10 +116,37 @@ test('no duplicate context-usage block: stats live only in Session Info', () => 
   assert.equal(renderer.includes('taskSummaryEl'), false);
   assert.equal(i18n.includes('contextUsage:'), false);
 
-  // The single source of truth (Session Info rows) and the compact action stay.
+  // The single source of truth (Session Info rows) stays.
   assert.match(html, /id="rside-token"/);
   assert.match(html, /id="rside-summary-count"/);
-  assert.match(html, /id="btn-compact"/);
   assert.match(renderer, /rsideToken\.textContent = t\('tokenEstimated'/);
   assert.match(renderer, /rsideSummaryCount\.textContent = `\$\{t\('compressSummarize'\)/);
+});
+
+// ── compact action sits in the composer, beside the mode selector ───────────
+
+test('compact button lives in the composer action bar, not the sidebar', () => {
+  const html = read('static/index.html');
+  const css = read('static/styles.css');
+  const icons = read('src/renderer/icons.ts');
+
+  // Positioned inside .input-left, immediately after the permission-mode box.
+  const permBox = html.indexOf('id="perm-box"');
+  const permPopoverFoot = html.indexOf('permPopoverFoot');
+  const compact = html.indexOf('id="btn-compact"');
+  const inputLeftEnd = html.indexOf('class="input-hint"', compact);
+  assert.ok(permBox >= 0 && compact > permPopoverFoot, 'compact follows the mode selector');
+  assert.ok(compact < inputLeftEnd, 'compact is inside .input-left');
+
+  // Rendered as a small chip with an icon + i18n label, not the old full-width button.
+  assert.match(html, /id="btn-compact" type="button" class="compact-btn"/);
+  assert.match(html, /<span class="icon-slot" data-icon="compress"><\/span>/);
+  assert.match(html, /<span class="compact-label" data-i18n="compactContext">/);
+  assert.match(icons, /compress: '/);
+  assert.match(css, /\.input-left \.compact-btn \{/);
+  assert.equal(html.includes('compact-btn" data-i18n="compactContext" disabled'), false);
+
+  // Not left behind in the right sidebar's task section.
+  const taskSection = html.slice(html.indexOf('data-i18n="taskProgress"'), html.indexOf('data-panel="files"'));
+  assert.equal(taskSection.includes('btn-compact'), false);
 });
