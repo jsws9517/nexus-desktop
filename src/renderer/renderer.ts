@@ -17,6 +17,7 @@ import { SubAgentsPage, mountSubAgentsPage } from './sidebar/pages/sub-agents.js
 import { mountSideChatPage } from './sidebar/pages/side-chat.js';
 import { AutomationPage, mountAutomationPage } from './sidebar/pages/automations.js';
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
+import { ArtifactsPage, mountArtifactsPage } from './sidebar/pages/artifacts.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
 import { openPath as previewOpenPath, openContent as previewOpenContent, close as previewClose, toggleFullscreen, getLiveHandle, bindDock } from './preview/open.js';
@@ -9171,6 +9172,16 @@ window.nexusDesktop.onTabsChanged((open) => {
       mount: (container, ctx) => mountAutomationPage(container, ctx, {
         // Default a new automation to the active session's project directory.
         getCurrentCwd: () => rsideCwd.title || '',
+      }),
+    });
+    sidebarRegistry.register({
+      id: ArtifactsPage.id,
+      title: ArtifactsPage.title,
+      titleKey: ArtifactsPage.titleKey,
+      icon: ArtifactsPage.icon,
+      mount: (container, ctx) => mountArtifactsPage(container, ctx, {
+        // "Open session" focuses an existing tab or opens the source session.
+        openSession: (sessionId) => { void openTab(sessionId); },
       }),
     });
     renderSidebarTabs();

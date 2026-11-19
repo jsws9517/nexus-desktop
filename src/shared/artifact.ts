@@ -63,6 +63,23 @@ export interface ArtifactEnvelope {
   artifact: Artifact;
 }
 
+/**
+ * One row in the cross-session artifact index (T2-4). `id` is the SOURCE
+ * message id in session-db, so the full envelope can be fetched later with
+ * `nexus:getArtifact(messageId)` for export / opening the source session.
+ * `type` is a plain string because legacy envelopes may lack a valid type —
+ * such rows land under "all" and simply never match a type filter.
+ */
+export interface ArtifactListItem {
+  id: number;
+  sessionId: string;
+  sessionName: string;
+  type: string;
+  title: string;
+  createdAt: number;
+  preview: string;
+}
+
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
 

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { WORKER_MARKERS } from './shared/constants.js';
 import { boundedSet } from './shared/bounded.js';
 import { logger } from './shared/logger.js';
+import { parseArtifactContent, type ArtifactListItem } from './shared/artifact.js';
 
 /**
  * Desktop-only direct access to the core session DB (better-sqlite3).
@@ -775,6 +776,119 @@ export function listSessions(
     }
     const rows = db.prepare(sql).all(...rowParams) as Array<Record<string, unknown>>;
     return { items: rows.map(toSessionItem), total: Number(countRow.n ?? 0) };
+  } catch {
+    return null;
+  }
+}
+
+// ── T2-4: cross-session artifact index ──────────────────────────────────────
+
+export interface QueryArtifactsOptions {
+  limit?: number;
+  sessionId?: string;
+  type?: string;
+  sinceMs?: number;
+}
+
+/** Short human-readable preview for the index row (never the full body). */
+function artifactPreview(artifact: ReturnType<typeof parseArtifactContent>): string {
+  if (!artifact) return '';
+  const raw = typeof artifact.body === 'string'
+    ? artifact.body
+    : artifact.body == null
+      ? ''
+      : JSON.stringify(artifact.body);
+  return raw.length > 160 ? raw.slice(0, 160) + '…' : raw;
+}
+
+/**
+ * Cross-session artifact index. Scans tool messages whose content carries an
+ * Artifact envelope and returns light metadata rows, newest first.
+ *
+ * All filters are bound SQL parameters (no LIKE/string interpolation from user
+ * input): the envelope marker is a constant bound parameter, `sessionId` /
+ * `sinceMs` are direct column comparisons, and `type` is read with JSON1 from
+ * the envelope. Rows with a malformed envelope are skipped, not fatal (AC-6 /
+ * risk §6). Wrapping `json_extract` in `CASE WHEN json_valid` guarantees it is
+ * never called on non-JSON tool output.
+ */
+export function queryArtifacts(opts: QueryArtifactsOptions = {}): { items: ArtifactListItem[] } | null {
+  const db = openDb();
+  if (!db || !checkSessionsSchema(db)) return null;
+  const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 100)));
+  const where = [
+    // Bound constant marker + JSON shape guards: malformed envelopes are
+    // excluded in SQL so LIMIT counts only usable rows (not skipped junk).
+    'm.content LIKE ?',
+    'json_valid(m.content) = 1',
+    "json_extract(m.content, '$.__artifactVersion') = 1",
+    "json_extract(m.content, '$.artifact.id') IS NOT NULL",
+    "json_extract(m.content, '$.artifact.type') IS NOT NULL",
+  ];
+  const params: unknown[] = ['%"__artifactVersion"%'];
+  if (opts.sessionId) {
+    where.push('m.session_id = ?');
+    params.push(opts.sessionId);
+  }
+  if (opts.sinceMs !== undefined && Number.isFinite(opts.sinceMs)) {
+    where.push('m.created_at >= ?');
+    params.push(opts.sinceMs);
+  }
+  if (opts.type) {
+    where.push("json_extract(m.content, '$.artifact.type') = ?");
+    params.push(opts.type);
+  }
+  const sql = `SELECT m.id AS id, m.session_id AS session_id, s.name AS session_name,
+                      m.content AS content, m.created_at AS created_at
+               FROM messages m LEFT JOIN sessions s ON s.id = m.session_id
+               WHERE ${where.join(' AND ')}
+               ORDER BY m.created_at DESC, m.id DESC LIMIT ?`;
+  // Oversample so a rare row that passes the SQL shape guards but fails full
+  // envelope validation does not starve the page of `limit` valid items.
+  params.push(Math.min(Math.max(limit * 2, 20), 1000));
+  try {
+    const rows = db.prepare(sql).all(...params) as Array<{
+      id: number; session_id: string; session_name: string | null;
+      content: string; created_at: number;
+    }>;
+    const items: ArtifactListItem[] = [];
+    const seen = new Set<string>();
+    for (const r of rows) {
+      const artifact = parseArtifactContent(r.content);
+      if (!artifact) continue;
+      // JS re-check of the type filter: keeps the result correct even if a
+      // legacy envelope stores its type somewhere JSON1 cannot reach.
+      if (opts.type && artifact.type !== opts.type) continue;
+      const sessionId = artifact.meta?.sessionId || r.session_id || '';
+      const key = `${sessionId}|${artifact.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({
+        id: r.id,
+        sessionId,
+        sessionName: r.session_name ?? '',
+        type: artifact.type ?? '',
+        title: artifact.title ?? '',
+        createdAt: Number(r.created_at) || 0,
+        preview: artifactPreview(artifact),
+      });
+      if (items.length >= limit) break;
+    }
+    return { items };
+  } catch {
+    return null;
+  }
+}
+
+/** Fetch the raw tool-message content for a full artifact (by message id). */
+export function getArtifactMessageContent(messageId: number): string | null {
+  const db = openDb();
+  if (!db || !Number.isInteger(messageId) || messageId <= 0) return null;
+  try {
+    const row = db.prepare('SELECT content FROM messages WHERE id = ?').get(messageId) as
+      | { content: string }
+      | undefined;
+    return row?.content ?? null;
   } catch {
     return null;
   }

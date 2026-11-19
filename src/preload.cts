@@ -148,6 +148,15 @@ const api = {
   // native paste command into the focused composer (right-click paste).
   writeClipboard: (text: string) => ipcRenderer.invoke('nexus:writeClipboard', { text }) as Promise<{ ok: boolean }>,
   pasteClipboard: () => ipcRenderer.invoke('nexus:pasteClipboard') as Promise<{ ok: boolean }>,
+  // T2-4: cross-session artifact index + full payload.
+  listArtifacts: (opts?: { limit?: number; sessionId?: string; type?: string; sinceMs?: number }) =>
+    ipcRenderer.invoke('nexus:listArtifacts', opts ?? {}) as Promise<{
+      ok: boolean;
+      items: Array<{ id: number; sessionId: string; sessionName: string; type: string; title: string; createdAt: number; preview: string }>;
+      error?: string;
+    }>,
+  getArtifact: (messageId: number) =>
+    ipcRenderer.invoke('nexus:getArtifact', { messageId }) as Promise<{ ok: boolean; content?: string; error?: string }>,
   // Export an artifact payload (base64 bytes or text) via a save dialog.
   saveArtifact: (defaultName: string, data: string, encoding?: 'base64' | 'text') =>
     ipcRenderer.invoke('nexus:saveArtifact', { defaultName, data, encoding }) as Promise<{ ok: boolean; path?: string; error?: string }>,

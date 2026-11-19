@@ -171,6 +171,9 @@ export const CHANNELS = {
   worktreeCreate: 'nexus:worktreeCreate',
   worktreeList: 'nexus:worktreeList',
   worktreeRemove: 'nexus:worktreeRemove',
+  // T2-4: cross-session artifact index + full payload (main reads session-db).
+  listArtifacts: 'nexus:listArtifacts',
+  getArtifact: 'nexus:getArtifact',
   readImagePreview: 'nexus:readImagePreview',
   pasteImage: 'nexus:pasteImage',
   writeClipboard: 'nexus:writeClipboard',

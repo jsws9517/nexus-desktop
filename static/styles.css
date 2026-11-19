@@ -3221,6 +3221,57 @@ html[data-theme='matcha'] #input-area .btn.danger:hover {
 .artifact-table th { position: sticky; top: 0; background: var(--bg-sidebar); color: var(--text-dim); font-weight: 600; z-index: 1; }
 .artifact-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
+/* ---------- T2-4: markdown / html / image artifact views ---------- */
+.artifact-markdown {
+  font-size: 13px; line-height: 1.6; color: var(--text);
+  max-height: 320px; overflow: auto;
+}
+.artifact-markdown h1, .artifact-markdown h2, .artifact-markdown h3 { margin: 0.5em 0 0.3em; }
+.artifact-markdown p { margin: 0.4em 0; }
+.artifact-markdown code { background: var(--code-bg); border-radius: 4px; padding: 1px 4px; }
+.artifact-html-frame {
+  width: 100%; min-height: 220px; border: 1px solid var(--border);
+  border-radius: 8px; background: #fff;
+}
+.artifact-image {
+  display: block; max-width: 100%; max-height: 320px;
+  border: 1px solid var(--border); border-radius: 8px; object-fit: contain;
+}
+
+/* ---------- T2-4: My Artifacts sidebar page ---------- */
+.artifacts-page { padding: 10px; }
+.artifacts-root { display: flex; flex-direction: column; gap: 10px; }
+.artifacts-header { display: flex; align-items: center; gap: 8px; }
+.artifacts-title { font-weight: 600; font-size: 14px; color: var(--text); }
+.artifacts-header .artifact-action { margin-left: auto; }
+.artifacts-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.artifacts-filter {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 10px; color: var(--text-dim); flex: 1 1 84px;
+}
+.artifacts-filter select {
+  width: 100%; background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px;
+}
+.artifacts-status {
+  font-size: 10px; color: var(--text-dim);
+  border-bottom: 1px solid var(--border); padding-bottom: 4px;
+}
+.artifacts-list { display: flex; flex-direction: column; gap: 6px; }
+.artifacts-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel);
+}
+.artifacts-row-icon { font-size: 18px; }
+.artifacts-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.artifacts-row-title {
+  font-size: 12px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.artifacts-row-meta { font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifacts-row-actions { display: flex; flex-direction: column; gap: 4px; }
+.artifacts-empty { font-size: 12px; color: var(--text-dim); text-align: center; padding: 16px 0; }
+
 /* ========== Accessibility & UX Enhancements ========== */
 
 /* Focus visible styles for keyboard navigation */

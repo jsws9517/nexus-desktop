@@ -42,6 +42,7 @@ import {
 import { globalRulesPath, ensureGlobalRules, resetGlobalRules, loadConstitutionBundle, resolveConstitutionFiles } from '../tools/agents.js';
 import { buildProjectRuleEntries } from '../shared/project-rules.js';
 import { scanCustomAgents, userAgentsDir } from '../tools/custom-agents.js';
+import { queryArtifacts, getArtifactMessageContent } from '../session-db.js';
 import { readState as readCoreOverlayState } from '../bootstrap/overlay.js';
 import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateMainLocalParams, validateWorkerParams } from '../shared/ipc-validation.js';
@@ -1204,6 +1205,52 @@ export function registerIpc(ctx: IpcContext): void {
       return { ok: true };
     } catch (e) {
       return fail('invalid', e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  // T2-4: cross-session artifact index. All filters are validated against the
+  // shared spec and bound as SQL parameters in session-db; the renderer never
+  // supplies SQL or a file path.
+  ipcMain.handle(CHANNELS.listArtifacts, async (event, params: unknown): Promise<{
+    ok: boolean;
+    items: Array<{ id: number; sessionId: string; sessionName: string; type: string; title: string; createdAt: number; preview: string }>;
+    error?: string;
+  }> => {
+    const empty = (error?: string) => ({ ok: false, items: [] as Array<never>, error });
+    if (!isTrustedSender(event)) return empty('untrusted sender');
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('listArtifacts', p);
+    if (vErr) return empty(vErr);
+    try {
+      const result = queryArtifacts({
+        limit: p.limit as number | undefined,
+        sessionId: p.sessionId as string | undefined,
+        type: p.type as string | undefined,
+        sinceMs: p.sinceMs as number | undefined,
+      });
+      if (!result) return empty('session DB unavailable');
+      return { ok: true, items: result.items };
+    } catch (e) {
+      return empty(e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  // T2-4: full envelope for one artifact (by source message id), used for
+  // export and for opening the source session.
+  ipcMain.handle(CHANNELS.getArtifact, async (event, params: unknown): Promise<{
+    ok: boolean;
+    content?: string;
+    error?: string;
+  }> => {
+    if (!isTrustedSender(event)) return { ok: false, error: 'untrusted sender' };
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('getArtifact', p);
+    if (vErr) return { ok: false, error: vErr };
+    try {
+      const content = getArtifactMessageContent(p.messageId as number);
+      return content ? { ok: true, content } : { ok: false, error: 'artifact not found' };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   });
 
