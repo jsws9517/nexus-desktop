@@ -46,6 +46,10 @@ export interface SidebarContext {
    *  never sits in "running" forever. Optional — pages may call it from their
    *  own render/timer loop to self-heal. */
   forceCloseStaleTasks?(): void;
+  /** Suspend the workbench idle auto-collapse while a page-owned modal is open,
+   *  and resume it when the modal closes. The workbench must never fold (and
+   *  dispose the page) underneath an in-progress dialog. Optional for tests. */
+  setAutoHidePaused?(paused: boolean): void;
   /** Subscribe to the agent event bus; returns an unsubscribe function. */
   subscribe(fn: (event: AgentEvent) => void): () => void;
 }

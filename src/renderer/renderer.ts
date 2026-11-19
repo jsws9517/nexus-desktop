@@ -708,6 +708,8 @@ function makeSidebarContext(sessionId: string): SidebarContext {
     // Force-close stale running tasks (per-task timeout + dead-run sweep) so
     // pages can self-heal by calling it from their own render/timer loops.
     forceCloseStaleTasks: () => { sweepStuckSubAgentRuns(); },
+    // Modal-owning pages (role editor) suspend idle folding for their lifetime.
+    setAutoHidePaused: setSidebarAutoHidePaused,
     subscribe: (fn) => {
       const wrapped = (event: AgentEvent) => fn(event);
       eventSubscribers.add(wrapped);
@@ -780,6 +782,9 @@ const SIDEBAR_AUTO_HIDE_DEFAULT_MS = 10_000;
  *  matches the historical 10-second constant. */
 let SIDEBAR_AUTO_HIDE_MS = SIDEBAR_AUTO_HIDE_DEFAULT_MS;
 let sidebarAutoHideTimer: number | null = null;
+/** A page-owned modal (e.g. the role editor) suspends idle collapse so the
+ *  workbench cannot fold — and dispose the page — mid-edit. */
+let sidebarAutoHidePaused = false;
 /** Live handle of the mounted right-panel file browser (set at startup). */
 let fileBrowserHandle: FileBrowserHandle | null = null;
 
@@ -794,6 +799,7 @@ function applyPanelIdleMs(ms: number): void {
 
 /** Collapse the open workbench back to its entry (dispose + hide the page). */
 function hideSidebarPage(): void {
+  sidebarAutoHidePaused = false;
   cancelSidebarAutoHide();
   setWorkbenchOpen(false);
   if (activeSidebarTabId === null) return;
@@ -804,14 +810,24 @@ function hideSidebarPage(): void {
   renderSidebarTabs();
 }
 
-/** (Re)arm the idle-close timer for the currently open sidebar page. */
+/** (Re)arm the idle-close timer for the currently open sidebar page. A page
+ *  holding a modal suspends this entirely — no idle folding while editing. */
 function armSidebarAutoHide(): void {
   cancelSidebarAutoHide();
-  if (activeSidebarTabId === null) return;
+  if (sidebarAutoHidePaused || activeSidebarTabId === null) return;
   sidebarAutoHideTimer = window.setTimeout(() => {
     sidebarAutoHideTimer = null;
     if (activeSidebarTabId !== null) hideSidebarPage();
   }, SIDEBAR_AUTO_HIDE_MS);
+}
+
+/** Called by pages with a modal dialog: cancel the countdown on pause and
+ *  restart it only on the true pause -> resume transition. */
+function setSidebarAutoHidePaused(paused: boolean): void {
+  const wasPaused = sidebarAutoHidePaused;
+  sidebarAutoHidePaused = paused;
+  if (paused) cancelSidebarAutoHide();
+  else if (wasPaused && activeSidebarTabId !== null) armSidebarAutoHide();
 }
 
 function cancelSidebarAutoHide(): void {

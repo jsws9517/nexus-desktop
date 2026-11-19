@@ -383,6 +383,9 @@ export function mountAgentsPage(
     closeEditor();
     editorSpec = spec;
     editorLang = lang();
+    // The dialog lives on <body>, outside the workbench's activity listeners.
+    // Hold off idle folding so an unfinished edit is never torn down.
+    ctx.setAutoHidePaused?.(true);
     const overlay = document.createElement('div');
     overlay.className = 'overlay agent-role-overlay';
     overlay.setAttribute('role', 'dialog');
@@ -398,6 +401,7 @@ export function mountAgentsPage(
   }
 
   function closeEditor(): void {
+    ctx.setAutoHidePaused?.(false);
     if (editorKeyHandler) document.removeEventListener('keydown', editorKeyHandler, true);
     editorOverlay?.remove();
     editorOverlay = null;

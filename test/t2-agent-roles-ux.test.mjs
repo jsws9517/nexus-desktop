@@ -147,11 +147,14 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 function makeCtx(activeId = '', initialLang = 'en') {
   let lang = initialLang;
   let unsubscribed = false;
+  let autoHidePaused = false;
   const subs = [];
   return {
     sessionId: 's1',
     getUiLang: () => lang,
     setUiLang: (next) => { lang = next; subs.forEach((fn) => fn({ type: 'language_changed' })); },
+    setAutoHidePaused: (paused) => { autoHidePaused = paused; },
+    isAutoHidePaused: () => autoHidePaused,
     subscribe: (fn) => {
       subs.push(fn);
       unsubscribed = true;
@@ -229,6 +232,7 @@ test('Agents page opens a modal editor, validates and saves via the injected bri
   assert.ok(!container.contains(overlay), 'modal lives outside the sidebar container');
   const modal = overlay.querySelector('.agent-role-modal');
   assert.ok(modal, 'modal dialog exists');
+  assert.equal(ctx.isAutoHidePaused(), true, 'idle collapse suspended while the dialog is open');
   const idField = modal.querySelector('[data-field="id"]');
   assert.equal(idField.value, 'my_assistant');
   assert.ok(!idField.hasAttribute('readonly'), 'new roles allow choosing an id');
@@ -253,6 +257,7 @@ test('Agents page opens a modal editor, validates and saves via the injected bri
   assert.equal(refreshSeen, true, 'reload(true) bypasses the scan cache after a write');
   assert.equal(applied.at(-1), 'my_assistant');
   assert.equal(document.querySelector('.agent-role-overlay'), null, 'modal closes after save');
+  assert.equal(ctx.isAutoHidePaused(), false, 'idle collapse resumed after save');
 
   dispose();
   container.remove();
@@ -275,6 +280,7 @@ test('Agents page modal locks the id when editing and supports Escape/backdrop/c
   reviewer.querySelector('[data-act="edit"]').click();
   let modal = document.querySelector('.agent-role-modal');
   assert.ok(modal);
+  assert.equal(ctx.isAutoHidePaused(), true);
   assert.match(modal.textContent, /Edit role/);
   assert.equal(modal.querySelector('[data-field="id"]').value, 'reviewer');
   assert.ok(modal.querySelector('[data-field="id"]').hasAttribute('readonly'));
@@ -283,6 +289,7 @@ test('Agents page modal locks the id when editing and supports Escape/backdrop/c
   // Escape dismisses the editor and unbinds its key handler.
   modal.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   assert.equal(document.querySelector('.agent-role-overlay'), null);
+  assert.equal(ctx.isAutoHidePaused(), false, 'Escape resumes idle collapse');
 
   // Backdrop click dismisses.
   container.querySelector('[data-act="use-template"]').click();
@@ -299,6 +306,7 @@ test('Agents page modal locks the id when editing and supports Escape/backdrop/c
   assert.ok(document.querySelector('.agent-role-overlay'));
   dispose();
   assert.equal(document.querySelector('.agent-role-overlay'), null);
+  assert.equal(ctx.isAutoHidePaused(), false, 'dispose resumes idle collapse even with an open dialog');
 
   container.remove();
 });
@@ -421,6 +429,15 @@ test('index.html exposes one workbench entry, not a crowded tab strip / role dro
   assert.match(html, /id="sidebar-tabs"/); // shared segmented nav lives inside the panel
   assert.ok(!html.includes('id="agent-role-select"'), 'toolbar role dropdown removed');
   assert.match(html, /data-i18n="workbenchEntry"/);
+});
+
+test('workbench idle collapse is suspended while a page-owned dialog is open', () => {
+  const renderer = readFileSync(join(__dirname, '..', 'src', 'renderer', 'renderer.ts'), 'utf-8');
+  assert.match(renderer, /let sidebarAutoHidePaused = false;/);
+  assert.match(renderer, /if \(sidebarAutoHidePaused \|\| activeSidebarTabId === null\) return;/);
+  assert.match(renderer, /function setSidebarAutoHidePaused\(paused: boolean\): void \{/);
+  assert.match(renderer, /setAutoHidePaused: setSidebarAutoHidePaused,/);
+  assert.match(renderer, /hideSidebarPage\(\): void \{\s*sidebarAutoHidePaused = false;/);
 });
 
 test('workbench sections register in the requested display order', () => {
