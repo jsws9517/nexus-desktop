@@ -518,21 +518,19 @@ export function mountAgentsPage(
         <button type="button" class="btn small" data-act="use-template">${esc(label('agentUseTemplate', lang()))}</button>
       </div></details>`);
 
-    const installedIds = new Set(agents.map((a) => a.id));
     const presetCards = AGENT_PRESETS.map((preset) => {
       const spec = presetSpec(preset, lang());
-      const installed = installedIds.has(preset.id);
       const inUse = active === preset.id;
       return `<div class="wb-card agent-preset ${inUse ? 'active' : ''}" data-preset="${esc(preset.id)}">
         <div class="row1">
           <span class="t">${esc(spec.name)}</span>
           <span class="wb-badge builtin">${esc(label('agentBuiltInBadge', lang()))}</span>
-          ${installed ? `<span class="wb-badge ok">${esc(label('agentInstalled', lang()))}</span>` : ''}
+          ${inUse ? `<span class="wb-badge ok">${esc(label('agentCurrentBadge', lang()))}</span>` : ''}
         </div>
         <div class="wb-desc">${esc(spec.description)}</div>
         <div class="agent-actions">
           <button type="button" class="btn small ${inUse ? '' : 'primary'}" data-act="preset-use" ${inUse ? 'disabled' : ''}>${inUse ? esc(label('agentApplied', lang())) : esc(label('agentPresetUse', lang()))}</button>
-          ${installed ? `<button type="button" class="btn ghost small" data-act="preset-copy">${esc(label('agentPresetSaveAs', lang()))}</button>` : ''}
+          <button type="button" class="btn ghost small" data-act="preset-copy">${esc(label('agentPresetSaveAs', lang()))}</button>
         </div></div>`;
     }).join('');
     parts.push(`<div class="wb-title">${esc(label('agentBuiltInTitle', lang()))}</div>
@@ -574,10 +572,37 @@ export function mountAgentsPage(
     bind();
   }
 
+  /** Pre-install any missing built-in role files so "enable" is a pure
+   *  apply-to-session action. The main-side handler only allows this for
+   *  ABSENT files — an existing built-in file is protected from overwrite
+   *  (code 'protected'). Failure is non-fatal: the role simply degrades
+   *  to "no role" for the session, same as a manually deleted file.
+   *  Only runs on the INITIAL load (first `reload()`), not on every
+   *  subsequent refresh. */
+  let initialLoadDone = false;
+  async function ensureBuiltinsInstalled(): Promise<void> {
+    if (initialLoadDone) return;
+    initialLoadDone = true;
+    let dirty = false;
+    for (const preset of AGENT_PRESETS) {
+      if (agents.some((a) => a.id === preset.id)) continue;
+      const res = await saveAgent(presetSpec(preset, lang()));
+      if (disposed) return;
+      if (res.ok) dirty = true; // best-effort; failures are non-fatal
+    }
+    if (dirty) {
+      const res2 = await listAgents(true);
+      if (disposed) return;
+      agents = Array.isArray(res2.agents) ? res2.agents : [];
+    }
+  }
+
   async function reload(refresh = false): Promise<void> {
     const res = await listAgents(refresh);
     if (disposed) return;
     agents = Array.isArray(res.agents) ? res.agents : [];
+    await ensureBuiltinsInstalled();
+    if (disposed) return;
     render();
   }
 
@@ -627,22 +652,13 @@ export function mountAgentsPage(
         openEditor({ ...agentTemplate(lang()), _new: true });
         break;
       case 'preset-use': {
+        // Built-in roles are pre-installed on first page load (see
+        // ensureBuiltinsInstalled()); the main-side handler protects the
+        // file from overwrite/delete, so this is a pure "apply to the
+        // current session" action — no filesystem write.
         const card = el.closest('.agent-preset') as HTMLElement | null;
         const preset = AGENT_PRESETS.find((p) => p.id === card?.dataset.preset);
         if (!preset) break;
-        // Install on first use; the main-side handler only allows this for
-        // absent files — an existing built-in file is protected from
-        // overwrite (the copy flow uses a new id instead).
-        if (!agents.some((a) => a.id === preset.id)) {
-          const res = await saveAgent(presetSpec(preset, lang()));
-          if (!res.ok) {
-            if (typeof window !== 'undefined' && window.alert) {
-              window.alert(res.error || label('agentPresetInstallFailed', lang()));
-            }
-            break;
-          }
-          await reload(true);
-        }
         applyRole(preset.id);
         render();
         break;

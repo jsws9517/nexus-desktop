@@ -223,8 +223,13 @@ test('Agents page shows template + role list, and applies/clears roles', async (
   const applied = [];
   const ctx = makeCtx('reviewer');
   let listCalls = 0;
+  // Pre-seed all built-in ids so ensureBuiltinsInstalled() is a no-op.
+  const allBuiltins = AGENT_PRESETS.map((p) => ({
+    ...TWO_ROLES[0], id: p.id, name: p.content['zh-CN'].name,
+  }));
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async () => { listCalls += 1; return { ok: true, agents: TWO_ROLES }; },
+    listAgents: async () => { listCalls += 1; return { ok: true, agents: [...TWO_ROLES, ...allBuiltins] }; },
+    saveAgent: async () => ({ ok: true }),
     applyRole: (id) => applied.push(id),
     getActiveRole: () => (applied.at(-1) ?? 'reviewer'),
   });
@@ -233,7 +238,7 @@ test('Agents page shows template + role list, and applies/clears roles', async (
 
   assert.equal(listCalls, 1);
   assert.match(container.innerHTML, /name: My Assistant/); // template visible
-  assert.equal(container.querySelectorAll('.agent-row').length, 2);
+  assert.equal(container.querySelectorAll('.agent-row').length, 6);
   assert.match(container.querySelector('.agent-current').textContent, /Code Reviewer/);
 
   // Apply the second (currently inactive) role.
@@ -256,9 +261,23 @@ test('Agents page opens a modal editor, validates and saves via the injected bri
   const applied = [];
   let refreshSeen = false;
   const ctx = makeCtx('');
+  // Pre-seed all built-in ids so ensureBuiltinsInstalled() is a no-op; track
+  // user-role saves separately from the auto-install writes.
+  const allBuiltins = AGENT_PRESETS.map((p) => ({
+    ...TWO_ROLES[0], id: p.id, name: p.content['zh-CN'].name,
+  }));
+  const userSaves = [];
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async (refresh) => { refreshSeen = refreshSeen || refresh === true; return { ok: true, agents: [] }; },
-    saveAgent: async (spec) => { saved.push(spec); return { ok: true }; },
+    listAgents: async (refresh) => {
+      refreshSeen = refreshSeen || refresh === true;
+      return { ok: true, agents: [...allBuiltins, ...userSaves] };
+    },
+    saveAgent: async (spec) => {
+      if (AGENT_PRESETS.some((p) => p.id === spec.id)) return { ok: true };
+      userSaves.push(spec);
+      saved.push(spec);
+      return { ok: true };
+    },
     applyRole: (id) => applied.push(id),
     getActiveRole: () => '',
   });
@@ -307,8 +326,11 @@ test('Agents page modal locks the id when editing and supports Escape/backdrop/c
   const container = document.createElement('div');
   document.body.appendChild(container);
   const ctx = makeCtx('');
+  const allBuiltins = AGENT_PRESETS.map((p) => ({
+    ...TWO_ROLES[0], id: p.id, name: p.content['zh-CN'].name,
+  }));
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async () => ({ ok: true, agents: TWO_ROLES }),
+    listAgents: async () => ({ ok: true, agents: [...TWO_ROLES, ...allBuiltins] }),
     saveAgent: async () => ({ ok: true }),
     applyRole: () => {},
     getActiveRole: () => '',
@@ -357,16 +379,14 @@ test('Agents page deletes a user role via the bridge (built-ins never reach dele
   const deleted = [];
   const ctx = makeCtx('');
   win.confirm = () => true; // auto-confirm the delete prompt
-  // A user role + an installed built-in: only the user row offers delete.
-  const roles = [
-    ...TWO_ROLES,
-    {
-      id: 'code_reviewer', name: 'Code Reviewer', description: 'Reviews diffs',
-      tools: [], systemPrompt: 'advise only', source: 'user', path: 'C:\\u\\code_reviewer.md',
-    },
-  ];
+  // A user role + all installed built-ins: only the user row offers delete.
+  const allBuiltins = AGENT_PRESETS.map((p) => ({
+    ...TWO_ROLES[0], id: p.id, name: p.content['zh-CN'].name,
+  }));
+  const roles = [...TWO_ROLES, ...allBuiltins];
   const dispose = mountAgentsPage(container, ctx, {
     listAgents: async () => ({ ok: true, agents: roles }),
+    saveAgent: async () => ({ ok: true }),
     deleteAgent: async (id, scope) => { deleted.push([id, scope]); return { ok: true }; },
     applyRole: () => {},
     getActiveRole: () => '',
@@ -392,16 +412,19 @@ test('Agents page deletes a user role via the bridge (built-ins never reach dele
 test('built-in "save as copy" writes a new id, applies it, and opens the copy for editing', async () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
-  const saved = [];
   const applied = [];
-  const reviewer = {
-    id: 'code_reviewer', name: 'Code Reviewer', description: 'Reviews diffs',
-    tools: [], systemPrompt: 'advise only', source: 'user', path: 'C:\\u\\code_reviewer.md',
-  };
+  const allBuiltins = AGENT_PRESETS.map((p) => ({
+    ...TWO_ROLES[0], id: p.id, name: p.content['zh-CN'].name,
+  }));
+  const userSaves = [];
   const ctx = makeCtx('');
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async () => ({ ok: true, agents: [reviewer] }),
-    saveAgent: async (spec) => { saved.push(spec); return { ok: true }; },
+    listAgents: async () => ({ ok: true, agents: [...allBuiltins, ...userSaves] }),
+    saveAgent: async (spec) => {
+      if (AGENT_PRESETS.some((p) => p.id === spec.id)) return { ok: true };
+      userSaves.push(spec);
+      return { ok: true };
+    },
     applyRole: (id) => applied.push(id),
     getActiveRole: () => '',
   });
@@ -413,9 +436,9 @@ test('built-in "save as copy" writes a new id, applies it, and opens the copy fo
   await tick();
 
   // The copy is a NEW id derived from the preset id — never the preset's own.
-  assert.equal(saved.length, 1);
-  assert.equal(saved[0].id, 'code_reviewer_copy');
-  assert.notEqual(saved[0].id, 'code_reviewer');
+  assert.equal(userSaves.length, 1);
+  assert.equal(userSaves[0].id, 'code_reviewer_copy');
+  assert.notEqual(userSaves[0].id, 'code_reviewer');
   // The copy is applied to the current session…
   assert.equal(applied.at(-1), 'code_reviewer_copy');
   // …and the built-in row is re-rendered without delete (copy instead).
@@ -431,12 +454,19 @@ test('built-in copy editor shows a "created copy" notice; the copy is editable, 
   const container = document.createElement('div');
   document.body.appendChild(container);
   const ctx = makeCtx('', 'en');
-  const list = [
-    { id: 'code_reviewer', name: 'Code Reviewer', description: 'd', tools: [], systemPrompt: 's', source: 'user', path: 'C:\\u\\code_reviewer.md' },
-  ];
+  // Pre-seed all built-ins so the auto-install is a no-op; the user copy is
+  // written on demand when "copy" is clicked.
+  const allBuiltins = AGENT_PRESETS.map((p) => ({
+    ...TWO_ROLES[0], id: p.id, name: p.content['zh-CN'].name,
+  }));
+  const userCopies = [];
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async () => ({ ok: true, agents: [...list] }),
-    saveAgent: async (spec) => { list.push(spec); return { ok: true }; },
+    listAgents: async () => ({ ok: true, agents: [...allBuiltins, ...userCopies] }),
+    saveAgent: async (spec) => {
+      if (AGENT_PRESETS.some((p) => p.id === spec.id)) return { ok: true };
+      userCopies.push(spec);
+      return { ok: true };
+    },
     applyRole: () => {},
     getActiveRole: () => '',
   });
@@ -477,14 +507,20 @@ test('built-in copy editor shows a "created copy" notice; the copy is editable, 
 test('copy row becomes a normal editable role; copy button still works from the preset card', async () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
-  const saved = [];
   const ctx = makeCtx('', 'en');
-  const roles = [
-    { id: 'code_reviewer', name: 'Code Reviewer', description: 'd', tools: [], systemPrompt: 's', source: 'user', path: 'C:\\u\\code_reviewer.md' },
-  ];
+  // Pre-seed all built-ins so the auto-install is a no-op; user copies are
+  // written on demand.
+  const allBuiltins = AGENT_PRESETS.map((p) => ({
+    ...TWO_ROLES[0], id: p.id, name: p.content['zh-CN'].name,
+  }));
+  const userCopies = [];
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async () => ({ ok: true, agents: roles }),
-    saveAgent: async (spec) => { saved.push(spec.id); roles.push(spec); return { ok: true }; },
+    listAgents: async () => ({ ok: true, agents: [...allBuiltins, ...userCopies] }),
+    saveAgent: async (spec) => {
+      if (AGENT_PRESETS.some((p) => p.id === spec.id)) return { ok: true };
+      userCopies.push(spec);
+      return { ok: true };
+    },
     applyRole: () => {},
     getActiveRole: () => '',
   });
@@ -505,8 +541,8 @@ test('copy row becomes a normal editable role; copy button still works from the 
   card.querySelector('[data-act="preset-copy"]').click();
   await tick();
   await tick();
-  assert.equal(saved.at(-1), 'code_reviewer_copy2');
-  assert.deepEqual(saved, ['code_reviewer_copy', 'code_reviewer_copy2']);
+  const ids = userCopies.map((c) => c.id).sort();
+  assert.deepEqual(ids, ['code_reviewer_copy', 'code_reviewer_copy2']);
   assert.ok(
     document.querySelector('.agent-row[data-id="code_reviewer_copy2"]'),
     'second copy listed',
@@ -520,8 +556,12 @@ test('template, built-ins and an untouched editor follow the UI language', async
   const container = document.createElement('div');
   document.body.appendChild(container);
   const ctx = makeCtx('', 'en');
+  // Pre-seed all built-ins so the auto-install is a no-op.
+  const allBuiltins = AGENT_PRESETS.map((p) => ({
+    ...TWO_ROLES[0], id: p.id, name: p.content['zh-CN'].name,
+  }));
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async () => ({ ok: true, agents: [] }),
+    listAgents: async () => ({ ok: true, agents: allBuiltins }),
     saveAgent: async () => ({ ok: true }),
     applyRole: () => {},
     getActiveRole: () => '',
@@ -559,45 +599,43 @@ test('template, built-ins and an untouched editor follow the UI language', async
   container.remove();
 });
 
-test('a built-in role installs on first use and applies to the current session', async () => {
+test('built-in roles are auto-installed on first load; preset-use is a pure apply', async () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const saved = [];
   const applied = [];
-  let listCalls = 0;
-  const reviewer = { ...TWO_ROLES[0], id: 'code_reviewer', name: 'Code Reviewer' };
   const ctx = makeCtx('');
+  // A listAgents that reflects the auto-installed files after the write.
+  const installedIds = new Set();
+  const allBuiltins = [
+    { ...TWO_ROLES[0], id: 'project_developer', name: '项目开发' },
+    { ...TWO_ROLES[0], id: 'code_reviewer', name: '代码审查' },
+    { ...TWO_ROLES[0], id: 'office_assistant', name: '办公助理' },
+    { ...TWO_ROLES[0], id: 'creative_writer', name: '创作达人' },
+  ];
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async () => {
-      listCalls += 1;
-      return { ok: true, agents: listCalls > 1 ? [reviewer] : [] };
-    },
-    saveAgent: async (spec) => { saved.push(spec); return { ok: true }; },
+    listAgents: async () => ({
+      ok: true,
+      agents: allBuiltins.filter((a) => installedIds.has(a.id)),
+    }),
+    saveAgent: async (spec) => { saved.push(spec); installedIds.add(spec.id); return { ok: true }; },
     applyRole: (id) => applied.push(id),
     getActiveRole: () => '',
   });
   await tick();
-
+  // Initial reload auto-installed all four missing built-in files.
+  assert.equal(saved.length, 4, 'auto-install wrote all missing built-ins');
+  const ids = saved.map((s) => s.id).sort();
+  assert.deepEqual(ids, ['code_reviewer', 'creative_writer', 'office_assistant', 'project_developer']);
+  // The preset card now shows the "current" badge (the file is installed).
   const card = [...container.querySelectorAll('.agent-preset')]
     .find((c) => c.dataset.preset === 'code_reviewer');
   assert.ok(card, 'built-in card rendered');
+  // Clicking "enable" applies the role to the session — no re-write.
   card.querySelector('[data-act="preset-use"]').click();
   await tick();
-  await tick();
-
-  assert.equal(saved.length, 1);
-  assert.equal(saved[0].id, 'code_reviewer');
   assert.equal(applied.at(-1), 'code_reviewer');
-  assert.ok(
-    container.querySelector('.agent-preset[data-preset="code_reviewer"] .wb-badge.ok'),
-    'installed badge shown',
-  );
-
-  // A second click only applies — it must not re-write the role file.
-  container.querySelector('.agent-preset[data-preset="code_reviewer"] [data-act="preset-use"]').click();
-  await tick();
-  assert.equal(saved.length, 1, 'no duplicate install');
-  assert.equal(applied.at(-1), 'code_reviewer');
+  assert.equal(saved.length, 4, 'preset-use does not re-write the file');
 
   dispose();
   container.remove();
