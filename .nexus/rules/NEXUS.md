@@ -95,3 +95,30 @@
    - `.mjs` by default; `.cjs` only when CommonJS is genuinely required.
    - Forbidden suffixes in tracked paths: `final`, `verify`, `tmp`, `temp`,
      `new`, `old`, `copy`, `backup`, `bak`, `_v2`; no timestamp-named scratch.
+
+## 5. Data-file safety: compression, verification & cleanup (hard rules)
+
+> These rules come from a real incident: CSVs were compressed to `.gz`, the
+> job reported success and "all OK", and healthy files were deleted — because
+> ad-hoc one-off scripts trusted existence/size, read only a prefix, and used
+> broad wildcards. They apply to ANY agent-generated file-processing code, not
+> just a particular helper.
+
+1. **Never trust existence, size, or a status line as proof of success.** A
+   `.gz` is valid only after a **full-stream** read reaches EOF and validates
+   the CRC32 + ISIZE trailer. Reading the first 8 KB (or any prefix) proves only
+   that the header is readable and is NOT an integrity check — truncated
+   streams pass a prefix read but fail at end of stream.
+2. **Never delete a source file until its own archive has passed full
+   verification.** Compress to a temp file, verify it (CRC/EOF + uncompressed
+   byte count equals the source), then publish atomically; only after that may
+   the source be removed. An "archive already exists" skip must still verify
+   the archive before deleting its source.
+3. **Never delete by broad wildcard or substring filter.** Cleanup targets
+   must be explicit, enumerated paths inside an explicit base directory,
+   confined to the exact verified-corrupt files. ZIP and other unrelated types
+   are never in scope. Destructive operations default to dry-run and require an
+   explicit, user-level confirmation.
+
+Violating any of these is a correctness/data-loss bug, not a style issue. When
+in doubt, fully verify before any destructive follow-up.
