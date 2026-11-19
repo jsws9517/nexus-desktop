@@ -30,6 +30,15 @@
       </div>
       <div class="toolbar-right">
         <div class="toolbar-group">
+          <label class="field-label" for="provider-select">Provider</label>
+          <!-- provider label has no data-i18n: it's the same word in both langs -->
+          <span class="select-wrap"><select id="provider-select"></select></span>
+        </div>
+        <div class="toolbar-group">
+          <label class="field-label" for="model-select" data-i18n="modelLabel">Model</label>
+          <span class="select-wrap"><select id="model-select"></select></span>
+        </div>
+        <div class="toolbar-group">
           <label class="field-label" for="theme-select" data-i18n="themeLabel">主题</label>
           <span class="select-wrap">
             <select id="theme-select">
@@ -53,15 +62,6 @@
               <option value="en" data-i18n="languageEn">English</option>
             </select>
           </span>
-        </div>
-        <span class="toolbar-sep" aria-hidden="true"></span>
-        <div class="toolbar-group">
-          <label class="field-label" for="provider-select">Provider</label>
-          <span class="select-wrap"><select id="provider-select"></select></span>
-        </div>
-        <div class="toolbar-group">
-          <label class="field-label" for="model-select" data-i18n="modelLabel">Model</label>
-          <span class="select-wrap"><select id="model-select"></select></span>
         </div>
         <button id="btn-settings" class="btn ghost icon-text" title="Settings" data-i18n-title="settings" aria-label="Settings">
           <span class="icon-slot" data-icon="sliders"></span>
