@@ -24,8 +24,11 @@ test('toolbar exposes a bilingual language selector next to the theme control', 
   assert.match(html, /<select id="language-select" aria-label="Language">/);
   assert.match(html, /<option value="zh-CN" data-i18n="languageZh">/);
   assert.match(html, /<option value="en" data-i18n="languageEn">/);
-  // The selector lives inside the toolbar, before the provider controls.
-  assert.ok(html.indexOf('id="language-select"') < html.indexOf('id="provider-select"'));
+  // The selector lives in the toolbar next to the theme control, before settings.
+  const themeIdx = html.indexOf('id="theme-select"');
+  const langIdx = html.indexOf('id="language-select"');
+  const settingsIdx = html.indexOf('id="btn-settings"');
+  assert.ok(themeIdx >= 0 && langIdx > themeIdx && langIdx < settingsIdx);
 });
 
 test('language option strings are bilingual', () => {
@@ -96,4 +99,27 @@ test('left sidebar drag clamps to the same 274~720px range as the right sidebar'
   assert.match(renderer, /style\.setProperty\('--sidebar-w'/);
   assert.match(renderer, /localStorage\.setItem\(LSIDE_W_KEY/);
   assert.match(renderer, /window\.addEventListener\('resize', applyLsideWidth\)/);
+});
+
+// ── context usage is shown once, in Session Info ────────────────────────────
+
+test('no duplicate context-usage block: stats live only in Session Info', () => {
+  const html = read('static/index.html');
+  const css = read('static/styles.css');
+  const renderer = read('src/renderer/renderer.ts');
+  const i18n = read('src/renderer/i18n.ts');
+
+  // The redundant task-summary card and its render function are gone.
+  assert.equal(html.includes('id="task-summary"'), false);
+  assert.equal(css.includes('.task-summary'), false);
+  assert.equal(renderer.includes('renderTaskSummary'), false);
+  assert.equal(renderer.includes('taskSummaryEl'), false);
+  assert.equal(i18n.includes('contextUsage:'), false);
+
+  // The single source of truth (Session Info rows) and the compact action stay.
+  assert.match(html, /id="rside-token"/);
+  assert.match(html, /id="rside-summary-count"/);
+  assert.match(html, /id="btn-compact"/);
+  assert.match(renderer, /rsideToken\.textContent = t\('tokenEstimated'/);
+  assert.match(renderer, /rsideSummaryCount\.textContent = `\$\{t\('compressSummarize'\)/);
 });
