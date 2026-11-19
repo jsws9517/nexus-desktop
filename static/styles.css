@@ -815,7 +815,11 @@ body {
 
 /* ---- Sidebar ---- */
 #sidebar {
-  width: 274px;
+  /* Width lives in a variable so the drag handle and responsive rules share
+     one source, mirroring the right sidebar's --rside-w (same 274px default,
+     same 720px ceiling). */
+  --sidebar-w: 274px;
+  width: var(--sidebar-w);
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   display: flex;
@@ -825,7 +829,23 @@ body {
   overflow: hidden;
   position: relative;
 }
+/* Width-drag in flight: track the pointer without the width transition. */
+#sidebar.dragging { transition: none; }
+/* Drag handle on the INNER (right) edge — drag rightwards to widen. */
+.sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 30;
+  background: transparent;
+  transition: background 0.15s;
+}
+.sidebar-resize:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 #sidebar.collapsed { width: 48px; }
+#sidebar.collapsed .sidebar-resize { display: none; }
 #sidebar.collapsed .sidebar-title { display: none; }
 #sidebar.collapsed .session-search { display: none; }
 #sidebar.collapsed #session-list { display: none; }
@@ -4010,7 +4030,7 @@ textarea:focus-visible,
 
 /* ---- responsive ---- */
 @media (max-width: 1440px) {
-  #sidebar { width: 250px; }
+  #sidebar { --sidebar-w: 250px; }
   /* PR2 E1: the right sidebar's width is driven by the --rside-w variable
      (drag handle + localStorage); on narrower screens the responsive cap is
      the variable value itself — the JS resize handler keeps any inline value

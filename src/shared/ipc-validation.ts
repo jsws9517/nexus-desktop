@@ -127,6 +127,9 @@ const MAIN_LOCAL_METHODS: Record<string, MethodSpec> = {
     optional: ['limit', 'sessionId', 'type', 'sinceMs'],
   },
   getArtifact: { fields: { messageId: S.num() } },
+  // Toolbar language switch writes the fixed ~/.nexus/config.json; no worker
+  // round-trip. The renderer sends only a validated language token.
+  setLanguage: { fields: { language: S.en(['zh-CN', 'en']) } },
 };
 
 export const WORKER_METHODS = {

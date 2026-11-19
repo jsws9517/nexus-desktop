@@ -243,6 +243,19 @@ export function presetSpec(preset: AgentPreset, lang: string): AgentSpec {
   };
 }
 
+/** Display name/description for an installed role. A built-in preset keeps
+ *  showing in the CURRENT UI language even if it was installed while a
+ *  different language was active — otherwise a Chinese and an English copy of
+ *  the same preset sit side by side. A user-renamed role is left untouched. */
+export function displayAgent(a: AgentView, lang: string): { name: string; description: string } {
+  const preset = AGENT_PRESETS.find((p) => p.id === a.id);
+  if (!preset) return { name: a.name, description: a.description };
+  const presetNames = [preset.content['zh-CN'].name, preset.content.en.name];
+  if (!presetNames.includes(a.name)) return { name: a.name, description: a.description };
+  const spec = presetSpec(preset, lang);
+  return { name: spec.name, description: spec.description };
+}
+
 // ── Pure helpers (unit-tested) ───────────────────────────────────────────────
 
 /** Parse the comma-separated tools field into a clean, deduped list. */
@@ -507,13 +520,14 @@ export function mountAgentsPage(
       for (const a of agents) {
         const isActive = a.id === active;
         const tools = a.tools ?? [];
+        const shown = displayAgent(a, lang());
         parts.push(`<div class="wb-card agent-row ${isActive ? 'active' : ''}" data-id="${esc(a.id)}" data-source="${esc(a.source)}">
           <div class="row1">
-            <span class="t">${esc(a.name)}</span>
+            <span class="t">${esc(shown.name)}</span>
             <span class="wb-badge ${a.source === 'project' ? 'project' : ''}">${esc(label(a.source === 'project' ? 'agentRoleProject' : 'agentRoleUser', lang()))}</span>
             ${isActive ? `<span class="wb-badge ok">${esc(label('agentCurrentBadge', lang()))}</span>` : ''}
           </div>
-          <div class="wb-desc">${esc(a.description || '—')} · id: ${esc(a.id)}${a.error ? ` · ⚠ ${esc(a.error)}` : ''}</div>
+          <div class="wb-desc">${esc(shown.description || '—')} · id: ${esc(a.id)}${a.error ? ` · ⚠ ${esc(a.error)}` : ''}</div>
           ${tools.length
             ? `<div class="wb-chips">${tools.map((t) => `<span class="wb-chip">${esc(t)}</span>`).join('')}</div>`
             : `<span class="wb-badge note">${esc(label('agentNoTools', lang()))}</span>`}

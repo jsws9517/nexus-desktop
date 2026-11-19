@@ -19,8 +19,10 @@ import {
   readState,
   prepareLaunch,
   coreDirFor,
+  patchActiveCoreRulesDedup,
   MAX_BOOT_FAILURES,
 } from '../dist/bootstrap/overlay.js';
+import { isDedupPatched, DEDUP_MARKER } from '../dist/shared/core-dedup.js';
 
 const tmp = mkdtempSync(join(tmpdir(), 'core-overlay-test-'));
 after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -139,6 +141,58 @@ test('prepareLaunch describes overlay env only when a core is active', () => {
   assert.equal(ov.version, '5.0.0');
   assert.equal(ov.env.NEXUS_OVERLAY_CORE_DIR, coreDirFor(root, '5.0.0'));
   assert.equal(ov.env.NEXUS_APP_ROOT, appRoot);
+});
+
+// ---- boot-time rules-dedup self-heal for already-installed overlays ----
+
+const UNPATCHED_CONTEXT = `export class ProjectContext {
+    async load(cwd) { this.loadRules(cwd); }
+    loadRules(cwd) {
+        const rulesDir = resolve(cwd, '.nexus', 'rules');
+        if (!existsSync(rulesDir)) return;
+        for (const f of readdirSync(rulesDir)) { this.inject(f); }
+    }
+    loadKnowledge() {}
+}
+`;
+
+function stageContext(root, version, source) {
+  const dir = join(coreDirFor(root, version), 'dist', 'src', 'context');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'project-context.js');
+  if (source !== null) writeFileSync(file, source);
+  return file;
+}
+
+test('prepareLaunch self-heals an unpatched active overlay before the worker loads it', () => {
+  const root = freshRoot();
+  stageCore(root, '6.0.0');
+  const file = stageContext(root, '6.0.0', UNPATCHED_CONTEXT);
+  activateCore(root, '6.0.0');
+  assert.equal(isDedupPatched(readFileSync(file, 'utf8')), false);
+
+  const ov = prepareLaunch(root, join(tmp, 'app-root'));
+  assert.equal(ov.env.NEXUS_OVERLAY_CORE_DIR, coreDirFor(root, '6.0.0'));
+  // The active core was patched in place during launch preparation.
+  assert.equal(isDedupPatched(readFileSync(file, 'utf8')), true);
+});
+
+test('patchActiveCoreRulesDedup is idempotent and non-fatal on missing/malformed files', () => {
+  const root = freshRoot();
+  stageCore(root, '7.0.0');
+  const file = stageContext(root, '7.0.0', UNPATCHED_CONTEXT);
+
+  assert.equal(patchActiveCoreRulesDedup(coreDirFor(root, '7.0.0')), true);
+  assert.equal(patchActiveCoreRulesDedup(coreDirFor(root, '7.0.0')), false, 'second call is a no-op');
+  assert.equal(readFileSync(file, 'utf8').includes(DEDUP_MARKER), true);
+
+  // No project-context.js at all -> false, no throw.
+  assert.equal(patchActiveCoreRulesDedup(coreDirFor(root, '8.0.0')), false);
+  // Signature drift -> false, no throw, source left unchanged.
+  stageCore(root, '9.0.0');
+  const drift = stageContext(root, '9.0.0', 'export class ProjectContext { /* changed layout */ }\n');
+  assert.equal(patchActiveCoreRulesDedup(coreDirFor(root, '9.0.0')), false);
+  assert.equal(readFileSync(drift, 'utf8'), 'export class ProjectContext { /* changed layout */ }\n');
 });
 
 // ---- resolve hook (real node child processes) ----

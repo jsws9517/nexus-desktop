@@ -37,6 +37,7 @@ const api = {
     ipcRenderer.invoke('nexus:getStatus', opts ?? {}),
   getPermissions: () => ipcRenderer.invoke('nexus:getPermissions'),
   getLanguage: () => ipcRenderer.invoke('nexus:getLanguage'),
+  setLanguage: (language: string) => ipcRenderer.invoke('nexus:setLanguage', { language }),
   reloadConfig: () => ipcRenderer.invoke('nexus:reloadConfig'),
   getSpeechVisionConfig: () => ipcRenderer.invoke('nexus:getSpeechVisionConfig'),
   setActiveSpeechProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveSpeechProvider', { name }),

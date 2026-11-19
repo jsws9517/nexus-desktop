@@ -35,6 +35,7 @@ export const CHANNELS = {
   getStatus: 'nexus:getStatus',
   getPermissions: 'nexus:getPermissions',
   getLanguage: 'nexus:getLanguage',
+  setLanguage: 'nexus:setLanguage',
   reloadConfig: 'nexus:reloadConfig',
   getSpeechVisionConfig: 'nexus:getSpeechVisionConfig',
   setActiveSpeechProvider: 'nexus:setActiveSpeechProvider',

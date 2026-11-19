@@ -29,7 +29,7 @@ const { validateMainLocalParams } = await import(
 );
 const {
   agentTemplate, agentTemplateMd, isTemplateFields,
-  AGENT_PRESETS, presetSpec,
+  AGENT_PRESETS, presetSpec, displayAgent,
   parseToolsInput, validRoleId, specFromFields, mountAgentsPage,
 } = await import(pathToFileURL(join(dist, 'renderer', 'sidebar', 'pages', 'agents.js')).href);
 
@@ -133,6 +133,25 @@ test('built-in presets are bilingual, id-safe and resolve to regular role specs'
     assert.match(zh.systemPrompt, /建议/);
     assert.deepEqual(en.tools, []);
   }
+});
+
+test('installed built-in roles follow the UI language; renamed roles are preserved', () => {
+  const preset = AGENT_PRESETS[0]; // project_developer
+  const en = presetSpec(preset, 'en');
+  const zh = presetSpec(preset, 'zh-CN');
+  const installed = {
+    id: preset.id, name: en.name, description: en.description,
+    tools: [], systemPrompt: en.systemPrompt, source: 'user', path: '/x',
+  };
+  // Installed while English was active, viewed in Chinese -> Chinese display.
+  assert.equal(displayAgent(installed, 'zh-CN').name, zh.name);
+  assert.equal(displayAgent(installed, 'zh-CN').description, zh.description);
+  // A hand-renamed role keeps its own name in every language.
+  const renamed = { ...installed, name: 'My Personal Workflow' };
+  assert.equal(displayAgent(renamed, 'zh-CN').name, 'My Personal Workflow');
+  // Ordinary roles are returned verbatim.
+  const custom = { ...installed, id: 'my_own', name: 'Custom' };
+  assert.deepEqual(displayAgent(custom, 'en'), { name: 'Custom', description: en.description });
 });
 
 // ── mounted page (happy-dom) ────────────────────────────────────────────────

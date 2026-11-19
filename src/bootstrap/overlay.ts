@@ -15,6 +15,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { patchProjectContextSource, isDedupPatched } from '../shared/core-dedup.js';
 
 export const MAX_BOOT_FAILURES = 2;
 const STATE_FILE = 'state.json';
@@ -145,6 +146,36 @@ export interface OverlayLaunch {
 }
 
 /**
+ * Self-heal the rules-dedup no-op on an already-installed overlay core.
+ *
+ * New overlays are patched during activation (core-overlay/manager.ts), but an
+ * overlay that was installed by an older desktop build can still be active with
+ * an unpatched `project-context.js` — its `loadRules()` would inject
+ * `.nexus/rules/*` a second time alongside the desktop's [Project Constitution]
+ * block. Patch it here, before the worker loads it, so the fix applies without
+ * waiting for the user to re-activate a core. Non-fatal by design: a layout
+ * mismatch only leaves dedup inactive (the rules panel reports it), it never
+ * blocks startup.
+ *
+ * @returns true when a patch was written, false when already patched / absent /
+ *          unpatchable / errored.
+ */
+export function patchActiveCoreRulesDedup(coreDir: string): boolean {
+  try {
+    const file = path.join(coreDir, 'dist', 'src', 'context', 'project-context.js');
+    if (!fs.existsSync(file)) return false;
+    const source = fs.readFileSync(file, 'utf8');
+    if (isDedupPatched(source)) return false;
+    const result = patchProjectContextSource(source);
+    if (!result.patched) return false;
+    fs.writeFileSync(file, result.code, 'utf8');
+    return true;
+  } catch {
+    return false; // never block boot for a best-effort source patch
+  }
+}
+
+/**
  * Decide and describe how to launch the core worker.
  * The worker entry imports ./bootstrap/register.js itself (a `--import` flag is
  * ignored by Electron utilityProcess), so only env is passed here.
@@ -156,6 +187,8 @@ export function prepareLaunch(root: string, appRoot: string): OverlayLaunch {
   if (!decision.coreDir) {
     return { version: null, disabledNow: decision.disabledNow, env: {} };
   }
+  // Heal an overlay installed by an older build before the worker loads it.
+  patchActiveCoreRulesDedup(decision.coreDir);
   return {
     version: decision.version,
     disabledNow: decision.disabledNow,

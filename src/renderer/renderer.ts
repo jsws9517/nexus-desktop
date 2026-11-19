@@ -355,6 +355,7 @@ declare global {
       getStatus(opts?: { sessionId?: string }): Promise<StatusInfo>;
       getPermissions(): Promise<PermissionsInfo>;
       getLanguage(): Promise<string>;
+      setLanguage(language: string): Promise<{ ok: boolean; error?: string }>;
       reloadConfig(): Promise<{ ok: boolean }>;
       getSpeechVisionConfig(): Promise<SpeechVisionConfig>;
       setActiveSpeechProvider(name: string): Promise<unknown>;
@@ -8699,6 +8700,55 @@ window.addEventListener('resize', applyRsideWidth);
   }
 }
 
+// ── Left sidebar width drag (274~720px, same ceiling as the right sidebar) ──
+// Mirrors the right-sidebar drag: the width is a CSS variable shared with the
+// responsive rules, a drag on the inner (right) edge updates it live, and the
+// value persists to localStorage across restarts.
+const LSIDE_W_KEY = 'nexus.left-sidebar.width';
+const LSIDE_W_MIN = 274;
+const LSIDE_W_MAX = 720;
+
+function applyLsideWidth(): void {
+  let stored = LSIDE_W_MIN;
+  try {
+    const s = parseInt(localStorage.getItem(LSIDE_W_KEY) ?? '', 10);
+    if (Number.isFinite(s) && s > 0) stored = s;
+  } catch { /* storage unavailable */ }
+  const cap = window.innerWidth <= 1440 ? 250 : LSIDE_W_MAX;
+  sidebarEl.style.setProperty('--sidebar-w', `${Math.min(Math.max(stored, LSIDE_W_MIN), cap)}px`);
+}
+applyLsideWidth();
+window.addEventListener('resize', applyLsideWidth);
+
+{
+  const handle = sidebarEl.querySelector<HTMLElement>('.sidebar-resize');
+  if (handle) {
+    handle.addEventListener('pointerdown', (e: PointerEvent) => {
+      if (sidebarEl.classList.contains('collapsed')) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = sidebarEl.getBoundingClientRect().width;
+      sidebarEl.classList.add('dragging');
+      const onMove = (ev: PointerEvent) => {
+        const w = Math.min(LSIDE_W_MAX, Math.max(LSIDE_W_MIN, startW + (ev.clientX - startX)));
+        sidebarEl.style.setProperty('--sidebar-w', `${Math.round(w)}px`);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        sidebarEl.classList.remove('dragging');
+        try {
+          const w = parseInt(sidebarEl.style.getPropertyValue('--sidebar-w'), 10);
+          if (Number.isFinite(w)) localStorage.setItem(LSIDE_W_KEY, String(w));
+        } catch { /* storage unavailable */ }
+        applyLsideWidth(); // re-clamp to the responsive cap
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    });
+  }
+}
+
 // Inline preview cards dispatch this when the user picks "在侧栏打开".
 window.addEventListener('nexus:open-preview-sidebar', (e) => {
   const path = (e as CustomEvent<{ path?: string }>).detail?.path;
@@ -9066,13 +9116,45 @@ window.nexusDesktop.onRateLimitUpdate((data) => {
   if ((primary.queuedMs ?? 0) === 0) rateQueuedLastMs = 0;
 });
 
-// When the full config Web UI closes it may have rewritten config.json
+// ── Toolbar language selector ───────────────────────────────────────────────
+// A quick switcher beside the theme/provider controls so the user does not have
+// to open the settings window for a one-off language change. It writes the same
+// ~/.nexus/config.json `language` field the settings UI uses, then re-runs the
+// exact same repaint path as a settings-window language change.
+
+/** Mirror the running UI language into the toolbar selector. */
+function syncLanguageSelect(): void {
+  const sel = document.getElementById('language-select') as HTMLSelectElement | null;
+  if (sel) sel.value = getUiLang();
+}
+
+/** Persist a toolbar language choice and repaint the whole UI. */
+async function changeLanguage(next: string): Promise<void> {
+  const lang = next === 'en' ? 'en' : 'zh-CN';
+  const res = await window.nexusDesktop.setLanguage(lang);
+  if (!res?.ok) {
+    syncLanguageSelect(); // revert the selector to the still-active language
+    return;
+  }
+  await window.nexusDesktop.reloadConfig();
+  await loadLanguage(); // re-read config from disk + applyI18n()
+  syncLanguageSelect();
+  notifyLanguageChanged();
+  renderSidebarTabs();
+  await refreshSidebarSession();
+}
+
+document.getElementById('language-select')?.addEventListener('change', (e) => {
+  void changeLanguage((e.target as HTMLSelectElement).value);
+});
+
 // (language, providers, MCP, ...). Reload the core config so the long-lived
 // in-memory copy matches disk, then re-apply i18n / sidebar state.
 window.nexusDesktop.onConfigWindowClosed(async () => {
   await window.nexusDesktop.reloadConfig();
   await refreshIntentToggles();
   await loadLanguage();
+  syncLanguageSelect();
   // Re-paint any open sidebar panels (Sub-Agents / Side Chat) when the config
   // window changed the UI language.
   notifyLanguageChanged();
@@ -9148,6 +9230,7 @@ window.nexusDesktop.onTabsChanged((open) => {
     addSkipLink();
     initTaskStatusCardTooltips();
     await loadLanguage();
+    syncLanguageSelect();
     showOnboarding();
     // Kick off the sidebar list first: nexus:listSessions is served straight
     // from the DB by the main process, so it renders without waiting on the

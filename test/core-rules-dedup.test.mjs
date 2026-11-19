@@ -1,16 +1,22 @@
 /**
  * Unit tests for the source-level rules-dedup patch applied to the installed
- * nexus-coder core by scripts/patch-core-rules-dedup.mjs.
+ * nexus-coder core (build time) and to every downloaded core overlay
+ * (activation time).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(__dirname, '..');
 const { patchProjectContextSource, isDedupPatched, DEDUP_MARKER } = await import(
-  pathToFileURL(join(__dirname, '..', 'scripts', 'patch-core-rules-dedup.mjs'))
+  pathToFileURL(join(ROOT, 'scripts', 'patch-core-rules-dedup.mjs'))
+);
+const shared = await import(
+  pathToFileURL(join(__dirname, '..', 'dist', 'shared', 'core-dedup.js')).href
 );
 
 const SAMPLE = `export class ProjectContext {
@@ -87,4 +93,35 @@ test('brace matching handles nested braces inside loadRules', () => {
   assert.equal(result.reason, 'patched');
   assert.ok(result.code.includes('loadKnowledge() {}'));
   assert.ok(!result.code.includes('this.x(f)'));
+});
+
+test('build-time script and shared overlay patch stay in sync', () => {
+  assert.equal(shared.DEDUP_MARKER, DEDUP_MARKER, 'marker drift between script and shared module');
+  const scriptPatched = patchProjectContextSource(SAMPLE).code;
+  const sharedPatched = shared.patchProjectContextSource(SAMPLE).code;
+  assert.equal(shared.isDedupPatched(scriptPatched), true);
+  assert.equal(isDedupPatched(sharedPatched), true);
+  assert.equal(sharedPatched.includes('readdirSync(rulesDir'), false);
+  assert.equal(shared.patchProjectContextSource(sharedPatched).reason, 'already-patched');
+});
+
+test('overlay activation patches the extracted core before promoting it', () => {
+  const manager = readFileSync(join(ROOT, 'src', 'core-overlay', 'manager.ts'), 'utf8');
+  assert.match(manager, /import \{ patchProjectContextSource, isDedupPatched \} from '\.\.\/shared\/core-dedup\.js'/);
+  assert.match(manager, /isDedupPatched\(source\)/);
+  assert.match(manager, /patchProjectContextSource\(source\)/);
+  // The patch is applied to the scratch dir BEFORE it is renamed into place.
+  assert.ok(
+    manager.indexOf('patchProjectContextSource(source)') < manager.indexOf('fs.renameSync(extractDir, targetDir)'),
+    'patch must run before the extracted core is promoted',
+  );
+});
+
+test('active-rules detection inspects the real core file, overlay or bundled', () => {
+  const register = readFileSync(join(ROOT, 'src', 'ipc', 'register.ts'), 'utf8');
+  assert.match(register, /import \{ readState as readCoreOverlayState, coreDirFor \} from '\.\.\/bootstrap\/overlay\.js'/);
+  assert.match(register, /isDedupPatched/);
+  assert.match(register, /coreDirFor\(ctx\.coreOverlayRoot\(\), activeCore\)/);
+  // The old unconditional "overlay active => false" assumption is gone.
+  assert.equal(register.includes('whose project-context.js is NOT patched'), false);
 });

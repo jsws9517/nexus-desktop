@@ -19,6 +19,7 @@ import {
   CoreManifestSignatureError,
 } from './download.js';
 import { GITHUB_MIRRORS } from '../shared/update-sources.js';
+import { patchProjectContextSource, isDedupPatched } from '../shared/core-dedup.js';
 import { isProtocolCompatible, readCoreDirProtocol, protocolMismatch, protocolRangeFromManifest } from './protocol.js';
 
 export interface CheckResult {
@@ -311,6 +312,29 @@ export class CoreUpdateManager {
         status: 'error',
         error: `core ${version} is missing dist/src/desktop-api.js (the desktop-api facade) — this desktop requires it; refusing activation`,
       });
+    }
+    // Apply the same rules-dedup no-op the bundled core gets at build time.
+    // An overlay runs in place of the bundled dist, so without this the core's
+    // loadRules() would inject .nexus/rules/* a second time alongside the
+    // desktop's [Project Constitution] block. A layout drift only logs — it
+    // must not block a core update; the UI reports dedup as inactive instead.
+    const contextFile = path.join(extractDir, 'dist', 'src', 'context', 'project-context.js');
+    try {
+      if (fs.existsSync(contextFile)) {
+        const source = fs.readFileSync(contextFile, 'utf8');
+        if (!isDedupPatched(source)) {
+          const result = patchProjectContextSource(source);
+          if (result.reason === 'signature-not-found') {
+            console.warn(`[core-overlay] dedup patch skipped for ${version}: loadRules() signature not found; rules may be injected twice`);
+          } else {
+            fs.writeFileSync(contextFile, result.code, 'utf8');
+          }
+        }
+      }
+    } catch (e) {
+      // Patch failure is non-fatal: activation still proceeds and the active
+      // rules panel warns that dedup is inactive.
+      console.warn(`[core-overlay] dedup patch failed for ${version}: ${e instanceof Error ? e.message : String(e)}`);
     }
     try {
       if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });

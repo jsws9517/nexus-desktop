@@ -34,7 +34,9 @@ const DEFAULT_TARGET = join(ROOT, 'node_modules', 'nexus-coder', 'dist', 'src', 
 const NOOP_METHOD = `    loadRules(_cwd) {
         // ${DEDUP_MARKER}: project rules are injected once by the desktop host
         // under [Project Constitution]; the core must not inject a second copy.
-        // This file is patched at build time by scripts/patch-core-rules-dedup.mjs.
+        // Patched at build time (scripts/patch-core-rules-dedup.mjs), overlay
+        // activation (src/core-overlay/manager.ts) or boot self-heal
+        // (src/bootstrap/overlay.ts).
         return;
     }`;
 

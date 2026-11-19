@@ -45,6 +45,15 @@
             </select>
           </span>
         </div>
+        <div class="toolbar-group">
+          <label class="field-label" for="language-select" data-i18n="languageLabel">界面语言</label>
+          <span class="select-wrap">
+            <select id="language-select" aria-label="Language">
+              <option value="zh-CN" data-i18n="languageZh">中文</option>
+              <option value="en" data-i18n="languageEn">English</option>
+            </select>
+          </span>
+        </div>
         <span class="toolbar-sep" aria-hidden="true"></span>
         <div class="toolbar-group">
           <label class="field-label" for="provider-select">Provider</label>
@@ -102,6 +111,7 @@
         <button id="btn-collapse-sidebar" class="sidebar-toggle" title="折叠侧栏" data-i18n-title="collapseSidebar" aria-label="折叠侧栏">
           <span class="icon-slot" data-icon="chevron-left"></span>
         </button>
+        <div class="sidebar-resize" role="separator" aria-orientation="vertical" title="拖曳调整宽度 / Drag to resize" aria-label="调整侧栏宽度"></div>
       </aside>
 
       <main id="chat-panel" role="main" aria-label="聊天面板">

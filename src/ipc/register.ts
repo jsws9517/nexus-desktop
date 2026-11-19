@@ -46,7 +46,8 @@ import {
   invalidateAgentCache, MAX_AGENT_FILE_BYTES,
 } from '../tools/custom-agents.js';
 import { queryArtifacts, getArtifactMessageContent } from '../session-db.js';
-import { readState as readCoreOverlayState } from '../bootstrap/overlay.js';
+import { readState as readCoreOverlayState, coreDirFor } from '../bootstrap/overlay.js';
+import { isDedupPatched } from '../shared/core-dedup.js';
 import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateMainLocalParams, validateWorkerParams } from '../shared/ipc-validation.js';
 import { mergePermissionsIntoConfig } from '../shared/permissions-config.js';
@@ -425,6 +426,33 @@ export function registerIpc(ctx: IpcContext): void {
       return typeof cfg.language === 'string' ? cfg.language : 'en';
     } catch {
       return 'en';
+    }
+  });
+  // Persist the UI language chosen from the toolbar selector. The path is the
+  // fixed ~/.nexus/config.json (never renderer-supplied); the renderer sends
+  // only a validated language token, which we normalise to the two known values.
+  ipcMain.handle(CHANNELS.setLanguage, async (event, params: unknown): Promise<{ ok: boolean; error?: string }> => {
+    if (!isTrustedSender(event)) return { ok: false, error: 'untrusted sender' };
+    const p = (params && typeof params === 'object' ? params : {}) as { language?: unknown };
+    const vErr = validateMainLocalParams('setLanguage', p);
+    if (vErr) return { ok: false, error: vErr };
+    const language = p.language === 'en' ? 'en' : 'zh-CN';
+    try {
+      const dir = join(homedir(), '.nexus');
+      await mkdir(dir, { recursive: true });
+      const cfgPath = join(dir, 'config.json');
+      let cfg: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(await readFile(cfgPath, 'utf-8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          cfg = parsed as Record<string, unknown>;
+        }
+      } catch { /* missing / malformed config — start from an empty object */ }
+      cfg.language = language;
+      await writeFile(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, 'utf-8');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   });
   ipcMain.handle(CHANNELS.reloadConfig, call('reloadConfig'));
@@ -929,15 +957,14 @@ export function registerIpc(ctx: IpcContext): void {
 
     let dedupActive = false;
     try {
-      // Overlay active => the core is loaded from <overlayRoot>/core/<version>,
-      // whose project-context.js is NOT patched (only the bundled copy is).
-      const overlayActive = readCoreOverlayState(ctx.coreOverlayRoot()).activeCore !== null;
-      if (!overlayActive) {
-        const coreFile = join(app.getAppPath(), 'node_modules', 'nexus-coder', 'dist', 'src', 'context', 'project-context.js');
-        dedupActive = await readFile(coreFile, 'utf8')
-          .then((s) => s.includes('NEXUS_RULES_DEDUP_PATCH: project rules are injected once'))
-          .catch(() => false);
-      }
+      // Inspect the core copy that actually runs. Overlays are patched at
+      // activation (see core-overlay/manager.ts), so the check is now based on
+      // the real file rather than assuming every overlay is unpatched.
+      const activeCore = readCoreOverlayState(ctx.coreOverlayRoot()).activeCore;
+      const coreFile = activeCore
+        ? join(coreDirFor(ctx.coreOverlayRoot(), activeCore), 'dist', 'src', 'context', 'project-context.js')
+        : join(app.getAppPath(), 'node_modules', 'nexus-coder', 'dist', 'src', 'context', 'project-context.js');
+      dedupActive = await readFile(coreFile, 'utf8').then(isDedupPatched).catch(() => false);
     } catch {
       dedupActive = false;
     }
