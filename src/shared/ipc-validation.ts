@@ -70,6 +70,15 @@ const AUTOMATION_METHODS: Record<string, MethodSpec> = {
   },
 };
 
+/**
+ * Main-process-only config methods (no worker round-trip). Validated with
+ * `validateMainLocalParams`; kept out of WORKER_METHODS so it stays the exact
+ * dispatch surface of agent-worker.ts.
+ */
+const MAIN_LOCAL_METHODS: Record<string, MethodSpec> = {
+  updatePermissionsConfig: { fields: { permissions: S.obj() } },
+};
+
 export const WORKER_METHODS = {
   earlyInit: { fields: { cwd: S.str() }, optional: ['cwd'] },
   init: { fields: { cwd: S.str(), deferMcp: S.bool() }, optional: ['cwd', 'deferMcp'] },
@@ -224,6 +233,16 @@ export function validateAutomationParams(
 ): string | null {
   const spec = AUTOMATION_METHODS[method];
   if (!spec) return `unknown automation method: ${method}`;
+  return validateParamsAgainst(spec, params);
+}
+
+/** Validate a main-local config method's params (see MAIN_LOCAL_METHODS). */
+export function validateMainLocalParams(
+  method: string,
+  params?: Record<string, unknown>,
+): string | null {
+  const spec = MAIN_LOCAL_METHODS[method];
+  if (!spec) return `unknown main-local method: ${method}`;
   return validateParamsAgainst(spec, params);
 }
 

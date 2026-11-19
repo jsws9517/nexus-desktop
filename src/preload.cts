@@ -90,6 +90,10 @@ const api = {
       dedupActive: boolean;
       reason: string;
     }>,
+  updatePermissionsConfig: (permissions: Record<string, unknown>) =>
+    ipcRenderer.invoke('nexus:updatePermissionsConfig', { permissions }) as Promise<{
+      ok: boolean; error?: string; code?: string;
+    }>,
   getGitStatus: (root: string) =>
     ipcRenderer.invoke('nexus:getGitStatus', root) as Promise<{
       ok: boolean;

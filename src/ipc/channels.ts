@@ -157,6 +157,7 @@ export const CHANNELS = {
   openExternalFile: 'nexus:openExternalFile',
   openInEditor: 'nexus:openInEditor',
   getActiveRules: 'nexus:getActiveRules',
+  updatePermissionsConfig: 'nexus:updatePermissionsConfig',
   getGitStatus: 'nexus:getGitStatus',
   readImagePreview: 'nexus:readImagePreview',
   pasteImage: 'nexus:pasteImage',

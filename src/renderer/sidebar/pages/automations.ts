@@ -22,7 +22,11 @@ interface AutomationRow {
   enabled: boolean;
   schedule: { type: string; expr?: string; everyMs?: number };
   prompt: string;
+  cwd: string;
   profile: string;
+  provider: string;
+  model: string;
+  missPolicy: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -47,13 +51,18 @@ export interface AutomationPageOptions {
     enabled?: boolean;
     schedule?: unknown;
     prompt?: string;
+    cwd?: string;
     profile?: string;
+    provider?: string;
+    model?: string;
     missPolicy?: string;
   }) => Promise<{ ok: boolean; id?: string; error?: string }>;
   deleteAutomation?: (id: string) => Promise<{ ok: boolean; error?: string }>;
   runAutomationNow?: (id: string) => Promise<{ ok: boolean; runId?: string; reason?: string; error?: string }>;
   listRuns?: (params?: { id?: string; limit?: number }) => Promise<{ ok: boolean; runs?: unknown[]; error?: string }>;
   getUiLang?: () => string;
+  /** Default cwd for a newly created automation (dependency-injectable). */
+  getCurrentCwd?: () => string;
 }
 
 type UpsertParams = Parameters<NonNullable<AutomationPageOptions['upsertAutomation']>>[0];
@@ -87,7 +96,11 @@ function mapAutomation(raw: unknown): AutomationRow | null {
     enabled: boolOr(j.enabled),
     schedule: (j.schedule ?? {}) as AutomationRow['schedule'],
     prompt: strOr(j.prompt) ?? '',
+    cwd: strOr(j.cwd) ?? '',
     profile: strOr(j.profile) ?? 'default',
+    provider: strOr(j.provider) ?? '',
+    model: strOr(j.model) ?? '',
+    missPolicy: strOr(j.missPolicy) ?? 'skip',
     createdAt: numOr(j.createdAt) ?? 0,
     updatedAt: numOr(j.updatedAt) ?? 0,
   };
@@ -164,6 +177,7 @@ export function mountAutomationPage(
   const deleteAutomation = opts.deleteAutomation ?? defaultDelete;
   const runAutomationNow = opts.runAutomationNow ?? defaultRunNow;
   const listRuns = opts.listRuns ?? defaultRuns;
+  const getCurrentCwd = opts.getCurrentCwd ?? (() => '');
   const getLang = (): string => ctx.getUiLang?.() ?? opts.getUiLang?.() ?? 'zh-CN';
 
   container.classList.add('automation-page');
@@ -180,6 +194,13 @@ export function mountAutomationPage(
   const titleEl = document.createElement('span');
   titleEl.className = 'automation-title';
   header.appendChild(titleEl);
+
+  const newBtn = document.createElement('button');
+  newBtn.type = 'button';
+  newBtn.className = 'automation-action-btn automation-new-btn';
+  newBtn.textContent = str('automationsNew', getLang());
+  newBtn.addEventListener('click', () => openForm(null));
+  header.appendChild(newBtn);
 
   const list = document.createElement('div');
   list.className = 'automation-list';
@@ -220,6 +241,271 @@ export function mountAutomationPage(
       return `${Math.round(ms / 1000)}s`;
     }
     return '';
+  }
+
+  /** Expand a friendly schedule helper into a core schedule object. */
+  function buildSchedule(
+    mode: string,
+    dailyTime: string,
+    weekday: string,
+    weekdayTime: string,
+    everyValue: string,
+    everyUnit: string,
+    cronExpr: string,
+  ): { type: string; expr?: string; everyMs?: number } | null {
+    if (mode === 'cron') {
+      const expr = cronExpr.trim();
+      return expr ? { type: 'cron', expr } : null;
+    }
+    if (mode === 'interval') {
+      const n = Number(everyValue);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      const mult = everyUnit === 'hour' ? 3_600_000 : everyUnit === 'day' ? 86_400_000 : 60_000;
+      return { type: 'interval', everyMs: Math.round(n * mult) };
+    }
+    if (mode === 'daily') {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(dailyTime.trim());
+      if (!m) return null;
+      const hh = Number(m[1]); const mm = Number(m[2]);
+      if (hh > 23 || mm > 59) return null;
+      return { type: 'cron', expr: `${mm} ${hh} * * *` };
+    }
+    if (mode === 'weekly') {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(weekdayTime.trim());
+      if (!m) return null;
+      const days: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+      const d = days[weekday];
+      if (d === undefined) return null;
+      const hh = Number(m[1]); const mm = Number(m[2]);
+      if (hh > 23 || mm > 59) return null;
+      return { type: 'cron', expr: `${mm} ${hh} * * ${d}` };
+    }
+    return null;
+  }
+
+  /** Parse an existing cron expr back into friendly helper inputs (best-effort). */
+  function cronToDaily(expr: string): { time: string } | null {
+    const m = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/.exec(expr.trim());
+    if (!m) return null;
+    return { time: `${String(m[2]).padStart(2, '0')}:${String(m[1]).padStart(2, '0')}` };
+  }
+
+  /** Open the create/edit dialog. `edit` is null for a new automation. */
+  function openForm(edit: AutomationRow | null): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'automation-form-overlay';
+    const dialog = document.createElement('div');
+    dialog.className = 'automation-form';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const heading = document.createElement('div');
+    heading.className = 'automation-form-heading';
+    heading.textContent = edit ? str('automationsEdit', getLang()) : str('automationsNew', getLang());
+    dialog.appendChild(heading);
+
+    const errEl = document.createElement('div');
+    errEl.className = 'automation-form-error hidden';
+    dialog.appendChild(errEl);
+
+    const fields = document.createElement('div');
+    fields.className = 'automation-form-fields';
+    dialog.appendChild(fields);
+
+    function addField(label: string, input: HTMLElement): void {
+      const row = document.createElement('label');
+      row.className = 'automation-form-field';
+      const lab = document.createElement('span');
+      lab.textContent = label;
+      row.appendChild(lab);
+      row.appendChild(input);
+      fields.appendChild(row);
+    }
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text'; nameInput.maxLength = 200;
+    nameInput.value = edit?.name ?? '';
+    addField(str('automationFieldName', getLang()), nameInput);
+
+    const promptInput = document.createElement('textarea');
+    promptInput.rows = 4; promptInput.maxLength = 65536;
+    promptInput.value = edit?.prompt ?? '';
+    addField(str('automationFieldPrompt', getLang()), promptInput);
+
+    // Schedule helper — friendly presets that fill expr/everyMs.
+    const scheduleSel = document.createElement('select');
+    for (const [v, label] of [
+      ['daily', str('automationSchedDaily', getLang())],
+      ['weekly', str('automationSchedWeekly', getLang())],
+      ['interval', str('automationSchedInterval', getLang())],
+      ['cron', str('automationSchedCron', getLang())],
+    ] as const) {
+      const o = document.createElement('option'); o.value = v; o.textContent = label;
+      scheduleSel.appendChild(o);
+    }
+    addField(str('automationFieldSchedule', getLang()), scheduleSel);
+
+    const dailyRow = document.createElement('div');
+    const dailyTime = document.createElement('input');
+    dailyTime.type = 'time'; dailyTime.value = '09:00';
+    const dailyHint = document.createElement('span');
+    dailyHint.textContent = str('automationTimeZoneHint', getLang());
+    dailyRow.appendChild(dailyTime); dailyRow.appendChild(dailyHint);
+    addField(str('automationSchedDaily', getLang()), dailyRow);
+
+    const weeklyRow = document.createElement('div');
+    const weekdaySel = document.createElement('select');
+    for (const [v, label] of [
+      ['mon', str('automationWeekMon', getLang())], ['tue', str('automationWeekTue', getLang())],
+      ['wed', str('automationWeekWed', getLang())], ['thu', str('automationWeekThu', getLang())],
+      ['fri', str('automationWeekFri', getLang())], ['sat', str('automationWeekSat', getLang())],
+      ['sun', str('automationWeekSun', getLang())],
+    ] as const) {
+      const o = document.createElement('option'); o.value = v; o.textContent = label;
+      weekdaySel.appendChild(o);
+    }
+    const weekdayTime = document.createElement('input');
+    weekdayTime.type = 'time'; weekdayTime.value = '09:00';
+    weeklyRow.appendChild(weekdaySel); weeklyRow.appendChild(weekdayTime);
+    addField(str('automationSchedWeekly', getLang()), weeklyRow);
+
+    const intervalRow = document.createElement('div');
+    const everyValue = document.createElement('input');
+    everyValue.type = 'number'; everyValue.min = '1'; everyValue.value = '30';
+    const everyUnit = document.createElement('select');
+    for (const [v, label] of [
+      ['minute', str('automationUnitMinute', getLang())],
+      ['hour', str('automationUnitHour', getLang())],
+      ['day', str('automationUnitDay', getLang())],
+    ] as const) {
+      const o = document.createElement('option'); o.value = v; o.textContent = label;
+      everyUnit.appendChild(o);
+    }
+    intervalRow.appendChild(everyValue); intervalRow.appendChild(everyUnit);
+    addField(str('automationSchedInterval', getLang()), intervalRow);
+
+    const cronInput = document.createElement('input');
+    cronInput.type = 'text'; cronInput.placeholder = '0 9 * * *';
+    addField(str('automationFieldCron', getLang()), cronInput);
+
+    // Initialize schedule inputs from an existing automation (best-effort).
+    if (edit) {
+      if (edit.schedule?.type === 'interval') {
+        scheduleSel.value = 'interval';
+        const ms = edit.schedule.everyMs ?? 0;
+        if (ms >= 86_400_000) { everyValue.value = String(Math.round(ms / 86_400_000)); everyUnit.value = 'day'; }
+        else if (ms >= 3_600_000) { everyValue.value = String(Math.round(ms / 3_600_000)); everyUnit.value = 'hour'; }
+        else { everyValue.value = String(Math.round(ms / 60_000)); everyUnit.value = 'minute'; }
+      } else if (edit.schedule?.type === 'cron' && edit.schedule.expr) {
+        const d = cronToDaily(edit.schedule.expr);
+        if (d) { scheduleSel.value = 'daily'; dailyTime.value = d.time; }
+        else { scheduleSel.value = 'cron'; cronInput.value = edit.schedule.expr; }
+      }
+    }
+
+    const cwdInput = document.createElement('input');
+    cwdInput.type = 'text'; cwdInput.value = edit?.cwd ?? getCurrentCwd();
+    addField(str('automationFieldCwd', getLang()), cwdInput);
+
+    const profileSel = document.createElement('select');
+    for (const v of ['default', 'office']) {
+      const o = document.createElement('option'); o.value = v; o.textContent = v;
+      profileSel.appendChild(o);
+    }
+    profileSel.value = edit?.profile ?? 'default';
+    addField(str('automationFieldProfile', getLang()), profileSel);
+
+    const missPolicySel = document.createElement('select');
+    for (const v of ['skip', 'catchup']) {
+      const o = document.createElement('option'); o.value = v; o.textContent = v;
+      missPolicySel.appendChild(o);
+    }
+    missPolicySel.value = edit?.missPolicy ?? 'skip';
+    addField(str('automationFieldMissPolicy', getLang()), missPolicySel);
+
+    const providerInput = document.createElement('input');
+    providerInput.type = 'text'; providerInput.value = edit?.provider ?? '';
+    addField(str('automationFieldProvider', getLang()), providerInput);
+
+    const modelInput = document.createElement('input');
+    modelInput.type = 'text'; modelInput.value = edit?.model ?? '';
+    addField(str('automationFieldModel', getLang()), modelInput);
+
+    // Show only the schedule controls relevant to the chosen mode.
+    function syncScheduleVisibility(): void {
+      dailyRow.classList.toggle('hidden', scheduleSel.value !== 'daily');
+      weeklyRow.classList.toggle('hidden', scheduleSel.value !== 'weekly');
+      intervalRow.classList.toggle('hidden', scheduleSel.value !== 'interval');
+      cronInput.parentElement?.classList.toggle('hidden', scheduleSel.value !== 'cron');
+    }
+    scheduleSel.addEventListener('change', syncScheduleVisibility);
+    syncScheduleVisibility();
+
+    const actions = document.createElement('div');
+    actions.className = 'automation-form-actions';
+    dialog.appendChild(actions);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button'; cancelBtn.className = 'automation-action-btn';
+    cancelBtn.textContent = str('automationCancel', getLang());
+    actions.appendChild(cancelBtn);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button'; saveBtn.className = 'automation-action-btn automation-action-primary';
+    saveBtn.textContent = str('automationSave', getLang());
+    actions.appendChild(saveBtn);
+
+    function close(): void {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+    }
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') close();
+    }
+    document.addEventListener('keydown', onKey);
+    cancelBtn.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+    function showError(msg: string): void {
+      errEl.textContent = msg;
+      errEl.classList.remove('hidden');
+    }
+
+    saveBtn.addEventListener('click', () => {
+      errEl.classList.add('hidden');
+      const name = nameInput.value.trim();
+      const prompt = promptInput.value.trim();
+      if (!name) { showError(str('automationErrName', getLang())); return; }
+      if (!prompt) { showError(str('automationErrPrompt', getLang())); return; }
+      const schedule = buildSchedule(
+        scheduleSel.value, dailyTime.value, weekdaySel.value, weekdayTime.value,
+        everyValue.value, everyUnit.value, cronInput.value,
+      );
+      if (!schedule) { showError(str('automationErrSchedule', getLang())); return; }
+      saveBtn.setAttribute('disabled', 'true');
+      upsertAutomation({
+        ...(edit ? { id: edit.id } : {}),
+        name, prompt, schedule,
+        enabled: edit ? edit.enabled : true,
+        cwd: cwdInput.value.trim(),
+        profile: profileSel.value,
+        provider: providerInput.value.trim(),
+        model: modelInput.value.trim(),
+        missPolicy: missPolicySel.value,
+      }).then((res) => {
+        if (!res?.ok) { showError(res?.error ?? str('automationErrSave', getLang())); return; }
+        close();
+        void pull();
+      }).catch(() => {
+        showError(str('automationErrSave', getLang()));
+      }).finally(() => {
+        saveBtn.removeAttribute('disabled');
+      });
+    });
+
+    nameInput.focus();
   }
 
   function render(): void {
@@ -264,6 +550,13 @@ export function mountAutomationPage(
       const actions = document.createElement('div');
       actions.className = 'automation-actions';
 
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'automation-action-btn automation-edit-btn';
+      editBtn.textContent = str('automationsEdit', getLang());
+      editBtn.addEventListener('click', () => openForm(aut));
+      actions.appendChild(editBtn);
+
       const runBtn = document.createElement('button');
       runBtn.type = 'button';
       runBtn.className = 'automation-action-btn';
@@ -291,7 +584,11 @@ export function mountAutomationPage(
           enabled: !aut.enabled,
           schedule: aut.schedule,
           prompt: aut.prompt,
+          cwd: aut.cwd,
           profile: aut.profile,
+          provider: aut.provider,
+          model: aut.model,
+          missPolicy: aut.missPolicy,
         }).then(() => void pull()).catch(() => {});
       });
       actions.appendChild(toggleBtn);

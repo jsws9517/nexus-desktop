@@ -407,6 +407,9 @@ declare global {
         dedupActive: boolean;
         reason: string;
       }>;
+      updatePermissionsConfig(permissions: Record<string, unknown>): Promise<{
+        ok: boolean; error?: string; code?: string;
+      }>;
       readImagePreview(path: string): Promise<string | undefined>;
       // Paste image from system clipboard (consistent with coder-core ALT+V).
       pasteImage(): Promise<{ path: string; preview: string } | null>;
@@ -6432,6 +6435,7 @@ function buildSettings(providersList: ProviderInfo[]): void {
     { id: 'startup', label: t('startupSection') },
     { id: 'editing', label: t('editingSection') },
     { id: 'rules', label: t('rulesSection') },
+    { id: 'permissions', label: t('permissionsSection') },
     { id: 'resource', label: t('resourceSection') },
     { id: 'appearance', label: t('appearanceSection') },
     { id: 'update', label: t('updateSection') },
@@ -6578,6 +6582,10 @@ function buildSettings(providersList: ProviderInfo[]): void {
   // Build rules section (user-level global rules)
   const rulesSection = sectionElements['rules'];
   buildRulesSection(rulesSection);
+
+  // Build security & permissions section (T1-4)
+  const permissionsSection = sectionElements['permissions'];
+  void buildPermissionsSection(permissionsSection);
 
   // Build resource section
   const resourceSection = sectionElements['resource'];
@@ -6726,6 +6734,163 @@ function buildRulesSection(container?: HTMLElement): void {
   actions.appendChild(openBtn);
   actions.appendChild(resetBtn);
   target.appendChild(actions);
+}
+
+/** Convert a config string[] to one-entry-per-line textarea text. */
+function permArrayToText(v: unknown): string {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').join('\n') : '';
+}
+
+/** Convert textarea text to a string[] (blank lines dropped). */
+function permTextToArray(s: string): string[] {
+  return s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+}
+
+/**
+ * Security & Permissions settings (T1-4). Reads the live `permissions` subtree
+ * via getConfig() and writes back through the whitelisting IPC, leaving every
+ * other config key untouched.
+ */
+async function buildPermissionsSection(container?: HTMLElement): Promise<void> {
+  const target = container || settingsBody;
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = t('permissionsSection');
+  target.appendChild(title);
+
+  const hint = document.createElement('div');
+  hint.className = 'startup-hint';
+  hint.textContent = t('permissionsModeHint');
+  target.appendChild(hint);
+
+  let perms: Record<string, unknown> = {};
+  try {
+    const cfg = await window.nexusDesktop.getConfig();
+    if (cfg?.permissions && typeof cfg.permissions === 'object' && !Array.isArray(cfg.permissions)) {
+      perms = cfg.permissions as Record<string, unknown>;
+    }
+  } catch {
+    // keep defaults — the form still lets the user save a fresh config
+  }
+
+  const form = document.createElement('div');
+  form.className = 'permissions-form';
+  target.appendChild(form);
+
+  function addArea(labelKey: string, value: string, rows = 3): HTMLTextAreaElement {
+    const row = document.createElement('div');
+    row.className = 'permissions-field';
+    const lab = document.createElement('label');
+    lab.textContent = t(labelKey);
+    const area = document.createElement('textarea');
+    area.rows = rows;
+    area.value = value;
+    lab.appendChild(area);
+    row.appendChild(lab);
+    form.appendChild(row);
+    return area;
+  }
+
+  // Mode is session-level only — show the current global value read-only.
+  const modeRow = document.createElement('div');
+  modeRow.className = 'permissions-field';
+  const modeLabel = document.createElement('label');
+  modeLabel.textContent = t('permissionsGlobalMode');
+  const modeVal = document.createElement('span');
+  modeVal.className = 'permissions-mode-value';
+  modeVal.textContent = typeof perms.mode === 'string' ? perms.mode : 'prompt';
+  modeLabel.appendChild(modeVal);
+  modeRow.appendChild(modeLabel);
+  const modeNote = document.createElement('div');
+  modeNote.className = 'startup-hint';
+  modeNote.textContent = t('permissionsSessionModeNote');
+  modeRow.appendChild(modeNote);
+  form.appendChild(modeRow);
+
+  const mcpAllowlist = addArea('permissionsMcpAllowlist', permArrayToText(perms.mcpAllowlist));
+  const allowlist = addArea('permissionsAllowlist', permArrayToText(perms.allowlist));
+
+  // execPermission: enum select, or read-only text for an unknown value (AC-4).
+  const execRow = document.createElement('div');
+  execRow.className = 'permissions-field';
+  const execLabel = document.createElement('label');
+  execLabel.textContent = t('permissionsExecPermission');
+  const execValues = ['auto', 'prompt', 'deny'];
+  let execInput: HTMLSelectElement | HTMLInputElement;
+  if (typeof perms.execPermission === 'string' && execValues.includes(perms.execPermission)) {
+    const sel = document.createElement('select');
+    for (const v of execValues) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v; sel.appendChild(o);
+    }
+    sel.value = perms.execPermission;
+    execInput = sel;
+  } else {
+    const txt = document.createElement('input');
+    txt.type = 'text';
+    txt.readOnly = true;
+    txt.value = typeof perms.execPermission === 'string' ? perms.execPermission : 'auto';
+    execInput = txt;
+  }
+  execLabel.appendChild(execInput);
+  execRow.appendChild(execLabel);
+  form.appendChild(execRow);
+
+  const safePaths = addArea('permissionsSafePaths', permArrayToText(perms.safePaths));
+  const safetyRules = addArea(
+    'permissionsSafetyRules',
+    JSON.stringify(perms.safetyRules ?? {}, null, 2),
+    5,
+  );
+
+  const errEl = document.createElement('div');
+  errEl.className = 'permissions-error hidden';
+  form.appendChild(errEl);
+
+  const actions = document.createElement('div');
+  actions.className = 'startup-row rules-actions';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn primary small';
+  saveBtn.textContent = t('permissionsSave');
+  actions.appendChild(saveBtn);
+  form.appendChild(actions);
+
+  const showError = (msg: string): void => {
+    errEl.textContent = msg;
+    errEl.classList.remove('hidden');
+  };
+
+  saveBtn.addEventListener('click', () => {
+    errEl.classList.add('hidden');
+    let rulesObj: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(safetyRules.value);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+      rulesObj = parsed as Record<string, unknown>;
+    } catch {
+      showError(t('permissionsInvalidJson'));
+      return;
+    }
+    const patch: Record<string, unknown> = {
+      allowlist: permTextToArray(allowlist.value),
+      safePaths: permTextToArray(safePaths.value),
+      mcpAllowlist: permTextToArray(mcpAllowlist.value),
+      execPermission: execInput.value,
+      safetyRules: rulesObj,
+    };
+    saveBtn.disabled = true;
+    void window.nexusDesktop.updatePermissionsConfig(patch).then((res) => {
+      if (!res.ok) {
+        showError(res.code === 'config_web_open' ? t('permissionsConfigWebOpen') : (res.error || t('permissionsSaveFailed')));
+        return;
+      }
+      settingsMsg.textContent = t('permissionsSaved');
+    }).catch(() => {
+      showError(t('permissionsSaveFailed'));
+    }).finally(() => {
+      saveBtn.disabled = false;
+    });
+  });
 }
 
 /** Render a labeled checkbox settings row that persists immediately on change. */
@@ -8659,7 +8824,10 @@ window.nexusDesktop.onTabsChanged((open) => {
       title: AutomationPage.title,
       titleKey: AutomationPage.titleKey,
       icon: AutomationPage.icon,
-      mount: mountAutomationPage,
+      mount: (container, ctx) => mountAutomationPage(container, ctx, {
+        // Default a new automation to the active session's project directory.
+        getCurrentCwd: () => rsideCwd.title || '',
+      }),
     });
     renderSidebarTabs();
     // Right-panel file browser: mounted once for the app lifetime; it handles

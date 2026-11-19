@@ -9,7 +9,7 @@
  */
 
 import { BrowserWindow, app, clipboard, dialog, ipcMain, shell } from 'electron';
-import { access, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { access, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, sep } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -31,7 +31,8 @@ import {
 import { globalRulesPath, ensureGlobalRules, resetGlobalRules, loadConstitutionBundle } from '../tools/agents.js';
 import { readState as readCoreOverlayState } from '../bootstrap/overlay.js';
 import { recentLogLines } from '../shared/logger.js';
-import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateWorkerParams } from '../shared/ipc-validation.js';
+import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateMainLocalParams, validateWorkerParams } from '../shared/ipc-validation.js';
+import { mergePermissionsIntoConfig } from '../shared/permissions-config.js';
 import { CHANNELS } from './channels.js';
 import type { DesktopStateAccess } from '../main/desktop-state.js';
 
@@ -936,6 +937,41 @@ export function registerIpc(ctx: IpcContext): void {
     } catch (e) {
       return { ok: false, files: [], mergedBytes: 0, dedupActive, reason: 'not-found' };
     }
+  });
+
+  // Update only the `permissions` subtree of ~/.nexus/config.json (T1-4).
+  // Whitelist merge keeps every other top-level key intact, and we refuse to
+  // write while the config Web UI is open so the two editors cannot clobber
+  // each other's changes. After writing, reload every worker so the new policy
+  // is visible on the next tool call.
+  ipcMain.handle(CHANNELS.updatePermissionsConfig, async (event, params: unknown): Promise<{
+    ok: boolean; error?: string; code?: 'untrusted' | 'config_web_open' | 'invalid' | 'write_failed';
+  }> => {
+    if (!isTrustedSender(event)) return { ok: false, code: 'untrusted', error: 'untrusted sender' };
+    if (ctx.configPort() !== undefined) {
+      return { ok: false, code: 'config_web_open', error: 'config-web-open' };
+    }
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('updatePermissionsConfig', p);
+    if (vErr) return { ok: false, code: 'invalid', error: vErr };
+
+    const cfgPath = join(homedir(), '.nexus', 'config.json');
+    try {
+      const raw = await readFile(cfgPath, 'utf8');
+      const cfg = JSON.parse(raw) as Record<string, unknown>;
+      const merged = mergePermissionsIntoConfig(cfg, p);
+      if (!merged.ok || !merged.config) {
+        return { ok: false, code: 'invalid', error: merged.error ?? 'invalid permissions' };
+      }
+      await writeFile(cfgPath, JSON.stringify(merged.config, null, 2) + '\n', 'utf8');
+    } catch (e) {
+      return { ok: false, code: 'write_failed', error: e instanceof Error ? e.message : String(e) };
+    }
+
+    // Best-effort reload: a failure here must not undo the persisted write.
+    try { await call('reloadConfig')(event, {}); } catch { /* global worker */ }
+    try { await ctx.sessionWorkers.reloadAll(); } catch { /* session workers */ }
+    return { ok: true };
   });
 
   // Git working-tree status for the right-panel file browser badges. Entry
