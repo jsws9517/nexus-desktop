@@ -27,6 +27,7 @@ import { createInlinePreviewCard, type InlinePreviewCard } from './preview/inlin
 import { findPreviewablePaths, partitionPreviewPaths, findRawPathHits } from './preview/paths.js';
 import { registerPreviewPaths } from './preview/register.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
+import { AtMentionController } from './at-mention.js';
 import { hydrateIcons, iconEl } from './icons.js';
 
 interface SessionInfo {
@@ -407,6 +408,12 @@ declare global {
         dedupActive: boolean;
         reason: string;
       }>;
+      listProjectRules(cwd: string): Promise<{
+        ok: boolean;
+        files: Array<{ name: string; path: string; size: number }>;
+        reason: string;
+        error?: string;
+      }>;
       updatePermissionsConfig(permissions: Record<string, unknown>): Promise<{
         ok: boolean; error?: string; code?: string;
       }>;
@@ -770,6 +777,7 @@ const busyIndicator = $('#busy-indicator');
 const inputStatus = $('#input-status');
 const attachmentsEl = $('#attachments');
 const attachBtn = $('#btn-attach');
+const atMentionPanel = $('#at-mention-panel') as HTMLElement;
 // One-time attachment RAG: its own state + row, fully separate from `+`.
 const ragAttachmentsEl = $('#rag-attachments');
 const ragAttachBtn = $('#btn-rag');
@@ -8485,8 +8493,39 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && busy && !stopRequested) requestStop();
 });
 
+// ---------- @ mentions (T1-2) ----------
+// Created before the composer keydown handlers so its consumed keys (arrows /
+// Enter / Tab / Escape) never reach Enter-to-send or Escape-to-stop. Labels are
+// getters so a runtime language switch updates the panel without a rebuild.
+const atMention = new AtMentionController({
+  input: inputEl,
+  panel: atMentionPanel,
+  getCwd: () => rsideCwd.title || '',
+  listDirectory: async (root, path) => {
+    const res = await window.nexusDesktop.listDirectory(root, path);
+    return { ok: res.ok, entries: res.entries ?? [], error: res.error };
+  },
+  listProjectRules: async (cwd) => {
+    const res = await window.nexusDesktop.listProjectRules(cwd);
+    return { ok: res.ok, files: res.files ?? [], error: res.error };
+  },
+  // All three candidate kinds use the existing attachments bridge; the core
+  // reads full file text from the `@path` line composed in sendMessage().
+  onPick: (paths) => { void attachFiles(paths); },
+  onFolderOverflow: (cap) => showToast(t('atMentionFolderOverflow', { n: cap }), 'warning', 5000),
+  onError: (msg) => showToast(msg, 'error'),
+  labels: {
+    get file() { return t('atMentionFile'); },
+    get directory() { return t('atMentionDirectory'); },
+    get rule() { return t('atMentionRule'); },
+    get invalidPath() { return t('atMentionInvalidPath'); },
+    get genericError() { return t('atMentionGenericError'); },
+  },
+});
+
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
+    if (atMention.isOpen()) return; // menu owns Enter while visible (AC-7)
     e.preventDefault();
     void sendMessage();
   }

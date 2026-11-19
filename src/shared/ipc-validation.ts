@@ -77,6 +77,10 @@ const AUTOMATION_METHODS: Record<string, MethodSpec> = {
  */
 const MAIN_LOCAL_METHODS: Record<string, MethodSpec> = {
   updatePermissionsConfig: { fields: { permissions: S.obj() } },
+  // T1-2: project-relative rule metadata for the @Rule mention source.
+  // Paths are resolved main-side from the fixed rule-file whitelist; the only
+  // renderer input is the current project cwd.
+  listProjectRules: { fields: { cwd: S.str(4096) } },
 };
 
 export const WORKER_METHODS = {

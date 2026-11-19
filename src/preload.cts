@@ -90,6 +90,14 @@ const api = {
       dedupActive: boolean;
       reason: string;
     }>,
+  // T1-2: @Rule mention candidates (metadata only; no rule body crosses IPC).
+  listProjectRules: (cwd: string) =>
+    ipcRenderer.invoke('nexus:listProjectRules', { cwd }) as Promise<{
+      ok: boolean;
+      files: Array<{ name: string; path: string; size: number }>;
+      reason: string;
+      error?: string;
+    }>,
   updatePermissionsConfig: (permissions: Record<string, unknown>) =>
     ipcRenderer.invoke('nexus:updatePermissionsConfig', { permissions }) as Promise<{
       ok: boolean; error?: string; code?: string;

@@ -28,7 +28,8 @@ import {
   automationRuns,
   automationUpsert,
 } from '../main/automation-runner.js';
-import { globalRulesPath, ensureGlobalRules, resetGlobalRules, loadConstitutionBundle } from '../tools/agents.js';
+import { globalRulesPath, ensureGlobalRules, resetGlobalRules, loadConstitutionBundle, resolveConstitutionFiles } from '../tools/agents.js';
+import { buildProjectRuleEntries } from '../shared/project-rules.js';
 import { readState as readCoreOverlayState } from '../bootstrap/overlay.js';
 import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateMainLocalParams, validateWorkerParams } from '../shared/ipc-validation.js';
@@ -936,6 +937,58 @@ export function registerIpc(ctx: IpcContext): void {
       };
     } catch (e) {
       return { ok: false, files: [], mergedBytes: 0, dedupActive, reason: 'not-found' };
+    }
+  });
+
+  // T1-2: metadata for the `@Rule` mention source. Reuses the T1-1 scanner
+  // (`resolveConstitutionFiles`) so the candidate list is exactly the set of
+  // files the desktop injects — no PROJECT.md / knowledge (those are context
+  // data, not selectable rules) and no CLAUDE.md candidate. Only metadata is
+  // returned; rule BODIES still come from [Project Constitution] or an @path
+  // attachment, never twice. Every resolved path is realpath-checked against
+  // the authorized root so a symlinked rules directory cannot escape it.
+  ipcMain.handle(CHANNELS.listProjectRules, async (event, params: unknown): Promise<{
+    ok: boolean;
+    files: Array<{ name: string; path: string; size: number }>;
+    reason: 'ok' | 'not-found' | 'unauthorized' | 'invalid';
+    error?: string;
+  }> => {
+    const empty = (reason: 'not-found' | 'unauthorized' | 'invalid', error?: string) =>
+      ({ ok: false, files: [] as Array<{ name: string; path: string; size: number }>, reason, error });
+    if (!isTrustedSender(event)) return empty('unauthorized', 'untrusted sender');
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('listProjectRules', p);
+    if (vErr) return empty('invalid', vErr);
+
+    let rootReal: string;
+    try {
+      rootReal = await realpath(p.cwd as string);
+    } catch (e) {
+      return empty('invalid', e instanceof Error ? e.message : String(e));
+    }
+    if (!(await allowedRoots()).some((allowed) => isWithin(rootReal, allowed))) {
+      return empty('unauthorized', 'path outside project root');
+    }
+
+    try {
+      const paths = await resolveConstitutionFiles(rootReal);
+      // Keep the scanner's deterministic order: map (ordered) then filter,
+      // never push from inside a concurrent callback.
+      const checked = await Promise.all(paths.map(async (file) => {
+        try {
+          const real = await realpath(file);
+          if (!isWithin(real, rootReal)) return null; // symlink escaping the project
+          return { file, size: (await stat(real)).size } as const;
+        } catch {
+          return null; // vanished / unreadable — skip this rule, keep the rest
+        }
+      }));
+      const verified = checked.filter((x): x is { file: string; size: number } => x !== null).map((x) => x.file);
+      const sizes = new Map(checked.filter((x) => x !== null).map((x) => [x.file, x.size]));
+      const files = buildProjectRuleEntries(rootReal, verified, sizes);
+      return { ok: true, files, reason: files.length > 0 ? 'ok' : 'not-found' };
+    } catch (e) {
+      return empty('invalid', e instanceof Error ? e.message : String(e));
     }
   });
 

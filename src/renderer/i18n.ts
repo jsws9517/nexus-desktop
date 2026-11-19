@@ -59,6 +59,18 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   permSetFailed: { 'zh-CN': '权限模式切换失败：{error}', en: 'Failed to switch permission mode: {error}' },
   permChanged: { 'zh-CN': '本会话权限模式已切换为 {mode}', en: 'Session permission mode switched to {mode}' },
   inputPlaceholder: { 'zh-CN': '输入消息，Enter 发送，Shift+Enter 换行…', en: 'Type a message, Enter to send…' },
+
+  // T1-2 @ mention candidates.
+  atMentionPanelAria: { 'zh-CN': '上下文引用候选', en: 'Context reference candidates' },
+  atMentionFile: { 'zh-CN': '文件', en: 'File' },
+  atMentionDirectory: { 'zh-CN': '目录', en: 'Folder' },
+  atMentionRule: { 'zh-CN': '规则', en: 'Rule' },
+  atMentionInvalidPath: { 'zh-CN': '引用路径无效或越出当前项目目录', en: 'Invalid reference path or outside the current project' },
+  atMentionGenericError: { 'zh-CN': '加载引用候选失败', en: 'Failed to load reference candidates' },
+  atMentionFolderOverflow: {
+    'zh-CN': '目录文件较多，仅引用前 {n} 个',
+    en: 'Folder has many files — only the first {n} were attached',
+  },
   composerHint: { 'zh-CN': 'Enter 发送 · Shift+Enter 换行', en: 'Enter to send · Shift+Enter for newline' },
   send: { 'zh-CN': '发送', en: 'Send' },
   stop: { 'zh-CN': '停止', en: 'Stop' },

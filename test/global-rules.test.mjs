@@ -150,14 +150,16 @@ test('every model step merges global rules with the project constitution', () =>
   const serviceSrc = readFileSync(join(dist, 'agent', 'service.js'), 'utf8');
   assert.ok(serviceSrc.includes('loadGlobalRules'), 'global rules loaded for every model step');
   assert.ok(serviceSrc.includes('GLOBAL_RULES_MARKER'), 'global marker embedded in the system prompt');
-  assert.ok(serviceSrc.includes('loadConstitution'), 'project constitution still resolved');
+  // T1-1 renamed loadConstitution() to loadConstitutionBundle() when the
+  // desktop took over as the single authoritative multi-file injector.
+  assert.ok(serviceSrc.includes('loadConstitutionBundle'), 'project constitution still resolved');
   assert.ok(serviceSrc.includes('CONSTITUTION_MARKER'), 'constitution embedded under its own marker');
   // Precedence contract: user-level global rules are injected FIRST so the
   // project constitution is read later and can override them. Anchor on the
   // awaited call sites — the bare identifiers also appear in the import list,
-  // where loadConstitution happens to be listed first.
+  // where the constitution loader happens to be listed first.
   const globalIdx = serviceSrc.indexOf('await loadGlobalRules(');
-  const constitutionIdx = serviceSrc.indexOf('await loadConstitution(');
+  const constitutionIdx = serviceSrc.indexOf('await loadConstitutionBundle(');
   assert.ok(globalIdx >= 0, 'global rules awaited in the model-step decorator');
   assert.ok(constitutionIdx >= 0, 'constitution awaited in the model-step decorator');
   assert.ok(globalIdx < constitutionIdx, 'global rules injected before the project constitution');

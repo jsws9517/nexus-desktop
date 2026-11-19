@@ -157,6 +157,10 @@ export const CHANNELS = {
   openExternalFile: 'nexus:openExternalFile',
   openInEditor: 'nexus:openInEditor',
   getActiveRules: 'nexus:getActiveRules',
+  // T1-2: metadata-only rule list for the @Rule mention source. No rule BODY
+  // is returned — bodies are injected as [Project Constitution] or read by the
+  // core from an @path attachment, never sent twice.
+  listProjectRules: 'nexus:listProjectRules',
   updatePermissionsConfig: 'nexus:updatePermissionsConfig',
   getGitStatus: 'nexus:getGitStatus',
   readImagePreview: 'nexus:readImagePreview',
