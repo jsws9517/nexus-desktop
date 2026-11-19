@@ -741,7 +741,8 @@ label.field-label[for="provider-select"]  { width: 58px; }
 label.field-label[for="model-select"]     { width: 58px; }
 #provider-select,
 #model-select,
-#theme-select {
+#theme-select,
+#language-select {
   -webkit-appearance: none;
   appearance: none;
   background: color-mix(in srgb, var(--bg-input) 78%, var(--bg-panel));
@@ -764,6 +765,7 @@ label.field-label[for="model-select"]     { width: 58px; }
 #provider-select { min-width: 150px; max-width: 170px; }
 #model-select     { min-width: 120px; max-width: 150px; }
 #theme-select     { min-width: 90px;  max-width: 120px; }
+#language-select  { min-width: 84px;  max-width: 110px; }
 #model-select:disabled {
   opacity: 0.6;
 }
@@ -3852,6 +3854,7 @@ textarea:focus-visible,
   outline-offset: 1px;
 }
 #theme-select { min-width: 90px; max-width: 120px; }
+#language-select { min-width: 84px; max-width: 110px; }
 #model-select { min-width: 120px; max-width: 150px; }
 
 .btn {
@@ -4104,6 +4107,7 @@ textarea:focus-visible,
 @media (max-width: 1320px) {
   .toolbar-group .field-label { display: none; }
   #theme-select { min-width: 84px; max-width: 108px; }
+  #language-select { min-width: 78px; max-width: 100px; }
   #provider-select, #model-select { min-width: 100px; max-width: 150px; }
   #cwd-label { max-width: 220px; }
 }
@@ -4134,6 +4138,7 @@ textarea:focus-visible,
   #toolbar .btn.icon-text { width: 30px; padding: 0; }
   #toolbar .btn.icon-text .btn-label { display: none; }
   #theme-select { min-width: 78px; max-width: 100px; }
+  #language-select { min-width: 72px; max-width: 92px; }
   #provider-select, #model-select { min-width: 92px; max-width: 140px; }
   #cwd-label { max-width: 150px; }
 }
@@ -4156,6 +4161,7 @@ textarea:focus-visible,
   #cwd-label { display: none; }
   .toolbar-left .toolbar-divider { display: none; }
   #theme-select { min-width: 70px; max-width: 92px; }
+  #language-select { min-width: 64px; max-width: 84px; }
   #provider-select, #model-select { min-width: 84px; max-width: 118px; }
   .session-pager .btn .btn-label { display: none; }
   .session-pager .btn { width: 26px; padding: 0; }
