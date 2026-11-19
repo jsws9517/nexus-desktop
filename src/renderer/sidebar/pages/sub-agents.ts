@@ -256,6 +256,6 @@ export const SubAgentsPage = {
   id: 'sub-agents',
   title: 'Sub-Agents',
   titleKey: 'sidebarSubAgents',
-  icon: '🛰',
+  icon: '🕸',
   mount: mountSubAgentsPage,
 } as const;
