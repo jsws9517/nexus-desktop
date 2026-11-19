@@ -161,6 +161,8 @@
 }
 .agent-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .agent-row .agent-actions { margin-top: 7px; }
+.agent-presets { display: flex; flex-direction: column; gap: 2px; }
+.wb-badge.builtin { color: var(--accent); border-color: var(--accent-dim); }
 .agent-err { color: var(--danger); font-size: 11px; min-height: 14px; margin-top: 4px; }
 
 /* Role editor modal — roomy form, decoupled from the narrow sidebar. */

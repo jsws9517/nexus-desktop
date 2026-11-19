@@ -53,22 +53,46 @@ export interface AgentsPageOptions {
   getUiLang?: () => string;
 }
 
-/** Starter values shown by "use template" — the raw Markdown is produced by
- *  serializeCustomAgent() main-side when the form is saved. */
-export const AGENT_TEMPLATE_FIELDS = {
-  scope: 'user' as const,
-  id: 'my_assistant',
-  name: 'My Assistant',
-  description: 'When should this role be used?',
-  tools: [] as string[],
-  systemPrompt:
-    'You are a helpful assistant.\n\n' +
-    'Describe how this role should think, what it should focus on, and any rules it must follow. ' +
-    'The role is advisory and can never override the baseline prompt, project constitution, or global rules.',
-};
+// ── Bilingual role content ───────────────────────────────────────────────────
+// The UI language selects the variant shown in the template card, prefilled by
+// "use template", and written when a built-in role is installed.
 
-/** Raw Markdown template displayed to the user (mirrors serializeCustomAgent). */
-export const AGENT_TEMPLATE_MD =
+type Lang = 'zh-CN' | 'en';
+type BiContent = { name: string; description: string; systemPrompt: string };
+type TemplateContent = BiContent & { md: string };
+
+export function isZhLang(lang: string): boolean {
+  return lang === 'zh-CN' || lang.toLowerCase().startsWith('zh');
+}
+const variant = <T>(lang: string, zh: T, en: T): T => isZhLang(lang) ? zh : en;
+
+const TEMPLATE: Record<Lang, TemplateContent> = {
+  'zh-CN': {
+    name: '我的助手',
+    description: '什么时候使用这个角色？',
+    systemPrompt:
+      '你是一名乐于助人的助手。\n\n' +
+      '在这里描述角色应如何思考、关注什么、遵守哪些规则。内容保持简短具体——角色只是建议，' +
+      '不能放宽基础提示、项目宪法或全局规则。',
+    md:
+`---
+name: 我的助手
+description: 什么时候使用这个角色？
+tools: []          # 留空 = 不限制；如 [read_text_file, git_status]
+---
+你是一名乐于助人的助手。
+
+在这里描述角色应如何思考、关注什么、遵守哪些规则。内容保持简短具体——角色只是建议，
+不能放宽基础提示、项目宪法或全局规则。`,
+  },
+  en: {
+    name: 'My Assistant',
+    description: 'When should this role be used?',
+    systemPrompt:
+      'You are a helpful assistant.\n\n' +
+      'Describe how this role should think, what it should focus on, and any rules it must follow. ' +
+      'The role is advisory and can never override the baseline prompt, project constitution, or global rules.',
+    md:
 `---
 name: My Assistant
 description: When should this role be used?
@@ -78,7 +102,146 @@ You are a helpful assistant.
 
 Describe how this role should think, what it should focus on, and any rules it
 must follow. The role is advisory and can never override the baseline prompt,
-the project constitution, or global rules.`;
+the project constitution, or global rules.`,
+  },
+};
+
+/** Starter fields shown by "use template" in the active UI language. The raw
+ *  Markdown is produced by serializeCustomAgent() main-side when saved. */
+export function agentTemplate(lang: string): AgentSpec {
+  const c = variant(lang, TEMPLATE['zh-CN'], TEMPLATE.en);
+  return {
+    scope: 'user', id: 'my_assistant', name: c.name, description: c.description,
+    tools: [], systemPrompt: c.systemPrompt,
+  };
+}
+
+/** Raw Markdown template displayed in the quick-start card. */
+export function agentTemplateMd(lang: string): string {
+  return variant(lang, TEMPLATE['zh-CN'].md, TEMPLATE.en.md);
+}
+
+export interface AgentPreset {
+  /** Stable user-scope file id. */
+  id: string;
+  content: Record<Lang, BiContent>;
+}
+
+/** Curated starter roles for common workflows. Installing one simply writes a
+ *  regular user-scope role through the existing validated IPC, so it behaves
+ *  exactly like a hand-authored role (editable, deletable, tool-scoped). */
+export const AGENT_PRESETS: readonly AgentPreset[] = [
+  {
+    id: 'project_developer',
+    content: {
+      'zh-CN': {
+        name: '项目开发',
+        description: '拆解需求、编写代码、跑通测试并汇总改动',
+        systemPrompt:
+          '你是一名资深项目开发助手。先确认目标与约束，再拆解任务、逐步实现并验证结果。\n\n' +
+          '- 优先复用现有代码与项目约定，改动尽量小而清晰。\n' +
+          '- 每完成一步就运行相关检查或测试，发现问题先自查再汇报。\n' +
+          '- 不做未经确认的破坏性操作。\n' +
+          '- 该角色仅提供建议，不能放宽基础提示、项目宪法或全局规则。',
+      },
+      en: {
+        name: 'Project Developer',
+        description: 'Break down requirements, write code, run tests and summarize changes',
+        systemPrompt:
+          'You are a senior project development assistant. Confirm the goal and constraints first, ' +
+          'then break the work into steps, implement them and verify the result.\n\n' +
+          '- Reuse existing code and project conventions; keep changes small and clear.\n' +
+          '- Run the relevant checks or tests after each step, and self-check before reporting.\n' +
+          '- Never perform destructive actions without confirmation.\n' +
+          '- This role is advisory and can never relax the baseline prompt, project constitution, or global rules.',
+      },
+    },
+  },
+  {
+    id: 'code_reviewer',
+    content: {
+      'zh-CN': {
+        name: '代码审查',
+        description: '只读审阅改动，指出正确性、安全和可维护性问题',
+        systemPrompt:
+          '你是一名代码审查员。只分析代码并给出可执行建议，不要修改任何文件。\n\n' +
+          '- 先用一句话说明改动目的，再按严重程度列出问题。\n' +
+          '- 每个问题给出文件、位置和具体修复建议。\n' +
+          '- 明确区分「必须修复」与「建议改进」。\n' +
+          '- 该角色仅提供建议，不能放宽基础提示、项目宪法或全局规则。',
+      },
+      en: {
+        name: 'Code Reviewer',
+        description: 'Read-only review of changes for correctness, safety and maintainability',
+        systemPrompt:
+          'You are a code reviewer. Analyze code and give actionable advice only — never modify files.\n\n' +
+          '- State the purpose of the change in one line, then list issues by severity.\n' +
+          '- Give the file, location and a concrete fix for every issue.\n' +
+          '- Clearly separate "must fix" from "nice to have".\n' +
+          '- This role is advisory and can never relax the baseline prompt, project constitution, or global rules.',
+      },
+    },
+  },
+  {
+    id: 'office_assistant',
+    content: {
+      'zh-CN': {
+        name: '办公助理',
+        description: '整理会议纪要、邮件、表格与日程，输出结构化文档',
+        systemPrompt:
+          '你是一名办公助理。把零散信息整理成清晰、可直接使用的文档。\n\n' +
+          '- 使用标题、要点和表格，先给结论再给细节。\n' +
+          '- 日期、人名和数字保持原样，不臆造缺失信息。\n' +
+          '- 把需要人工确认的地方明确列为待办。\n' +
+          '- 该角色仅提供建议，不能放宽基础提示、项目宪法或全局规则。',
+      },
+      en: {
+        name: 'Office Assistant',
+        description: 'Turn notes, email, tables and schedules into structured documents',
+        systemPrompt:
+          'You are an office assistant. Turn scattered information into clear, ready-to-use documents.\n\n' +
+          '- Use headings, bullets and tables; lead with the conclusion.\n' +
+          '- Keep dates, names and numbers verbatim; never invent missing facts.\n' +
+          '- List anything needing human confirmation as an explicit follow-up.\n' +
+          '- This role is advisory and can never relax the baseline prompt, project constitution, or global rules.',
+      },
+    },
+  },
+  {
+    id: 'creative_writer',
+    content: {
+      'zh-CN': {
+        name: '创作达人',
+        description: '撰写与润色故事、文案和脚本，提供多版风格供选择',
+        systemPrompt:
+          '你是一名创作助手。围绕主题给出有画面感、有节奏的内容。\n\n' +
+          '- 先确认受众、语气与篇幅，再动笔。\n' +
+          '- 一次给出两到三个不同风格的版本供选择。\n' +
+          '- 保留用户原文的核心信息，不擅自改变事实。\n' +
+          '- 该角色仅提供建议，不能放宽基础提示、项目宪法或全局规则。',
+      },
+      en: {
+        name: 'Creative Writer',
+        description: 'Draft and polish stories, copy and scripts with multiple styles',
+        systemPrompt:
+          'You are a creative writing assistant. Produce vivid, well-paced content around the topic.\n\n' +
+          '- Confirm audience, tone and length before writing.\n' +
+          '- Offer two or three distinct style variants at once.\n' +
+          '- Preserve the user\'s core information; never change facts without asking.\n' +
+          '- This role is advisory and can never relax the baseline prompt, project constitution, or global rules.',
+      },
+    },
+  },
+];
+
+/** Resolve a preset to a regular user-scope role spec in the active language. */
+export function presetSpec(preset: AgentPreset, lang: string): AgentSpec {
+  const c = variant(lang, preset.content['zh-CN'], preset.content.en);
+  return {
+    scope: 'user', id: preset.id, name: c.name, description: c.description,
+    tools: [], systemPrompt: c.systemPrompt,
+  };
+}
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────────────
 
@@ -109,6 +272,17 @@ export function specFromFields(fields: FieldBag): AgentSpec {
     tools: parseToolsInput(fields.tools ?? ''),
     systemPrompt: (fields.systemPrompt ?? '').trim(),
   };
+}
+
+/** True when a new-role form still holds the starter template of `lang`, i.e.
+ *  the user has not edited it. Such a form follows the UI language on switch. */
+export function isTemplateFields(fields: FieldBag, lang: string): boolean {
+  const t = agentTemplate(lang);
+  return (fields.id ?? '').trim() === t.id
+    && (fields.name ?? '').trim() === t.name
+    && (fields.description ?? '').trim() === t.description
+    && (fields.systemPrompt ?? '').trim() === t.systemPrompt
+    && parseToolsInput(fields.tools ?? '').join(',') === t.tools.join(',');
 }
 
 function label(key: string, lang: string, vars?: Record<string, string | number>): string {
@@ -142,6 +316,9 @@ export function mountAgentsPage(
   let editorSpec: (AgentSpec & { _new: boolean }) | null = null;
   let editorOverlay: HTMLElement | null = null;
   let editorKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+  /** Language the open editor was created in — used to detect untouched
+   *  template values when the UI language switches. */
+  let editorLang = lang();
 
   container.classList.add('agents-page');
 
@@ -205,6 +382,7 @@ export function mountAgentsPage(
   function openEditor(spec: AgentSpec & { _new: boolean }): void {
     closeEditor();
     editorSpec = spec;
+    editorLang = lang();
     const overlay = document.createElement('div');
     overlay.className = 'overlay agent-role-overlay';
     overlay.setAttribute('role', 'dialog');
@@ -259,12 +437,17 @@ export function mountAgentsPage(
     applyRole(spec.id);
   }
 
-  /** Rebuild the open editor in a new language while preserving field values. */
+  /** Rebuild the open editor in a new language. An untouched new-role form
+   *  follows the template into the new language; hand-edited values are kept. */
   function refreshEditor(): void {
     if (!editorSpec || !editorOverlay) return;
     const fields = readEditorFields();
     const isNew = editorSpec._new;
-    editorSpec = { ...specFromFields(fields), _new: isNew };
+    const followTemplate = isNew && isTemplateFields(fields, editorLang);
+    editorSpec = followTemplate
+      ? { ...agentTemplate(lang()), _new: true }
+      : { ...specFromFields(fields), _new: isNew };
+    editorLang = lang();
     const activeField = (document.activeElement as HTMLElement | null)?.dataset?.field;
     editorOverlay.innerHTML = editorHtml(editorSpec);
     bindEditor(editorOverlay);
@@ -286,10 +469,32 @@ export function mountAgentsPage(
     parts.push(`<details class="wb-card agent-template" open>
       <summary>${esc(label('agentTemplateTitle', lang()))}</summary>
       <p class="wb-desc">${esc(label('agentTemplateHint', lang()))}</p>
-      <pre>${esc(AGENT_TEMPLATE_MD)}</pre>
+      <p class="wb-desc">${esc(label('agentLangHint', lang()))}</p>
+      <pre>${esc(agentTemplateMd(lang()))}</pre>
       <div class="agent-actions">
         <button type="button" class="btn small" data-act="use-template">${esc(label('agentUseTemplate', lang()))}</button>
       </div></details>`);
+
+    const installedIds = new Set(agents.map((a) => a.id));
+    const presetCards = AGENT_PRESETS.map((preset) => {
+      const spec = presetSpec(preset, lang());
+      const installed = installedIds.has(preset.id);
+      const inUse = active === preset.id;
+      return `<div class="wb-card agent-preset ${inUse ? 'active' : ''}" data-preset="${esc(preset.id)}">
+        <div class="row1">
+          <span class="t">${esc(spec.name)}</span>
+          <span class="wb-badge builtin">${esc(label('agentBuiltInBadge', lang()))}</span>
+          ${installed ? `<span class="wb-badge ok">${esc(label('agentInstalled', lang()))}</span>` : ''}
+        </div>
+        <div class="wb-desc">${esc(spec.description)}</div>
+        <div class="agent-actions">
+          <button type="button" class="btn small ${inUse ? '' : 'primary'}" data-act="preset-use" ${inUse ? 'disabled' : ''}>${inUse ? esc(label('agentApplied', lang())) : esc(label('agentPresetUse', lang()))}</button>
+          ${installed ? `<button type="button" class="btn ghost small" data-act="preset-edit">${esc(label('agentEdit', lang()))}</button>` : ''}
+        </div></div>`;
+    }).join('');
+    parts.push(`<div class="wb-title">${esc(label('agentBuiltInTitle', lang()))}</div>
+      <p class="wb-desc">${esc(label('agentBuiltInHint', lang()))}</p>
+      <div class="agent-presets">${presetCards}</div>`);
 
     parts.push(`<div class="wb-title">${esc(label('agentExisting', lang(), { n: agents.length }))}</div>`);
     if (agents.length === 0) {
@@ -335,8 +540,41 @@ export function mountAgentsPage(
   async function onAction(act: string, el: HTMLElement): Promise<void> {
     switch (act) {
       case 'use-template':
-        openEditor({ ...AGENT_TEMPLATE_FIELDS, _new: true });
+        openEditor({ ...agentTemplate(lang()), _new: true });
         break;
+      case 'preset-use': {
+        const card = el.closest('.agent-preset') as HTMLElement | null;
+        const preset = AGENT_PRESETS.find((p) => p.id === card?.dataset.preset);
+        if (!preset) break;
+        // Install on first use through the same validated IPC as a hand-authored
+        // role; once present it behaves like any other editable role.
+        if (!agents.some((a) => a.id === preset.id)) {
+          const res = await saveAgent(presetSpec(preset, lang()));
+          if (!res.ok) {
+            if (typeof window !== 'undefined' && window.alert) {
+              window.alert(res.error || label('agentPresetInstallFailed', lang()));
+            }
+            break;
+          }
+          await reload(true);
+        }
+        applyRole(preset.id);
+        render();
+        break;
+      }
+      case 'preset-edit': {
+        const card = el.closest('.agent-preset') as HTMLElement | null;
+        const preset = AGENT_PRESETS.find((p) => p.id === card?.dataset.preset);
+        const a = agents.find((x) => x.id === preset?.id);
+        if (a) {
+          openEditor({
+            id: a.id, name: a.name, description: a.description,
+            tools: a.tools ?? [], systemPrompt: a.systemPrompt,
+            scope: a.source, _new: false,
+          });
+        }
+        break;
+      }
       case 'clear':
         applyRole('');
         render();

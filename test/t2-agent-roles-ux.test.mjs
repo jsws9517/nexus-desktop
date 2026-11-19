@@ -28,7 +28,8 @@ const { validateMainLocalParams } = await import(
   pathToFileURL(join(dist, 'shared', 'ipc-validation.js')).href
 );
 const {
-  AGENT_TEMPLATE_MD, AGENT_TEMPLATE_FIELDS,
+  agentTemplate, agentTemplateMd, isTemplateFields,
+  AGENT_PRESETS, presetSpec,
   parseToolsInput, validRoleId, specFromFields, mountAgentsPage,
 } = await import(pathToFileURL(join(dist, 'renderer', 'sidebar', 'pages', 'agents.js')).href);
 
@@ -104,8 +105,34 @@ test('page helpers parse tools, validate ids and normalize form specs', () => {
     scope: 'project', id: 'writer', name: 'Writer', description: 'docs',
     tools: ['a', 'b'], systemPrompt: 'body',
   });
-  assert.match(AGENT_TEMPLATE_MD, /^---\nname: My Assistant/);
-  assert.equal(AGENT_TEMPLATE_FIELDS.scope, 'user');
+  assert.match(agentTemplateMd('en'), /^---\nname: My Assistant/);
+  assert.match(agentTemplateMd('zh-CN'), /^---\nname: 我的助手/);
+  assert.equal(agentTemplate('en').scope, 'user');
+  assert.equal(agentTemplate('zh-CN').name, '我的助手');
+  assert.equal(isTemplateFields({
+    id: 'my_assistant', name: 'My Assistant', description: 'When should this role be used?',
+    tools: '', systemPrompt: agentTemplate('en').systemPrompt,
+  }, 'en'), true);
+});
+
+test('built-in presets are bilingual, id-safe and resolve to regular role specs', () => {
+  assert.deepEqual(
+    AGENT_PRESETS.map((p) => p.id),
+    ['project_developer', 'code_reviewer', 'office_assistant', 'creative_writer'],
+  );
+  for (const preset of AGENT_PRESETS) {
+    assert.equal(validRoleId(preset.id), true, `invalid preset id ${preset.id}`);
+    const en = presetSpec(preset, 'en');
+    const zh = presetSpec(preset, 'zh-CN');
+    assert.equal(en.scope, 'user');
+    assert.equal(zh.scope, 'user');
+    assert.equal(en.id, preset.id);
+    assert.equal(zh.id, preset.id);
+    assert.notEqual(en.name, zh.name);
+    assert.match(en.systemPrompt, /advisory/);
+    assert.match(zh.systemPrompt, /建议/);
+    assert.deepEqual(en.tools, []);
+  }
 });
 
 // ── mounted page (happy-dom) ────────────────────────────────────────────────
@@ -117,12 +144,19 @@ after(() => win.close());
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function makeCtx(activeId = '') {
+function makeCtx(activeId = '', initialLang = 'en') {
+  let lang = initialLang;
   let unsubscribed = false;
+  const subs = [];
   return {
     sessionId: 's1',
-    getUiLang: () => 'en',
-    subscribe: () => { unsubscribed = true; return () => { unsubscribed = false; }; },
+    getUiLang: () => lang,
+    setUiLang: (next) => { lang = next; subs.forEach((fn) => fn({ type: 'language_changed' })); },
+    subscribe: (fn) => {
+      subs.push(fn);
+      unsubscribed = true;
+      return () => { unsubscribed = false; };
+    },
     getSubAgentRuns: () => new Map(),
     didUnsubscribe: () => unsubscribed,
   };
@@ -288,6 +322,93 @@ test('Agents page deletes a role via the bridge', async () => {
   await tick();
   await tick();
   assert.deepEqual(deleted, [['reviewer', 'user']]);
+
+  dispose();
+  container.remove();
+});
+
+test('template, built-ins and an untouched editor follow the UI language', async () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const ctx = makeCtx('', 'en');
+  const dispose = mountAgentsPage(container, ctx, {
+    listAgents: async () => ({ ok: true, agents: [] }),
+    saveAgent: async () => ({ ok: true }),
+    applyRole: () => {},
+    getActiveRole: () => '',
+  });
+  await tick();
+
+  assert.match(container.querySelector('.agent-template pre').textContent, /name: My Assistant/);
+  assert.match(container.textContent, /Built-in roles/);
+  assert.match(container.textContent, /Project Developer/);
+
+  ctx.setUiLang('zh-CN');
+  await tick();
+  assert.match(container.querySelector('.agent-template pre').textContent, /name: 我的助手/);
+  assert.match(container.textContent, /内置角色/);
+  assert.match(container.textContent, /项目开发/);
+
+  // Untouched new-role editor switches its prefilled fields with the language.
+  container.querySelector('[data-act="use-template"]').click();
+  let modal = document.querySelector('.agent-role-modal');
+  assert.equal(modal.querySelector('[data-field="name"]').value, '我的助手');
+  ctx.setUiLang('en');
+  await tick();
+  modal = document.querySelector('.agent-role-modal');
+  assert.equal(modal.querySelector('[data-field="name"]').value, 'My Assistant');
+  assert.equal(modal.querySelector('[data-field="systemPrompt"]').value, agentTemplate('en').systemPrompt);
+
+  // Hand-edited values survive a later switch.
+  modal.querySelector('[data-field="name"]').value = 'My Custom Role';
+  ctx.setUiLang('zh-CN');
+  await tick();
+  modal = document.querySelector('.agent-role-modal');
+  assert.equal(modal.querySelector('[data-field="name"]').value, 'My Custom Role');
+
+  dispose();
+  container.remove();
+});
+
+test('a built-in role installs on first use and applies to the current session', async () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const saved = [];
+  const applied = [];
+  let listCalls = 0;
+  const reviewer = { ...TWO_ROLES[0], id: 'code_reviewer', name: 'Code Reviewer' };
+  const ctx = makeCtx('');
+  const dispose = mountAgentsPage(container, ctx, {
+    listAgents: async () => {
+      listCalls += 1;
+      return { ok: true, agents: listCalls > 1 ? [reviewer] : [] };
+    },
+    saveAgent: async (spec) => { saved.push(spec); return { ok: true }; },
+    applyRole: (id) => applied.push(id),
+    getActiveRole: () => '',
+  });
+  await tick();
+
+  const card = [...container.querySelectorAll('.agent-preset')]
+    .find((c) => c.dataset.preset === 'code_reviewer');
+  assert.ok(card, 'built-in card rendered');
+  card.querySelector('[data-act="preset-use"]').click();
+  await tick();
+  await tick();
+
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, 'code_reviewer');
+  assert.equal(applied.at(-1), 'code_reviewer');
+  assert.ok(
+    container.querySelector('.agent-preset[data-preset="code_reviewer"] .wb-badge.ok'),
+    'installed badge shown',
+  );
+
+  // A second click only applies — it must not re-write the role file.
+  container.querySelector('.agent-preset[data-preset="code_reviewer"] [data-act="preset-use"]').click();
+  await tick();
+  assert.equal(saved.length, 1, 'no duplicate install');
+  assert.equal(applied.at(-1), 'code_reviewer');
 
   dispose();
   container.remove();
