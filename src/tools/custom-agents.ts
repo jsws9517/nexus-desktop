@@ -42,6 +42,75 @@ export const MAX_AGENT_FILE_BYTES = 64 * 1024;
 export const MAX_AGENTS_PER_SCAN = 100;
 export const MAX_ROLE_PROMPT_CHARS = 32 * 1024;
 
+/**
+ * Starter template surfaced by the in-app role editor (UX for non-developers).
+ * It uses the exact on-disk format so "Use template" → "Save" produces a file
+ * identical to one a power user would write by hand.
+ */
+export const AGENT_ROLE_TEMPLATE =
+`---
+name: My Assistant
+description: When should this role be used?
+tools: []
+---
+You are a helpful assistant.
+
+Describe how this role should think, what it should focus on, and any rules it
+must follow. Keep it short and specific — the role block is advisory and can
+never relax the baseline prompt, project constitution, or global rules.
+`;
+
+/** Validate a role id before it becomes a single \`<id>.md\` filename. Rejects
+ *  path separators, dot segments, whitespace and anything that could escape the
+ *  agents directory — the id crosses IPC from the renderer. */
+export function safeAgentId(raw: string): string | null {
+  const id = typeof raw === 'string' ? raw.trim() : '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) return null;
+  if (id === '.' || id === '..') return null;
+  return id;
+}
+
+/** Quote a frontmatter scalar using the escape set `unquote()` understands. */
+function fmQuote(value: string): string {
+  const clean = String(value ?? '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/["\\]/g, (ch) => '\\' + ch)
+    .slice(0, 500);
+  return `"${clean}"`;
+}
+
+/** Serialize the editor's structured fields into a role Markdown file. */
+export function serializeCustomAgent(spec: {
+  name: string;
+  description: string;
+  tools: string[];
+  systemPrompt: string;
+}): string {
+  const tools = (Array.isArray(spec.tools) ? spec.tools : [])
+    .filter((t): t is string => typeof t === 'string' && !!t.trim())
+    .map((t) => t.trim())
+    .filter((t, i, all) => all.indexOf(t) === i)
+    .slice(0, 64);
+  const toolsLine = tools.length > 0
+    ? `tools: [${tools.map(fmQuote).join(', ')}]`
+    : 'tools: []';
+  const body = String(spec.systemPrompt ?? '').trim() || 'Describe this role.';
+  return (
+    `---\n` +
+    `name: ${fmQuote(spec.name || 'Unnamed role')}\n` +
+    `description: ${fmQuote(spec.description || '')}\n` +
+    `${toolsLine}\n` +
+    `---\n` +
+    `${body}\n`
+  );
+}
+
+/** Drop cached scans after a write/delete so the picker and editor see fresh
+ *  data immediately instead of waiting out the 1.5 s TTL. */
+export function invalidateAgentCache(): void {
+  cache.clear();
+}
+
 export type AgentSource = 'user' | 'project';
 
 export interface CustomAgent {

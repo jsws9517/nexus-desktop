@@ -18,6 +18,7 @@ import { mountSideChatPage } from './sidebar/pages/side-chat.js';
 import { AutomationPage, mountAutomationPage } from './sidebar/pages/automations.js';
 import { JobsPage, mountJobsPage } from './sidebar/pages/jobs.js';
 import { ArtifactsPage, mountArtifactsPage } from './sidebar/pages/artifacts.js';
+import { AgentsPage, mountAgentsPage } from './sidebar/pages/agents.js';
 import { mountFileBrowser, FILE_DRAG_MIME } from './components/FileBrowser.js';
 import type { FileBrowserContext, FileBrowserHandle } from './components/FileBrowser.js';
 import { openPath as previewOpenPath, openContent as previewOpenContent, close as previewClose, toggleFullscreen, getLiveHandle, bindDock } from './preview/open.js';
@@ -441,11 +442,17 @@ declare global {
       }>;
       worktreeRemove(cwd: string, name: string): Promise<{ ok: boolean; code?: string; error?: string }>;
       // T2-1: file-based custom agent roles.
-      listCustomAgents(cwd: string): Promise<{
+      listCustomAgents(cwd: string, refresh?: boolean): Promise<{
         ok: boolean;
         agents: Array<{ id: string; name: string; description: string; tools?: string[]; systemPrompt: string; source: 'user' | 'project'; path: string; error?: string }>;
-        reason: string;
+        reason?: string;
+        error?: string;
       }>;
+      saveCustomAgent(params: {
+        cwd: string; scope: 'user' | 'project'; id: string; name: string;
+        description: string; tools: string; systemPrompt: string;
+      }): Promise<{ ok: boolean; path?: string; error?: string; code?: string }>;
+      deleteCustomAgent(params: { cwd: string; scope: 'user' | 'project'; id: string }): Promise<{ ok: boolean; error?: string; code?: string }>;
       // T2-4: cross-session artifact index + full payload.
       listArtifacts(opts?: { limit?: number; sessionId?: string; type?: string; sinceMs?: number }): Promise<{
         ok: boolean;
@@ -640,7 +647,12 @@ const collapseBtn = $('#btn-collapse-sidebar') as HTMLButtonElement;
 const sidebarRegistry = new SidebarRegistryImpl();
 const sidebarTabsEl = $('#sidebar-tabs') as HTMLElement;
 const sidebarPageEl = $('#sidebar-page') as HTMLElement;
+const workbenchBtn = $('#btn-workbench') as HTMLButtonElement | null;
+const workbenchPanel = $('#workbench-panel') as HTMLElement | null;
+const workbenchCloseBtn = $('#btn-workbench-close') as HTMLButtonElement | null;
 let activeSidebarTabId: string | null = null;
+/** Remembered workbench section so re-opening the collapsed panel restores it. */
+let lastWorkbenchTabId = 'agents';
 // Unsubscribe hook for the currently mounted sidebar page (registry tracks it;
 // we keep the active id so switching tabs can re-mount when a tab re-opens).
 
@@ -662,9 +674,20 @@ function renderSidebarTabs(): void {
     btn.className = 'sidebar-tab' + (reg.id === activeSidebarTabId ? ' active' : '');
     btn.dataset.tabId = reg.id;
     // Built-in panels carry an i18n key for their title; third-party regs fall
-    // back to their static title.
+    // back to their static title. Icon + label are separate spans so the
+    // workbench segmented nav can stack them vertically and stay compact.
     const label = reg.titleKey ? t(reg.titleKey) : reg.title;
-    btn.textContent = (reg.icon ? reg.icon + ' ' : '') + label;
+    if (reg.icon) {
+      const ico = document.createElement('span');
+      ico.className = 'wb-tab-ico';
+      ico.setAttribute('aria-hidden', 'true');
+      ico.textContent = reg.icon;
+      btn.appendChild(ico);
+    }
+    const lab = document.createElement('span');
+    lab.className = 'wb-tab-label';
+    lab.textContent = label;
+    btn.appendChild(lab);
     btn.title = label;
     btn.setAttribute('role', 'tab');
     btn.setAttribute('aria-selected', String(reg.id === activeSidebarTabId));
@@ -695,32 +718,61 @@ function makeSidebarContext(sessionId: string): SidebarContext {
   };
 }
 
-/** Toggle a sidebar tab on/off (click again to close — registry disposes page). */
-function toggleSidebarTab(id: string): void {
-  if (activeSidebarTabId === id) {
-    hideSidebarPage();
-    return;
-  }
+/** Show/hide the workbench panel shell (entry state + panel visibility). */
+function setWorkbenchOpen(open: boolean): void {
+  if (workbenchPanel) workbenchPanel.hidden = !open;
+  workbenchBtn?.setAttribute('aria-expanded', String(open));
+  workbenchBtn?.classList.toggle('open', open);
+}
+
+/** Mount a workbench section into the shared page surface (the registry
+ *  disposes the previously mounted page, so switching sections never leaks). */
+function mountSidebarTab(id: string): void {
   const reg = sidebarRegistry.get(id);
   if (!reg) return;
-  const ctx = makeSidebarContext(currentSessionId);
   sidebarPageEl.hidden = false;
-  const route = () => {
-    sidebarRegistry.mount(id, sidebarPageEl, makeSidebarContext(currentSessionId));
-  };
-  // Mount fresh every toggle; sidebarRegistry.mount disposes any earlier mount.
+  sidebarRegistry.mount(id, sidebarPageEl, makeSidebarContext(currentSessionId));
   activeSidebarTabId = id;
-  route();
+  lastWorkbenchTabId = id;
   renderSidebarTabs();
-  // Auto-hide: collapse back to the bare icon strip after idle.
+  // Auto-hide: collapse the workbench back to its entry after idle.
   armSidebarAutoHide();
 }
 
+/** Toggle a workbench section on/off (click the active section again to fold
+ *  the whole panel closed — registry disposes the page). */
+function toggleSidebarTab(id: string): void {
+  if (activeSidebarTabId === id && !sidebarPageEl.hidden) {
+    hideSidebarPage();
+    return;
+  }
+  setWorkbenchOpen(true);
+  mountSidebarTab(id);
+}
+
+/** Open the collapsed workbench, restoring the last-used section. */
+function openWorkbench(): void {
+  const id = sidebarRegistry.get(lastWorkbenchTabId)
+    ? lastWorkbenchTabId
+    : (sidebarRegistry.list()[0]?.id ?? lastWorkbenchTabId);
+  setWorkbenchOpen(true);
+  mountSidebarTab(id);
+}
+
+/** Bind the workbench entry + close button once at startup. */
+function bindWorkbench(): void {
+  workbenchBtn?.addEventListener('click', () => {
+    if (!workbenchPanel || workbenchPanel.hidden) openWorkbench();
+    else hideSidebarPage();
+  });
+  workbenchCloseBtn?.addEventListener('click', () => hideSidebarPage());
+}
+
 /**
- * Auto-hide idle sidebar panels (Sub-Agents / Side Chat). Once a page is open
- * it stays until the user interacts, then slides back to the bare icon strip
- * after `SIDEBAR_AUTO_HIDE_MS` of inactivity — the strip alone never occupies
- * the panel's bottom space persistently.
+ * Auto-hide the idle workbench. Once a section is open it stays until the user
+ * interacts, then folds back to the collapsed entry after
+ * `SIDEBAR_AUTO_HIDE_MS` of inactivity — the entry alone never takes space from
+ * the session list. (Mouse/keyboard activity inside the panel re-arms it.)
  */
 const SIDEBAR_AUTO_HIDE_DEFAULT_MS = 10_000;
 /** Configurable idle auto-collapse delay (sidebar + file browser), in ms.
@@ -740,9 +792,10 @@ function applyPanelIdleMs(ms: number): void {
   fileBrowserHandle?.setIdleMs(ms);
 }
 
-/** Collapse the open sidebar page back to the icon strip (dispose + hide). */
+/** Collapse the open workbench back to its entry (dispose + hide the page). */
 function hideSidebarPage(): void {
   cancelSidebarAutoHide();
+  setWorkbenchOpen(false);
   if (activeSidebarTabId === null) return;
   sidebarRegistry.mountDispose(activeSidebarTabId);
   activeSidebarTabId = null;
@@ -865,8 +918,9 @@ const tabBarEl = $('#tab-bar') as HTMLElement;
 
 // ---------- state ----------
 let currentSessionId = '';
-/** T2-1: role remembered for the NEXT new session (toolbar picker selection). */
-let selectedRoleId = '';
+/** T2-1: role applied to the CURRENT session only (mirrors session `agentId`).
+ *  New sessions start with no role; enabling is an explicit per-session action. */
+let activeRoleId = '';
 let busy = false;
 let running = false;
 let stopRequested = false;
@@ -4344,11 +4398,7 @@ async function openNewTab(): Promise<void> {
   const inherit = currentSessionId ? { provider: status.provider, model: status.model } : undefined;
   let sid = '';
   try {
-    sid = await window.nexusDesktop.startSession(
-      undefined,
-      undefined,
-      selectedRoleId ? { agentId: selectedRoleId } : undefined,
-    );
+    sid = await window.nexusDesktop.startSession();
   } catch (err) {
     addSystem(`${t('tabsOpenFailed')}${errText(err)}`);
     return;
@@ -4469,65 +4519,55 @@ function withRpcTimeout<T>(promise: Promise<T>, ms: number, label: string): Prom
 /** History restore deadline: a dead worker must show an error, not a blank pane. */
 const HISTORY_LOAD_TIMEOUT_MS = 15_000;
 
-// ---------- T2-1: custom agent role picker ----------
-/** Populate the toolbar role selector from the user + project role files and
- *  reflect the ACTIVE session's `agentId`. A role that no longer exists simply
- *  falls back to "no role" (AC-6) without disturbing the session. */
-async function refreshRolePicker(): Promise<void> {
-  const sel = $('#agent-role-select') as HTMLSelectElement | null;
-  if (!sel) return;
-  let active = selectedRoleId;
+// ---------- T2-1: session-scoped agent role ----------
+/** Read the active session's role id (source of truth = session `agentId`).
+ *  Mirrored in `activeRoleId` so the workbench Agents view renders in sync. */
+async function refreshActiveRole(): Promise<void> {
+  if (!currentSessionId) { activeRoleId = ''; return; }
   try {
-    const meta = currentSessionId
-      ? await window.nexusDesktop.getSessionMetadata(currentSessionId)
-      : {};
-    if (typeof meta?.agentId === 'string' && meta.agentId) active = meta.agentId;
-  } catch { /* fall back to the remembered selection */ }
-
-  const noneLabel = t('agentRoleNone');
-  sel.replaceChildren();
-  const none = document.createElement('option');
-  none.value = '';
-  none.textContent = noneLabel;
-  sel.appendChild(none);
-  try {
-    const res = await window.nexusDesktop.listCustomAgents(await currentProjectDir());
-    if (res.reason === 'too-many') none.textContent = `${noneLabel} — ${t('agentRoleTooMany')}`;
-    for (const agent of res.agents) {
-      const opt = document.createElement('option');
-      opt.value = agent.id;
-      const source = agent.source === 'project' ? t('agentRoleProject') : t('agentRoleUser');
-      opt.textContent = `${agent.name} (${source})${agent.error ? ' ⚠ ' + t('agentRoleInvalid') : ''}`;
-      opt.title = agent.description || agent.path;
-      sel.appendChild(opt);
-    }
-  } catch {
-    // A failed scan leaves just the "no role" option; never break the composer.
-  }
-  sel.value = active;
-  if (sel.value !== active) sel.value = ''; // vanished role → degrade (AC-6)
+    const meta = await window.nexusDesktop.getSessionMetadata(currentSessionId);
+    activeRoleId = (typeof meta?.agentId === 'string' && meta.agentId) ? meta.agentId : '';
+  } catch { activeRoleId = ''; }
 }
 
-/** Bind the picker once. Selecting a role updates the current session's
- *  metadata immediately so the next prompt carries the `[Agent Role]` block;
- *  the choice is also remembered for the next new session. */
-function bindRolePicker(): void {
-  const sel = $('#agent-role-select') as HTMLSelectElement | null;
-  if (!sel) return;
-  sel.addEventListener('change', () => {
-    selectedRoleId = sel.value;
-    if (currentSessionId) {
-      void window.nexusDesktop.setSessionMetadata(currentSessionId, { agentId: selectedRoleId })
-        .catch(() => { /* best effort */ });
-    }
-  });
+/** Apply (or clear, with '') a role to the CURRENT session only. New sessions
+ *  always start with no role — enabling is an explicit per-session action. */
+function applyRoleToSession(id: string): void {
+  activeRoleId = id;
+  if (!currentSessionId) return;
+  void window.nexusDesktop.setSessionMetadata(currentSessionId, { agentId: id })
+    .catch(() => { /* best effort — the session still works without a role */ });
+}
+
+/** Dependency-injected bridge for the workbench Agents view. The renderer only
+ *  supplies cwd/ids/fields; all filesystem paths are built main-side. */
+function makeAgentsPageOptions() {
+  return {
+    listAgents: async (refresh = false) =>
+      window.nexusDesktop.listCustomAgents(await currentProjectDir(), refresh),
+    saveAgent: async (spec: {
+      scope: 'user' | 'project'; id: string; name: string;
+      description: string; tools: string[]; systemPrompt: string;
+    }) => window.nexusDesktop.saveCustomAgent({
+      cwd: await currentProjectDir(),
+      scope: spec.scope, id: spec.id, name: spec.name,
+      description: spec.description, tools: spec.tools.join(', '),
+      systemPrompt: spec.systemPrompt,
+    }),
+    deleteAgent: async (id: string, scope: 'user' | 'project') =>
+      window.nexusDesktop.deleteCustomAgent({ cwd: await currentProjectDir(), scope, id }),
+    applyRole: applyRoleToSession,
+    getActiveRole: () => activeRoleId,
+  };
 }
 
 /** Activate `sessionId`, rendering its transcript as the visible conversation. */
 async function switchTab(sessionId: string): Promise<void> {
   activeTabId = sessionId;
   currentSessionId = sessionId;
-  void refreshRolePicker();
+  // Refresh the session-scoped role before notifying pages so the Agents view
+  // re-renders with the correct active role for this session.
+  await refreshActiveRole();
   // Scoped sidebar pages (e.g. Sub-Agents) re-bind to the new session now —
   // no need to wait for the next agent event.
   notifyActiveSessionChanged(sessionId);
@@ -6377,12 +6417,8 @@ async function handleNewCommand(): Promise<void> {
     else addSystem(`${t('tabsOpenFailed')}${res.reason ?? ''}`);
     return;
   }
-  // T2-1: carry the picker's role into the new session's metadata before its
-  // first prompt, so the very first LLM call already sees [Agent Role].
-  if (selectedRoleId) {
-    try { await window.nexusDesktop.setSessionMetadata(res.sessionId, { agentId: selectedRoleId }); }
-    catch { /* best effort — the session still works without a role */ }
-  }
+  // New sessions intentionally start with no role; a role is enabled explicitly
+  // per session from the workbench Agents view.
   // openTab resolves the new session to the worker that openNewSession just
   // bound, so no second worker is spawned — it just focuses the new tab.
   tabNames.set(res.sessionId, res.sessionId);
@@ -9113,8 +9149,8 @@ window.nexusDesktop.onTabsChanged((open) => {
     }
     refreshProviderSelect();
     refreshModelSelect();
-    bindRolePicker();
-    void refreshRolePicker().catch(() => {});
+    bindWorkbench();
+    void refreshActiveRole().catch(() => {});
     cwdLabel.textContent = status.cwd || t('noProject');
     cwdLabel.title = status.cwd;
     const shouldRestore = await window.nexusDesktop.getRestoreSessionOnLaunch();
@@ -9183,6 +9219,15 @@ window.nexusDesktop.onTabsChanged((open) => {
         // "Open session" focuses an existing tab or opens the source session.
         openSession: (sessionId) => { void openTab(sessionId); },
       }),
+    });
+    // Unified workbench: Agent roles live as one section alongside the four
+    // session-scoped panels, all sharing the same segmented nav + card styles.
+    sidebarRegistry.register({
+      id: AgentsPage.id,
+      title: AgentsPage.title,
+      titleKey: AgentsPage.titleKey,
+      icon: AgentsPage.icon,
+      mount: (container, ctx) => mountAgentsPage(container, ctx, makeAgentsPageOptions()),
     });
     renderSidebarTabs();
     // Right-panel file browser: mounted once for the app lifetime; it handles

@@ -167,6 +167,8 @@ export const CHANNELS = {
   gitDiff: 'nexus:gitDiff',
   // T2-1: file-based custom agent roles (user + project scope).
   listCustomAgents: 'nexus:listCustomAgents',
+  saveCustomAgent: 'nexus:saveCustomAgent',
+  deleteCustomAgent: 'nexus:deleteCustomAgent',
   // T2-3: controlled git worktree lifecycle (main-only, no worker round-trip).
   worktreeCreate: 'nexus:worktreeCreate',
   worktreeList: 'nexus:worktreeList',

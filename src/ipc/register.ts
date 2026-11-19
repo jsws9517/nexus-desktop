@@ -9,7 +9,7 @@
  */
 
 import { BrowserWindow, app, clipboard, dialog, ipcMain, shell } from 'electron';
-import { access, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readdir, readFile, realpath, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, normalize, sep } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -41,7 +41,10 @@ import {
 } from '../main/automation-runner.js';
 import { globalRulesPath, ensureGlobalRules, resetGlobalRules, loadConstitutionBundle, resolveConstitutionFiles } from '../tools/agents.js';
 import { buildProjectRuleEntries } from '../shared/project-rules.js';
-import { scanCustomAgents, userAgentsDir } from '../tools/custom-agents.js';
+import {
+  scanCustomAgents, userAgentsDir, safeAgentId, serializeCustomAgent,
+  invalidateAgentCache, MAX_AGENT_FILE_BYTES,
+} from '../tools/custom-agents.js';
 import { queryArtifacts, getArtifactMessageContent } from '../session-db.js';
 import { readState as readCoreOverlayState } from '../bootstrap/overlay.js';
 import { recentLogLines } from '../shared/logger.js';
@@ -1035,9 +1038,104 @@ export function registerIpc(ctx: IpcContext): void {
       return await scanCustomAgents({
         userDir: userAgentsDir(),
         projectDir: join(rootReal, '.nexus', 'agents'),
+        ...(p.refresh === true ? { cache: false } : {}),
       });
     } catch (e) {
       return empty('invalid', e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  /**
+   * Resolve the canonical agents directory for a scope. The renderer supplies
+   * only a validated id + scope (+ cwd for project scope); every path is built
+   * main-side, realpath-checked and confined to an allowed root, so a symlink
+   * or `..` id can never write outside ~/.nexus/agents or <cwd>/.nexus/agents.
+   */
+  const resolveAgentTarget = async (
+    scope: 'user' | 'project', cwd: string, id: string,
+  ): Promise<{ dirReal: string; file: string } | { error: string }> => {
+    const safeId = safeAgentId(id);
+    if (!safeId) return { error: 'invalid role id' };
+    let dir: string;
+    if (scope === 'user') {
+      dir = userAgentsDir();
+    } else {
+      let rootReal: string;
+      try {
+        rootReal = await realpath(cwd);
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+      if (!(await allowedRoots()).some((allowed) => isWithin(rootReal, allowed))) {
+        return { error: 'path outside allowed roots' };
+      }
+      dir = join(rootReal, '.nexus', 'agents');
+    }
+    try {
+      await mkdir(dir, { recursive: true });
+      const dirReal = await realpath(dir);
+      // The resolved directory itself must still be inside an allowed root —
+      // this is what catches a symlinked `agents` dir pointing elsewhere.
+      if (!(await allowedRoots()).some((allowed) => isWithin(dirReal, allowed))) {
+        return { error: 'path outside allowed roots' };
+      }
+      return { dirReal, file: join(dirReal, `${safeId}.md`) };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  };
+
+  /** Write a role file from the editor's structured spec (no renderer paths). */
+  ipcMain.handle(CHANNELS.saveCustomAgent, async (event, params: unknown): Promise<{
+    ok: boolean; path?: string; error?: string; code?: string;
+  }> => {
+    if (!isTrustedSender(event)) return { ok: false, code: 'untrusted', error: 'untrusted sender' };
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('saveCustomAgent', p);
+    if (vErr) return { ok: false, code: 'invalid', error: vErr };
+    const target = await resolveAgentTarget(p.scope as 'user' | 'project', p.cwd as string, p.id as string);
+    if ('error' in target) return { ok: false, code: 'invalid', error: target.error };
+
+    const tools = String(p.tools ?? '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+    const content = serializeCustomAgent({
+      name: String(p.name ?? ''), description: String(p.description ?? ''),
+      tools, systemPrompt: String(p.systemPrompt ?? ''),
+    });
+    if (Buffer.byteLength(content, 'utf8') > MAX_AGENT_FILE_BYTES) {
+      return { ok: false, code: 'too_large', error: 'role exceeds size limit' };
+    }
+    try {
+      // Refuse a symlink at the target so writes cannot escape via a planted link.
+      try {
+        const st = await lstat(target.file);
+        if (st.isSymbolicLink()) return { ok: false, code: 'invalid', error: 'refusing symlink target' };
+      } catch { /* absent is fine */ }
+      await writeFile(target.file, content, 'utf8');
+      invalidateAgentCache();
+      return { ok: true, path: target.file };
+    } catch (e) {
+      return { ok: false, code: 'write_failed', error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Delete a role file by validated id + scope. */
+  ipcMain.handle(CHANNELS.deleteCustomAgent, async (event, params: unknown): Promise<{
+    ok: boolean; error?: string; code?: string;
+  }> => {
+    if (!isTrustedSender(event)) return { ok: false, code: 'untrusted', error: 'untrusted sender' };
+    const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+    const vErr = validateMainLocalParams('deleteCustomAgent', p);
+    if (vErr) return { ok: false, code: 'invalid', error: vErr };
+    const target = await resolveAgentTarget(p.scope as 'user' | 'project', p.cwd as string, p.id as string);
+    if ('error' in target) return { ok: false, code: 'invalid', error: target.error };
+    try {
+      const st = await lstat(target.file);
+      if (!st.isFile() || st.isSymbolicLink()) return { ok: false, code: 'not_found', error: 'role not found' };
+      await unlink(target.file);
+      invalidateAgentCache();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, code: 'delete_failed', error: e instanceof Error ? e.message : String(e) };
     }
   });
 

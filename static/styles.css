@@ -58,6 +58,116 @@
 }
 .sidebar-page[hidden] { display: none; }
 
+/* ---- Unified workbench: collapsed entry + segmented nav + shared cards ---- */
+.workbench-entry {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 8px 6px; padding: 9px 10px; flex-shrink: 0;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 9px; color: var(--text); cursor: pointer;
+  font-size: 12px; font-weight: 600; text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+.workbench-entry:hover { border-color: var(--accent); }
+.workbench-entry.open {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+}
+.workbench-entry-ico { font-size: 16px; }
+.workbench-entry-sub {
+  margin-left: auto; font-size: 10px; font-weight: 400; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.workbench-entry-chev { color: var(--text-dim); transition: transform 0.2s; }
+.workbench-entry.open .workbench-entry-chev { transform: rotate(180deg); }
+#sidebar.collapsed .workbench-entry,
+#sidebar.collapsed .workbench-panel { display: none; }
+
+.workbench-panel {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  overflow: hidden; border-top: 1px solid var(--border);
+}
+.workbench-panel[hidden] { display: none; }
+.workbench-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px 4px; flex-shrink: 0;
+}
+.workbench-head-title { font-size: 13px; font-weight: 600; }
+.workbench-close {
+  background: transparent; border: 0; color: var(--text-dim);
+  cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 5px;
+}
+.workbench-close:hover { color: var(--accent); background: rgba(255, 255, 255, 0.05); }
+
+/* Segmented nav — stacked icon + short label; every section shares this look. */
+#sidebar-tabs.wb-seg { gap: 2px; padding: 2px 6px 6px; }
+.wb-seg .sidebar-tab {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  font-size: 10px; padding: 5px 2px; flex: 1; min-width: 0; line-height: 1.2;
+}
+.wb-tab-ico { font-size: 15px; line-height: 1; }
+.wb-tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Shared page surface + card primitive (used by Agent Roles and adopters). */
+.sidebar-page.wb-body { padding: 10px; }
+.wb-title {
+  font-size: 11px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px; margin: 2px 0 8px;
+}
+.wb-desc { font-size: 11px; color: var(--text-dim); margin: 4px 0; }
+.wb-empty {
+  font-size: 12px; color: var(--text-dim); text-align: center;
+  padding: 20px 12px; border: 1px dashed var(--border); border-radius: 9px;
+}
+.wb-card {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 9px; padding: 10px 12px; margin-bottom: 8px;
+}
+.wb-card.active { border-color: var(--ok); }
+.wb-card .row1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.wb-card .t { font-weight: 600; font-size: 12px; }
+.wb-badge {
+  font-size: 10px; padding: 1px 7px; border-radius: 99px;
+  border: 1px solid var(--border); color: var(--text-dim); white-space: nowrap;
+}
+.wb-badge.project { color: #ffce7a; border-color: #7a5e2a; }
+.wb-badge.ok { color: var(--ok); border-color: var(--ok); margin-left: auto; }
+.wb-badge.note { color: var(--warn); border-color: #7a5e2a; }
+.wb-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.wb-chip {
+  font: 10px Consolas, Monaco, monospace; background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 6px; color: #bcd3ff;
+}
+
+/* ---- Agent Roles section (works with the shared card primitive above) ---- */
+.agents-page { padding: 0; }
+.agent-current {
+  background: linear-gradient(135deg, var(--accent-dim), #3a4a7a);
+  border: 1px solid var(--accent); border-radius: 9px;
+  padding: 9px 12px; margin-bottom: 9px; font-size: 12px;
+}
+.agent-current b { color: #fff; }
+.ac-cap { font-size: 11px; color: #cfe0ff; }
+.ac-clear { float: right; color: #cfe0ff; cursor: pointer; font-size: 11px; }
+.ac-clear:hover { color: #fff; }
+.agent-template summary {
+  cursor: pointer; color: var(--accent); font-weight: 600; font-size: 12px;
+}
+.agent-template pre {
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px; overflow: auto;
+  font: 10px/1.5 Consolas, Monaco, monospace; color: #c8e0ff;
+  margin: 8px 0; white-space: pre-wrap; word-break: break-word;
+}
+.agent-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.agent-row .agent-actions { margin-top: 7px; }
+.af-label { display: block; font-size: 11px; color: var(--text-dim); margin: 7px 0 3px; }
+.af-grid { display: flex; gap: 8px; }
+.af-grid > div { flex: 1; min-width: 0; }
+.agent-form input, .agent-form select, .agent-form textarea { width: 100%; }
+.agent-form textarea { min-height: 84px; resize: vertical; }
+.agent-err { color: var(--danger); font-size: 11px; min-height: 14px; margin-top: 4px; }
+
 /* ---- Sub-Agents page (flagship P1 use case) ---- */
 .sub-agents-page { padding: 10px; }
 .sub-agents-root { display: flex; flex-direction: column; gap: 10px; }

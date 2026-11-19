@@ -116,8 +116,8 @@ const api = {
       ok: boolean; text: string; truncated: boolean; root?: string; error?: string;
     }>,
   // T2-1: file-based custom agent roles.
-  listCustomAgents: (cwd: string) =>
-    ipcRenderer.invoke('nexus:listCustomAgents', { cwd }) as Promise<{
+  listCustomAgents: (cwd: string, refresh?: boolean) =>
+    ipcRenderer.invoke('nexus:listCustomAgents', { cwd, refresh }) as Promise<{
       ok: boolean;
       agents: Array<{
         id: string; name: string; description: string; tools?: string[];
@@ -125,6 +125,17 @@ const api = {
       }>;
       reason: string;
       error?: string;
+    }>,
+  saveCustomAgent: (params: {
+    cwd: string; scope: 'user' | 'project'; id: string; name: string;
+    description: string; tools: string; systemPrompt: string;
+  }) =>
+    ipcRenderer.invoke('nexus:saveCustomAgent', params) as Promise<{
+      ok: boolean; path?: string; error?: string; code?: string;
+    }>,
+  deleteCustomAgent: (params: { cwd: string; scope: 'user' | 'project'; id: string }) =>
+    ipcRenderer.invoke('nexus:deleteCustomAgent', params) as Promise<{
+      ok: boolean; error?: string; code?: string;
     }>,
   // T2-3: controlled git worktree lifecycle.
   worktreeCreate: (cwd: string, name: string, branch?: string) =>

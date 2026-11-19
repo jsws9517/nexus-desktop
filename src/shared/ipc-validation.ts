@@ -95,7 +95,26 @@ const MAIN_LOCAL_METHODS: Record<string, MethodSpec> = {
   worktreeList: { fields: { cwd: S.str(4096) } },
   worktreeRemove: { fields: { cwd: S.str(4096), name: S.str(80) } },
   // T2-1: file-based custom agent roles (cwd-scoped scan).
-  listCustomAgents: { fields: { cwd: S.str(4096) } },
+  // `refresh` bypasses the short scan cache after an in-app edit/delete.
+  listCustomAgents: { fields: { cwd: S.str(4096), refresh: S.bool() }, optional: ['refresh'] },
+  // Writes go through this structured spec — the renderer never supplies a
+  // filesystem path, only a validated id + a scope, so the main process can
+  // resolve and contain the target itself. `tools` is a comma/newline list
+  // parsed main-side (keeps the validation surface scalar-only).
+  saveCustomAgent: {
+    fields: {
+      cwd: S.str(4096),
+      scope: S.en(['user', 'project']),
+      id: S.str(80),
+      name: S.str(200),
+      description: S.str(500),
+      tools: S.str(8192),
+      systemPrompt: S.str(65536),
+    },
+  },
+  deleteCustomAgent: {
+    fields: { cwd: S.str(4096), scope: S.en(['user', 'project']), id: S.str(80) },
+  },
   // T2-4: cross-session artifact index. All filters are optional and applied
   // as parameterized SQL WHERE conditions in the main process.
   listArtifacts: {

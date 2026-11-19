@@ -54,11 +54,6 @@
           <label class="field-label" for="model-select" data-i18n="modelLabel">Model</label>
           <span class="select-wrap"><select id="model-select"></select></span>
         </div>
-        <div class="toolbar-group">
-          <label class="field-label" for="agent-role-select" data-i18n="agentRoleLabel">Role</label>
-          <span class="select-wrap"><select id="agent-role-select"></select></span>
-        </div>
-        <span class="toolbar-sep" aria-hidden="true"></span>
         <button id="btn-settings" class="btn ghost icon-text" title="Settings" data-i18n-title="settings" aria-label="Settings">
           <span class="icon-slot" data-icon="sliders"></span>
           <span class="btn-label" data-i18n="settings">设置</span>
@@ -89,8 +84,21 @@
             <span class="icon-slot" data-icon="chevron-right"></span>
           </button>
         </div>
-        <nav id="sidebar-tabs" class="sidebar-tabs" role="tablist" aria-label="侧边栏扩展"></nav>
-        <div id="sidebar-page" class="sidebar-page" role="tabpanel" hidden></div>
+        <!-- Unified workbench: single collapsed entry + segmented nav + shared content surface -->
+        <button id="btn-workbench" class="workbench-entry" aria-expanded="false" aria-controls="workbench-panel">
+          <span class="workbench-entry-ico" aria-hidden="true">🧰</span>
+          <span class="workbench-entry-label" data-i18n="workbenchEntry">工作台</span>
+          <span class="workbench-entry-sub" data-i18n="workbenchEntrySub">子任务 · 角色 · 自动化 · 后台 · 产物</span>
+          <span class="workbench-entry-chev" aria-hidden="true">⌃</span>
+        </button>
+        <div id="workbench-panel" class="workbench-panel" hidden>
+          <div class="workbench-head">
+            <span class="workbench-head-title" data-i18n="workbenchTitle">工作台</span>
+            <button id="btn-workbench-close" class="workbench-close" title="收起工作台" data-i18n-title="workbenchClose" aria-label="收起工作台">✕</button>
+          </div>
+          <nav id="sidebar-tabs" class="sidebar-tabs wb-seg" role="tablist" aria-label="工作台视图"></nav>
+          <div id="sidebar-page" class="sidebar-page wb-body" role="tabpanel" hidden></div>
+        </div>
         <button id="btn-collapse-sidebar" class="sidebar-toggle" title="折叠侧栏" data-i18n-title="collapseSidebar" aria-label="折叠侧栏">
           <span class="icon-slot" data-icon="chevron-left"></span>
         </button>
