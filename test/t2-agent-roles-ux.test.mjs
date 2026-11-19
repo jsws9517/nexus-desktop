@@ -22,14 +22,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = join(__dirname, '..', 'dist');
 
 const {
-  safeAgentId, serializeCustomAgent, parseFrontmatter,
+  safeAgentId, serializeCustomAgent, parseFrontmatter, BUILTIN_ROLE_IDS,
 } = await import(pathToFileURL(join(dist, 'tools', 'custom-agents.js')).href);
 const { validateMainLocalParams } = await import(
   pathToFileURL(join(dist, 'shared', 'ipc-validation.js')).href
 );
 const {
   agentTemplate, agentTemplateMd, isTemplateFields,
-  AGENT_PRESETS, presetSpec, displayAgent,
+  AGENT_PRESETS, presetSpec, displayAgent, isBuiltinPresetId,
   parseToolsInput, validRoleId, specFromFields, mountAgentsPage,
 } = await import(pathToFileURL(join(dist, 'renderer', 'sidebar', 'pages', 'agents.js')).href);
 
@@ -132,7 +132,28 @@ test('built-in presets are bilingual, id-safe and resolve to regular role specs'
     assert.match(en.systemPrompt, /advisory/);
     assert.match(zh.systemPrompt, /建议/);
     assert.deepEqual(en.tools, []);
+    // Every UI preset is also in the main-side protection set.
+    assert.equal(isBuiltinPresetId(preset.id), true);
+    assert.ok(BUILTIN_ROLE_IDS.includes(preset.id), `missing main-side protection for ${preset.id}`);
   }
+  assert.equal(isBuiltinPresetId('reviewer'), false, 'ordinary roles are not built-ins');
+});
+
+test('main-side IPC enforces built-in role protection (enable/copy only, no in-place write or delete)', () => {
+  // Source-level guard: the handlers consult BUILTIN_ROLE_IDS before any fs.
+  const register = readFileSync(join(__dirname, '..', 'src', 'ipc', 'register.ts'), 'utf-8');
+  assert.match(register, /isBuiltinRole/);
+  const saveBlock = register.slice(register.indexOf("validateMainLocalParams('saveCustomAgent'"), register.indexOf("validateMainLocalParams('deleteCustomAgent'"));
+  const deleteBlock = register.slice(register.indexOf("validateMainLocalParams('deleteCustomAgent'"));
+  // save: reject when the built-in file already exists (overwrite), but the
+  // install path (absent file) still reaches resolveAgentTarget → writeFile.
+  assert.match(saveBlock, /isBuiltinRole\(p\.id as string\)/);
+  assert.match(saveBlock, /code: 'protected'/);
+  assert.match(saveBlock, /writeFile/);
+  // delete: built-in ids are refused before any unlink.
+  assert.match(deleteBlock, /isBuiltinRole\(p\.id as string\)/);
+  assert.match(deleteBlock, /code: 'protected'/);
+  assert.ok(!deleteBlock.slice(0, deleteBlock.indexOf("isBuiltinRole")).includes('unlink'), 'no unlink before the guard');
 });
 
 test('installed built-in roles follow the UI language; renamed roles are preserved', () => {
@@ -330,14 +351,22 @@ test('Agents page modal locks the id when editing and supports Escape/backdrop/c
   container.remove();
 });
 
-test('Agents page deletes a role via the bridge', async () => {
+test('Agents page deletes a user role via the bridge (built-ins never reach delete)', async () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const deleted = [];
   const ctx = makeCtx('');
   win.confirm = () => true; // auto-confirm the delete prompt
+  // A user role + an installed built-in: only the user row offers delete.
+  const roles = [
+    ...TWO_ROLES,
+    {
+      id: 'code_reviewer', name: 'Code Reviewer', description: 'Reviews diffs',
+      tools: [], systemPrompt: 'advise only', source: 'user', path: 'C:\\u\\code_reviewer.md',
+    },
+  ];
   const dispose = mountAgentsPage(container, ctx, {
-    listAgents: async () => ({ ok: true, agents: TWO_ROLES }),
+    listAgents: async () => ({ ok: true, agents: roles }),
     deleteAgent: async (id, scope) => { deleted.push([id, scope]); return { ok: true }; },
     applyRole: () => {},
     getActiveRole: () => '',
@@ -349,6 +378,139 @@ test('Agents page deletes a role via the bridge', async () => {
   await tick();
   await tick();
   assert.deepEqual(deleted, [['reviewer', 'user']]);
+
+  const builtin = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer');
+  assert.ok(builtin, 'built-in row rendered');
+  assert.equal(builtin.querySelector('[data-act="delete"]')?.outerHTML ?? '', '', 'no delete button on built-ins');
+  assert.equal(builtin.querySelector('[data-act="edit"]')?.outerHTML ?? '', '', 'no in-place edit button on built-ins');
+  assert.ok(builtin.querySelector('[data-act="copy"]'), 'copy (save-as) offered instead');
+
+  dispose();
+  container.remove();
+});
+
+test('built-in "save as copy" writes a new id, applies it, and opens the copy for editing', async () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const saved = [];
+  const applied = [];
+  const reviewer = {
+    id: 'code_reviewer', name: 'Code Reviewer', description: 'Reviews diffs',
+    tools: [], systemPrompt: 'advise only', source: 'user', path: 'C:\\u\\code_reviewer.md',
+  };
+  const ctx = makeCtx('');
+  const dispose = mountAgentsPage(container, ctx, {
+    listAgents: async () => ({ ok: true, agents: [reviewer] }),
+    saveAgent: async (spec) => { saved.push(spec); return { ok: true }; },
+    applyRole: (id) => applied.push(id),
+    getActiveRole: () => '',
+  });
+  await tick();
+
+  const builtin = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer');
+  builtin.querySelector('[data-act="copy"]').click();
+  await tick();
+  await tick();
+
+  // The copy is a NEW id derived from the preset id — never the preset's own.
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, 'code_reviewer_copy');
+  assert.notEqual(saved[0].id, 'code_reviewer');
+  // The copy is applied to the current session…
+  assert.equal(applied.at(-1), 'code_reviewer_copy');
+  // …and the built-in row is re-rendered without delete (copy instead).
+  const builtinRow = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer');
+  assert.equal(builtinRow?.querySelector('[data-act="delete"]')?.outerHTML ?? '', '', 'built-in still has no delete');
+  assert.ok(builtinRow?.querySelector('[data-act="copy"]'), 'copy button on the built-in row');
+
+  dispose();
+  container.remove();
+});
+
+test('built-in copy editor shows a "created copy" notice; the copy is editable, the built-in is not', async () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const ctx = makeCtx('', 'en');
+  const list = [
+    { id: 'code_reviewer', name: 'Code Reviewer', description: 'd', tools: [], systemPrompt: 's', source: 'user', path: 'C:\\u\\code_reviewer.md' },
+  ];
+  const dispose = mountAgentsPage(container, ctx, {
+    listAgents: async () => ({ ok: true, agents: [...list] }),
+    saveAgent: async (spec) => { list.push(spec); return { ok: true }; },
+    applyRole: () => {},
+    getActiveRole: () => '',
+  });
+  await tick();
+
+  const builtin = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer');
+  builtin.querySelector('[data-act="copy"]').click();
+  await tick();
+  await tick();
+
+  // The editor is open with the copy fields, id locked, and a positive notice.
+  let modal = document.querySelector('.agent-role-modal');
+  assert.ok(modal, 'copy editor opened');
+  assert.equal(modal.querySelector('[data-field="id"]').value, 'code_reviewer_copy');
+  assert.ok(modal.querySelector('[data-field="id"]').hasAttribute('readonly'), 'copy id locked');
+  assert.match(modal.textContent, /Created copy/i, 'English notice shown');
+
+  // A language switch keeps the hand-edited copy fields (id locked) and
+  // re-renders the list in the new language; the copy row is a normal
+  // editable role (edit + delete), the built-in row keeps its copy button.
+  ctx.setUiLang('zh-CN');
+  await tick();
+  modal = document.querySelector('.agent-role-modal');
+  assert.equal(modal.querySelector('[data-field="id"]').value, 'code_reviewer_copy');
+  assert.ok(modal.querySelector('[data-field="id"]').hasAttribute('readonly'), 'copy id still locked after language switch');
+  const copyRow = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer_copy');
+  assert.ok(copyRow, 'copy row listed after the language switch');
+  assert.ok(copyRow.querySelector('[data-act="edit"]'), 'copy is a normal editable role');
+  assert.ok(copyRow.querySelector('[data-act="delete"]'), 'copy is deletable');
+  const builtinRow = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer');
+  assert.equal(builtinRow.querySelector('[data-act="delete"]')?.outerHTML ?? '', '', 'built-in still has no delete');
+  assert.ok(builtinRow.querySelector('[data-act="copy"]'), 'built-in keeps the copy button');
+
+  dispose();
+  container.remove();
+});
+
+test('copy row becomes a normal editable role; copy button still works from the preset card', async () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const saved = [];
+  const ctx = makeCtx('', 'en');
+  const roles = [
+    { id: 'code_reviewer', name: 'Code Reviewer', description: 'd', tools: [], systemPrompt: 's', source: 'user', path: 'C:\\u\\code_reviewer.md' },
+  ];
+  const dispose = mountAgentsPage(container, ctx, {
+    listAgents: async () => ({ ok: true, agents: roles }),
+    saveAgent: async (spec) => { saved.push(spec.id); roles.push(spec); return { ok: true }; },
+    applyRole: () => {},
+    getActiveRole: () => '',
+  });
+  await tick();
+
+  // 1) Copy from the built-in row → the copy appears as a normal row.
+  const builtin = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer');
+  builtin.querySelector('[data-act="copy"]').click();
+  await tick();
+  await tick();
+  const copyRow = [...container.querySelectorAll('.agent-row')].find((r) => r.dataset.id === 'code_reviewer_copy');
+  assert.ok(copyRow, 'copy row listed after the save');
+  assert.ok(copyRow.querySelector('[data-act="edit"]'), 'copy is a normal editable role');
+  assert.ok(copyRow.querySelector('[data-act="delete"]'), 'copy is deletable');
+
+  // 2) Copy from the preset card works too and picks the next free id.
+  const card = [...container.querySelectorAll('.agent-preset')].find((c) => c.dataset.preset === 'code_reviewer');
+  card.querySelector('[data-act="preset-copy"]').click();
+  await tick();
+  await tick();
+  assert.equal(saved.at(-1), 'code_reviewer_copy2');
+  assert.deepEqual(saved, ['code_reviewer_copy', 'code_reviewer_copy2']);
+  assert.ok(
+    document.querySelector('.agent-row[data-id="code_reviewer_copy2"]'),
+    'second copy listed',
+  );
 
   dispose();
   container.remove();

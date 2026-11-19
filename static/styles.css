@@ -173,6 +173,11 @@
 .agent-role-modal .modal-head h3 { margin: 0; }
 .agent-role-modal .agent-err { min-height: 0; margin: 0; }
 .agent-role-modal .agent-err:empty { display: none; }
+/* Positive notice (e.g. "copy created") in the role editor — same slot as
+   .agent-err but not danger-red. */
+.agent-role-modal .agent-err.agent-notice {
+  color: var(--accent); margin: 4px 0; white-space: pre-wrap;
+}
 .ar-fields { display: flex; flex-direction: column; gap: 12px; }
 .ar-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ar-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }

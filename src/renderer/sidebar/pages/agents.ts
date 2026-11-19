@@ -127,9 +127,12 @@ export interface AgentPreset {
   content: Record<Lang, BiContent>;
 }
 
-/** Curated starter roles for common workflows. Installing one simply writes a
- *  regular user-scope role through the existing validated IPC, so it behaves
- *  exactly like a hand-authored role (editable, deletable, tool-scoped). */
+/** Curated starter roles for common workflows. Enabling one writes the file
+ *  through the same validated IPC as a hand-authored role — but the built-in
+ *  files themselves are protected: they cannot be edited or deleted in place
+ *  (UI hides those actions; the main-side IPC enforces it independently via
+ *  BUILTIN_ROLE_IDS). The only modification path is "save as copy" under a
+ *  NEW id, which produces a normal editable role. */
 export const AGENT_PRESETS: readonly AgentPreset[] = [
   {
     id: 'project_developer',
@@ -243,6 +246,13 @@ export function presetSpec(preset: AgentPreset, lang: string): AgentSpec {
   };
 }
 
+/** Whether a listed role is one of the built-in presets — the only ids the UI
+ *  hides in-place edit/delete for (the main-side IPC enforces the same rule
+ *  independently, via BUILTIN_ROLE_IDS). */
+export function isBuiltinPresetId(id: string): boolean {
+  return AGENT_PRESETS.some((p) => p.id === id);
+}
+
 /** Display name/description for an installed role. A built-in preset keeps
  *  showing in the CURRENT UI language even if it was installed while a
  *  different language was active — otherwise a Chinese and an English copy of
@@ -332,18 +342,26 @@ export function mountAgentsPage(
   /** Language the open editor was created in — used to detect untouched
    *  template values when the UI language switches. */
   let editorLang = lang();
+  /** Set right after a built-in preset is copied to a new id; consumed by
+   *  refreshEditor() so the copy message is re-localized on a language switch
+   *  instead of being lost in the rebuilt fields. */
+  let copyNotice = '';
 
   container.classList.add('agents-page');
 
   // ── Modal editor ──────────────────────────────────────────────────────────
 
   function editorHtml(spec: AgentSpec & { _new: boolean }): string {
+    const notice = copyNotice
+      ? `<div class="agent-err agent-notice">${esc(copyNotice)}</div>`
+      : '';
     return `
       <div class="modal agent-role-modal" role="document" aria-labelledby="agent-role-modal-title">
         <div class="modal-head">
           <h3 id="agent-role-modal-title">${esc(label(spec._new ? 'agentNewRole' : 'agentEditRole', lang()))}</h3>
           <button type="button" class="btn ghost small icon-only" data-act="close" aria-label="${esc(label('agentCancel', lang()))}">✕</button>
         </div>
+        ${notice}
         <div class="agent-err" data-role="err"></div>
         <div class="ar-fields">
           <div class="ar-grid">
@@ -393,9 +411,11 @@ export function mountAgentsPage(
   }
 
   function openEditor(spec: AgentSpec & { _new: boolean }): void {
-    closeEditor();
+    const pendingNotice = copyNotice;
+    closeEditor(); // note: closeEditor() also resets the pending copy notice
     editorSpec = spec;
     editorLang = lang();
+    copyNotice = pendingNotice; // keep a notice set right before openEditor()
     // The dialog lives on <body>, outside the workbench's activity listeners.
     // Hold off idle folding so an unfinished edit is never torn down.
     ctx.setAutoHidePaused?.(true);
@@ -420,6 +440,7 @@ export function mountAgentsPage(
     editorOverlay = null;
     editorKeyHandler = null;
     editorSpec = null;
+    copyNotice = '';
   }
 
   function readEditorFields(): FieldBag {
@@ -430,7 +451,9 @@ export function mountAgentsPage(
   }
 
   function editorErr(msg: string): void {
-    const el = editorOverlay?.querySelector('.agent-err') as HTMLElement | null;
+    // The copy notice has its own .agent-err element; [data-role="err"] is the
+    // field-validation slot only.
+    const el = editorOverlay?.querySelector<HTMLElement>('.agent-err[data-role="err"]');
     if (el) el.textContent = msg;
   }
 
@@ -455,15 +478,18 @@ export function mountAgentsPage(
   }
 
   /** Rebuild the open editor in a new language. An untouched new-role form
-   *  follows the template into the new language; hand-edited values are kept. */
+   *  follows the template into the new language; hand-edited values (including
+   *  the copy-notice line) are kept and re-localized. */
   function refreshEditor(): void {
     if (!editorSpec || !editorOverlay) return;
     const fields = readEditorFields();
+    const notice = copyNotice;
     const isNew = editorSpec._new;
     const followTemplate = isNew && isTemplateFields(fields, editorLang);
     editorSpec = followTemplate
       ? { ...agentTemplate(lang()), _new: true }
       : { ...specFromFields(fields), _new: isNew };
+    copyNotice = followTemplate ? '' : notice;
     editorLang = lang();
     const activeField = (document.activeElement as HTMLElement | null)?.dataset?.field;
     editorOverlay.innerHTML = editorHtml(editorSpec);
@@ -506,7 +532,7 @@ export function mountAgentsPage(
         <div class="wb-desc">${esc(spec.description)}</div>
         <div class="agent-actions">
           <button type="button" class="btn small ${inUse ? '' : 'primary'}" data-act="preset-use" ${inUse ? 'disabled' : ''}>${inUse ? esc(label('agentApplied', lang())) : esc(label('agentPresetUse', lang()))}</button>
-          ${installed ? `<button type="button" class="btn ghost small" data-act="preset-edit">${esc(label('agentEdit', lang()))}</button>` : ''}
+          ${installed ? `<button type="button" class="btn ghost small" data-act="preset-copy">${esc(label('agentPresetSaveAs', lang()))}</button>` : ''}
         </div></div>`;
     }).join('');
     parts.push(`<div class="wb-title">${esc(label('agentBuiltInTitle', lang()))}</div>
@@ -531,10 +557,16 @@ export function mountAgentsPage(
           ${tools.length
             ? `<div class="wb-chips">${tools.map((t) => `<span class="wb-chip">${esc(t)}</span>`).join('')}</div>`
             : `<span class="wb-badge note">${esc(label('agentNoTools', lang()))}</span>`}
+          ${isBuiltinPresetId(a.id)
+            ? `<span class="wb-badge builtin">${esc(label('agentBuiltInBadge', lang()))}</span>
+               <span class="wb-badge note">${esc(label('agentBuiltInLocked', lang()))}</span>`
+            : ''}
           <div class="agent-actions">
             <button type="button" class="btn small ${isActive ? '' : 'primary'}" data-act="apply" ${isActive ? 'disabled' : ''}>${isActive ? esc(label('agentApplied', lang())) : esc(label('agentApply', lang()))}</button>
-            <button type="button" class="btn ghost small" data-act="edit">${esc(label('agentEdit', lang()))}</button>
-            <button type="button" class="btn ghost small" data-act="delete">${esc(label('agentDelete', lang()))}</button>
+            ${isBuiltinPresetId(a.id)
+              ? `<button type="button" class="btn ghost small" data-act="copy">${esc(label('agentPresetSaveAs', lang()))}</button>`
+              : `<button type="button" class="btn ghost small" data-act="edit">${esc(label('agentEdit', lang()))}</button>
+                 <button type="button" class="btn ghost small" data-act="delete">${esc(label('agentDelete', lang()))}</button>`}
           </div></div>`);
       }
     }
@@ -555,6 +587,40 @@ export function mountAgentsPage(
     });
   }
 
+  /** "Save as copy" (按需修改另存) for a built-in role: duplicate the current
+   *  preset fields into a NEW id (never the preset's own), so the built-in
+   *  file stays untouched and the copy is a normal editable role. */
+  async function copyPreset(el: HTMLElement, fromRow: boolean): Promise<void> {
+    const sourceEl = fromRow ? el.closest<HTMLElement>('.agent-row') : el.closest<HTMLElement>('.agent-preset');
+    const presetId = fromRow ? sourceEl?.dataset.id : sourceEl?.dataset.preset;
+    const preset = AGENT_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    // Copy the preset's CANONICAL fields (bilingual, UI-language aware), not
+    // the possibly-renamed installed file — the built-in file itself is left
+    // exactly as shipped.
+    const base = presetSpec(preset, lang());
+    const idTaken = (id: string): boolean =>
+      agents.some((a) => a.id === id) || AGENT_PRESETS.some((p) => p.id === id);
+    let id = `${base.id}_copy`;
+    let n = 2;
+    while (idTaken(id) && n < 50) id = `${base.id}_copy${n++}`;
+    const copy = { ...base, id };
+    const res = await saveAgent(copy);
+    if (!res.ok) {
+      if (typeof window !== 'undefined' && window.alert) {
+        window.alert(res.error || label('agentCopyFailed', lang()));
+      }
+      return;
+    }
+    // Set BEFORE openEditor: the notice survives its internal closeEditor()
+    // reset and is re-rendered with the freshly opened dialog.
+    copyNotice = label('agentCopyApplied', lang(), { name: copy.name });
+    openEditor({ ...copy, _new: false });
+    // The user just created this copy for the current session — apply it.
+    applyRole(copy.id);
+    await reload(true);
+  }
+
   async function onAction(act: string, el: HTMLElement): Promise<void> {
     switch (act) {
       case 'use-template':
@@ -564,8 +630,9 @@ export function mountAgentsPage(
         const card = el.closest('.agent-preset') as HTMLElement | null;
         const preset = AGENT_PRESETS.find((p) => p.id === card?.dataset.preset);
         if (!preset) break;
-        // Install on first use through the same validated IPC as a hand-authored
-        // role; once present it behaves like any other editable role.
+        // Install on first use; the main-side handler only allows this for
+        // absent files — an existing built-in file is protected from
+        // overwrite (the copy flow uses a new id instead).
         if (!agents.some((a) => a.id === preset.id)) {
           const res = await saveAgent(presetSpec(preset, lang()));
           if (!res.ok) {
@@ -580,17 +647,9 @@ export function mountAgentsPage(
         render();
         break;
       }
-      case 'preset-edit': {
-        const card = el.closest('.agent-preset') as HTMLElement | null;
-        const preset = AGENT_PRESETS.find((p) => p.id === card?.dataset.preset);
-        const a = agents.find((x) => x.id === preset?.id);
-        if (a) {
-          openEditor({
-            id: a.id, name: a.name, description: a.description,
-            tools: a.tools ?? [], systemPrompt: a.systemPrompt,
-            scope: a.source, _new: false,
-          });
-        }
+      case 'preset-copy':
+      case 'copy': {
+        await copyPreset(el, act === 'copy');
         break;
       }
       case 'clear':

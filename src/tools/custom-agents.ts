@@ -43,6 +43,27 @@ export const MAX_AGENTS_PER_SCAN = 100;
 export const MAX_ROLE_PROMPT_CHARS = 32 * 1024;
 
 /**
+ * Reserved ids of the built-in (preset) roles shipped in the app — the same
+ * ids the workbench Agents page installs from its "内置角色" section. These ids
+ * are protected on the main side: the built-in files may be created and re-used
+ * ("enable"), but never overwritten in place or deleted ("delete") — the only
+ * way to change one is to save a copy under a NEW id (按需修改另存) and edit
+ * that copy. A new preset added to the UI list MUST be registered here too,
+ * or its in-place files stay writable/deletable (defense in depth).
+ */
+export const BUILTIN_ROLE_IDS: readonly string[] = [
+  'project_developer',
+  'code_reviewer',
+  'office_assistant',
+  'creative_writer',
+];
+
+/** True when a role id belongs to a built-in preset (see BUILTIN_ROLE_IDS). */
+export function isBuiltinRole(id: string): boolean {
+  return BUILTIN_ROLE_IDS.includes(typeof id === 'string' ? id : '');
+}
+
+/**
  * Starter template surfaced by the in-app role editor (UX for non-developers).
  * It uses the exact on-disk format so "Use template" → "Save" produces a file
  * identical to one a power user would write by hand.

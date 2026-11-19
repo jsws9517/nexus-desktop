@@ -18,7 +18,7 @@ const dist = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const {
   parseFrontmatter, sanitizeRolePrompt, buildCustomAgent,
   roleAllowsTool, AGENT_ROLE_MARKER, buildAgentRoleBlock, injectAgentRoleBlock, stripAgentRoleBlock,
-  scanCustomAgents, MAX_AGENT_FILE_BYTES,
+  scanCustomAgents, MAX_AGENT_FILE_BYTES, BUILTIN_ROLE_IDS, isBuiltinRole,
 } = await import(pathToFileURL(join(dist, 'tools', 'custom-agents.js')).href);
 const { ESSENTIAL_TOOLS } = await import(pathToFileURL(join(dist, 'tools', 'tool-relevance.js')).href);
 
@@ -135,6 +135,22 @@ test('roleAllowsTool honors alias families and empty whitelists', () => {
   assert.equal(roleAllowsTool('vault_write', new Set()), true);
   // ESSENTIAL_TOOLS exemption is applied by the caller; sanity-check it exists.
   assert.equal(ESSENTIAL_TOOLS.has('file_read'), true);
+});
+
+// ── built-in preset protection (only enable / save-as-copy, no edit/delete) ─
+
+test('BUILTIN_ROLE_IDS matches the shipped preset ids; isBuiltinRole guards types', () => {
+  // The main-side protection set must stay in lockstep with the UI preset list.
+  assert.deepEqual(
+    [...BUILTIN_ROLE_IDS].sort(),
+    ['code_reviewer', 'creative_writer', 'office_assistant', 'project_developer'],
+  );
+  for (const id of BUILTIN_ROLE_IDS) assert.equal(isBuiltinRole(id), true);
+  assert.equal(isBuiltinRole('reviewer'), false);
+  assert.equal(isBuiltinRole(''), false);
+  assert.equal(isBuiltinRole('../evil'), false);
+  assert.equal(isBuiltinRole(null), false, 'non-strings are not built-in');
+  assert.equal(isBuiltinRole(undefined), false);
 });
 
 // ── scanner ─────────────────────────────────────────────────────────────────

@@ -43,6 +43,7 @@ import { globalRulesPath, ensureGlobalRules, resetGlobalRules, loadConstitutionB
 import { buildProjectRuleEntries } from '../shared/project-rules.js';
 import {
   scanCustomAgents, userAgentsDir, safeAgentId, serializeCustomAgent,
+  isBuiltinRole,
   invalidateAgentCache, MAX_AGENT_FILE_BYTES,
 } from '../tools/custom-agents.js';
 import { queryArtifacts, getArtifactMessageContent } from '../session-db.js';
@@ -1120,6 +1121,20 @@ export function registerIpc(ctx: IpcContext): void {
     const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
     const vErr = validateMainLocalParams('saveCustomAgent', p);
     if (vErr) return { ok: false, code: 'invalid', error: vErr };
+    // Built-in preset ids may only be WRITTEN when the file does not exist yet
+    // (install / re-install after a manual out-of-app deletion). Overwriting an
+    // existing file would clobber in-place edits; the UI routes those through
+    // "save as copy" under a new id instead.
+    if (isBuiltinRole(p.id as string)) {
+      let exists = false;
+      try { exists = (await lstat(join(userAgentsDir(), `${p.id as string}.md`))).isFile(); } catch { /* absent */ }
+      if (exists) {
+        return {
+          ok: false, code: 'protected',
+          error: 'built-in role: use "save as copy" under a new id to modify it',
+        };
+      }
+    }
     const target = await resolveAgentTarget(p.scope as 'user' | 'project', p.cwd as string, p.id as string);
     if ('error' in target) return { ok: false, code: 'invalid', error: target.error };
 
@@ -1153,6 +1168,11 @@ export function registerIpc(ctx: IpcContext): void {
     const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
     const vErr = validateMainLocalParams('deleteCustomAgent', p);
     if (vErr) return { ok: false, code: 'invalid', error: vErr };
+    // Built-in preset roles cannot be deleted — only disabled for a session
+    // (clear the active role) or copied to a new id and modified there.
+    if (isBuiltinRole(p.id as string)) {
+      return { ok: false, code: 'protected', error: 'built-in role: deletion is not allowed' };
+    }
     const target = await resolveAgentTarget(p.scope as 'user' | 'project', p.cwd as string, p.id as string);
     if ('error' in target) return { ok: false, code: 'invalid', error: target.error };
     try {
