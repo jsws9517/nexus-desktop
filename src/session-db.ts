@@ -1,10 +1,21 @@
 import Database from 'better-sqlite3';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { WORKER_MARKERS } from './shared/constants.js';
 import { boundedSet } from './shared/bounded.js';
 import { logger } from './shared/logger.js';
 import { parseArtifactContent, type ArtifactListItem } from './shared/artifact.js';
+import {
+  FILE_ARTIFACT_SQL_EXTENSIONS,
+  MAX_FILE_REFS_PER_MESSAGE,
+  artifactTypeForPath,
+  baseNameOf,
+  decodeFileItemId,
+  extractPathsForMessage,
+  fileArtifactEnvelope,
+  isAbsoluteFilePath,
+} from './shared/file-artifacts.js';
 
 /**
  * Desktop-only direct access to the core session DB (better-sqlite3).
@@ -811,6 +822,12 @@ function artifactPreview(artifact: ReturnType<typeof parseArtifactContent>): str
  * the envelope. Rows with a malformed envelope are skipped, not fatal (AC-6 /
  * risk §6). Wrapping `json_extract` in `CASE WHEN json_valid` guarantees it is
  * never called on non-JSON tool output.
+ *
+ * It ALSO indexes file references — the `@<abs path>` lines the attach flow
+ * writes into user messages, and deliverable paths in tool/assistant output.
+ * Those are synthesized into the same Artifact envelope on read, so a regular
+ * attachment or a sub-agent's `.docx` shows up here even though no skill
+ * wrapped it. Their ids are negative: `-(messageId * 100 + pathIndex)`.
  */
 export function queryArtifacts(opts: QueryArtifactsOptions = {}): { items: ArtifactListItem[] } | null {
   const db = openDb();
@@ -853,6 +870,9 @@ export function queryArtifacts(opts: QueryArtifactsOptions = {}): { items: Artif
     }>;
     const items: ArtifactListItem[] = [];
     const seen = new Set<string>();
+    // Paths already covered by a structured envelope (e.g. docx.write's refs)
+    // must not reappear as a second, poorer file row.
+    const seenPaths = new Set<string>();
     for (const r of rows) {
       const artifact = parseArtifactContent(r.content);
       if (!artifact) continue;
@@ -863,6 +883,11 @@ export function queryArtifacts(opts: QueryArtifactsOptions = {}): { items: Artif
       const key = `${sessionId}|${artifact.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      for (const ref of artifact.refs ?? []) {
+        if (ref.kind === 'file' && typeof ref.path === 'string' && ref.path) {
+          seenPaths.add(ref.path.toLowerCase());
+        }
+      }
       items.push({
         id: r.id,
         sessionId,
@@ -874,17 +899,171 @@ export function queryArtifacts(opts: QueryArtifactsOptions = {}): { items: Artif
       });
       if (items.length >= limit) break;
     }
-    return { items };
+
+    // File references (regular attachments / produced deliverables). Only the
+    // slots the envelope rows left can be filled; the walk stops as soon as
+    // they are.
+    const fileRows = queryFileReferenceItems(
+      db, opts, Math.min(Math.max(limit - items.length, 20), 400), seenPaths,
+    );
+    items.push(...fileRows);
+
+    // Newest first, matching the envelope query's ORDER BY. Positive ids sort
+    // before negative ones only as a stable tiebreaker.
+    items.sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
+    return { items: items.slice(0, limit) };
   } catch {
     return null;
   }
 }
 
-/** Fetch the raw tool-message content for a full artifact (by message id). */
+/** Cache `existsSync` per path: the page polls, but files rarely appear/vanish. */
+const PATH_EXISTS_TTL_MS = 60_000;
+const pathExistsCache = new Map<string, { ok: boolean; at: number }>();
+
+function fileExistsCached(path: string, onMiss?: () => void): boolean {
+  const now = Date.now();
+  const hit = pathExistsCache.get(path);
+  if (hit && now - hit.at < PATH_EXISTS_TTL_MS) return hit.ok;
+  onMiss?.();
+  let ok = false;
+  try {
+    ok = existsSync(path);
+  } catch {
+    ok = false;
+  }
+  if (pathExistsCache.size > 2000) pathExistsCache.clear();
+  pathExistsCache.set(path, { ok, at: now });
+  return ok;
+}
+
+/** Rows the file index may examine per call, and the wall-clock budget for it. */
+const FILE_WALK_MAX_MS = 400;
+const FILE_WALK_BATCH = 800;
+/** Disk stats allowed per call. Cache misses only, so a poll after the first
+ *  one pays nothing for paths it has already checked. */
+const MAX_STAT_CHECKS = 400;
+
+/**
+ * Index rows for file references. The SQL prefilter is intentionally narrow
+ * (role + a distinctive extension list) so ordinary prose is never parsed; the
+ * authoritative decision is made in JS: the path must be absolute, must carry a
+ * known deliverable extension (or come from an explicit `@` attachment line),
+ * and must still exist on disk.
+ *
+ * The walk is over `m.id DESC` (the rowid PK index), not `created_at DESC`:
+ * `ORDER BY created_at` with a LIKE prefilter forces a full scan of the whole
+ * message table (seconds on a large history, blocking the main process on every
+ * poll), while the rowid walk answers the same "newest first" question in tens
+ * of milliseconds. Message ids are append-only, so id order IS time order.
+ */
+function queryFileReferenceItems(
+  db: Database.Database,
+  opts: QueryArtifactsOptions,
+  need: number,
+  seenPaths: Set<string>,
+): ArtifactListItem[] {
+  const extClause = FILE_ARTIFACT_SQL_EXTENSIONS.map(() => 'm.content LIKE ?').join(' OR ');
+  // Inline base64 images (`![x](data:image/png;base64,...)`) mention `.png` in
+  // their alt text but are megabytes of payload; excluding them keeps the walk
+  // cheap and leaves the real path to the small JSON result beside them.
+  const where: string[] = [
+    `((m.role = 'user' AND m.content LIKE '%@%') OR ((m.role = 'tool' OR m.role = 'assistant') AND (${extClause})))`,
+    `m.content NOT LIKE '%;base64,%'`,
+  ];
+  const params: unknown[] = FILE_ARTIFACT_SQL_EXTENSIONS.map((ext) => `%${ext}%`);
+  if (opts.sessionId) {
+    where.push('m.session_id = ?');
+    params.push(opts.sessionId);
+  }
+  const sql = `SELECT m.id AS id, m.session_id AS session_id, s.name AS session_name,
+                      m.role AS role, m.content AS content, m.created_at AS created_at
+               FROM messages m LEFT JOIN sessions s ON s.id = m.session_id
+               WHERE m.id < ? AND ${where.join(' AND ')}
+               ORDER BY m.id DESC LIMIT ?`;
+  const stmt = db.prepare(sql);
+
+  let hi = Number((db.prepare('SELECT MAX(id) AS id FROM messages').get() as
+    | { id: number | null } | undefined)?.id) || 0;
+  hi += 1; // exclusive upper bound
+  const startedAt = Date.now();
+  const out: ArtifactListItem[] = [];
+  const sinceMs = opts.sinceMs !== undefined && Number.isFinite(opts.sinceMs) ? opts.sinceMs : undefined;
+  let stats = 0;
+
+  while (out.length < need && hi > 1 && Date.now() - startedAt < FILE_WALK_MAX_MS && stats < MAX_STAT_CHECKS) {
+    const rows = stmt.all(hi, ...params, FILE_WALK_BATCH) as Array<{
+      id: number; session_id: string; session_name: string | null;
+      role: string; content: string; created_at: number;
+    }>;
+    if (rows.length === 0) break;
+    hi = rows[rows.length - 1].id; // next batch continues below the oldest row
+    let reachedCutoff = false;
+    for (const r of rows) {
+      const createdAt = Number(r.created_at) || 0;
+      // ids descend with time, so once a row predates the cutoff every later id
+      // does too: stop instead of scanning the rest of the history.
+      if (sinceMs !== undefined && createdAt < sinceMs) {
+        reachedCutoff = true;
+        continue;
+      }
+      const paths = extractPathsForMessage(r.role, r.content).slice(0, MAX_FILE_REFS_PER_MESSAGE);
+      for (let i = 0; i < paths.length; i++) {
+        const path = paths[i];
+        if (!isAbsoluteFilePath(path)) continue;
+        const key = path.toLowerCase();
+        if (seenPaths.has(key)) continue;
+        if (!fileExistsCached(path, () => { stats++; })) continue;
+        seenPaths.add(key);
+        const type = artifactTypeForPath(path);
+        if (opts.type && type !== opts.type) continue;
+        out.push({
+          // Negative id namespace: -(messageId * 100 + pathIndex). Decoded by
+          // getArtifactMessageContent() into the same synthesized envelope.
+          id: -(r.id * 100 + i),
+          sessionId: r.session_id || '',
+          sessionName: r.session_name ?? '',
+          type,
+          title: baseNameOf(path),
+          createdAt,
+          preview: path,
+        });
+      }
+      if (out.length >= need) break;
+    }
+    if (reachedCutoff) break;
+    if (rows.length < FILE_WALK_BATCH) break; // no more matching rows at all
+  }
+  return out;
+}
+
+/**
+ * Fetch the raw tool-message content for a full artifact (by message id).
+ *
+ * Negative ids address a synthesized file artifact: `-(messageId * 100 + i)`
+ * from queryArtifacts. The envelope is rebuilt from the source message on
+ * demand, so no extra table or write cycle is needed.
+ */
 export function getArtifactMessageContent(messageId: number): string | null {
   const db = openDb();
-  if (!db || !Number.isInteger(messageId) || messageId <= 0) return null;
+  if (!db || !Number.isInteger(messageId) || messageId === 0) return null;
   try {
+    if (messageId < 0) {
+      const decoded = decodeFileItemId(messageId);
+      if (!decoded) return null;
+      const row = db
+        .prepare('SELECT session_id, role, content FROM messages WHERE id = ?')
+        .get(decoded.messageId) as
+        | { session_id: string; role: string; content: string }
+        | undefined;
+      if (!row) return null;
+      const path = extractPathsForMessage(row.role, row.content)[decoded.index];
+      if (!path || !isAbsoluteFilePath(path) || !fileExistsCached(path)) return null;
+      return fileArtifactEnvelope(path, {
+        sessionId: row.session_id,
+        origin: row.role === 'user' ? 'user' : 'task',
+      });
+    }
     const row = db.prepare('SELECT content FROM messages WHERE id = ?').get(messageId) as
       | { content: string }
       | undefined;

@@ -34,6 +34,30 @@ Rendering rules worth knowing:
 - A desktop fan-out batch shows up **twice**: the in-chat `fan-out execution card` and the Sub-Agents panel.
 - The Jobs page shows only shell processes (`bg_`). Agent runs are **not** a Jobs-page concern — the `bj_` section that used to claim otherwise was removed (§3).
 
+### My Artifacts page (T2-4) — `src/renderer/sidebar/pages/artifacts.ts`
+
+Read-only, cross-session index of deliverables, fed by **two sources** in
+`src/session-db.ts` → `queryArtifacts`:
+
+1. **Artifact envelopes** — tool messages whose content carries
+   `{"__artifactVersion":1, artifact:{…}}` (skills like `docx.write`, `bi.chart`).
+   Rows keep their source message `id`.
+2. **File references derived from the transcript** — the `@<abs path>` lines the
+   `+` attach flow writes into user messages, and deliverable paths in
+   tool/assistant output (JSON `files[]`/`path` fields, quoted/bare absolute
+   paths). These are *synthesized* into the same envelope shape on read
+   (`src/shared/file-artifacts.ts`), so a regular attachment or a `spawn_office`
+   `.docx` is listed even though no skill wrapped it. Rows use a **negative**
+   id, `-(messageId * 100 + pathIndex)`, which `getArtifactMessageContent`
+   decodes back into a synthesized envelope.
+
+The file-reference walk is over `m.id DESC` (the rowid PK index) with a
+time + stat-check budget — NOT `created_at DESC`, whose `LIKE` prefilter would
+force a full-table scan of every message body on each poll. Inline base64
+image results are excluded in SQL (they are megabytes of payload and never a
+source of paths). Filtering is by type / session / time only — never body
+full-text or tags.
+
 ---
 
 ## 2. Sub-agent execution paths (3) — all live

@@ -1,12 +1,20 @@
 /**
  * My Artifacts sidebar page (T2-4).
  *
- * A cross-session, STRUCTURED view of the Artifact envelopes embedded in tool
- * messages. This is deliberately NOT the right-side FileBrowser: that component
- * enumerates physical files in the current project tree, while this page reads
- * historical messages and includes inline / base64 artifacts that never touch
- * disk. Filtering is by type / session / time only — never body full-text or
- * tags — so an inline artifact is never accidentally dropped.
+ * A cross-session view of deliverables. Two sources feed it:
+ *   1. Artifact envelopes embedded in tool messages (skills like docx.write /
+ *      bi.chart / sheet.read) — structured bodies, inline or file-backed.
+ *   2. File references derived from the transcript: `@<abs path>` lines from
+ *      the attach flow, and deliverable paths in tool/assistant output. These
+ *      are synthesized into the same envelope shape by session-db, so a regular
+ *      attachment or a `spawn_office` .docx is listed even without a skill
+ *      envelope. File rows use negative ids and open/reveal the real file.
+ *
+ * This is deliberately NOT the right-side FileBrowser: that component enumerates
+ * physical files in the current project tree, while this page reads historical
+ * messages and includes inline / base64 artifacts that never touch disk.
+ * Filtering is by type / session / time only — never body full-text or tags —
+ * so an inline artifact is never accidentally dropped.
  *
  * Dependency-injected (list/get/export/open callbacks) so the filter state
  * machine and rendering can be unit-tested without Electron.
@@ -65,6 +73,7 @@ export interface ExportPayload {
 const TYPE_ICON: Record<string, string> = {
   sheet: '📊', chart: '📈', ppt: '🎞️', docx: '📄', pdf: '📄',
   markdown: '📝', html: '🌐', image: '🖼️', csv: '📋', dataframe: '🗃️',
+  file: '📎',
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -235,7 +244,7 @@ export function mountArtifactsPage(
   allTypes.value = '';
   allTypes.textContent = label('artifactFilterAllTypes', langOf(ctx, opts));
   typeSel.select.appendChild(allTypes);
-  for (const type of ['sheet', 'chart', 'ppt', 'docx', 'pdf', 'markdown', 'html', 'image', 'csv', 'dataframe']) {
+  for (const type of ['sheet', 'chart', 'ppt', 'docx', 'pdf', 'markdown', 'html', 'image', 'csv', 'dataframe', 'file']) {
     const option = document.createElement('option');
     option.value = type;
     option.textContent = `${TYPE_ICON[type] ?? '🧩'} ${type}`;
@@ -344,8 +353,41 @@ export function mountArtifactsPage(
       exportBtn.textContent = label('artifactExport', lang);
       exportBtn.addEventListener('click', () => void exportOne(item));
       actions.appendChild(exportBtn);
+
+      // File-backed rows (negative ids) are real files on disk: offer "open"
+      // instead of a save-copy export.
+      if (item.id < 0) {
+        const openFileBtn = document.createElement('button');
+        openFileBtn.type = 'button';
+        openFileBtn.className = 'btn ghost small artifact-action';
+        openFileBtn.textContent = label('artifactOpenFile', lang);
+        openFileBtn.addEventListener('click', () => void openFile(item));
+        actions.appendChild(openFileBtn);
+      }
       row.appendChild(actions);
       list.appendChild(row);
+    }
+  }
+
+  /** The on-disk path of an artifact, when it references a real file. */
+  function filePathOf(artifact: Artifact): string {
+    const ref = artifact.refs?.find((r) => r.kind === 'file' && typeof r.path === 'string' && r.path);
+    return ref?.path ?? '';
+  }
+
+  async function openFile(item: ArtifactListItem): Promise<void> {
+    try {
+      const res = await getArtifact(item.id);
+      const artifact = res.ok && res.content ? parseArtifactContent(res.content) : null;
+      const path = artifact ? filePathOf(artifact) : '';
+      if (!path) return;
+      // openExternalFile only opens files under the app's allowed roots; an
+      // artifact can live anywhere (user's E: drive, a temp cache), so fall back
+      // to revealing it in the file manager instead of failing silently.
+      const opened = await window.nexusDesktop.openExternalFile(path);
+      if (!opened?.ok) void window.nexusDesktop.revealFile(path);
+    } catch {
+      /* open is best-effort */
     }
   }
 
@@ -360,6 +402,13 @@ export function mountArtifactsPage(
     if (!content) return;
     const artifact = parseArtifactContent(content);
     if (!artifact) return;
+    // A file-backed artifact already exists on disk: "export" means showing it
+    // in the file manager, not writing a copy of bytes we never loaded.
+    const onDisk = filePathOf(artifact);
+    if (onDisk) {
+      void window.nexusDesktop.revealFile(onDisk);
+      return;
+    }
     if (artifact.type === 'chart') {
       await exportChartPng(artifact);
       return;

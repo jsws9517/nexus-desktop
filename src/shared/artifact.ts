@@ -22,6 +22,13 @@ export const ARTIFACT_TYPES = [
   'image',
   'csv',
   'dataframe',
+  /**
+   * A plain file on disk referenced by path (regular attachment / produced
+   * deliverable) rather than structured content. Its body carries `{ path }`
+   * and its `refs` a single `{ kind: 'file', path }` entry, so the artifact
+   * index can list documents/images that were never wrapped by a skill.
+   */
+  'file',
 ] as const;
 export type ArtifactType = (typeof ARTIFACT_TYPES)[number];
 
@@ -67,6 +74,9 @@ export interface ArtifactEnvelope {
  * One row in the cross-session artifact index (T2-4). `id` is the SOURCE
  * message id in session-db, so the full envelope can be fetched later with
  * `nexus:getArtifact(messageId)` for export / opening the source session.
+ * File-reference rows (regular attachments / produced deliverables) use a
+ * NEGATIVE id — `-(messageId * 100 + pathIndex)` — because their envelope is
+ * synthesized from the source message instead of being stored in it.
  * `type` is a plain string because legacy envelopes may lack a valid type —
  * such rows land under "all" and simply never match a type filter.
  */
