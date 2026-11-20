@@ -324,9 +324,16 @@ export function registerIpc(ctx: IpcContext): void {
     return out;
   };
 
-  /** Resolve an open/edit request to a canonical path that is safe to hand to the OS. */
+  /**
+   * Resolve an open/edit request to a canonical path that is safe to hand to the
+   * OS. `trustedArtifact` (artifact page only): skip the project-root containment
+   * check — a file that landed in "My Artifacts" is already on disk and user-
+   * visible, so its directory need not be an allowed root. The executable
+   * blacklist still applies.
+   */
   const resolveOpenable = async (
     raw: unknown,
+    trustedArtifact = false,
   ): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
     if (!isNonEmptyString(raw) || raw.length > 4096 || !isAbsolute(raw)) {
       return { ok: false, error: 'invalid path' };
@@ -341,9 +348,11 @@ export function registerIpc(ctx: IpcContext): void {
     if (DANGEROUS_OPEN_EXT.has(ext)) {
       return { ok: false, error: `refusing to open executable file (${ext})` };
     }
-    const roots = await allowedRoots();
-    if (!roots.some((allowed) => isWithin(real, allowed))) {
-      return { ok: false, error: 'path outside allowed roots' };
+    if (!trustedArtifact) {
+      const roots = await allowedRoots();
+      if (!roots.some((allowed) => isWithin(real, allowed))) {
+        return { ok: false, error: 'path outside allowed roots' };
+      }
     }
     return { ok: true, path: real };
   };
@@ -907,19 +916,29 @@ export function registerIpc(ctx: IpcContext): void {
   );
 
   // Open a file with the OS default application (right-panel file browser).
-  ipcMain.handle(CHANNELS.openExternalFile, async (event, path: unknown): Promise<{ ok: boolean; error?: string }> => {
-    if (!isTrustedSender(event)) return { ok: false, error: 'untrusted sender' };
-    const resolved = await resolveOpenable(path);
-    if (!resolved.ok) return resolved;
-    try {
-      const st = await stat(resolved.path);
-      if (!st.isFile()) return { ok: false, error: 'not a file' };
-      const err = await shell.openPath(resolved.path);
-      return err ? { ok: false, error: err } : { ok: true };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
-  });
+  // `trustedArtifact` (artifacts page only): a file already listed in "My
+  // Artifacts" may live outside the project roots — skip the containment check
+  // (the executable blacklist still applies).
+  ipcMain.handle(
+    CHANNELS.openExternalFile,
+    async (
+      event,
+      path: unknown,
+      trustedArtifact?: boolean,
+    ): Promise<{ ok: boolean; error?: string }> => {
+      if (!isTrustedSender(event)) return { ok: false, error: 'untrusted sender' };
+      const resolved = await resolveOpenable(path, trustedArtifact === true);
+      if (!resolved.ok) return resolved;
+      try {
+        const st = await stat(resolved.path);
+        if (!st.isFile()) return { ok: false, error: 'not a file' };
+        const err = await shell.openPath(resolved.path);
+        return err ? { ok: false, error: err } : { ok: true };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  );
 
   // Open a file in a text editor (right-panel file browser "Open in editor").
   // On Windows the OS association (via shell.openPath) is used because that is

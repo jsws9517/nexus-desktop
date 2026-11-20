@@ -402,7 +402,7 @@ declare global {
       revealFile(path: string): Promise<{ ok: boolean }>;
       getFileInfos(paths: string[]): Promise<Array<{ path: string; name: string; size: number; isImage: boolean; preview?: string }>>;
       listDirectory(root: string, path: string): Promise<{ ok: boolean; entries?: Array<{ name: string; type: 'file' | 'directory'; size: number }>; truncated?: boolean; error?: string }>;
-      openExternalFile(path: string): Promise<{ ok: boolean; error?: string }>;
+      openExternalFile(path: string, trustedArtifact?: boolean): Promise<{ ok: boolean; error?: string }>;
       openInEditor(path: string): Promise<{ ok: boolean; error?: string }>;
       getActiveRules(cwd?: string): Promise<{
         ok: boolean;

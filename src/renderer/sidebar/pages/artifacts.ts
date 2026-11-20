@@ -386,7 +386,7 @@ export function mountArtifactsPage(
       // openExternalFile only opens files under the app's allowed roots; an
       // artifact can live anywhere (user's E: drive, a temp cache), so fall back
       // to revealing it in the file manager instead of failing silently.
-      const opened = await window.nexusDesktop.openExternalFile(path);
+      const opened = await window.nexusDesktop.openExternalFile(path, true);
       if (!opened?.ok) void window.nexusDesktop.revealFile(path);
     } catch {
       /* open is best-effort */
