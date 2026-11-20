@@ -509,7 +509,7 @@ export function mountAgentsPage(
     parts.push(`<div class="agent-current">${active ? `<span class="ac-clear" data-act="clear">${esc(label('agentClear', lang()))}</span>` : ''}
       <span class="ac-cap">${esc(label('agentCurrent', lang()))}</span><br><b>${esc(activeName)}</b></div>`);
 
-    parts.push(`<details class="wb-card agent-template" open>
+    parts.push(`<details class="wb-card agent-template">
       <summary>${esc(label('agentTemplateTitle', lang()))}</summary>
       <p class="wb-desc">${esc(label('agentTemplateHint', lang()))}</p>
       <p class="wb-desc">${esc(label('agentLangHint', lang()))}</p>
