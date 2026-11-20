@@ -4473,6 +4473,7 @@ async function openTab(
   if (!res.ok) {
     if (res.reason === 'max-tabs') addSystem(t('tabsMaxReached'));
     else if (res.reason === 'overloaded') addSystem(t('tabsOverloaded'));
+    else if (res.reason === 'session-gone') addSystem(t('tabsSessionGone'));
     else addSystem(`${t('tabsOpenFailed')}${res.reason ?? ''}`);
     return;
   }

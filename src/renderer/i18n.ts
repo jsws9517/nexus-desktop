@@ -503,6 +503,11 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   },
   tabsOverloaded: { 'zh-CN': '系统资源过高，已暂停新建会话', en: 'System overloaded; new sessions paused' },
   tabsOpenFailed: { 'zh-CN': '无法打开会话标签：', en: 'Failed to open session tab: ' },
+  // The session has been deleted: its row no longer exists in the sessions
+  // table, so "Open session" cannot point at it. Shown by the tabs layer when
+  // openSession refuses to spawn a blank worker for a gone id (defense-in-depth
+  // for stale artifact rows that survived a session delete).
+  tabsSessionGone: { 'zh-CN': '该会话已删除，无法打开', en: 'This session was deleted and cannot be opened' },
   // T2-3: git worktree task isolation.
   worktreeNew: { 'zh-CN': '在新 worktree 中打开', en: 'Open in New Worktree' },
   worktreeManage: { 'zh-CN': '管理 worktree', en: 'Manage Worktrees' },

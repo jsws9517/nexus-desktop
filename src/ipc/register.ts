@@ -726,6 +726,21 @@ export function registerIpc(ctx: IpcContext): void {
       if (sessionWorkers.isLive(sessionId)) {
         return { ok: true, tab: sessionWorkers.get(sessionId) };
       }
+      // A session the user already deleted (or one that was never persisted)
+      // has no `sessions` row. Core's startSession would treat the unknown id
+      // as "create fresh", handing back a brand-new session id — the renderer
+      // tab would then point at the wrong, empty conversation. Refuse up front
+      // and let the UI tell the user the session is gone.
+      {
+        let gone = false;
+        try {
+          const { sessionExists } = await import('../session-db.js');
+          gone = !sessionExists(sessionId);
+        } catch {
+          gone = false; // unreadable DB: do not block a real reopen
+        }
+        if (gone) return { ok: false, reason: 'session-gone' };
+      }
       if (ctx.countOpenTabs() >= ctx.getMaxTabs()) {
         return { ok: false, reason: 'max-tabs' };
       }

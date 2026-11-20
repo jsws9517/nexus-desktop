@@ -859,6 +859,12 @@ export function queryArtifacts(opts: QueryArtifactsOptions = {}): { items: Artif
                       m.content AS content, m.created_at AS created_at
                FROM messages m LEFT JOIN sessions s ON s.id = m.session_id
                WHERE ${where.join(' AND ')}
+               -- A session can be deleted while its messages rows survive
+               -- (the delete path is not fully cascading, or rows were
+               -- written after the delete). Surfacing their artifacts
+               -- would point "Open session" at an id that no longer
+               -- exists, so drop rows whose session row is gone.
+               AND EXISTS (SELECT 1 FROM sessions s2 WHERE s2.id = m.session_id)
                ORDER BY m.created_at DESC, m.id DESC LIMIT ?`;
   // Oversample so a rare row that passes the SQL shape guards but fails full
   // envelope validation does not starve the page of `limit` valid items.
@@ -921,6 +927,25 @@ export function queryArtifacts(opts: QueryArtifactsOptions = {}): { items: Artif
 const PATH_EXISTS_TTL_MS = 60_000;
 const pathExistsCache = new Map<string, { ok: boolean; at: number }>();
 
+/**
+ * Does a persisted session row exist for `sessionId`? Used by openSession to
+ * refuse to spawn a blank worker for an id that has already been deleted (or
+ * that was never a real session). A direct DB read: cheap, no worker round-trip.
+ * Returns true when the DB is unavailable so a transient read failure never
+ * blocks a legitimately-reopenable session.
+ */
+export function sessionExists(sessionId: string): boolean {
+  if (!sessionId) return false;
+  const db = openDb();
+  if (!db) return true;
+  try {
+    const row = db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(sessionId);
+    return row != null;
+  } catch {
+    return true;
+  }
+}
+
 function fileExistsCached(path: string, onMiss?: () => void): boolean {
   const now = Date.now();
   const hit = pathExistsCache.get(path);
@@ -980,6 +1005,10 @@ function queryFileReferenceItems(
                       m.role AS role, m.content AS content, m.created_at AS created_at
                FROM messages m LEFT JOIN sessions s ON s.id = m.session_id
                WHERE m.id < ? AND ${where.join(' AND ')}
+               -- Same guard as the envelope query: drop file rows whose
+               -- owning session has been deleted (its artifacts would
+               -- point "Open session" at a gone id).
+               AND EXISTS (SELECT 1 FROM sessions s2 WHERE s2.id = m.session_id)
                ORDER BY m.id DESC LIMIT ?`;
   const stmt = db.prepare(sql);
 

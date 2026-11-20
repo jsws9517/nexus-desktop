@@ -94,8 +94,9 @@ ins.run('s1', 'tool', `![shot.png](data:image/png;base64,${'A'.repeat(700_000)})
 seed.close();
 
 const {
-  queryArtifacts, getArtifactMessageContent,
+  queryArtifacts, getArtifactMessageContent, sessionExists,
 } = await import(pathToFileURL(join(dist, 'session-db.js')).href);
+const modSessionDb = { sessionExists };
 const {
   extractAttachmentPaths, extractProducedPaths, artifactTypeForPath, isAbsoluteFilePath,
   decodeFileItemId, FILE_ITEM_STRIDE,
@@ -223,3 +224,41 @@ test('newest rows first across envelope and file sources', () => {
   const sorted = [...times].sort((a, b) => b - a);
   assert.deepEqual(times, sorted);
 });
+
+// ── Guard: artifacts of a deleted session must not surface (root cause of ──
+// ── "Open session" landing on a blank, wrong conversation). ─────────────────
+test('file rows whose session was deleted are dropped from the index', () => {
+  // Give the deleted session its OWN deliverable so the test isolates the
+  // session-existence guard from the cross-session path dedup (which already
+  // collapses identical paths). Seed a session, attach a file into it, then
+  // delete the session row while the message survives — exactly what the
+  // periodic session-delete flow leaves behind.
+  const s3Path = join(outDir, 'gamma-only.pdf');
+  writeFileSync(s3Path, 'x');
+  const db2 = new Database(dbPath);
+  db2.prepare('INSERT INTO sessions (id,name,provider,model,created_at,updated_at) VALUES (?,?,?,?,?,?)')
+    .run('s3', 'Gamma', 'p', 'm', T0, T0);
+  db2.prepare('INSERT INTO messages (session_id,role,content,created_at) VALUES (?,?,?,?)')
+    .run('s3', 'user', `@${s3Path}\ndeleted-session attachment`, T0 + 9000);
+  // Simulate the delete: the sessions row disappears but the message remains.
+  db2.prepare('DELETE FROM sessions WHERE id = ?').run('s3');
+  db2.close();
+
+  const items = queryArtifacts({ limit: 400 }).items;
+  const s3Rows = items.filter((it) => it.sessionId === 's3' || it.title === 'gamma-only.pdf');
+  assert.deepEqual(s3Rows, [], 'a deleted session contributes no artifact rows');
+  // The live sessions' own distinct artifacts are still present, so the guard
+  // only prunes the gone session (not its peers).
+  const ids = items.map((it) => it.sessionId);
+  assert.ok(ids.includes('s1'), 's1 rows survive');
+});
+
+test('sessionExists distinguishes live, deleted, and unknown ids', () => {
+  // sessionExists is exported from the same compiled module imported above.
+  const { sessionExists } = modSessionDb;
+  assert.equal(sessionExists('s1'), true);
+  assert.equal(sessionExists('s3'), false, 'deleted session has no row');
+  assert.equal(sessionExists('never-existed'), false);
+  assert.equal(sessionExists(''), false);
+});
+
