@@ -350,12 +350,14 @@ export function mountArtifactsPage(
       const exportBtn = document.createElement('button');
       exportBtn.type = 'button';
       exportBtn.className = 'btn ghost small artifact-action';
-      exportBtn.textContent = label('artifactExport', lang);
+      // "Save" materializes inline content; for file-backed rows it just
+      // reveals the on-disk file, so label that one "Reveal" instead.
+      const fileBacked = item.id < 0;
+      exportBtn.textContent = label(fileBacked ? 'artifactRevealFile' : 'artifactExport', lang);
       exportBtn.addEventListener('click', () => void exportOne(item));
       actions.appendChild(exportBtn);
 
       // File-backed rows (negative ids) are real files on disk: offer "open"
-      // instead of a save-copy export.
       if (item.id < 0) {
         const openFileBtn = document.createElement('button');
         openFileBtn.type = 'button';
