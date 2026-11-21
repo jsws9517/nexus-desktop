@@ -15,7 +15,17 @@
  *     afterwards is `blocked`, not `passed`.
  */
 
+import { parseSubagentFailureKind } from '../tools/acp-router.js';
+
 export type ResultClass = 'ok' | 'blocked' | 'failed';
+
+/**
+ * Subagent delegation failures carry a machine-readable prefix
+ * ([subagent:<kind>]) that is authoritative when present: structured codes
+ * win over prose patterns so a policy/quota denial cannot hide in wording the
+ * regex set below fails to catch.
+ */
+const SUBAGENT_BLOCKED_KINDS = new Set(['blocked_policy', 'blocked_quota']);
 
 const BLOCKED_PATTERNS: RegExp[] = [
   /unattended mode blocked/i,
@@ -32,6 +42,10 @@ const BLOCKED_PATTERNS: RegExp[] = [
   /(?:操作|命令|动作)被(?:拦截|阻止|拒绝)/,
   /(?:权限|授权)不足/,
   /已被(?:安全|策略|门禁)(?:拦截|阻断)/,
+  // Defence in depth for subagent policy denials: even if the structured
+  // short-circuit above is bypassed (a hand-built prose result), the raw code
+  // text still matches here.
+  /\[subagent:blocked_policy\]/,
 ];
 
 /**
@@ -42,6 +56,11 @@ const BLOCKED_PATTERNS: RegExp[] = [
 export function classifyToolResult(isError: boolean, content: string): ResultClass {
   if (!isError) return 'ok';
   if (!content) return 'failed';
+  // Structured subagent codes are authoritative: a policy or quota denial is a
+  // "the gate said no", not a broken tool, even when its prose matches no
+  // BLOCKED_PATTERNS regex.
+  const subagentKind = parseSubagentFailureKind(content);
+  if (subagentKind !== null && SUBAGENT_BLOCKED_KINDS.has(subagentKind)) return 'blocked';
   for (const re of BLOCKED_PATTERNS) {
     if (re.test(content)) return 'blocked';
   }

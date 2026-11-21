@@ -26,7 +26,16 @@ export { FILESYSTEM_TOOLS, FILESYSTEM_TOOL_DEFS, callFsTool } from './filesystem
 export { SEQUENTIAL_THINK_TOOLS, SEQUENTIAL_THINK_TOOL_DEFS, callSequentialThinkTool } from './sequential-think.js';
 export { SQLITE_TOOLS, SQLITE_TOOL_DEFS, callSqliteTool, closeSqliteDbs } from './sqlite.js';
 export { AGENTS_TOOLS, AGENTS_TOOL_DEFS, callAgentsTool } from './agents.js';
-export { ACP_ROUTER_TOOLS, ACP_ROUTER_TOOL_DEFS, callAcpRouterTool } from './acp-router.js';
+export {
+  ACP_ROUTER_TOOLS,
+  ACP_ROUTER_TOOL_DEFS,
+  callAcpRouterTool,
+  parseSubagentFailureKind,
+  buildSubagentFailure,
+  subagentFailureKey,
+  formatSubagentSteer,
+  type SubagentFailureKind,
+} from './acp-router.js';
 export { SKILL_REGISTRIES } from '../skills/index.js';
 export { SHEET_TOOLS, SHEET_TOOL_DEFS, callSheetTool } from '../skills/sheet.js';
 export { CHART_TOOLS, CHART_TOOL_DEFS, callChartTool } from '../skills/chart.js';

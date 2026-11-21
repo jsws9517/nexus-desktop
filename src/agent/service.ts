@@ -519,6 +519,17 @@ export class AgentService {
    * whether the hint already fired, so a timeout storm cannot spam steer.
    */
   private gitSlowHinted = false;
+  /**
+   * Subagent blocked_policy: same per-turn de-dup as gitSlowHinted — a policy
+   * denial that repeats across the turn gets ONE steer banner, not one per
+   * refusal.
+   */
+  private subagentPolicyHinted = false;
+  /**
+   * Subagent blocked_quota: per-turn de-dup for quota hints ("use background
+   * mode or retry later").
+   */
+  private subagentQuotaHinted = false;
   private touchedFiles = new Map<string, { mtimeMs: number; size: number }>();
   private turnTranscript: TranscriptEntry[] = [];
   /** Input of the current turn (contract + anti-cheat context). */
@@ -1871,8 +1882,16 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           // gate-blocked stay args-independent: a class-level refusal is a spin
           // no matter how the args vary.
           const argsDigest = JSON.stringify(event.args ?? {}).slice(0, 80);
-          const failureKey =
-            cls === 'arg-invalid'
+          const subagentKind =
+            isError && DELEGATION_TOOLS.has(name) ? parseSubagentFailureKind(content) : null;
+          // Subagent delegation failures carry a structured [subagent:<kind>]
+          // code; for the DELEGATION_TOOLS family it OVERRIDES the prose class:
+          // blocked_policy/blocked_quota are excluded from the storm counter
+          // (policy said no, not a broken tool); not_found is arg-level; the
+          // rest are class-level. Non-delegation tools keep their legacy keys.
+          const failureKey = subagentKind
+            ? subagentFailureKey(subagentKind, name, argsDigest) ?? `${name}:${argsDigest}`
+            : cls === 'arg-invalid'
               ? `${name}:arg-invalid:${argsDigest}`
               : cls === 'exec-failed' || cls === 'gate-blocked'
                 ? `${name}:${cls}`
@@ -1889,10 +1908,27 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           // (a slow remote must not hard-kill an otherwise healthy turn) and
           // gets ONE model-facing hint per turn instead.
           const gitSlow = isError && isGitSlowResult(name, content);
+          // H1 + subagent codes: policy/quota denials are EXCLUDED from the
+          // fail_seq storm counter (same semantics as gate-blocked: the model
+          // may be asking the user for a grant, or waiting out a quota —
+          // retrying in a loop is legitimate, not a spin).
+          const subagentExcluded = subagentKind === 'blocked_policy' || subagentKind === 'blocked_quota';
           const rv =
-            cls === 'gate-blocked' || gitSlow
+            cls === 'gate-blocked' || gitSlow || subagentExcluded
               ? null
               : rep.noteToolOutcome(name, isError, failureKey);
+          if (subagentExcluded) {
+            this.onLog?.('warn',
+              `[subagent:${subagentKind}] ${name} delegation refused (${subagentKind === 'blocked_policy' ? 'policy' : 'quota'}; excluded from fail_seq)`,
+            );
+            const hinted =
+              subagentKind === 'blocked_policy' ? this.subagentPolicyHinted : this.subagentQuotaHinted;
+            if (!hinted) {
+              if (subagentKind === 'blocked_policy') this.subagentPolicyHinted = true;
+              else this.subagentQuotaHinted = true;
+              this.agent?.enqueueSteer?.(formatSubagentSteer(subagentKind, name));
+            }
+          }
           if (rv?.stalled) this.handleRepetitionGuard(rv);
           if (gitSlow) {
             this.onLog?.('warn', `[git-slow] ${name} timed out (class git-slow; excluded from fail_seq)`);
@@ -1908,6 +1944,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         rep?.reset();
         this.toolCallsAcc = [];
         this.gitSlowHinted = false;
+        this.subagentPolicyHinted = false;
+        this.subagentQuotaHinted = false;
         this.resetCorrectionStep();
       } else if (event.type === 'turn_end') {
         if (rep && this.toolCallsAcc.length > 0) {

@@ -54,6 +54,56 @@ const MAX_ROLE_FILE_BYTES = 16_000;
 const MAX_TOOL_RESULT_CHARS = 30_000;
 
 // ---------------------------------------------------------------------------
+// Subagent failure classification — structured error codes for delegation.
+//
+// Every subagent tool returns one of these codes so the LLM can disambiguate
+// "gate-blocked" from "role not found" without parsing prose. The renderer
+// consumes them to build the steer banner shown in the chat bubble.
+// ---------------------------------------------------------------------------
+export type SubagentFailureKind =
+  | 'blocked_policy'
+  | 'blocked_quota'
+  | 'not_found'
+  | 'exec_error'
+  | 'timeout'
+  | 'unknown';
+
+/**
+ * Build a structured error payload for subagent delegation failures.
+ *
+ * `ToolResult` only carries {content, isError}, so the failure code is encoded
+ * into `content` as a machine-parseable prefix `[subagent:<kind>]`.
+ * Both the LLM (which reads the result) and AgentService.noteToolOutcome
+ * (which logs + classifies) can recover the code without parsing prose.
+ */
+export const SUBAGENT_FAILURE_PREFIX = '[subagent:';
+
+export function buildSubagentFailure(
+  kind: SubagentFailureKind,
+  message: string,
+): { content: string; isError: true } {
+  return {
+    content: `${SUBAGENT_FAILURE_PREFIX}${kind}] ${message}`,
+    isError: true,
+  };
+}
+
+/**
+ * Extract the structured failure code from a subagent error's content.
+ * Returns null when the payload carries no `[subagent:<kind>]` prefix
+ * (i.e. it is not a delegation failure).
+ */
+export function parseSubagentFailureKind(content: string): SubagentFailureKind | null {
+  const m = content.match(/^\[subagent:([a-z_]+)\]/);
+  if (!m) return null;
+  const kind = m[1];
+  const known: SubagentFailureKind[] = [
+    'blocked_policy', 'blocked_quota', 'not_found', 'exec_error', 'timeout', 'unknown',
+  ];
+  return (known.includes(kind as SubagentFailureKind) ? kind : 'unknown') as SubagentFailureKind;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -187,10 +237,15 @@ export async function callAcpRouterTool(
 
   if (action === 'lookup') {
     const roleName = typeof a.role === 'string' ? a.role : '';
-    if (!roleName) return { content: '`role` is required for action=lookup.', isError: true };
+    if (!roleName) return buildSubagentFailure('not_found', '`role` is required for action=lookup.');
     const roles = await discoverRoles(root);
     const role = roles.find((r) => r.name === roleName);
-    if (!role) return { content: `Role "${roleName}" not found. Use acp_router(action=list_roles) to see available roles.`, isError: true };
+    if (!role) {
+      return buildSubagentFailure(
+        'not_found',
+        `Role "${roleName}" not found. Use acp_router(action=list_roles) to see available roles.`,
+      );
+    }
     return { content: JSON.stringify({
       name: role.name,
       path: role.path,
@@ -202,16 +257,16 @@ export async function callAcpRouterTool(
   if (action === 'route') {
     const roleName = typeof a.role === 'string' ? a.role : '';
     const prompt = typeof a.prompt === 'string' ? a.prompt : '';
-    if (!roleName) return { content: '`role` is required for action=route.', isError: true };
-    if (!prompt) return { content: '`prompt` is required for action=route.', isError: true };
+    if (!roleName) return buildSubagentFailure('not_found', '`role` is required for action=route.');
+    if (!prompt) return buildSubagentFailure('not_found', '`prompt` is required for action=route.');
 
     const roles = await discoverRoles(root);
     const role = roles.find((r) => r.name === roleName);
     if (!role) {
-      return {
-        content: `Role "${roleName}" not found. Use acp_router(action=list_roles) to see available roles.`,
-        isError: true,
-      };
+      return buildSubagentFailure(
+        'not_found',
+        `Role "${roleName}" not found. Use acp_router(action=list_roles) to see available roles.`,
+      );
     }
 
     // This tool only resolves config. Role dispatch belongs to core, which owns
@@ -234,5 +289,55 @@ export async function callAcpRouterTool(
     return { content: JSON.stringify(payload) };
   }
 
-  return { content: `Unknown acp_router action: "${action}". Valid: list_roles, lookup, route.`, isError: true };
+  return buildSubagentFailure('unknown', `Unknown acp_router action: "${action}". Valid: list_roles, lookup, route.`);
+}
+
+/**
+ * Map a subagent failure kind to a RepetitionMonitor fail_seq key.
+ *
+ * Pure function so the service's storm-counter branch stays testable without a
+ * live AgentService:
+ *   - `blocked_policy` / `blocked_quota` → `null` (EXCLUDED from the fail_seq
+ *     storm counter, same semantics as gate-blocked: the policy said no, the
+ *     tool is not broken, and the model may be legitimately asking the user for
+ *     a grant / waiting out a quota).
+ *   - `not_found` → arg-level key `${name}:subagent-not-found:${argsDigest}`:
+ *     only the SAME bad args failing repeatedly count as a spin, so a repair
+ *     loop that fixes the role id is not killed.
+ *   - `exec_error` / `timeout` / `unknown` → class-level key
+ *     `${name}:subagent-${kind}`: a repeated failure of the same class is a
+ *     spin no matter how the args vary.
+ */
+export function subagentFailureKey(
+  kind: SubagentFailureKind,
+  name: string,
+  argsDigest: string,
+): string | null {
+  switch (kind) {
+    case 'blocked_policy':
+    case 'blocked_quota':
+      return null;
+    case 'not_found':
+      return `${name}:subagent-not-found:${argsDigest}`;
+    case 'exec_error':
+    case 'timeout':
+    case 'unknown':
+      return `${name}:subagent-${kind}`;
+  }
+}
+
+/**
+ * Build a human-readable steer banner for a delegation failure.
+ * This is injected into the chat so the user sees exactly what went wrong.
+ */
+export function formatSubagentSteer(kind: SubagentFailureKind, toolName: string): string {
+  const steerMap: Record<SubagentFailureKind, string> = {
+    blocked_policy: `Subagent delegate blocked by policy (${toolName}) — user action required.`,
+    blocked_quota: `Subagent delegate quota exceeded — consider background mode.`,
+    not_found: `Subagent role not found — verify role id and try again.`,
+    exec_error: `Subagent execution failed — check logs for details.`,
+    timeout: `Subagent timed out — consider increasing maxDurationMs.`,
+    unknown: `Subagent error (${toolName}) — inspect raw result.`,
+  };
+  return steerMap[kind] ?? steerMap.unknown;
 }
