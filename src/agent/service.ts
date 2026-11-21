@@ -1455,10 +1455,19 @@ export class AgentService {
       _toolCallId: string,
       toolArgs: unknown,
     ) => {
-      // Auto mode: skip UI prompt entirely — let downstream checks handle everything.
-      // The safety gate (unattended) is intentionally more conservative; in auto mode
-      // there's no safety gate so we trust the allowlist + safe paths.
-      if (this.getActiveMode() === 'auto') {
+      // Both auto and unattended are non-interactive: this bridge must never
+      // surface a UI card for either (docs/permissions-modes.md, §unattended).
+      //
+      // - auto: trust the allowlist + safe paths; no safety gate runs.
+      // - unattended: the core safety gate is the SOLE arbiter and runs in
+      //   preToolUse BEFORE any batch verdict (agent.js: preToolUse → batch).
+      //   Core already skips batch permission in unattended precisely so no
+      //   card is shown; if a caller still reaches here, the tool has passed
+      //   the gate and must be allowed — prompting would violate the
+      //   "never interactive" contract and could pin a card for the full
+      //   permission timeout. Only `prompt` asks the user.
+      const mode = this.getActiveMode();
+      if (mode === 'auto' || mode === 'unattended') {
         return { verdict: 'allow' as const };
       }
       const summary =
