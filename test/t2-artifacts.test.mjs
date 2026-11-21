@@ -106,7 +106,7 @@ test('getArtifactMessageContent fetches full raw envelope by message id', () => 
 // ── page filter state machine (pure helpers) ─────────────────────────────────
 
 const {
-  sinceMsFor, deriveSessions, filterArtifacts, exportPayloadFor,
+  sinceMsFor, deriveSessions, filterArtifacts, exportPayloadFor, SESSION_CURRENT,
 } = await import(pathToFileURL(join(dist, 'renderer', 'sidebar', 'pages', 'artifacts.js')).href);
 
 const NOW = new Date(2024, 0, 10, 12, 0, 0).getTime();
@@ -130,15 +130,48 @@ test('deriveSessions dedupes by sessionId and keeps names', () => {
 });
 
 test('filterArtifacts combines type / session / time and never inspects body', () => {
-  assert.equal(filterArtifacts(items, { type: '', sessionId: '', time: 'all' }, NOW).length, 3);
+  assert.equal(filterArtifacts(items, { type: '', sessionId: '', time: 'all' }, NOW, '').length, 3);
   assert.deepEqual(
-    filterArtifacts(items, { type: 'chart', sessionId: 's1', time: 'all' }, NOW).map((x) => x.id),
+    filterArtifacts(items, { type: 'chart', sessionId: 's1', time: 'all' }, NOW, '').map((x) => x.id),
     [1],
   );
   // Only today's image survives (chart is 1s before midnight? both today here —
   // use 7days to exclude the 9-day-old markdown).
   assert.deepEqual(
-    filterArtifacts(items, { type: '', sessionId: '', time: '7days' }, NOW).map((x) => x.id),
+    filterArtifacts(items, { type: '', sessionId: '', time: '7days' }, NOW, '').map((x) => x.id),
+    [1, 3],
+  );
+});
+
+test('filterArtifacts resolves SESSION_CURRENT to the live active session', () => {
+  // Active session s1 → only s1 rows survive.
+  assert.deepEqual(
+    filterArtifacts(items, { type: '', sessionId: SESSION_CURRENT, time: 'all' }, NOW, 's1').map((x) => x.id),
+    [1, 3],
+  );
+  // Active session s2 → only the s2 markdown row survives.
+  assert.deepEqual(
+    filterArtifacts(items, { type: '', sessionId: SESSION_CURRENT, time: 'all' }, NOW, 's2').map((x) => x.id),
+    [2],
+  );
+  // No active session (activeSessionId = '') → empty, not silently widened.
+  assert.deepEqual(
+    filterArtifacts(items, { type: '', sessionId: SESSION_CURRENT, time: 'all' }, NOW, ''),
+    [],
+  );
+  // Active session with no rows in the aggregate → empty.
+  assert.deepEqual(
+    filterArtifacts(items, { type: '', sessionId: SESSION_CURRENT, time: 'all' }, NOW, 's9'),
+    [],
+  );
+  // Stacks with a type filter: active s1 + type 'chart' → only the s1 chart.
+  assert.deepEqual(
+    filterArtifacts(items, { type: 'chart', sessionId: SESSION_CURRENT, time: 'all' }, NOW, 's1').map((x) => x.id),
+    [1],
+  );
+  // Stacks with a time filter: active s1 + 7days → excludes the 9-day-old row (none in s1, so both s1 rows).
+  assert.deepEqual(
+    filterArtifacts(items, { type: '', sessionId: SESSION_CURRENT, time: '7days' }, NOW, 's1').map((x) => x.id),
     [1, 3],
   );
 });

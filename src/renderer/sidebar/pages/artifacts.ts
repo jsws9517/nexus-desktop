@@ -36,10 +36,18 @@ import type { SidebarContext } from '../types.js';
 
 export type ArtifactTimeFilter = 'today' | '7days' | 'all';
 
+/**
+ * Sentinel value for the "current session" option in the session dropdown.
+ * It is resolved to the live active tab's sessionId at render time; when no
+ * session is active, or the active session has no artifacts in the current
+ * aggregate, the list shows an empty state rather than silently widening.
+ */
+export const SESSION_CURRENT = '__current__';
+
 export interface ArtifactFilterState {
   /** '' = all types. */
   type: string;
-  /** '' = all sessions. */
+  /** '' = all sessions; SESSION_CURRENT = the active tab's session; else a concrete sessionId. */
   sessionId: string;
   time: ArtifactTimeFilter;
 }
@@ -110,16 +118,35 @@ export function deriveSessions(items: ArtifactListItem[]): SessionOption[] {
  * Apply type / session / time filters to the aggregated list. Entries with a
  * missing type or session simply never match a specific filter (they stay
  * visible under "all") — the risk noted in the plan. No body inspection.
+ *
+ * When `state.sessionId` is the SESSION_CURRENT sentinel, it is resolved to
+ * `activeSessionId` (the live active tab's id). If that resolves to '' (no
+ * active tab), or the active session has no rows in `items`, the result is
+ * empty — the empty state is surfaced by the page, not silently widened.
  */
 export function filterArtifacts(
   items: ArtifactListItem[],
   state: ArtifactFilterState,
   now: number,
+  activeSessionId: string,
 ): ArtifactListItem[] {
   const since = sinceMsFor(state.time, now);
+  // Resolve the SESSION_CURRENT sentinel to the live active session up front,
+  // so a single comparison below covers every branch. When the sentinel is
+  // active but no session is (or the active session has no rows), the result
+  // is intentionally empty — the page shows an empty state, not a silent
+  // widening to "all sessions".
+  const isCurrentScope = state.sessionId === SESSION_CURRENT;
+  const effectiveSession = isCurrentScope ? activeSessionId : state.sessionId;
   return items.filter((it) => {
     if (state.type && it.type !== state.type) return false;
-    if (state.sessionId && it.sessionId !== state.sessionId) return false;
+    // SESSION_CURRENT with no active session → no rows match (empty state).
+    if (isCurrentScope) {
+      if (!activeSessionId) return false;
+      if (it.sessionId !== activeSessionId) return false;
+    } else if (effectiveSession && it.sessionId !== effectiveSession) {
+      return false;
+    }
     if (since !== undefined && it.createdAt < since) return false;
     return true;
   });
@@ -290,6 +317,15 @@ export function mountArtifactsPage(
     all.value = '';
     all.textContent = label('artifactFilterAllSessions', lang);
     sessionSel.select.appendChild(all);
+    // The "current session" sentinel: always present as the second option so
+    // the user can one-click scope to the active tab without remembering its id.
+    // It resolves to the live active session at render time; when no session is
+    // active, or it has no artifacts, the list shows an empty state.
+    const cur = document.createElement('option');
+    cur.value = SESSION_CURRENT;
+    cur.textContent = label('artifactCurrentSession', lang);
+    cur.title = label('artifactCurrentSessionHint', lang);
+    sessionSel.select.appendChild(cur);
     for (const s of deriveSessions(allItems)) {
       const option = document.createElement('option');
       option.value = s.sessionId;
@@ -303,13 +339,27 @@ export function mountArtifactsPage(
 
   function render(): void {
     const lang = langOf(ctx, opts);
-    const rows = filterArtifacts(allItems, state, now());
+    const activeSessionId = ctx.getActiveSessionId?.() ?? '';
+    const rows = filterArtifacts(allItems, state, now(), activeSessionId);
+    // Empty state for the SESSION_CURRENT sentinel: the active session is
+    // genuinely empty (or there is no active tab). Distinguish "no active
+    // session at all" from "active session has no artifacts yet" so the user
+    // knows why the list is blank.
+    const isCurrentScope = state.sessionId === SESSION_CURRENT;
     status.textContent = `${rows.length}`;
     list.replaceChildren();
     if (rows.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'artifacts-empty';
-      empty.textContent = label('artifactEmpty', lang);
+      if (isCurrentScope && !activeSessionId) {
+        empty.textContent = label('artifactNoActiveSession', lang);
+      } else if (isCurrentScope) {
+        // activeSessionId is non-empty but produced no rows: the session has
+        // no artifacts in the current aggregate. Use the generic empty label.
+        empty.textContent = label('artifactEmpty', lang);
+      } else {
+        empty.textContent = label('artifactEmpty', lang);
+      }
       list.appendChild(empty);
       return;
     }
@@ -448,9 +498,17 @@ export function mountArtifactsPage(
   void load();
   const timer = setInterval(() => void load(), pollMs);
 
+  // Re-render immediately when the active tab changes (the SESSION_CURRENT
+  // filter resolves to the live active session, so a tab switch must refresh
+  // the list without waiting for the 10s poll). Sub-agents page does the same.
+  const unsubscribe = ctx.subscribe((event) => {
+    if (event.type === 'session_changed') render();
+  });
+
   return () => {
     disposed = true;
     clearInterval(timer);
+    unsubscribe();
     container.innerHTML = '';
   };
 }

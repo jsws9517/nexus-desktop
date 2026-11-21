@@ -735,6 +735,12 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   artifactTimeAll: { 'zh-CN': '全部', en: 'All time' },
   artifactFilterAllTypes: { 'zh-CN': '全部类型', en: 'All types' },
   artifactFilterAllSessions: { 'zh-CN': '全部会话', en: 'All sessions' },
+  // The "current session" sentinel option in the session dropdown. It scopes
+  // the list to the live active tab; when no tab is active the list shows
+  // artifactNoActiveSession instead of silently widening.
+  artifactCurrentSession: { 'zh-CN': '当前会话', en: 'Current session' },
+  artifactCurrentSessionHint: { 'zh-CN': '只看当前激活标签页的会话产物', en: 'Show only the active tab\'s session artifacts' },
+  artifactNoActiveSession: { 'zh-CN': '当前没有激活的会话', en: 'No active session' },
   artifactUntitledSession: { 'zh-CN': '未命名会话', en: 'Untitled session' },
 
   // P0 Preview panel.
