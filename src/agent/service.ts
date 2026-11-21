@@ -55,6 +55,9 @@ import {
   skillToolNames,
   ToolRefreshQueue,
   AUTOMATION_OFFICE_PINS,
+  parseSubagentFailureKind,
+  subagentFailureKey,
+  formatSubagentSteer,
 } from '../tools/index.js';
 import { applyRouting } from '../tools/routing.js';
 import { aliasFamilyOf } from '../tools/tool-relevance.js';
@@ -822,7 +825,12 @@ export class AgentService {
         ? 'git-slow'
         : classifyToolFailure({ content: String(r?.content ?? ''), kind: r?.kind as 'ok' | 'exec_error' | 'tool_error' })
       : 'ok';
-    const line = `[tool-${failed ? 'error' : 'ok'}] ${name}${target}${failed ? ` [${failClass}]` : ''} -> ${outcomeLine(result)}`;
+    // Delegation failures carry a structured [subagent:<kind>] code — log it in
+    // place of the prose-derived class so operators can grep the whole family
+    // by code without reading the outcome text.
+    const subagentKind = failed ? parseSubagentFailureKind(String(r?.content ?? '')) : null;
+    const classTag = subagentKind ? `[subagent:${subagentKind}]` : `[${failClass}]`;
+    const line = `[tool-${failed ? 'error' : 'ok'}] ${name}${target}${failed ? ` ${classTag}` : ''} -> ${outcomeLine(result)}`;
     if (failed) logger.warn(line);
     else logger.info(line);
   }
@@ -3531,6 +3539,43 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         this.emitText(`Project directory set to ${target} (persisted)\n`);
       } else {
         this.emitText(`Working directory switched to ${target} (temporary)\n`);
+        // /chcwd does NOT persist or rebind the project (that is /setdir's job),
+        // but the sentinel and path-authorizer still need to know the new cwd is
+        // in scope, or every subsequent write in that directory is denied as
+        // "outside the authorized root". Check whether the target is already
+        // authorized; if not, run the same authorization flow /setdir uses so the
+        // user gets a one-time Allow/Deny card and the sentinel rebases to the
+        // new working directory. This keeps /chcwd "temporary" (no metadata
+        // persistence) while still making the new directory usable.
+        try {
+          const { getAuthorizedRoots, authorizePath: authPath, grantProjectRoot } =
+            await import('nexus-coder/dist/src/desktop-api.js');
+          const roots = getAuthorizedRoots();
+          const isWithin = roots.some(
+            (r) => {
+              const norm = (p: string) => p.toLowerCase().replace(/\\/g, '/');
+              const t = norm(target);
+              const root = norm(r);
+              return t === root || t.startsWith(root.endsWith('/') ? root : root + '/');
+            },
+          );
+          if (!isWithin) {
+            const ok = await authPath(target);
+            if (ok) {
+              grantProjectRoot(target);
+              this.activeSentinel?.setRoot(target);
+              this.emitText(`Path authorized for ${target}\n`);
+            } else {
+              this.emitText(`Path ${target} is not authorized. Write operations there will be blocked.\n`);
+            }
+          } else {
+            // Already authorized: just rebase the sentinel so its immutable-zone
+            // globs resolve relative to the new cwd.
+            this.activeSentinel?.setRoot(target);
+          }
+        } catch (e) {
+          this.onLog?.('warn', `/chcwd: authorization check failed: ${(e as Error).message}`);
+        }
       }
       this.onEvent?.({ type: 'cwdChanged', cwd: target, sessionId: sid });
       return true;

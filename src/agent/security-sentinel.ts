@@ -240,7 +240,15 @@ export class SecuritySentinel {
       for (const p of immutableTargets) {
         if (this.isImmutable(p)) {
           evidence.push(`target in immutable zone: ${p}`);
-          return this.fatal('policy_write', 'policy_write', 'write to harness/policy zone is forbidden', evidence);
+          return this.fatal(
+            'policy_write',
+            'policy_write',
+            `write to immutable zone blocked: ${p}. ` +
+              `This is a configurable security policy (immutablePaths), not a hard wall. ` +
+              `Override it by editing ~/.nexus/correction.json and setting ` +
+              `"immutablePaths" to exclude the pattern that matches this path.`,
+            evidence,
+          );
         }
       }
     }
