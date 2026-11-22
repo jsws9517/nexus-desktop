@@ -310,16 +310,28 @@ const api = {
   getResourceState: () => ipcRenderer.invoke('nexus:getResourceState'),
   getRateLimitStatus: () => ipcRenderer.invoke('nexus:getRateLimitStatus'),
 
-  // Spend mode: per-provider billing tier + global default.
+  // Spend mode: per-provider billing tier + global default + optional relax
+  // override for unattended-coding floors.
   getSpendMode: () =>
     ipcRenderer.invoke('nexus:getSpendMode') as Promise<{
       default: string;
       providers: Record<string, { mode: string; host?: string; updatedAt?: string }>;
+      /** Unattended-coding relaxation floors (optional). */
+      relax?: { turns?: number; subAgentTurns?: number };
     }>,
   setSpendModeDefault: (mode: string) =>
     ipcRenderer.invoke('nexus:setSpendModeDefault', mode) as Promise<{ ok: boolean }>,
   setProviderSpendMode: (provider: string, host: string, mode: string | null) =>
     ipcRenderer.invoke('nexus:setProviderSpendMode', { provider, host, mode }) as Promise<{ ok: boolean }>,
+  // Unattended-coding relaxation floors (desktop.json `spendMode.relax`).
+  // The settings page persists the values; the worker reads them mtime-cached.
+  getSpendModeRelax: () =>
+    ipcRenderer.invoke('nexus:getSpendModeRelax') as Promise<{
+      ok: boolean;
+      relax?: { turns?: number; subAgentTurns?: number };
+    }>,
+  setSpendModeRelax: (r: { turns?: number; subAgentTurns?: number }) =>
+    ipcRenderer.invoke('nexus:setSpendModeRelax', r) as Promise<{ ok: boolean }>,
 
   // Multi-tab: per-session worker lifecycle.
   openSession: (sessionId: string, cwd?: string) =>

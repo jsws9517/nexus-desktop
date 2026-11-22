@@ -23,6 +23,23 @@
 
 export type SpendMode = 'token' | 'coding' | 'free';
 
+/**
+ * Optional desktop.json overrides for the unattended-coding relaxation floors
+ * (see SpendPolicy.relaxedTurns / relaxedSubAgentTurns). Shape mirrors the
+ * `spendMode` section already dual-written by the /billing worker, so both
+ * surfaces can persist through the same mtime-cached read.
+ *
+ *   "spendMode": {
+ *     "default": "coding",
+ *     "relax": { "turns": 300, "subAgentTurns": 90 },
+ *     "providers": { ... }
+ *   }
+ */
+export interface SpendModeOverride {
+  turns?: number;
+  subAgentTurns?: number;
+}
+
 /** Per-tier strategy. Single source of truth for every injection point. */
 export interface SpendPolicy {
   /** Sliding-window RPM the rate limiter paces to. */
@@ -47,6 +64,24 @@ export interface SpendPolicy {
    * tool) before the harness calls it a spin; frugal tiers stop early.
    */
   failSeqMax: number;
+  /**
+   * Temporary floor applied to the main-chat `maxTurns` during unattended
+   * coding runs. Only the `coding` tier relaxes: unattended coding is the one
+   * mode where the user has explicitly asked for long-running work, so the
+   * harness raises its turn budget. The relaxation is always restored in
+   * `finally` after the turn.
+   *
+   * Floor, never ceiling: a user-configured value above this is preserved
+   * (Math.max against the configured baseline). Default 200 matches the
+   * historical RELAXED_UNATTENDED_MAX_TURNS constant.
+   */
+  relaxedTurns?: number;
+  /**
+   * Temporary floor applied to every sub-agent role's maxTurns during
+   * unattended coding runs. Same floor-not-ceiling semantics as `relaxedTurns`.
+   * Default 60 matches the historical RELAXED_SUBAGENT_FLOOR_TURNS constant.
+   */
+  relaxedSubAgentTurns?: number;
 }
 
 export const SPEND_MODES: readonly SpendMode[] = ['token', 'coding', 'free'] as const;
@@ -79,6 +114,10 @@ export const SPEND_POLICIES: Record<SpendMode, SpendPolicy> = {
     // Subscription backstop: tolerate longer same-class failure storms (a model
     // repairing bad args or probing a flaky tool) before the spin guard aborts.
     failSeqMax: 6,
+    // Unattended-coding relaxation floors (see SpendPolicy.relaxedTurns docs).
+    // Overridable in desktop.json; these are the safe defaults.
+    relaxedTurns: 200,
+    relaxedSubAgentTurns: 60,
   },
   free: {
     rpm: 3,
@@ -105,6 +144,28 @@ export function resolveSpendPolicy(mode: SpendMode): SpendPolicy {
   return SPEND_POLICIES[mode] ?? SPEND_POLICIES[DEFAULT_SPEND_MODE];
 }
 
+/**
+ * Resolve the relaxed-turns floor for the coding tier.
+ *
+ * `override` (when finite and > 0) wins; otherwise the policy's built-in
+ * `relaxedTurns` (or the 200 fallback for tiers that don't declare one, e.g.
+ * the `token` / `free` tiers where the relaxation itself is off anyway).
+ *
+ * Callers are expected to combine with Math.max(configured, floor) so that a
+ * user value above the floor is never lowered — this function only returns
+ * the floor component, never the final effective value.
+ */
+export function resolveRelaxedTurns(policy: SpendPolicy, override?: number): number {
+  const base = policy.relaxedTurns ?? 200;
+  return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : base;
+}
+
+/** Resolve the relaxed sub-agent floor for the coding tier (same semantics). */
+export function resolveRelaxedSubAgentTurns(policy: SpendPolicy, override?: number): number {
+  const base = policy.relaxedSubAgentTurns ?? 60;
+  return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : base;
+}
+
 /** Human-readable short label per tier (renderer chip). */
 export const SPEND_MODE_LABEL: Record<SpendMode, string> = {
   token: 'Token',
@@ -113,9 +174,9 @@ export const SPEND_MODE_LABEL: Record<SpendMode, string> = {
 };
 
 /** A one-line policy summary for the /billing status card. */
-export function describeSpendPolicy(mode: SpendMode): string {
+export function describeSpendPolicy(mode: SpendMode, overrides?: SpendModeOverride): string {
   const p = resolveSpendPolicy(mode);
-  return [
+  const lines = [
     `RPM ${p.rpm}`,
     `429 backoff ${Math.round(p.backoffBaseMs / 1000)}s–${Math.round(p.backoffCapMs / 1000)}s`,
     `loop ≥ ${p.maxRepeat}`,
@@ -123,5 +184,15 @@ export function describeSpendPolicy(mode: SpendMode): string {
     `fan-out ≤ ${p.fanoutCap}`,
     `retry ≤ ${p.retryBudget}`,
     `fail-seq ≥ ${p.failSeqMax}`,
-  ].join(' · ');
+  ];
+  // The relaxation knobs only mean something on the coding tier; surfacing
+  // them there (with the effective value incl. desktop.json overrides) is what
+  // makes the previously-hardcoded 200/60 floors discoverable from /billing.
+  if (mode === 'coding') {
+    lines.push(
+      `relax turns ≥ ${resolveRelaxedTurns(p, overrides?.turns)}`,
+      `relax sub-agent turns ≥ ${resolveRelaxedSubAgentTurns(p, overrides?.subAgentTurns)}`,
+    );
+  }
+  return lines.join(' · ');
 }

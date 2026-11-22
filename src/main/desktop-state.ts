@@ -57,13 +57,16 @@ interface DesktopStateData {
   // GitHub prerelease (e.g. 0.3.5-beta.1), so stable builds can surface a
   // beta update in-app. Persisted to ~/.nexus/desktop.json.
   allowBetaUpdates?: boolean;
-  // Per-provider spend mode (token/coding/free) + global default. Written by the
-  // settings page (main) AND the /billing slash command (worker) — so reads are
-  // mtime-aware. See src/shared/spend-policy.ts.
+  // Per-provider spend mode (token/coding/free) + global default + optional
+  // relaxation-override section. Written by the settings page (main) AND the
+  // /billing slash command (worker) — so reads are mtime-aware. See
+  // src/shared/spend-policy.ts for the `relax` section's semantics.
   spendMode?: {
     v?: number;
     default?: string;
     providers?: Record<string, { mode?: string; host?: string; updatedAt?: string }>;
+    /** Unattended-coding relaxation floors (optional override). */
+    relax?: { turns?: number; subAgentTurns?: number };
   };
   // H2: how long an unanswered permission card may wait (ms) before it
   // auto-denies. Read by the worker (src/agent/desktop-config.ts) with an
@@ -121,9 +124,13 @@ export interface DesktopStateAccess {
   getSpendMode(): {
     default: string;
     providers: Record<string, { mode: string; host?: string; updatedAt?: string }>;
+    /** Unattended-coding relaxation floors (optional override). */
+    relax?: { turns?: number; subAgentTurns?: number };
   };
   setSpendModeDefault(mode: string): void;
   setProviderSpendMode(provider: string, host: string, mode: string | null): void;
+  /** Unattended-coding relaxation floors (desktop.json `spendMode.relax`). */
+  setSpendModeRelax(r: { turns?: number; subAgentTurns?: number }): void;
   /** H2: permission-card timeout (ms); absent/invalid → 10-minute default. */
   getPermissionTimeoutMs(): number;
   setPermissionTimeoutMs(ms: number): void;
@@ -386,9 +393,26 @@ export function createDesktopState(): DesktopStateStore {
           updatedAt: typeof e.updatedAt === 'string' ? e.updatedAt : undefined,
         };
       }
+      // Normalize the optional `relax` section (unattended-coding floors).
+      // Garbage values are dropped rather than forwarded so a hand-edited
+      // desktop.json cannot ever silently lower the spend-policy default.
+      let relax: { turns?: number; subAgentTurns?: number } | undefined;
+      const r = s?.relax;
+      if (r && typeof r === 'object' && !Array.isArray(r)) {
+        const rr = r as { turns?: unknown; subAgentTurns?: unknown };
+        const out: { turns?: number; subAgentTurns?: number } = {};
+        if (typeof rr.turns === 'number' && Number.isFinite(rr.turns) && rr.turns > 0) {
+          out.turns = Math.round(rr.turns);
+        }
+        if (typeof rr.subAgentTurns === 'number' && Number.isFinite(rr.subAgentTurns) && rr.subAgentTurns > 0) {
+          out.subAgentTurns = Math.round(rr.subAgentTurns);
+        }
+        if (out.turns !== undefined || out.subAgentTurns !== undefined) relax = out;
+      }
       return {
         default: typeof s?.default === 'string' && s.default ? s.default : 'token',
         providers,
+        relax,
       };
     },
     setSpendModeDefault(mode: string): void {
@@ -398,6 +422,8 @@ export function createDesktopState(): DesktopStateStore {
           v: 1,
           default: typeof mode === 'string' && mode ? mode : 'token',
           providers: s?.providers ?? {},
+          // Preserve the optional relax override across a default write.
+          ...(s?.relax ? { relax: s.relax } : {}),
         },
       });
     },
@@ -416,6 +442,23 @@ export function createDesktopState(): DesktopStateStore {
           v: 1,
           default: typeof s?.default === 'string' ? s.default : 'token',
           providers,
+          // Preserve the optional relax override across a provider-mode write.
+          ...(s?.relax ? { relax: s.relax } : {}),
+        },
+      });
+    },
+    setSpendModeRelax(r: { turns?: number; subAgentTurns?: number }): void {
+      const s = read().spendMode;
+      const cur = s?.relax ?? {};
+      const next: { turns?: number; subAgentTurns?: number } = { ...cur };
+      if (r.turns !== undefined) next.turns = r.turns;
+      if (r.subAgentTurns !== undefined) next.subAgentTurns = r.subAgentTurns;
+      write({
+        spendMode: {
+          v: 1,
+          default: typeof s?.default === 'string' ? s.default : 'token',
+          providers: s?.providers ?? {},
+          relax: next,
         },
       });
     },

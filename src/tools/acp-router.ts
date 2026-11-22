@@ -21,8 +21,23 @@
  *   tools: [read_media_file, list_directory_with_sizes, query]
  *   constitution: path relative to .nexus/agents/<name>/
  *   background: true|false   (default: false — inline is faster)
+ *   maxDurationMs: 300000    (optional wall-clock cap for this role's job)
+ *   maxTurns: 20             (optional LLM-turn cap for this role's job)
+ *   maxTokens: 8192          (optional per-reply output-token budget)
  *   ---
  *   <system prompt for this role>
+ *
+ * Turn / token limits in this file are LOCAL overrides for THIS role only.
+ * They do NOT affect the parent chat or any other sub-agent role. The
+ * canonical turn budgets live in the core config (config.json):
+ *   - top-level `maxTurns`        — main-chat baseline (default 25)
+ *   - `subAgents.maxTurns.<role>` — per-role sub-agent budget
+ *                                    (general 8 / tester 4 / committer 4 /
+ *                                     office 12 / skill-fixer 8 / tdd 10)
+ * A role file that omits `maxTurns` inherits the config value for the role
+ * core dispatches; a role file that sets `maxTurns` here is a per-job
+ * override that core honours only when the role is routed through
+ * acp_router and the dispatch path reads roleConfig.maxTurns.
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -40,6 +55,8 @@ interface RoleFrontMatter {
   background?: boolean;
   maxDurationMs?: number;
   maxTurns?: number;
+  /** Per-reply output-token budget for this role's sub-agent job. */
+  maxTokens?: number;
 }
 
 interface RoleDef {
@@ -129,6 +146,9 @@ function extractFrontMatter(content: string): { body: string; fm: RoleFrontMatte
     } else if (key === 'maxTurns') {
       const n = Number(val);
       if (Number.isFinite(n)) fm.maxTurns = n;
+    } else if (key === 'maxTokens') {
+      const n = Number(val);
+      if (Number.isFinite(n)) fm.maxTokens = n;
     } else if (key === 'role') {
       fm.role = val;
     }
@@ -280,6 +300,7 @@ export async function callAcpRouterTool(
         background: role.frontmatter.background,
         maxDurationMs: role.frontmatter.maxDurationMs,
         maxTurns: role.frontmatter.maxTurns,
+        maxTokens: role.frontmatter.maxTokens,
         constitution: role.frontmatter.constitution,
       },
       prompt,

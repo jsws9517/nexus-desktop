@@ -137,8 +137,11 @@ export const CHANNELS = {
   setAllowBetaUpdates: 'nexus:setAllowBetaUpdates',
   getPermissionTimeoutMs: 'nexus:getPermissionTimeoutMs',
   setPermissionTimeoutMs: 'nexus:setPermissionTimeoutMs',
+  // Unattended-coding relaxation floors (desktop.json `spendMode.relax`).
+  // The settings page persists the values; the worker reads them mtime-cached.
+  getSpendModeRelax: 'nexus:getSpendModeRelax',
+  setSpendModeRelax: 'nexus:setSpendModeRelax',
   getResourceState: 'nexus:getResourceState',
-
   // Spend mode: per-provider billing tier + global default (desktop.json).
   getSpendMode: 'nexus:getSpendMode',
   setSpendModeDefault: 'nexus:setSpendModeDefault',

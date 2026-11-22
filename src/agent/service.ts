@@ -87,6 +87,8 @@ import type { AgentEvent, PermissionRequest, ProviderInfo, RateLimitStatus } fro
 import { RateLimiter, inferProviderFamily } from './rate-limiter.js';
 import {
   resolveSpendPolicy,
+  resolveRelaxedTurns,
+  resolveRelaxedSubAgentTurns,
   SPEND_MODE_LABEL,
   describeSpendPolicy,
   type SpendMode,
@@ -99,7 +101,7 @@ import {
   suggestForHost,
   writeProviderMode,
 } from './spend-mode-store.js';
-import { readPermissionTimeoutMs } from './desktop-config.js';
+import { readPermissionTimeoutMs, readSpendModeOverride } from './desktop-config.js';
 import type { SubTask } from './types.js';
 import { extractTopic } from './topic.js';
 import { planFanoutClauses, shouldUseFanout } from './fanout.js';
@@ -334,9 +336,31 @@ function inferTaskKind(input: string): 'coding' | 'research' | 'ops' | 'chat' {
 // coding task; always restored in `finally`. The 6h SessionBudget wall-clock
 // watchdog stays in force as the real upper bound — relaxing turns is NOT
 // removing safety nets.
-const RELAXED_UNATTENDED_MAX_TURNS = 200;
-const RELAXED_SUBAGENT_FLOOR_TURNS = 60;
+//
+// The floors below were historical constants. They are now SPEND POLICY
+// defaults: src/shared/spend-policy.ts `SpendPolicy.relaxedTurns` (200) and
+// `relaxedSubAgentTurns` (60), overridable per user via
+// ~/.nexus/desktop.json `spendMode.relax` — the same file already dual-written
+// by the /billing worker (mtime-cached reader). A desktop.json override only
+// RAISES the floor; it can never lower a configured `maxTurns` above the
+// floor (Math.max floor semantics, see runTurn).
 const RELAXABLE_SUBAGENT_ROLES = ['general', 'tester', 'committer', 'skill-fixer', 'office', 'tdd'];
+
+/**
+ * Best-effort read of the desktop.json `spendMode.relax` override.
+ *
+ * The mtime-cached reader (desktop-config.ts) never throws by contract, but
+ * this wrapper guards against a future change breaking runTurn / /billing
+ * paths. Returns `{}` when the file is missing / the section is absent /
+ * malformed — the spend-policy defaults then apply.
+ */
+function safeReadSpendOverride(): { relax?: import('../shared/spend-policy.js').SpendModeOverride } {
+  try {
+    return readSpendModeOverride();
+  } catch {
+    return {};
+  }
+}
 
 /** Return shape of the desktop completion gate (subset of core's TurnEndVerdict). */
 interface CompletionGateVerdict {
@@ -2758,14 +2782,18 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (relaxTurns) {
       // The baseline comes from top-level `maxTurns` (read into agent.maxTurns
       // in the core Agent constructor). Read it defensively too so a configured
-      // value above the 200 floor is never lowered by this temporary relaxation.
+      // value above the relaxation floor is never lowered by this temporary
+      // relaxation. The floor itself is a SPEND POLICY default (spend-policy.ts
+      // `relaxedTurns` / `relaxedSubAgentTurns`) overridable via
+      // ~/.nexus/desktop.json `spendMode.relax` — see getTurnRelaxationFloors.
       const configuredMaxTurns = agent.config.getMaxTurns?.() ?? originalMaxTurns;
-      agent.maxTurns = Math.max(configuredMaxTurns, originalMaxTurns, RELAXED_UNATTENDED_MAX_TURNS);
+      const { parentFloor, subAgentFloor } = this.getTurnRelaxationFloors();
+      agent.maxTurns = Math.max(configuredMaxTurns, originalMaxTurns, parentFloor);
       try {
         const snapshot = agent.config.getSubAgentMaxTurnsSnapshot(RELAXABLE_SUBAGENT_ROLES);
         const relaxed: Record<string, number> = {};
         for (const [role, turns] of Object.entries(snapshot)) {
-          relaxed[role] = Math.max(turns, RELAXED_SUBAGENT_FLOOR_TURNS);
+          relaxed[role] = Math.max(turns, subAgentFloor);
         }
         agent.config.setSubAgentMaxTurnsInMemory(relaxed);
         restoreSubAgentTurns = () => agent.config.setSubAgentMaxTurnsInMemory(snapshot);
@@ -3767,10 +3795,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const sub = (args[0] || 'status').toLowerCase();
 
     if (sub === 'status' || sub === '') {
+      const override = safeReadSpendOverride();
       const lines: string[] = [
         `Provider: ${spend.provider}`,
         `Spend mode: ${spend.mode} (${SPEND_MODE_LABEL[spend.mode]}) — ${spend.source === 'manual' ? 'manual' : 'default'}`,
-        `Policy: ${describeSpendPolicy(spend.mode)}`,
+        `Policy: ${describeSpendPolicy(spend.mode, override?.relax)}`,
       ];
       if (spend.hostChanged) {
         lines.push(
@@ -3809,8 +3838,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const mode = sub as SpendMode;
     const res = writeProviderMode(spend.provider, spend.host, mode);
     if (res.ok) {
+      const override = safeReadSpendOverride();
       this.emitText(
-        `Spend mode for "${spend.provider}" set to ${SPEND_MODE_LABEL[mode]} (${describeSpendPolicy(mode)}).\n`,
+        `Spend mode for "${spend.provider}" set to ${SPEND_MODE_LABEL[mode]} (${describeSpendPolicy(mode, override?.relax)}).\n`,
       );
       this.onEvent?.({ type: 'spend_mode', provider: spend.provider, mode, source: 'manual' });
     } else {
@@ -4878,6 +4908,31 @@ private resetAttachmentRagRoundCache(): void {
     return this.getActiveMode() === 'unattended'
       && this.getSpendContext().mode === 'coding'
       && inferTaskKind(input) === 'coding';
+  }
+
+  /**
+   * Resolve the two relaxation floors for the active spend tier:
+   *   - `parentFloor`    = Math.max(policy default, desktop.json override, 1)
+   *   - `subAgentFloor`  = same for the sub-agent roles
+   *
+   * The override path is the same mtime-cached desktop.json reader already
+   * used for permissionTimeoutMs (desktop-config.ts), so a settings-page or
+   * /billing write takes effect on the NEXT runTurn — no worker restart.
+   * Invalid / absent values fall back to the policy default (200 / 60).
+   *
+   * Floor, never ceiling: runTurn still applies Math.max(configured, floor),
+   * so a user-configured value above the floor is preserved.
+   */
+  private getTurnRelaxationFloors(): { parentFloor: number; subAgentFloor: number } {
+    const ctx = this.getSpendContext();
+    const policy = ctx.policy;
+    const override = safeReadSpendOverride();
+    const parentFloor = resolveRelaxedTurns(policy, override?.relax?.turns);
+    const subAgentFloor = resolveRelaxedSubAgentTurns(policy, override?.relax?.subAgentTurns);
+    return {
+      parentFloor: Number.isFinite(parentFloor) && parentFloor > 0 ? Math.round(parentFloor) : 200,
+      subAgentFloor: Number.isFinite(subAgentFloor) && subAgentFloor > 0 ? Math.round(subAgentFloor) : 60,
+    };
   }
 
   async setCwd(cwd: string): Promise<void> {

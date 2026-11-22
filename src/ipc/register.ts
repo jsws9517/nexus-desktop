@@ -713,6 +713,35 @@ export function registerIpc(ctx: IpcContext): void {
       return { ok: true };
     },
   );
+  // Unattended-coding relaxation floors: desktop.json `spendMode.relax`.
+  // The settings page persists the values; the worker (src/agent/desktop-config.ts)
+  // reads them mtime-cached so a write takes effect on the NEXT runTurn.
+  // Invalid / missing / non-numeric / non-positive values are rejected (no
+  // write) so a user can never silently lower the safety floor.
+  ipcMain.handle(
+    CHANNELS.getSpendModeRelax,
+    (): { ok: boolean; relax?: { turns?: number; subAgentTurns?: number } } => {
+      const cur = ctx.getSpendMode();
+      return { ok: true, relax: cur.relax };
+    },
+  );
+  ipcMain.handle(
+    CHANNELS.setSpendModeRelax,
+    (_e, p: { turns?: unknown; subAgentTurns?: unknown }): { ok: boolean } => {
+      const patch: { turns?: number; subAgentTurns?: number } = {};
+      if (p?.turns !== undefined) {
+        if (typeof p.turns !== 'number' || !Number.isFinite(p.turns) || p.turns <= 0) return { ok: false };
+        patch.turns = Math.round(p.turns);
+      }
+      if (p?.subAgentTurns !== undefined) {
+        if (typeof p.subAgentTurns !== 'number' || !Number.isFinite(p.subAgentTurns) || p.subAgentTurns <= 0) return { ok: false };
+        patch.subAgentTurns = Math.round(p.subAgentTurns);
+      }
+      if (!patch.turns && !patch.subAgentTurns) return { ok: false };
+      ctx.setSpendModeRelax(patch);
+      return { ok: true };
+    },
+  );
 
   // ── Multi-tab: per-session worker lifecycle ──
   // openSession binds (and optionally spawns) a worker to a concrete session.

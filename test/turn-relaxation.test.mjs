@@ -131,3 +131,45 @@ test('unattended but non-coding task does not relax any turn budget', async () =
   assert.deepEqual(agent.subTurns, original, 'no sub-agent relaxation for non-coding task');
   assert.equal(agent.subOverrideCalls.length, 0, 'no sub-agent override writes for non-coding task');
 });
+
+/**
+ * A desktop.json `spendMode.relax` override RAISES the unattended-coding
+ * floor (never lowers a configured value above the new floor). The test
+ * points NEXUS_CONFIG_DIR at the sandbox tree and writes the section
+ * between tests; invalidateDesktopConfigCache is needed because the
+ * reader mtime-caches.
+ */
+test('desktop.json spendMode.relax raises the relaxation floor', async () => {
+  const { writeFileSync, rmSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { invalidateDesktopConfigCache } = await import(
+    pathToFileURL(join(__dirname, '..', 'dist', 'agent', 'desktop-config.js')).href
+  );
+  // Write the override into the same sandbox dir the rest of this test file
+  // already uses for desktop.json (NEXUS_CONFIG_DIR is set by sandbox-env.mjs).
+  const cfgDir = process.env.NEXUS_CONFIG_DIR;
+  writeFileSync(
+    join(cfgDir, 'desktop.json'),
+    JSON.stringify({ spendMode: { default: 'coding', relax: { turns: 500, subAgentTurns: 90 } } }),
+  );
+  invalidateDesktopConfigCache();
+
+  const agent = makeAgent({ mode: 'unattended' });
+  const original = { ...agent.subTurns };
+  const svc = makeService(agent);
+
+  try {
+    await svc.runTurn(CODING_INPUT);
+    assert.equal(agent.maxTurnsDuringChat, 500, 'override turns=500 applied during chat');
+    assert.ok(
+      Object.values(agent.subTurnsDuringChat).every((v) => v >= 90),
+      `override subAgentTurns=90 applied: ${JSON.stringify(agent.subTurnsDuringChat)}`,
+    );
+    assert.equal(agent.maxTurns, 25, 'parent maxTurns restored after chat');
+    assert.deepEqual(agent.subTurns, original, 'sub-agent budgets restored after chat');
+  } finally {
+    // Clean the override so subsequent tests see the spend-policy default.
+    try { rmSync(join(cfgDir, 'desktop.json')); } catch { /* best-effort */ }
+    invalidateDesktopConfigCache();
+  }
+});
