@@ -3808,6 +3808,19 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           'Note: this provider\'s baseUrl changed; its saved mode was ignored. Re-confirm with /billing <mode>.',
         );
       }
+      // Point the user at the other budget surfaces when they ask about
+      // "how long can a run stretch". The four surfaces (config.json
+      // maxTurns / desktop.json spendMode.relax / correction.json
+      // session.* / acp.timeouts.turnAbsoluteMs) are documented in
+      // docs/budgets.md; this hint is the one-line discoverability aid.
+      if (spend.mode === 'coding') {
+        lines.push(
+          'Turn budgets: see docs/budgets.md — config.json maxTurns (per-chat), ' +
+          'desktop.json spendMode.relax (unattended-coding floors), correction.json ' +
+          'session.maxWallClockMs (6h hard watchdog), acp.timeouts.turnAbsoluteMs ' +
+          '(20 min remote cap).',
+        );
+      }
       this.emitText(lines.join('\n') + '\n');
       this.onEvent?.({
         type: 'spend_mode',

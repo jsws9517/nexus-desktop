@@ -5,6 +5,24 @@
  * budgets below decide when the harness intervenes, so the agent must not be
  * able to edit them from inside a session. A project-level file is deliberately
  * NOT supported — only `~/.nexus/correction.json` and the defaults here.
+ *
+ * Relationship to the other three budget surfaces (see docs/budgets.md):
+ *   - config.json `maxTurns` / `subAgents.maxTurns.<role>` — model-visible
+ *     per-chat / per-role turn budgets. The model consumes these and may
+ *     read them; they reset every `chat()` cycle.
+ *   - desktop.json `spendMode.relax` — host-side relaxation floors applied
+ *     for unattended coding runs. Read mtime-cached by the worker; restored
+ *     in `finally` after each `runTurn`.
+ *   - correction.json (this file) — session-scoped watchdogs + correction
+ *     loop budgets + security-sentinel inputs. The only surface that MUST
+ *     survive a turn relaxation: `session.maxWallClockMs` (6h) is the
+ *     hard upper bound that kills a genuine infinite loop even when
+ *     per-turn `maxTurns` is temporarily raised to 200.
+ *
+ * `immutablePaths` and `networkAllowlist` are loaded into
+ * SecuritySentinel at `beginCorrectionTurn()`; the model has no write
+ * path to this file, so it cannot widen its own allow-list from
+ * inside a session.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
