@@ -12,8 +12,13 @@
  *   }
  *
  * Semantics:
- *   - `contextLimit` replaces the manual `modelContextLimits` firefighting: the
- *     compression detector uses the declared value instead of guessing 128k.
+ *   - `contextLimit` is the CANONAL declaration for a model's context window.
+ *     New configs should only set this field; the legacy `modelContextLimits`
+ *     map (a flat `{ model: number }` firefighting surface) is a read-only
+ *     fallback that `resolveContextLimit()` consults only when `modelCapabilities`
+ *     has no entry for the model. A one-shot migration to fold legacy values
+ *     into `modelCapabilities` is tracked separately — until then, users may
+ *     keep both, with `modelCapabilities` winning on conflict.
  *   - `vision: false` (positively confirmed text-only) triggers the vision-route
  *     hint injected into the system prompt, telling the model to bridge through
  *     `ocr_extract` / `analyze_image`.
@@ -24,7 +29,8 @@
 
 /** Per-model capability record. Absent fields = "unknown / inherit default". */
 export interface ModelCapability {
-  /** Context window size in tokens. Replaces modelContextLimits when present. */
+  /** Context window size in tokens. Canonical declaration; when present,
+   *  shadows the legacy `modelContextLimits` map for this model. */
   contextLimit?: number;
   /** true = natively vision-capable; false = positively text-only; absent = unknown. */
   vision?: boolean;
@@ -102,7 +108,17 @@ export function shouldInjectVisionHint(caps: ModelCapabilities | undefined, mode
   return false;
 }
 
-/** Resolve the effective context limit: declared capability → modelContextLimits → undefined. */
+/**
+ * Resolve the effective context limit.
+ *
+ * Precedence: `modelCapabilities.<model>.contextLimit` (canonical) →
+ * legacy `modelContextLimits` (read-only fallback) → `undefined`.
+ *
+ * The legacy map is a flat `{ model: number }` firefighting surface kept
+ * for backward compatibility only. New configs should declare
+ * `modelCapabilities` instead; a one-shot migration to fold legacy values
+ * into `modelCapabilities` is tracked separately.
+ */
 export function resolveContextLimit(
   caps: ModelCapabilities | undefined,
   modelId: string,

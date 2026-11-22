@@ -1510,7 +1510,9 @@ export class AgentService {
     // Watch context-manager progress callbacks to detect repeated compressions.
     // When the same session triggers ≥ 3 compresses within 5 minutes, inform
     // the user that their model's context limit may need an explicit entry in
-    // config.json's modelContextLimits map.
+    // config.json's `modelCapabilities` map (canonical) — the legacy
+    // `modelContextLimits` map is a read-only fallback, see
+    // src/model-capabilities.ts resolveContextLimit().
     const ctx = this.agent.context;
     const origOnProgress = ctx.onProgress;
     ctx.onProgress = (...args: Parameters<NonNullable<typeof origOnProgress>>) => {
@@ -5170,8 +5172,9 @@ private resetAttachmentRagRoundCache(): void {
 
   /**
    * Resolve the declared context limit for the active model. Returns the
-   * declared value from modelCapabilities (preferred), legacy modelContextLimits,
-   * or undefined when unknown. Used by getStatus → renderer context gauge (§5.3).
+   * declared value from `modelCapabilities` (canonical) → legacy
+   * `modelContextLimits` (read-only fallback) → undefined when unknown.
+   * Used by getStatus → renderer context gauge (§5.3).
    */
   getActiveContextLimit(): number | undefined {
     try {
