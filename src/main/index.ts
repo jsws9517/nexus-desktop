@@ -329,6 +329,13 @@ function createWindow(): void {
     logf(`blocked window.open to ${url}`);
     return { action: 'deny' };
   });
+  // Voice input captures the microphone in the renderer. Electron denies media
+  // permission requests unless a handler explicitly approves them; this window
+  // only ever loads the bundled local page, so grant just `media` and deny the
+  // rest (webviews live in isolated sessions and are unaffected).
+  mainWin.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media');
+  });
   mainWin.webContents.on('console-message', (event) => {
     logf(`renderer[${event.level}]: ${event.message}`);
   });

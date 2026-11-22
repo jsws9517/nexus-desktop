@@ -8,10 +8,12 @@
  * single-source validation spec in src/shared/ipc-validation.ts.
  */
 
-import type { WORKER_METHODS } from '../shared/ipc-validation.js';
+import type { WORKER_METHODS, DESKTOP_WORKER_METHODS } from '../shared/ipc-validation.js';
 
-/** Worker-routed method ids — derived, never hand-maintained. */
-export type WorkerMethod = keyof typeof WORKER_METHODS;
+/** Worker-routed method ids — derived, never hand-maintained. Includes the
+ *  desktop-only methods (e.g. voiceTranscribe) that live outside the shared
+ *  core contract map. */
+export type WorkerMethod = keyof typeof WORKER_METHODS | keyof typeof DESKTOP_WORKER_METHODS;
 
 /** All IPC channels used by the desktop app (main→renderer + renderer→main). */
 export const CHANNELS = {
@@ -38,6 +40,8 @@ export const CHANNELS = {
   setLanguage: 'nexus:setLanguage',
   reloadConfig: 'nexus:reloadConfig',
   getSpeechVisionConfig: 'nexus:getSpeechVisionConfig',
+  // Voice input: renderer records PCM → WAV → base64; worker transcribes via core STT.
+  voiceTranscribe: 'nexus:voiceTranscribe',
   setActiveSpeechProvider: 'nexus:setActiveSpeechProvider',
   setActiveTtsProvider: 'nexus:setActiveTtsProvider',
   setActiveVisionProvider: 'nexus:setActiveVisionProvider',

@@ -44,6 +44,7 @@ type WorkerRequest =
   | { id: number; method: 'getLanguage' }
   | { id: number; method: 'reloadConfig' }
   | { id: number; method: 'getSpeechVisionConfig' }
+  | { id: number; method: 'voiceTranscribe'; params: { audio: string } }
   | { id: number; method: 'setActiveSpeechProvider'; params: { name: string } }
   | { id: number; method: 'setActiveTtsProvider'; params: { name: string } }
   | { id: number; method: 'setActiveVisionProvider'; params: { name: string } }
@@ -327,6 +328,9 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   getLanguage: () => service.getLanguage(),
   reloadConfig: () => service.reloadConfig(),
   getSpeechVisionConfig: () => service.getSpeechVisionConfig(),
+  voiceTranscribe: async (req: WorkerRequest & { method: 'voiceTranscribe' }) => {
+    return service.transcribeVoice(req.params.audio);
+  },
   setActiveSpeechProvider: (req: WorkerRequest & { method: 'setActiveSpeechProvider' }) => {
     service.setActiveSpeechProvider(req.params.name);
   },

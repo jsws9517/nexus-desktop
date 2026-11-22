@@ -40,6 +40,12 @@ const api = {
   setLanguage: (language: string) => ipcRenderer.invoke('nexus:setLanguage', { language }),
   reloadConfig: () => ipcRenderer.invoke('nexus:reloadConfig'),
   getSpeechVisionConfig: () => ipcRenderer.invoke('nexus:getSpeechVisionConfig'),
+  // Voice input: renderer captures PCM → WAV (base64); the worker picks the
+  // active STT provider via core's transcribeAudio() and returns the text.
+  voiceTranscribe: (audioBase64: string) =>
+    ipcRenderer.invoke('nexus:voiceTranscribe', { audio: audioBase64 }) as Promise<{
+      ok: boolean; text: string; provider: string; model: string; error?: string;
+    }>,
   setActiveSpeechProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveSpeechProvider', { name }),
   setActiveTtsProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveTtsProvider', { name }),
   setActiveVisionProvider: (name: string) => ipcRenderer.invoke('nexus:setActiveVisionProvider', { name }),

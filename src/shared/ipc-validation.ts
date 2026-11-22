@@ -36,6 +36,8 @@ const S = {
 export const PERMISSION_ANSWERS = ['y', 'a', 'n'] as const;
 export const MAX_CHAT_INPUT = 65536;
 const MAX_SIDE_CHAT_MESSAGES = 50;
+/** Base64 ceiling for a captured WAV clip (120s mono 16 kHz / 16-bit ≈ 5.1 MB). */
+export const MAX_VOICE_WAV_BASE64 = 7 * 1024 * 1024;
 
 /**
  * T6 automation control-plane specs. Main-process-owned channels (no worker
@@ -227,6 +229,23 @@ export const WORKER_METHODS = {
   shutdown: { fields: {} },
 } satisfies Record<string, MethodSpec>;
 
+/**
+ * Desktop-only worker RPCs — implemented in agent-worker.ts but intentionally
+ * NOT part of `WORKER_METHODS`: that map mirrors the core's shared
+ * `WORKER_METHODS` contract (asserted byte-for-byte by test/contract.test.mjs).
+ * Voice transcription is a desktop-local capability built on core's exported
+ * `transcribeAudio()`; there is no corresponding core RPC to coordinate with,
+ * so registering it in the shared contract would be a false dependency.
+ */
+export const DESKTOP_WORKER_METHODS = {
+  voiceTranscribe: { fields: { audio: S.str(MAX_VOICE_WAV_BASE64) } },
+} satisfies Record<string, MethodSpec>;
+
+const ALL_WORKER_METHODS: Record<string, MethodSpec> = {
+  ...WORKER_METHODS,
+  ...DESKTOP_WORKER_METHODS,
+};
+
 function checkField(value: unknown, spec: FieldSpec, path: string): string | null {
   switch (spec.kind) {
     case 'string':
@@ -270,7 +289,7 @@ function checkField(value: unknown, spec: FieldSpec, path: string): string | nul
 
 /** Validate a worker-routed request's params. Returns an error message or null. */
 export function validateWorkerParams(method: string, params?: Record<string, unknown>): string | null {
-  const spec = (WORKER_METHODS as Record<string, MethodSpec>)[method];
+  const spec = ALL_WORKER_METHODS[method];
   if (!spec) return `unknown method: ${method}`;
   return validateParamsAgainst(spec, params);
 }

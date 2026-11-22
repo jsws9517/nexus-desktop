@@ -30,6 +30,7 @@ import { findPreviewablePaths, partitionPreviewPaths, findRawPathHits } from './
 import { registerPreviewPaths } from './preview/register.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 import { AtMentionController } from './at-mention.js';
+import { VoiceInputController, type VoiceTranscribeResult } from './voice-input.js';
 import { hydrateIcons, iconEl } from './icons.js';
 
 interface SessionInfo {
@@ -358,6 +359,8 @@ declare global {
       setLanguage(language: string): Promise<{ ok: boolean; error?: string }>;
       reloadConfig(): Promise<{ ok: boolean }>;
       getSpeechVisionConfig(): Promise<SpeechVisionConfig>;
+      /** WAV (base64) → text via the active core STT provider, routed through the worker. */
+      voiceTranscribe(audioBase64: string): Promise<VoiceTranscribeResult>;
       setActiveSpeechProvider(name: string): Promise<unknown>;
       setActiveTtsProvider(name: string): Promise<unknown>;
       setActiveVisionProvider(name: string): Promise<unknown>;
@@ -5335,6 +5338,22 @@ let svConfig: SpeechVisionConfig = {
   visionProviders: [],
 };
 
+// Declared before refreshSidebarModels() so the config-refresh path can update
+// the mic button's disabled state without a temporal-dead-zone reference.
+let voiceInput: VoiceInputController | null = null;
+
+/** The active STT provider, if one is configured. Voice input is unavailable
+ *  without it — transcribeAudio() has nothing to route the WAV to. */
+function activeSpeechProvider(): SpeechProviderSettings | undefined {
+  return svConfig.speechProviders.find(
+    (p) => p.name === svConfig.activeSpeech && (p.category === 'stt' || !p.category),
+  );
+}
+
+function syncVoiceAvailability(): void {
+  voiceInput?.setAvailable(!!activeSpeechProvider());
+}
+
 /** Coerce the IPC result to a complete shape so downstream .filter/.find never
  *  hit undefined. The main process returns {} before agent config is ready; a
  *  bare undefined/absent field here would crash the settings panel. */
@@ -5358,6 +5377,7 @@ async function refreshSidebarModels(): Promise<void> {
   const sp = svConfig.speechProviders.find((p) => p.name === svConfig.activeSpeech);
   const tts = svConfig.speechProviders.find((p) => p.name === svConfig.activeTts);
   const vp = svConfig.visionProviders.find((p) => p.name === svConfig.activeVision);
+  syncVoiceAvailability();
   rsideSpeech.textContent = sp
     ? `${sp.name} · ${sp.model}`
     : `${tts ? tts.name : ''}${tts ? ' · ' + tts.model : ''}` || t('none');
@@ -8853,9 +8873,40 @@ const atMention = new AtMentionController({
   },
 });
 
+// ---------- voice input picker ----------
+// Read-only view of the configured STT provider: the panel never switches it.
+// One click starts recording; trailing silence auto-transcribes and inserts the
+// text at the caret (no confirm dialog, never auto-sent). transcribeVoice() may
+// fall back to another stt provider, but the transcript is shown in the composer
+// for the user to proofread before sending.
+function activeSpeechLabel(): string {
+  const sp = activeSpeechProvider();
+  if (!sp) return svConfig.activeSpeech || '';
+  return sp.model ? `${sp.name} / ${sp.model}` : sp.name;
+}
+
+voiceInput = new VoiceInputController({
+  button: $('#btn-voice') as HTMLButtonElement,
+  popover: $('#voice-popover') as HTMLElement,
+  input: inputEl,
+  transcribe: (wav) => window.nexusDesktop.voiceTranscribe(wav),
+  getProviderLabel: activeSpeechLabel,
+  onError: (msg) => showToast(msg, 'error'),
+  onNotice: (msg) => showToast(msg, 'warning'),
+  onAfterFill: () => {
+    autoGrowInput();
+    updateSendButtonVisibility();
+    updateRollbackButtonVisibility();
+    saveDraft();
+  },
+});
+onI18nApplied(() => voiceInput?.applyLanguage());
+syncVoiceAvailability(); // reflect the config already loaded during init
+
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     if (atMention.isOpen()) return; // menu owns Enter while visible (AC-7)
+    if (voiceInput?.isOpen()) return; // voice picker owns the composer while open
     e.preventDefault();
     void sendMessage();
   }

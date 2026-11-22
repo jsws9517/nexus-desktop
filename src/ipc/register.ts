@@ -487,6 +487,9 @@ export function registerIpc(ctx: IpcContext): void {
     }
   });
   ipcMain.handle(CHANNELS.getSpeechVisionConfig, call('getSpeechVisionConfig'));
+  // Voice transcription is routed to the worker (not handled in main): main
+  // stays free of any core STT import and only forwards the request.
+  ipcMain.handle(CHANNELS.voiceTranscribe, call('voiceTranscribe'));
   ipcMain.handle(CHANNELS.setActiveSpeechProvider, call('setActiveSpeechProvider'));
   ipcMain.handle(CHANNELS.setActiveTtsProvider, call('setActiveTtsProvider'));
   ipcMain.handle(CHANNELS.setActiveVisionProvider, call('setActiveVisionProvider'));

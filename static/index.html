@@ -206,6 +206,23 @@
                 <span class="btn-label" data-i18n="rollbackBtn">作废上一条并重发</span>
               </button>
               <span id="input-status"></span>
+              <div id="voice-box" class="voice-box">
+                <button id="btn-voice" class="btn icon" data-i18n-title="voiceInputTitle" title="语音输入" aria-label="语音输入" aria-pressed="false">
+                  <span class="icon-slot" data-icon="mic"></span>
+                </button>
+                <div id="voice-popover" class="voice-popover hidden" role="dialog" aria-label="语音输入">
+                  <div class="voice-popover-head">
+                    <span data-i18n="voicePopoverTitle">语音输入</span>
+                    <span id="voice-provider" class="voice-provider"></span>
+                  </div>
+                  <div class="voice-recrow">
+                    <span class="voice-dot" aria-hidden="true"></span>
+                    <span id="voice-timer" class="voice-timer">00:00</span>
+                    <div id="voice-bars" class="voice-bars" aria-hidden="true"></div>
+                  </div>
+                  <div class="voice-hint" data-i18n="voiceHint">静音 5 秒后自动转写 · 再次点击麦克风取消</div>
+                </div>
+              </div>
               <button id="btn-send" class="btn primary" data-i18n-title="send" title="发送">
                 <span class="icon-slot" data-icon="arrow-up"></span>
                 <span class="btn-label" data-i18n="send">发送</span>

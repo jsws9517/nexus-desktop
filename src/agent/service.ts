@@ -22,6 +22,11 @@ import {
   BYPASS_USAGE,
   BYPASS_HELP_LINES,
 } from 'nexus-coder/dist/src/desktop-api.js';
+// Desktop-only voice input: reuse core's exported STT implementation without
+// going through a core RPC (and without importing it into the main process).
+import { transcribeAudio } from 'nexus-coder/dist/src/stt/index.js';
+import { GLOBAL_SCOPE, preAuthorizeRoot } from 'nexus-coder/dist/src/security/path-authorizer.js';
+import { dataPath } from 'nexus-coder/dist/src/config/paths.js';
 import type {
   Agent,
   JobWakePolicy,
@@ -40,7 +45,7 @@ import type { SlashLogEntry } from '../slash-log.js';
 import { cleanupSessionCaches, registerCacheFile, toolResultSpillDir } from '../main/cache-cleanup.js';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
@@ -5519,6 +5524,50 @@ reloadConfig(): { ok: boolean } {
       next.apiKey = fields.apiKey;
     }
     cfg.setVisionProvider(name, next as Parameters<typeof cfg.setVisionProvider>[1]);
+  }
+
+  /**
+   * Voice input (desktop-only): decode a captured WAV clip and run it through
+   * the core's active STT provider. Lives on the worker so the main process
+   * never imports a core STT module. The temp file is written under core's own
+   * data dir and pre-authorized, because transcribeAudio() calls
+   * authorizePath() and an unrecognized dir would stall on a permission prompt.
+   */
+  async transcribeVoice(audioBase64: string): Promise<{
+    ok: true; text: string; provider: string; model: string;
+  }> {
+    const MAX_WAV_BYTES = 5 * 1024 * 1024; // 120s mono 16 kHz 16-bit ≈ 3.84 MB
+    let buf: Buffer;
+    try {
+      buf = Buffer.from(audioBase64, 'base64');
+    } catch {
+      throw new Error('Invalid audio data');
+    }
+    if (!buf.length) throw new Error('Empty audio data');
+    if (buf.length > MAX_WAV_BYTES) throw new Error('Audio clip is too large');
+    if (
+      buf.length < 44
+      || buf.toString('ascii', 0, 4) !== 'RIFF'
+      || buf.toString('ascii', 8, 12) !== 'WAVE'
+    ) {
+      throw new Error('Unsupported audio format (WAV required)');
+    }
+    const cacheDir = dataPath('voice-cache');
+    mkdirSync(cacheDir, { recursive: true });
+    preAuthorizeRoot(cacheDir, GLOBAL_SCOPE);
+    const file = join(cacheDir, `voice-${process.pid}-${randomBytes(8).toString('hex')}.wav`);
+    try {
+      await writeFile(file, buf);
+      const result = await transcribeAudio(file);
+      return {
+        ok: true,
+        text: result.text ?? '',
+        provider: result.provider ?? '',
+        model: result.model ?? '',
+      };
+    } finally {
+      try { await unlink(file); } catch { /* best-effort cleanup */ }
+    }
   }
 
   /** Cumulative token estimate for a session. Incremental: after the first full

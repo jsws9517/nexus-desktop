@@ -1,7 +1,7 @@
 {
   "name": "nexus-desktop",
   "version": "0.4.4-beta.0",
-  "nexusCoreVersion": "1.2.6-1",
+  "nexusCoreVersion": "1.2.8",
   "nexusDesktopProtocol": 4,
   "description": "Nexus — where every agent finds home.",
   "type": "module",
@@ -59,7 +59,7 @@
     "exceljs": "^3.4.0",
     "http-cache-semantics": "^4.3.0",
     "jszip": "^3.10.2",
-    "nexus-coder": "1.2.6-1",
+    "nexus-coder": "^1.2.8",
     "proxy-addr": "^2.0.8",
     "tar": "^7.5.22",
     "undici": "^8.11.2",
@@ -191,7 +191,8 @@
       "entitlementsInherit": "scripts/entitlements.mac.plist",
       "identity": "-",
       "extendInfo": {
-        "CFBundleDisplayName": "Nexus"
+        "CFBundleDisplayName": "Nexus",
+        "NSMicrophoneUsageDescription": "Nexus uses the microphone for voice input. Audio is transcribed to text for your review and is never sent automatically."
       }
     },
     "appImage": {

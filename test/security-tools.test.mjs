@@ -291,6 +291,16 @@ test('ipc: adversarial params are rejected', () => {
   assert.equal(validateWorkerParams('bogusMethod', {}), 'unknown method: bogusMethod');
 });
 
+test('ipc: desktop-only voiceTranscribe spec bounds the WAV payload', () => {
+  assert.equal(validateWorkerParams('voiceTranscribe', { audio: 'AAAA' }), null);
+  assert.equal(validateWorkerParams('voiceTranscribe', { audio: 42 }), 'params.audio must be a string');
+  assert.equal(validateWorkerParams('voiceTranscribe', {}), 'missing required param: audio');
+  assert.match(
+    validateWorkerParams('voiceTranscribe', { audio: 'x'.repeat(8 * 1024 * 1024) }) || '',
+    /exceeds max length/,
+  );
+});
+
 test('sqlite: tool-set completeness (the 10 documented built-ins)', () => {
   const expected = ['query', 'execute', 'list-tables', 'describe-table', 'create-table', 'drop-table', 'insert-record', 'update-record', 'delete-record', 'transaction'];
   for (const n of expected) assert.ok(SQLITE_TOOLS.has(n), `sqlite tool ${n}`);

@@ -60,6 +60,26 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   permChanged: { 'zh-CN': '本会话权限模式已切换为 {mode}', en: 'Session permission mode switched to {mode}' },
   inputPlaceholder: { 'zh-CN': '输入消息，Enter 发送，Shift+Enter 换行…', en: 'Type a message, Enter to send…' },
 
+  // Voice input picker (click → auto-stop on silence → insert into composer).
+  voiceInputTitle: { 'zh-CN': '语音输入', en: 'Voice input' },
+  voicePopoverTitle: { 'zh-CN': '语音输入', en: 'Voice input' },
+  voiceProvider: { 'zh-CN': 'STT：{name}', en: 'STT: {name}' },
+  voiceHint: {
+    'zh-CN': '静音 5 秒后自动转写 · 再次点击麦克风取消',
+    en: 'Auto-transcribes after 5 s of silence · Click the mic again to cancel',
+  },
+  voiceNoProvider: {
+    'zh-CN': '未配置 STT 服务商，请先在设置中添加语音识别服务',
+    en: 'No STT provider configured — add a speech-to-text provider in Settings',
+  },
+  voiceMicDenied: { 'zh-CN': '无法访问麦克风，请检查系统权限', en: 'Cannot access the microphone — check system permissions' },
+  voiceRecordFailed: { 'zh-CN': '录音启动失败：{error}', en: 'Failed to start recording: {error}' },
+  voiceTranscribeFailed: { 'zh-CN': '转写失败：{error}', en: 'Transcription failed: {error}' },
+  voiceEmpty: { 'zh-CN': '没有识别到语音内容', en: 'No speech recognized' },
+  voiceNoSpeech: { 'zh-CN': '未检测到语音，已取消录音', en: 'No speech detected — recording cancelled' },
+  voiceTooShort: { 'zh-CN': '语音太短，已丢弃', en: 'Speech too short — discarded' },
+  voiceLimit: { 'zh-CN': '录音已达 2 分钟上限，已自动停止', en: 'Reached the 2-minute limit — recording stopped' },
+
   // T1-2 @ mention candidates.
   atMentionPanelAria: { 'zh-CN': '上下文引用候选', en: 'Context reference candidates' },
   atMentionFile: { 'zh-CN': '文件', en: 'File' },

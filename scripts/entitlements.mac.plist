@@ -24,5 +24,8 @@
     <!-- User-selected folders only (not sandboxed — this is a Developer ID app). -->
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
+    <!-- Voice input: renderer captures the microphone for on-device WAV encoding. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
   </dict>
 </plist>
