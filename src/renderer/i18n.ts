@@ -65,8 +65,52 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   voicePopoverTitle: { 'zh-CN': '语音输入', en: 'Voice input' },
   voiceProvider: { 'zh-CN': 'STT：{name}', en: 'STT: {name}' },
   voiceHint: {
-    'zh-CN': '静音 5 秒后自动转写 · 再次点击麦克风取消',
-    en: 'Auto-transcribes after 5 s of silence · Click the mic again to cancel',
+    'zh-CN': '聆听中… · 开始说话吧',
+    en: 'Listening… · Start speaking',
+  },
+  voiceHintPreparing: {
+    'zh-CN': '麦克风启动中… · 就绪后再说话',
+    en: 'Starting microphone… · Speak once it is ready',
+  },
+  voiceHintVoice: {
+    'zh-CN': '检测到语音 · 再点麦克风可立即转写',
+    en: 'Speech detected · Click the mic to transcribe now',
+  },
+  voiceHintSilence: {
+    'zh-CN': '安静中 · {seconds} 秒后自动转写',
+    en: 'Quiet · Auto-transcribes in {seconds} s',
+  },
+  voiceMicTitleIdle: {
+    'zh-CN': '语音输入 · 点击开始录音（静音 5 秒后自动转写）',
+    en: 'Voice input · Click to record (auto-transcribes after 5 s of silence)',
+  },
+  voiceMicTitleRecording: {
+    'zh-CN': '停止并转写 · 再点一次麦克风（或静音 5 秒自动转写）',
+    en: 'Stop & transcribe · Click the mic again (or after 5 s of silence)',
+  },
+  voiceMicTitleTranscribing: {
+    'zh-CN': '正在转写… · 请稍候（此时点击麦克风无效）',
+    en: 'Transcribing… · Please wait (mic clicks are ignored)',
+  },
+  voiceMicTitleInserted: {
+    'zh-CN': '开始下一段语音输入 · 点击麦克风',
+    en: 'Start another voice input · Click the mic',
+  },
+  voiceClearTitleRecording: {
+    'zh-CN': '取消本次录音（不转写）',
+    en: 'Cancel this recording (no transcription)',
+  },
+  voiceClearTitleTranscribing: {
+    'zh-CN': '取消转写',
+    en: 'Cancel transcription',
+  },
+  voiceClearTitleInserted: {
+    'zh-CN': '撤销本次语音转写（10 秒内有效）',
+    en: 'Undo this transcript (within 10 s)',
+  },
+  voiceCannotUndo: {
+    'zh-CN': '内容已修改，无法自动撤销',
+    en: 'Text changed — cannot auto-undo',
   },
   voiceNoProvider: {
     'zh-CN': '未配置 STT 服务商，请先在设置中添加语音识别服务',

@@ -1750,7 +1750,17 @@ label.field-label[for="model-select"]     { width: 58px; }
 .mcp-loading { font-size: 12px; color: var(--text-dim); padding: 6px; }
 
 /* ---- Voice input picker (composer, next to Send) ---- */
-.voice-box { position: relative; display: inline-flex; flex-shrink: 0; align-items: center; }
+.voice-box { position: relative; display: inline-flex; flex-shrink: 0; align-items: center; gap: 2px; }
+/* Cancel/undo sits right beside the mic. Hidden by default (no reserved slot —
+ * the composer toolbar is already width-dynamic). Semi-transparent on purpose
+ * so a stray click cannot destroy a recording; hover/focus makes it fully legible. */
+/* Scoped under .voice-box so the later generic `.btn { display: inline-flex }`
+ * cannot win the cascade and leave the button permanently visible. */
+.voice-box .voice-clear { display: none; }
+.voice-box .voice-clear.visible { display: inline-flex; opacity: 0.35; }
+.voice-box .voice-clear.visible:hover,
+.voice-box .voice-clear.visible:focus-visible { opacity: 1; }
+#input-status.voice-hidden { display: none; }
 #btn-voice:disabled { opacity: 0.35; cursor: not-allowed; }
 #btn-voice:disabled:hover { background: transparent; color: var(--text-dim); }
 #btn-voice.recording {

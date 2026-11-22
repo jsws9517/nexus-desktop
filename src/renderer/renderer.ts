@@ -6203,6 +6203,7 @@ function enqueue(text: string, opts?: { rollback?: boolean }): void {
   if (!text) return;
   addUser(text);
   inputEl.value = '';
+  voiceInput?.hideClear();
   autoGrowInput();
   pendingQueue.push(text);
   maybeHandleIterativeIntent(text, opts?.rollback === true);
@@ -6346,6 +6347,7 @@ function ownsWork(): boolean {
 async function sendMessage(): Promise<void> {
   const text = inputEl.value.trim();
   if (!text && attachments.length === 0) return;
+  voiceInput?.hideClear(); // a sent transcript can no longer be undone
   // /new — desktop shortcut equal to the core command: open a brand-new empty
   // tab that inherits the current session's project dir + project memory.
   // Intercepted locally so the fresh session gets its own worker/tab and the
@@ -8887,8 +8889,10 @@ function activeSpeechLabel(): string {
 
 voiceInput = new VoiceInputController({
   button: $('#btn-voice') as HTMLButtonElement,
+  clearButton: $('#btn-voice-clear') as HTMLButtonElement,
   popover: $('#voice-popover') as HTMLElement,
   input: inputEl,
+  statusEl: inputStatus,
   transcribe: (wav) => window.nexusDesktop.voiceTranscribe(wav),
   getProviderLabel: activeSpeechLabel,
   onError: (msg) => showToast(msg, 'error'),
@@ -8963,6 +8967,7 @@ function saveDraft(): void {
   } catch {}
 }
 function loadDraft(id: string): void {
+  voiceInput?.hideClear(); // a different session must not undo into this one
   try {
     const d = localStorage.getItem(draftKey(id));
     inputEl.value = d ?? '';
@@ -9213,6 +9218,7 @@ window.nexusDesktop.onWorkerRestarted(async () => {
     const leftover = pendingQueue.splice(0).join('\n\n');
     const draft = inputEl.value.trim();
     inputEl.value = draft ? `${leftover}\n\n${draft}` : leftover;
+    voiceInput?.hideClear();
     autoGrowInput();
   }
   if (keepId && tabs.has(keepId)) {

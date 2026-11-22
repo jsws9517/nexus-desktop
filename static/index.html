@@ -207,6 +207,9 @@
               </button>
               <span id="input-status"></span>
               <div id="voice-box" class="voice-box">
+                <button id="btn-voice-clear" class="btn icon voice-clear" data-i18n-title="voiceInputTitle" title="取消语音输入" aria-label="取消语音输入">
+                  <span class="icon-slot" data-icon="x"></span>
+                </button>
                 <button id="btn-voice" class="btn icon" data-i18n-title="voiceInputTitle" title="语音输入" aria-label="语音输入" aria-pressed="false">
                   <span class="icon-slot" data-icon="mic"></span>
                 </button>
@@ -220,7 +223,7 @@
                     <span id="voice-timer" class="voice-timer">00:00</span>
                     <div id="voice-bars" class="voice-bars" aria-hidden="true"></div>
                   </div>
-                  <div class="voice-hint" data-i18n="voiceHint">静音 5 秒后自动转写 · 再次点击麦克风取消</div>
+                  <div id="voice-hint" class="voice-hint" data-i18n="voiceHint">聆听中… · 开始说话吧</div>
                 </div>
               </div>
               <button id="btn-send" class="btn primary" data-i18n-title="send" title="发送">

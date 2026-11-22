@@ -1,15 +1,19 @@
 /**
  * Voice input picker (send-area microphone button).
  *
- * State machine: idle → recording → transcribing → idle. A single mic click
- * starts recording; recording stops itself on trailing silence (default 5 s),
- * pre-recording silence (default 10 s) cancels, and a hard cap (default 120 s)
- * forces a transcribe. The transcript is inserted straight into the composer —
- * there is no confirm dialog and nothing is auto-sent.
+ * State machine: idle → recording → transcribing → idle. One mic click starts
+ * recording; a second click stops immediately and transcribes; trailing silence
+ * (5 s) also transcribes automatically. While transcribing the mic is inert.
+ * The transcript is inserted at the composer caret — never auto-sent. A
+ * semi-hidden × to the left of the mic cancels at any stage, and after a
+ * successful insert it undoes only the text this controller just added (10 s).
  *
- * Silence detection calibrates an ambient-noise floor from the first 300 ms of
- * the clip, then treats RMS above `max(floor * 3, 0.012)` as voice. A clip with
- * under 300 ms of voiced audio is discarded (cough / accidental click).
+ * VAD is deliberately conservative: an adaptive noise floor with rate-limited
+ * fall/rise feeds a two-threshold hysteresis plus 150 ms onset / 350 ms offset
+ * confirmation. Only confirmed voice frames refresh the silence timer, so a
+ * covered mic or steady noise cannot hold the recorder until the 120 s cap.
+ * Manual stop ignores VAD entirely and uses total audio length, so a soft voice
+ * missed by detection is still transcribed when the user stops by hand.
  *
  * Audio is captured as raw PCM with an AudioContext ScriptProcessor, resampled
  * to 16 kHz and encoded as a 16-bit mono WAV in the renderer. The WAV (base64)
@@ -28,14 +32,18 @@ export interface VoiceTranscribeResult {
 
 export interface VoiceInputOptions {
   button: HTMLButtonElement;
+  /** Semi-hidden cancel/undo affordance placed left of the mic. */
+  clearButton: HTMLButtonElement;
   popover: HTMLElement;
   input: HTMLTextAreaElement;
+  /** Existing running-status readout; hidden while the picker is recording. */
+  statusEl?: HTMLElement;
   transcribe: (wavBase64: string) => Promise<VoiceTranscribeResult>;
   /** Label of the current active STT provider, e.g. "openai / whisper-1". */
   getProviderLabel: () => string;
   onError: (msg: string) => void;
   onNotice?: (msg: string) => void;
-  /** Re-run autogrow / draft persistence after text is inserted. */
+  /** Re-run autogrow / draft persistence after text is inserted or undone. */
   onAfterFill: () => void;
   /** Hard cap for one recording segment (default 120 s). */
   maxSeconds?: number;
@@ -45,12 +53,109 @@ export interface VoiceInputOptions {
   preSilenceSeconds?: number;
   /** Minimum voiced audio to keep (default 300 ms). */
   minSpeechMs?: number;
+  /** How long the post-insert undo affordance stays up (default 10 s). */
+  undoWindowMs?: number;
 }
 
 type VoiceState = 'idle' | 'recording' | 'transcribing';
+type HintMode = 'idle' | 'preparing' | 'listening' | 'voice' | 'silence';
 
-const CALIBRATION_MS = 300;
-const MIN_VOICE_RMS = 0.012;
+/** Absolute detection floors. Conservative on purpose: soft speech may need a
+ *  manual stop, but a covered mic / room noise must not reset the silence timer. */
+const MIN_VOICE_ON = 0.010;
+const MIN_VOICE_OFF = 0.006;
+/** Adaptive floor bounds + slew rates (per second). The floor starts low so the
+ *  very first utterance is detectable, rises slowly to match a noisy room, and
+ *  never collapses to zero on a single digital-silence frame. */
+const NOISE_FLOOR_INIT = 0.002;
+const NOISE_FLOOR_MAX = 0.012;
+const NOISE_FALL_PER_SEC = 0.02;
+const NOISE_RISE_PER_SEC = 0.002;
+/** Confirmation windows: brief spikes never count as speech. */
+const VOICE_ON_MS = 150;
+const VOICE_OFF_MS = 350;
+
+export interface VadState {
+  floor: number;
+  onThreshold: number;
+  offThreshold: number;
+  aboveMs: number;
+  belowMs: number;
+  active: boolean;
+}
+
+export interface VadFrame {
+  active: boolean;
+  floor: number;
+  onThreshold: number;
+  offThreshold: number;
+}
+
+export function makeVadState(): VadState {
+  return {
+    floor: NOISE_FLOOR_INIT,
+    onThreshold: MIN_VOICE_ON,
+    offThreshold: MIN_VOICE_OFF,
+    aboveMs: 0,
+    belowMs: 0,
+    active: false,
+  };
+}
+
+/**
+ * Advance the adaptive floor by one audio window and report whether a voice
+ * segment is confirmed. Two thresholds give hysteresis (a dip between off and
+ * on does not chop a sentence), and onset/offset must persist for a full window
+ * before the state flips. Pure and DOM-free so it can be driven frame by frame
+ * in unit tests.
+ */
+export function updateVad(state: VadState, rms: number, dtMs: number): VadFrame {
+  const dtSec = dtMs / 1000;
+  if (rms < state.floor) {
+    // Rate-limited downward tracking: one quiet frame cannot zero the floor and
+    // make the next noise burst look like speech.
+    state.floor = Math.max(rms, state.floor - NOISE_FALL_PER_SEC * dtSec);
+  } else {
+    state.floor = Math.min(
+      state.floor + NOISE_RISE_PER_SEC * dtSec,
+      NOISE_FLOOR_MAX,
+      rms,
+    );
+  }
+  state.onThreshold = Math.max(state.floor * 3, MIN_VOICE_ON);
+  state.offThreshold = Math.max(state.floor * 2, MIN_VOICE_OFF);
+
+  if (state.active) {
+    if (rms > state.offThreshold) {
+      state.belowMs = 0;
+    } else {
+      state.belowMs += dtMs;
+      if (state.belowMs >= VOICE_OFF_MS) {
+        state.active = false;
+        state.aboveMs = 0;
+        state.belowMs = 0;
+      }
+    }
+  } else {
+    if (rms > state.onThreshold) {
+      state.aboveMs += dtMs;
+      state.belowMs = 0;
+      if (state.aboveMs >= VOICE_ON_MS) {
+        state.active = true;
+        state.aboveMs = 0;
+      }
+    } else {
+      state.aboveMs = 0;
+      state.belowMs += dtMs;
+    }
+  }
+  return {
+    active: state.active,
+    floor: state.floor,
+    onThreshold: state.onThreshold,
+    offThreshold: state.offThreshold,
+  };
+}
 
 function must<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -123,8 +228,11 @@ function toBase64(buf: ArrayBuffer): string {
 
 export class VoiceInputController {
   private readonly button: HTMLButtonElement;
+  private readonly clearButton: HTMLButtonElement;
   private readonly popover: HTMLElement;
   private readonly input: HTMLTextAreaElement;
+  private readonly statusEl?: HTMLElement;
+  private readonly hintEl: HTMLElement;
   private readonly opts: VoiceInputOptions;
   private readonly providerEl: HTMLElement;
   private readonly timerEl: HTMLElement;
@@ -135,6 +243,7 @@ export class VoiceInputController {
   private readonly preSilenceMs: number;
   private readonly minSpeechMs: number;
   private readonly maxMs: number;
+  private readonly undoMs: number;
 
   private state: VoiceState = 'idle';
   /** Disabled when no active STT provider is configured (checked via svConfig). */
@@ -151,18 +260,24 @@ export class VoiceInputController {
   private transcribingToken = 0;
   private level = 0;
 
-  // Ambient-noise calibration + voice activity tracking.
-  private calibrating = true;
-  private noiseSum = 0;
-  private noiseCount = 0;
-  private noiseSamples = 0;
-  private voiceThreshold = MIN_VOICE_RMS;
+  // Adaptive noise floor + confirmed voice activity tracking.
+  private vad = makeVadState();
   private lastVoiceAt = 0;
   private voiceSamples = 0;
 
-  /** Escape is swallowed while the picker is open so the global
-   *  "Escape = stop agent" handler never fires mid-recording. Cancelling is
-   *  intentionally mic-button-only. */
+  // Post-insert undo affordance.
+  private clearVisible = false;
+  private undoTimer: number | null = null;
+  private lastInsert: { start: number; text: string } | null = null;
+  private hintMode: HintMode = 'idle';
+  /** False from the click until the first captured audio frame arrives. The
+   *  popover must not say "Listening" before the mic is actually delivering
+   *  samples, otherwise the user speaks into a gap and loses the first words. */
+  private captureReady = false;
+
+  /** Escape is swallowed while the picker owns an active recording or
+   *  transcription, so the global "Escape = stop agent" handler never fires
+   *  mid-voice. Cancelling is done with the mic or the × button. */
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     if (e.key === 'Escape' && this.state !== 'idle') {
       e.preventDefault();
@@ -170,18 +285,27 @@ export class VoiceInputController {
     }
   };
 
+  /** Any user edit invalidates the just-inserted transcript's undo window. */
+  private readonly onInput = (): void => {
+    if (this.state === 'idle' && this.clearVisible) this.hideClear();
+  };
+
   constructor(opts: VoiceInputOptions) {
     this.opts = opts;
     this.button = opts.button;
+    this.clearButton = opts.clearButton;
     this.popover = opts.popover;
     this.input = opts.input;
+    this.statusEl = opts.statusEl;
     this.providerEl = must('voice-provider');
     this.timerEl = must('voice-timer');
     this.barsEl = must('voice-bars');
+    this.hintEl = must('voice-hint');
     this.silenceMs = (opts.silenceSeconds ?? 5) * 1000;
     this.preSilenceMs = (opts.preSilenceSeconds ?? 10) * 1000;
     this.minSpeechMs = opts.minSpeechMs ?? 300;
     this.maxMs = (opts.maxSeconds ?? 120) * 1000;
+    this.undoMs = opts.undoWindowMs ?? 10_000;
 
     for (let i = 0; i < 12; i++) {
       const b = document.createElement('i');
@@ -194,6 +318,11 @@ export class VoiceInputController {
       e.stopPropagation();
       void this.toggle();
     });
+    this.clearButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onClearClick();
+    });
+    this.input.addEventListener('input', this.onInput);
     this.popover.addEventListener('click', (e) => e.stopPropagation());
     document.addEventListener('keydown', this.onKeyDown, true);
     this.applyLanguage();
@@ -202,53 +331,169 @@ export class VoiceInputController {
   /** Refresh dynamic (JS-populated) labels after an i18n language switch. */
   applyLanguage(): void {
     this.providerEl.textContent = t('voiceProvider', { name: this.opts.getProviderLabel() || '—' });
-    // The button keeps a static data-i18n-title in HTML, but a disabled one needs
-    // an explanatory tooltip, so own its title/label here too.
-    const label = this.available ? t('voiceInputTitle') : t('voiceNoProvider');
-    this.button.title = label;
-    this.button.setAttribute('aria-label', label);
+    this.updateTitles();
+    this.updateHint(true);
   }
 
   /** Toggle the disabled affordance when the active STT provider config changes. */
   setAvailable(available: boolean): void {
     this.available = available;
     this.button.disabled = !available;
-    if (!available && this.state !== 'idle') this.close();
+    if (!available && this.state !== 'idle') {
+      this.close();
+      this.opts.onNotice?.(t('voiceNoProvider'));
+    }
     this.applyLanguage();
   }
 
-  /** True while the picker owns the screen (used by the composer keydown guard). */
+  /** True while the picker is recording or transcribing (composer keydown guard). */
   isOpen(): boolean {
     return this.state !== 'idle';
   }
 
+  /** Hide the temporary cancel/undo affordance (send, session switch, draft load). */
+  hideClear(): void {
+    if (this.undoTimer !== null) {
+      window.clearTimeout(this.undoTimer);
+      this.undoTimer = null;
+    }
+    this.clearVisible = false;
+    this.lastInsert = null;
+    this.clearButton.classList.remove('visible');
+    this.updateTitles();
+  }
+
+  // ---------- state / affordance plumbing ----------
+
+  private setState(next: VoiceState): void {
+    this.state = next;
+    this.button.classList.toggle('recording', next === 'recording');
+    this.button.classList.toggle('transcribing', next === 'transcribing');
+    this.button.setAttribute('aria-pressed', next === 'recording' ? 'true' : 'false');
+    // The existing "running/busy" readout must not compete with the live
+    // recording indicator: hide it for the duration of the voice interaction.
+    this.statusEl?.classList.toggle('voice-hidden', next !== 'idle');
+    this.updateTitles();
+    this.updateHint(true);
+  }
+
+  private showClear(): void {
+    this.clearVisible = true;
+    this.clearButton.classList.add('visible');
+    this.updateTitles();
+  }
+
+  private micTitle(): string {
+    if (!this.available) return t('voiceNoProvider');
+    switch (this.state) {
+      case 'recording': return t('voiceMicTitleRecording');
+      case 'transcribing': return t('voiceMicTitleTranscribing');
+      default: return this.clearVisible ? t('voiceMicTitleInserted') : t('voiceMicTitleIdle');
+    }
+  }
+
+  private clearTitle(): string {
+    switch (this.state) {
+      case 'recording': return t('voiceClearTitleRecording');
+      case 'transcribing': return t('voiceClearTitleTranscribing');
+      default: return t('voiceClearTitleInserted');
+    }
+  }
+
+  private updateTitles(): void {
+    const mic = this.micTitle();
+    this.button.title = mic;
+    this.button.setAttribute('aria-label', mic);
+    const clear = this.clearTitle();
+    this.clearButton.title = clear;
+    this.clearButton.setAttribute('aria-label', clear);
+  }
+
+  private updateHint(force = false): void {
+    let mode: HintMode = 'idle';
+    if (this.state === 'recording') {
+      if (!this.captureReady) mode = 'preparing';
+      else if (this.vad.active) mode = 'voice';
+      else if (this.lastVoiceAt > 0) mode = 'silence';
+      else mode = 'listening';
+    }
+    if (!force && mode === this.hintMode) return;
+    this.hintMode = mode;
+    switch (mode) {
+      case 'preparing':
+        this.hintEl.textContent = t('voiceHintPreparing');
+        break;
+      case 'voice':
+        this.hintEl.textContent = t('voiceHintVoice');
+        break;
+      case 'silence':
+        this.hintEl.textContent = t('voiceHintSilence', { seconds: Math.ceil(this.silenceMs / 1000) });
+        break;
+      default:
+        this.hintEl.textContent = t('voiceHint');
+    }
+  }
+
+  // ---------- public interaction ----------
+
   private toggle(): Promise<void> {
     if (!this.available) return Promise.resolve();
     if (this.state === 'idle') return this.start();
-    // recording → discard; transcribing → cancel pending fill. Either way the
-    // mic button is the only cancel affordance.
-    this.close();
+    if (this.state === 'recording') return this.stopAndTranscribe(true);
+    // Transcribing: ignore. A second request while the STT is in flight could
+    // duplicate the transcript or leave a stale token behind.
     return Promise.resolve();
   }
+
+  private onClearClick(): void {
+    if (this.state === 'recording') {
+      this.close(); // discard the segment; no toast, the affordance is explicit
+      return;
+    }
+    if (this.state === 'transcribing') {
+      this.close(); // bumps transcribingToken, so a late result is dropped
+      return;
+    }
+    this.undoInsert();
+  }
+
+  /** Remove exactly the text inserted by the last transcription, if untouched. */
+  private undoInsert(): void {
+    const last = this.lastInsert;
+    if (!last) {
+      this.hideClear();
+      return;
+    }
+    const actual = this.input.value.slice(last.start, last.start + last.text.length);
+    if (actual !== last.text) {
+      this.hideClear();
+      this.opts.onNotice?.(t('voiceCannotUndo'));
+      return;
+    }
+    this.input.value = this.input.value.slice(0, last.start)
+      + this.input.value.slice(last.start + last.text.length);
+    this.hideClear();
+    this.input.focus();
+    this.input.setSelectionRange(last.start, last.start);
+    this.opts.onAfterFill();
+  }
+
+  // ---------- recording ----------
 
   private async start(): Promise<void> {
     this.closeTimers();
     this.releaseAudio();
     this.chunks = [];
     this.level = 0;
-    this.calibrating = true;
-    this.noiseSum = 0;
-    this.noiseCount = 0;
-    this.noiseSamples = 0;
-    this.voiceThreshold = MIN_VOICE_RMS;
+    this.vad = makeVadState();
     this.lastVoiceAt = 0;
     this.voiceSamples = 0;
-    this.state = 'recording';
-    this.button.classList.add('recording');
-    this.button.setAttribute('aria-pressed', 'true');
+    this.captureReady = false;
+    this.hideClear();
+    this.setState('recording');
+    this.showClear();
     this.timerEl.textContent = '00:00';
     this.popover.classList.remove('hidden');
-    this.applyLanguage();
 
     if (!navigator.mediaDevices?.getUserMedia) {
       this.close();
@@ -282,6 +527,12 @@ export class VoiceInputController {
       this.processor.onaudioprocess = (e) => {
         if (this.state !== 'recording') return;
         const data = e.inputBuffer.getChannelData(0);
+        if (!this.captureReady) {
+          // First real sample has arrived: switch the hint from "starting" to
+          // the live-state text before doing anything else.
+          this.captureReady = true;
+          this.updateHint(true);
+        }
         this.chunks.push(new Float32Array(data));
         // RMS over a stride is plenty for both the meter and VAD.
         let sum = 0;
@@ -290,21 +541,15 @@ export class VoiceInputController {
         const rms = n ? Math.sqrt(sum / n) : 0;
         this.updateBars(rms);
 
-        if (this.calibrating) {
-          this.noiseSum += sum;
-          this.noiseCount += n;
-          this.noiseSamples += data.length;
-          if (this.noiseSamples >= this.sampleRate * CALIBRATION_MS / 1000 && this.noiseCount > 0) {
-            const floor = Math.sqrt(this.noiseSum / this.noiseCount);
-            this.voiceThreshold = Math.max(floor * 3, MIN_VOICE_RMS);
-            this.calibrating = false;
-          }
-          return;
-        }
-        if (rms > this.voiceThreshold) {
+        const dtMs = data.length / this.sampleRate * 1000;
+        const voiced = updateVad(this.vad, rms, dtMs).active;
+        if (voiced) {
+          // Only confirmed voice refreshes the trailing-silence timer and the
+          // keep/discard decision. Covered-mic thumps and steady noise never count.
           this.lastVoiceAt = Date.now();
           this.voiceSamples += data.length;
         }
+        this.updateHint();
       };
       this.source.connect(this.processor);
       this.processor.connect(this.sink);
@@ -317,12 +562,12 @@ export class VoiceInputController {
         const sec = Math.floor((now - this.startedAt) / 1000);
         this.timerEl.textContent = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 
-        if (!this.calibrating && this.lastVoiceAt === 0 && now - this.startedAt >= this.preSilenceMs) {
+        if (this.lastVoiceAt === 0 && now - this.startedAt >= this.preSilenceMs) {
           this.close();
           this.opts.onNotice?.(t('voiceNoSpeech'));
           return;
         }
-        if (!this.calibrating && this.lastVoiceAt > 0 && now - this.lastVoiceAt >= this.silenceMs) {
+        if (this.lastVoiceAt > 0 && now - this.lastVoiceAt >= this.silenceMs) {
           void this.stopAndTranscribe();
           return;
         }
@@ -349,17 +594,20 @@ export class VoiceInputController {
     });
   }
 
-  private async stopAndTranscribe(): Promise<void> {
+  private async stopAndTranscribe(manual = false): Promise<void> {
     if (this.state !== 'recording') return;
     this.closeTimers();
     this.releaseAudio();
+    const frames = this.chunks.reduce((n, c) => n + c.length, 0);
+    const totalMs = frames / this.sampleRate * 1000;
     const voicedMs = this.voiceSamples / this.sampleRate * 1000;
-    if (voicedMs < this.minSpeechMs) {
+    // Manual stop bypasses VAD: a soft voice that never crossed the threshold
+    // must still transcribe. Only a genuinely tiny clip is discarded.
+    if ((manual ? totalMs : voicedMs) < this.minSpeechMs) {
       this.close();
       this.opts.onNotice?.(t('voiceTooShort'));
       return;
     }
-    const frames = this.chunks.reduce((n, c) => n + c.length, 0);
     if (frames < 1000) {
       this.close();
       this.opts.onError(t('voiceEmpty'));
@@ -367,10 +615,7 @@ export class VoiceInputController {
     }
     const pcm = resample(this.chunks, this.sampleRate, 16000);
     const base64 = toBase64(encodeWav(pcm, 16000));
-    this.state = 'transcribing';
-    this.button.classList.remove('recording');
-    this.button.classList.add('transcribing');
-    this.button.setAttribute('aria-pressed', 'false');
+    this.setState('transcribing');
     this.popover.classList.add('hidden');
     const token = ++this.transcribingToken;
     try {
@@ -410,19 +655,30 @@ export class VoiceInputController {
     this.input.value = before + ins + after;
     const caret = (before + ins).length;
     this.close();
+    this.lastInsert = { start: pos, text: ins };
+    this.armUndoTimer();
+    this.showClear();
     this.input.focus();
     this.input.setSelectionRange(caret, caret);
     this.opts.onAfterFill();
   }
 
+  private armUndoTimer(): void {
+    if (this.undoTimer !== null) window.clearTimeout(this.undoTimer);
+    this.undoTimer = window.setTimeout(() => {
+      this.undoTimer = null;
+      if (this.state === 'idle') this.hideClear();
+    }, this.undoMs);
+  }
+
   close(): void {
     this.transcribingToken++;
+    this.captureReady = false;
     this.closeTimers();
     this.releaseAudio();
     this.popover.classList.add('hidden');
-    this.button.classList.remove('recording', 'transcribing');
-    this.button.setAttribute('aria-pressed', 'false');
-    this.state = 'idle';
+    this.hideClear();
+    this.setState('idle');
   }
 
   private closeTimers(): void {
