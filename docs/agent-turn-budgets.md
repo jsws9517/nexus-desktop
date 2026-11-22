@@ -1,6 +1,10 @@
-# Budgets & Limits — Where Each Knob Lives
+# Agent Turn / Token / Time Budgets — Where Each Knob Lives
 
-> Scope: nexus-desktop turn / token / time budgets.
+> Scope: nexus-desktop turn / token / time budgets across the four
+> config surfaces. Module keywords: **agent lifecycle, turn budget,
+> token budget, watchdog, relaxation floor, sub-agent role budget,
+> session watchdog, ACP turn absolute deadline**.
+>
 > Goal: a single page that answers "which file do I edit to change X?"
 > so a user (or a future architect) does not have to spelunk through
 > four config surfaces to find out.

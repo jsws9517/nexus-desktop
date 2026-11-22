@@ -3812,10 +3812,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       // "how long can a run stretch". The four surfaces (config.json
       // maxTurns / desktop.json spendMode.relax / correction.json
       // session.* / acp.timeouts.turnAbsoluteMs) are documented in
-      // docs/budgets.md; this hint is the one-line discoverability aid.
+      // docs/agent-turn-budgets.md; this hint is the one-line
+      // discoverability aid.
       if (spend.mode === 'coding') {
         lines.push(
-          'Turn budgets: see docs/budgets.md — config.json maxTurns (per-chat), ' +
+          'Turn budgets: see docs/agent-turn-budgets.md — config.json maxTurns (per-chat), ' +
           'desktop.json spendMode.relax (unattended-coding floors), correction.json ' +
           'session.maxWallClockMs (6h hard watchdog), acp.timeouts.turnAbsoluteMs ' +
           '(20 min remote cap).',

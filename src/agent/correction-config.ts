@@ -6,7 +6,7 @@
  * able to edit them from inside a session. A project-level file is deliberately
  * NOT supported — only `~/.nexus/correction.json` and the defaults here.
  *
- * Relationship to the other three budget surfaces (see docs/budgets.md):
+ * Relationship to the other three budget surfaces (see docs/agent-turn-budgets.md):
  *   - config.json `maxTurns` / `subAgents.maxTurns.<role>` — model-visible
  *     per-chat / per-role turn budgets. The model consumes these and may
  *     read them; they reset every `chat()` cycle.
