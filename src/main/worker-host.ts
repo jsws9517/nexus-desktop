@@ -8,6 +8,7 @@ import { app, utilityProcess } from 'electron';
 import type { UtilityProcess } from 'electron';
 import type { AgentEvent } from '../agent-service.js';
 import { logger } from '../shared/logger.js';
+import { EXTERNAL_RULES_ENV } from '../shared/rules-external.js';
 
 const diag = (s: string): void => {
   logger.debug(s);
@@ -194,7 +195,7 @@ export class WorkerHost {
     const child = spawn('node', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      env: { ...process.env, ...this.launch.env },
+      env: { ...process.env, ...EXTERNAL_RULES_ENV, ...this.launch.env },
     });
     this.handle = child;
 
@@ -245,7 +246,7 @@ export class WorkerHost {
       serviceName: 'nexus-core',
       stdio: 'pipe',
       execArgv: [WORKER_V8_FLAG],
-      env: { ...process.env, ...this.launch.env },
+      env: { ...process.env, ...EXTERNAL_RULES_ENV, ...this.launch.env },
     });
     this.handle = child;
     diag(`utilityProcess forked pid=${(child as unknown as { pid?: number }).pid}`);

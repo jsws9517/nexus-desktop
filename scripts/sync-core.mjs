@@ -34,35 +34,6 @@ import { createHash } from 'node:crypto';
 import { existsSync, rmSync, cpSync, watch, readdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { patchProjectContextSource, isDedupPatched, DEDUP_MARKER } from './patch-core-rules-dedup.mjs';
-
-/**
- * Apply the source-level rules-dedup patch to the installed core dist. Runs on
- * EVERY sync (including the fingerprint fast-path), because `npm install` can
- * restore an unpatched copy without changing the source dist fingerprint.
- * Version-bound: a core upgrade re-copies dist, then this re-patches the new
- * source; if the core layout drifts, it fails loudly (see function below).
- */
-function applyDedupPatch() {
-  const target = join(dstRoot, 'dist', 'src', 'context', 'project-context.js');
-  if (!existsSync(target)) {
-    console.warn(`[sync-core] dedup patch skipped: ${target} not found`);
-    return;
-  }
-  const src = readFileSync(target, 'utf8');
-  if (isDedupPatched(src)) return;
-  const result = patchProjectContextSource(src);
-  if (result.reason === 'signature-not-found') {
-    console.error(
-      '[sync-core] DEDUP PATCH FAILED: core loadRules() signature changed. ' +
-      'Project rules may be injected twice. Update patch-core-rules-dedup.mjs.',
-    );
-    process.exitCode = 1;
-    return;
-  }
-  writeFileSync(target, result.code, 'utf8');
-  console.log(`[sync-core] applied ${DEDUP_MARKER} to installed core (loadRules -> no-op)`);
-}
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const srcRoot = process.env.NEXUS_CODER_SRC || join(root, '..', 'nexus-coder');
@@ -240,7 +211,6 @@ function startWatch({ force = false } = {}) {
     if (syncOnce({ quiet: true })) {
       console.log(`[sync-core] resynced at ${new Date().toISOString()}`);
     }
-    applyDedupPatch();
   }
 
   function debounce() {
@@ -312,6 +282,3 @@ if (wantWatch) {
 } else {
   syncOnce({ force: wantForce });
 }
-// Always (re-)assert the dedup patch after any sync path, including the
-// fingerprint fast-path where no files were copied.
-applyDedupPatch();

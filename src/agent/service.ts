@@ -1345,8 +1345,9 @@ export class AgentService {
           // step under a single `[Project Constitution]` marker so it is
           // strippable/auditable. Every matched file is honoured (multi-file
           // merge); oversize files are skipped with a warning. This is the sole
-          // authoritative project-rule injection — the core's loadRules() is
-          // patched to no-op so rules never appear twice (see scripts/patch-core-rules-dedup.mjs).
+          // authoritative project-rule injection — the core skips its own
+          // loadRules() via NEXUS_PROJECT_RULES_EXTERNAL (set on every worker by
+          // WorkerHost), so rules never appear twice.
           try {
             const bundle = await loadConstitutionBundle(projectDir ?? process.cwd());
             const text = bundle.reason !== 'not-found' ? bundle.text : null;

@@ -53,7 +53,7 @@ import {
   getMessageLast,
 } from '../session-db.js';
 import { readState as readCoreOverlayState, coreDirFor } from '../bootstrap/overlay.js';
-import { isDedupPatched } from '../shared/core-dedup.js';
+import { coreHonorsExternalRules } from '../shared/rules-external.js';
 import { recentLogLines } from '../shared/logger.js';
 import { isBoolean, isFiniteNumber, isNonEmptyString, isString, isValidPathList, validateAutomationParams, validateMainLocalParams, validateWorkerParams } from '../shared/ipc-validation.js';
 import { mergePermissionsIntoConfig } from '../shared/permissions-config.js';
@@ -1050,14 +1050,15 @@ export function registerIpc(ctx: IpcContext): void {
 
     let dedupActive = false;
     try {
-      // Inspect the core copy that actually runs. Overlays are patched at
-      // activation (see core-overlay/manager.ts), so the check is now based on
-      // the real file rather than assuming every overlay is unpatched.
+      // Read-only capability probe (no source rewriting). The core skips its own
+      // loadRules() when the worker env sets NEXUS_PROJECT_RULES_EXTERNAL=1. An
+      // old overlay core that predates the flag still injects rules twice, so
+      // inspect the copy that actually runs and warn in that case only.
       const activeCore = readCoreOverlayState(ctx.coreOverlayRoot()).activeCore;
       const coreFile = activeCore
         ? join(coreDirFor(ctx.coreOverlayRoot(), activeCore), 'dist', 'src', 'context', 'project-context.js')
         : join(app.getAppPath(), 'node_modules', 'nexus-coder', 'dist', 'src', 'context', 'project-context.js');
-      dedupActive = await readFile(coreFile, 'utf8').then(isDedupPatched).catch(() => false);
+      dedupActive = await readFile(coreFile, 'utf8').then(coreHonorsExternalRules).catch(() => false);
     } catch {
       dedupActive = false;
     }
