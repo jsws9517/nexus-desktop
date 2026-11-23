@@ -629,6 +629,8 @@ interface TabInfo {
   model: string;
   busy: boolean;
   cwd?: string | null;
+  /** Optimistic placeholder shown from the click until openSession resolves. */
+  loading?: boolean;
 }
 
 // ---------- element helpers ----------
@@ -4128,7 +4130,7 @@ function tabAddButton(): HTMLElement {
 
 function tabChip(tab: TabInfo): HTMLElement {
   const chip = document.createElement('div');
-  chip.className = 'tab' + (tab.sessionId === activeTabId ? ' active' : '');
+  chip.className = 'tab' + (tab.sessionId === activeTabId ? ' active' : '') + (tab.loading ? ' loading' : '');
   const busy = document.createElement('span');
   busy.className = 'tab-busy' + (tab.busy ? ' on' : '');
   busy.title = tab.busy ? t('tabsBusy') : '';
@@ -4140,12 +4142,15 @@ function tabChip(tab: TabInfo): HTMLElement {
   close.replaceChildren(iconEl('x', 'icon icon-sm'));
   close.title = t('tabsCloseHint');
   close.setAttribute('aria-label', t('tabsCloseHint'));
+  close.disabled = !!tab.loading;
   close.addEventListener('click', (e) => {
     e.stopPropagation();
     void closeTabs([tab.sessionId]);
   });
   chip.append(busy, name, close);
-  chip.addEventListener('click', () => void switchTab(tab.sessionId));
+  chip.addEventListener('click', () => {
+    if (!tab.loading) void switchTab(tab.sessionId);
+  });
   chip.addEventListener('contextmenu', (ev) => {
     ev.preventDefault();
     openTabContextMenu(tab.sessionId, ev);
@@ -4434,18 +4439,61 @@ async function resolveProjectDir(sessionId?: string): Promise<string | undefined
   let cwd: string | undefined;
   if (sessionId) {
     try {
-      const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
+      const meta = (await withRpcTimeout(
+        window.nexusDesktop.getSessionMetadata(sessionId),
+        10_000,
+        'getSessionMetadata',
+      )) as Record<string, unknown>;
       const projectDir = (meta.projectDir ?? '') as string;
       if (projectDir) cwd = projectDir;
     } catch {}
   }
   if (!cwd) {
     try {
-      const def = (await window.nexusDesktop.getDefaultProjectDir()) as { dir?: string };
+      const def = (await withRpcTimeout(
+        window.nexusDesktop.getDefaultProjectDir(),
+        10_000,
+        'getDefaultProjectDir',
+      )) as { dir?: string };
       if (def && def.dir) cwd = def.dir;
     } catch {}
   }
   return cwd;
+}
+
+/**
+ * Session ids whose openSession RPC is still in flight. P0: a click must show
+ * feedback immediately, so we insert an optimistic chip before any IPC; this
+ * set (a) makes repeat clicks no-ops and (b) keeps the pending chip alive if a
+ * main-side tabsChanged sweep happens to fire mid-open.
+ */
+const openingSessions = new Set<string>();
+
+/** Hard ceiling for the foreground open IPC; the worker's own steps are bounded
+ *  too, this is the last-resort guard so a click can never hang the UI forever. */
+const OPEN_SESSION_TIMEOUT_MS = 60_000;
+
+const openingBannerEl = $('#session-opening');
+let openingSlowTimer: ReturnType<typeof setTimeout> | undefined;
+function showOpeningBanner(): void {
+  const label = openingBannerEl?.querySelector<HTMLElement>('[data-i18n]');
+  if (label) label.textContent = t('sessionOpening');
+  openingBannerEl?.classList.remove('hidden');
+  if (openingSlowTimer) clearTimeout(openingSlowTimer);
+  // A hard failure timeout would false-positive on a legitimately slow cold
+  // start; instead escalate the copy after 8s so the wait stays legible.
+  openingSlowTimer = setTimeout(() => {
+    if (openingBannerEl?.classList.contains('hidden')) return;
+    const l = openingBannerEl?.querySelector<HTMLElement>('[data-i18n]');
+    if (l) l.textContent = t('sessionOpeningSlow');
+  }, 8_000);
+}
+function hideOpeningBanner(): void {
+  if (openingSlowTimer) {
+    clearTimeout(openingSlowTimer);
+    openingSlowTimer = undefined;
+  }
+  openingBannerEl?.classList.add('hidden');
 }
 
 /** Open `sessionId` in its own worker process (or focus it if already open). */
@@ -4455,10 +4503,32 @@ async function openTab(
   inherit?: { provider: string; model: string },
 ): Promise<void> {
   if (name) tabNames.set(sessionId, name);
-  if (tabs.has(sessionId)) {
+  if (tabs.has(sessionId) && !openingSessions.has(sessionId)) {
     await switchTab(sessionId);
     return;
   }
+  if (openingSessions.has(sessionId)) return; // duplicate click — already opening
+
+  // Immediate feedback: pending chip + pane banner, before resolveProjectDir()
+  // (which itself waits on the global worker). The user sees a response on the
+  // very next frame instead of wondering whether the click registered.
+  const prevActive = activeTabId;
+  openingSessions.add(sessionId);
+  tabs.set(sessionId, { sessionId, provider: '', model: '', busy: false, loading: true });
+  activeTabId = sessionId;
+  renderTabBar();
+  showOpeningBanner();
+
+  const rollback = (): void => {
+    openingSessions.delete(sessionId);
+    // A real tab from main's tabsChanged may already have replaced the pending
+    // one — never delete that.
+    if (tabs.get(sessionId)?.loading) tabs.delete(sessionId);
+    if (activeTabId === sessionId) activeTabId = prevActive;
+    hideOpeningBanner();
+    renderTabBar();
+  };
+
   let res: { ok: boolean; tab?: TabInfo; reason?: string };
   try {
     // Bind the session's recorded project directory to its worker process so a
@@ -4468,18 +4538,26 @@ async function openTab(
     // projectDir — a new session stays projectDir-less until the user
     // explicitly sets one via Open Project or /setdir.
     let cwd = await resolveProjectDir(sessionId);
-    res = await window.nexusDesktop.openSession(sessionId, cwd);
+    res = await withRpcTimeout(
+      window.nexusDesktop.openSession(sessionId, cwd),
+      OPEN_SESSION_TIMEOUT_MS,
+      'openSession',
+    );
   } catch (err) {
+    rollback();
     addSystem(`${t('tabsOpenFailed')}${errText(err)}`);
     return;
   }
   if (!res.ok) {
+    rollback();
     if (res.reason === 'max-tabs') addSystem(t('tabsMaxReached'));
     else if (res.reason === 'overloaded') addSystem(t('tabsOverloaded'));
     else if (res.reason === 'session-gone') addSystem(t('tabsSessionGone'));
     else addSystem(`${t('tabsOpenFailed')}${res.reason ?? ''}`);
     return;
   }
+  openingSessions.delete(sessionId);
+  hideOpeningBanner();
   const tinfo = res.tab!;
   let provider = tinfo.provider;
   let model = tinfo.model;
@@ -4583,6 +4661,9 @@ function makeAgentsPageOptions() {
 
 /** Activate `sessionId`, rendering its transcript as the visible conversation. */
 async function switchTab(sessionId: string): Promise<void> {
+  // Any successful tab activation ends the pending-open visual (also safe for
+  // a plain switch where the banner was already hidden).
+  hideOpeningBanner();
   activeTabId = sessionId;
   currentSessionId = sessionId;
   // Refresh the session-scoped role before notifying pages so the Agents view
@@ -9246,7 +9327,11 @@ window.nexusDesktop.onTabEvents((payloads) => {
 // Main-side tab registry changed (open/close/exit): mirror it in the tab bar.
 window.nexusDesktop.onTabsChanged((open) => {
   const keep = new Set(open.map((t) => t.sessionId));
-  for (const sid of [...tabs.keys()]) if (!keep.has(sid)) tabs.delete(sid);
+  // Keep optimistic chips that are still opening: main's snapshot can race an
+  // in-flight openSession and would otherwise make the pending chip blink out.
+  for (const sid of [...tabs.keys()]) {
+    if (!keep.has(sid) && !openingSessions.has(sid)) tabs.delete(sid);
+  }
   for (const t of open) if (t.sessionId) tabs.set(t.sessionId, t);
   renderTabBar();
 });

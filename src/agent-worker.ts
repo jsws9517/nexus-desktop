@@ -172,6 +172,33 @@ let earlyDone = false;
 let initPromise: Promise<void> | null = null;
 let initDone = false;
 
+/**
+ * P1: open() now resolves before startSession finishes loading the full
+ * transcript (and its optional post-resume compress) on a background RPC.
+ * Methods that touch the bound in-memory context must wait for that promise,
+ * otherwise the first `chat` on a freshly opened tab races an empty context.
+ * Set by the `startSession` handler; null on a worker that never bound a
+ * session (e.g. a cold spare before it is leased).
+ */
+let sessionReadyPromise: Promise<unknown> | null = null;
+const SESSION_GATED_METHODS = new Set<WorkerMethod>([
+  'chat', 'steer', 'regenerate', 'withdraw', 'prepareParentMemory',
+]);
+
+/**
+ * P1: extractor packages used to be imported inside earlyInit, which put their
+ * module graph (and any native deps) on EVERY tab's startup path even though
+ * attachments are rare. The loader is already idempotent, so import on first
+ * RAG use instead — zero cost for a plain chat session.
+ */
+async function ensureExtractors(): Promise<void> {
+  try {
+    await loadExtractorPackages();
+  } catch (e) {
+    logger.warn(`extractor-loader: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 // EARLY_METHODS imported from src/shared/constants.ts (single source).
 
 function writeDiag(data: unknown): void {
@@ -224,6 +251,9 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   // transient store. `paths` is already validated as a string[] by the shared
   // spec; the per-file allowlist decision lives in the module.
   ragIngest: async (req: WorkerRequest & { method: 'ragIngest' }) => {
+    // First real attachment use is the earliest point that needs extractors;
+    // loading them here keeps them off the every-tab startup path.
+    await ensureExtractors();
     const paths = Array.isArray(req.params.paths)
       ? (req.params.paths as unknown[]).filter((p): p is string => typeof p === 'string' && p.length > 0)
       : [];
@@ -238,8 +268,14 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
     service.clearAttachmentStore(req.params.sessionId);
     return { ok: true };
   },
-  ragStatus: (req: WorkerRequest & { method: 'ragStatus' }) => service.attachmentStoreStatus(req.params.sessionId),
-  ragCapabilities: () => service.ragCapabilities(),
+  ragStatus: async (req: WorkerRequest & { method: 'ragStatus' }) => {
+    await ensureExtractors();
+    return service.attachmentStoreStatus(req.params.sessionId);
+  },
+  ragCapabilities: async () => {
+    await ensureExtractors();
+    return service.ragCapabilities();
+  },
   steer: (req: WorkerRequest & { method: 'steer' }) => service.steer(req.params.input, req.params.rollback === true),
   restore: async (req: WorkerRequest & { method: 'restore' }) => {
     const res = await service.restore(req.params.backupPath);
@@ -294,7 +330,19 @@ const HANDLERS: Record<DispatchMethod, DispatchHandler> = {
   abort: () => {
     service.abort();
   },
-  startSession: async (req: WorkerRequest & { method: 'startSession' }) => service.startSession(req.params?.name, req.params?.sessionId, req.params?.metadata, req.params?.prevSessionId),
+  startSession: async (req: WorkerRequest & { method: 'startSession' }) => {
+    // Capture the promise synchronously at handler entry so any later RPC
+    // (chat/steer/...) that lands on this worker can gate on it, regardless of
+    // whether main awaited this response or fired it in the background.
+    const p = service.startSession(
+      req.params?.name,
+      req.params?.sessionId,
+      req.params?.metadata,
+      req.params?.prevSessionId,
+    );
+    sessionReadyPromise = p;
+    return p;
+  },
   prepareParentMemory: () => service.prepareParentMemory(),
   listSessions: (req: WorkerRequest & { method: 'listSessions' }) => service.listSessions(req.params ?? {}),
   getMessages: (req: WorkerRequest & { method: 'getMessages' }) => service.getMessages(req.params.sessionId, req.params),
@@ -412,19 +460,9 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
   if (req.method === 'earlyInit') {
     try {
       const t0 = Date.now();
-      // Extractor packages must be live before any ragIngest can run, and earlyInit
-      // is the earliest point in the worker's life. Wrapped because this sits on
-      // the startup path: a loader bug must degrade "PDF is not searchable", not
-      // "the agent never starts".
-      let loaded: string[] = [];
-      let failed: string[] = [];
-      try {
-        const res = await loadExtractorPackages();
-        loaded = res.loaded;
-        failed = Object.keys(res.failed);
-      } catch (e) {
-        logger.warn(`extractor-loader: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      // P1: extractor imports moved to first RAG use (ensureExtractors). They
+      // used to sit here, on every tab's startup path, for a feature most
+      // sessions never touch.
       earlyPromise = service.earlyInit(req.params?.cwd);
       await earlyPromise;
       earlyDone = true;
@@ -433,7 +471,6 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
         ok: true,
         ms: Date.now() - t0,
         cwd: service.getCwd(),
-        extractors: { loaded, failed },
       });
       respond(req.id, { ok: true, cwd: service.getCwd() });
     } catch (e) {
@@ -462,6 +499,13 @@ async function handleRequest(line: string | Record<string, unknown>): Promise<vo
   }
   if (req.method !== 'init' && !EARLY_METHODS.has(req.method) && initPromise !== null && !initDone) {
     await initPromise.catch(() => {});
+  }
+  // P1: a resumed tab is registered before its transcript finishes loading.
+  // Keep turn-producing RPCs behind the background startSession so the first
+  // message can never run against a half-bound context. Read-only methods
+  // (getStatus/getMessages/...) stay ungated — they come from the DB/config.
+  if (SESSION_GATED_METHODS.has(req.method as WorkerMethod) && sessionReadyPromise) {
+    await sessionReadyPromise.catch(() => {});
   }
   const handler = HANDLERS[req.method as DispatchMethod];
   if (!handler) {

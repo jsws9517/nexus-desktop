@@ -121,6 +121,10 @@
           <span class="btn-label" data-i18n="freeze">冻结视图</span>
         </button>
         <div id="chat-empty" class="chat-empty hidden" data-i18n="chatEmptyHint">点击「＋ 新建」或输入 /new 开始新会话，也可以直接输入第一条消息</div>
+        <div id="session-opening" class="session-opening hidden" role="status" aria-live="polite">
+          <span class="session-opening-spinner" aria-hidden="true"></span>
+          <span data-i18n="sessionOpening">正在打开会话…</span>
+        </div>
         <div id="messages" role="log" aria-label="消息历史" aria-live="polite"></div>
         <div id="input-area" role="region" aria-label="消息输入区域">
           <div id="attachments" class="attachments hidden" aria-label="附件列表"></div>

@@ -24,6 +24,21 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 const RESTART_RPC_TIMEOUT_MS = 20_000;
 
 /**
+ * P1: bound every normal open() RPC so a wedged worker cannot freeze the tab
+ * click forever. The old restart-only `withTimeout` left the foreground path
+ * unbounded — a hung `startSession` (e.g. a post-resume LLM compress) meant the
+ * renderer never got its tab and the user saw "click did nothing".
+ */
+const OPEN_RPC_TIMEOUT_MS = 20_000;
+
+/**
+ * Background session binding is allowed a little longer than the foreground
+ * steps: it loads the full transcript and may compress it. It never blocks the
+ * tab from appearing, so a generous deadline is safe.
+ */
+const SESSION_BIND_TIMEOUT_MS = 60_000;
+
+/**
  * H6: crash-respawn budget per session (loose cap). A worker that dies
  * unexpectedly is re-spawned and re-bound up to this many times in a row;
  * beyond it we fall back to the pre-H6 behaviour (drop the row) so a
@@ -468,20 +483,37 @@ export class SessionWorkers {
     this.wire(bound);
     try {
       if (fromSpare) {
-        // Spare already ran earlyInit (no cwd) — apply this tab's working directory.
-        if (opts?.cwd) await worker.request('setCwd', { cwd: opts.cwd });
+        // Spare already ran earlyInit + initAcp + loadSkills during warm-up.
+        // Only this tab's cwd still needs applying. Re-running initAcp/skills
+        // here was pure duplicate work on the open path (a fresh filesystem
+        // skill scan + ~12 module imports on this machine).
+        if (opts?.cwd) {
+          await withTimeout(
+            worker.request('setCwd', { cwd: opts.cwd }),
+            OPEN_RPC_TIMEOUT_MS,
+            'setCwd',
+          );
+        }
       } else {
-        await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
+        await withTimeout(
+          worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined),
+          OPEN_RPC_TIMEOUT_MS,
+          'earlyInit',
+        );
+        // A fresh worker has never registered ACP targets or scanned skills;
+        // a spare has, so skip both in that branch (they are idempotent, but
+        // idempotent ≠ free — the scan is the expensive part).
+        await withTimeout(worker.request('initAcp'), OPEN_RPC_TIMEOUT_MS, 'initAcp');
+        await withTimeout(worker.request('loadSkills'), OPEN_RPC_TIMEOUT_MS, 'loadSkills');
       }
-      // A spare was warmed with ACP already registered, but this branch may have
-      // spawned fresh; start() is idempotent, so call it unconditionally rather
-      // than tracking which path we took. Same for the skill scan: spares ran
-      // loadSkills during warm-up; a freshly spawned worker needs it now.
-      await worker.request('initAcp');
-      await worker.request('loadSkills');
-      const sid = (await worker.request('startSession', { sessionId })) as string;
-      bound.sessionId = sid || sessionId;
-      const status = (await worker.request('getStatus')) as {
+      // Status is read BEFORE startSession now: provider/model come from the
+      // config the Agent was constructed with, so they are already correct and
+      // we can hand the tab back without waiting for the full transcript load.
+      const status = (await withTimeout(
+        worker.request('getStatus'),
+        OPEN_RPC_TIMEOUT_MS,
+        'getStatus',
+      )) as {
         provider?: string;
         model?: string;
         busy?: boolean;
@@ -490,7 +522,14 @@ export class SessionWorkers {
       bound.model = typeof status.model === 'string' ? status.model : '';
       bound.busy = !!status.busy;
       await this.applySessionBinding(bound);
-      this.map.set(bound.sessionId, bound);
+      // Register the tab and resolve openSession NOW. Loading the whole
+      // transcript (and the optional post-resume compress) happens in the
+      // background; the renderer paints history from the DB independently of
+      // the worker's in-memory context. Worker RPCs that need the bound
+      // session (chat/steer/regenerate/...) gate themselves on the background
+      // startSession completing, so nothing can race a half-bound context.
+      bound.sessionId = sessionId;
+      this.map.set(sessionId, bound);
       // H6: a MANUAL open re-arms crash auto-respawn for this session (clears
       // any stale "user closed" marker + resets the budget), so a later crash
       // of this live tab still respawns rather than vanishes. A RE-SPAWN must
@@ -502,7 +541,9 @@ export class SessionWorkers {
         this.respawnCounts.delete(bound.sessionId);
       }
       this.onChange?.(this.tabs());
-      // Keep one spare warm for the next open (gated on resource health).
+      // Send startSession FIRST (message ordering on the worker's RPC channel),
+      // then replenish the spare pool.
+      this.bindSessionInBackground(bound, sessionId);
       void this.warmSpare();
       return {
         sessionId: bound.sessionId,
@@ -517,6 +558,44 @@ export class SessionWorkers {
       this.map.delete(sessionId);
       throw err;
     }
+  }
+
+  /**
+   * P1: load a resumed session's full transcript + context on a background RPC
+   * so openSession() resolves as soon as the tab is presentable. On failure the
+   * tab is removed and the worker stopped (its context was never bound, so it
+   * must not be allowed to serve a chat turn); log loudly and let the user
+   * reopen from the session list. `rearm:false` crash respawns also come here.
+   */
+  private bindSessionInBackground(bound: BoundWorker, sessionId: string): void {
+    const request = withTimeout(
+      bound.worker.request('startSession', { sessionId }),
+      SESSION_BIND_TIMEOUT_MS,
+      'startSession(background)',
+    );
+    void request.then(
+      (sid) => {
+        if (typeof sid === 'string' && sid && sid !== sessionId) {
+          this.onLog?.(
+            'warn',
+            `background startSession returned ${sid} for requested ${sessionId}`,
+          );
+        }
+      },
+      (err) => {
+        this.onLog?.(
+          'error',
+          `background session bind failed (sessionId=${sessionId}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+        if (this.map.get(sessionId) === bound) {
+          this.map.delete(sessionId);
+          try {
+            bound.worker.stop();
+          } catch {}
+          this.onChange?.(this.tabs());
+        }
+      },
+    );
   }
 
   /**
@@ -564,23 +643,42 @@ export class SessionWorkers {
     this.wire(bound);
     try {
       if (fromSpare) {
-        if (opts?.cwd) await worker.request('setCwd', { cwd: opts.cwd });
+        // Spare already ran earlyInit + initAcp + loadSkills; only the cwd is
+        // tab-specific. Re-running the skill scan here duplicated its cost.
+        if (opts?.cwd) {
+          await withTimeout(
+            worker.request('setCwd', { cwd: opts.cwd }),
+            OPEN_RPC_TIMEOUT_MS,
+            'setCwd',
+          );
+        }
       } else {
-        await worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined);
+        await withTimeout(
+          worker.request('earlyInit', opts?.cwd ? { cwd: opts.cwd } : undefined),
+          OPEN_RPC_TIMEOUT_MS,
+          'earlyInit',
+        );
+        // Only a freshly spawned needs ACP targets + a skill scan; a spare
+        // already has both from warm-up.
+        await withTimeout(worker.request('initAcp'), OPEN_RPC_TIMEOUT_MS, 'initAcp');
+        await withTimeout(worker.request('loadSkills'), OPEN_RPC_TIMEOUT_MS, 'loadSkills');
       }
-      // Same as open(): a fresh-session worker needs its own ACP registry, since
-      // registration is per Agent and lives behind Agent.init() — same for the
-      // skill scan, which only ran if this worker came off the spare pool.
-      await worker.request('initAcp');
-      await worker.request('loadSkills');
-      const sid = (await worker.request('startSession', {
-        prevSessionId: opts?.prevSessionId,
-      })) as string;
+      // openNew must keep startSession on the critical path: the core CREATES
+      // the session here and only the returned id identifies the new tab.
+      const sid = (await withTimeout(
+        worker.request('startSession', { prevSessionId: opts?.prevSessionId }),
+        OPEN_RPC_TIMEOUT_MS,
+        'startSession',
+      )) as string;
       if (!sid || typeof sid !== 'string' || sid.length === 0) {
         throw new Error('worker startSession returned no session id');
       }
       bound.sessionId = sid;
-      const status = (await worker.request('getStatus')) as {
+      const status = (await withTimeout(
+        worker.request('getStatus'),
+        OPEN_RPC_TIMEOUT_MS,
+        'getStatus',
+      )) as {
         provider?: string;
         model?: string;
       };

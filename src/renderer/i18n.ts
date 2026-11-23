@@ -567,6 +567,11 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   },
   tabsOverloaded: { 'zh-CN': '系统资源过高，已暂停新建会话', en: 'System overloaded; new sessions paused' },
   tabsOpenFailed: { 'zh-CN': '无法打开会话标签：', en: 'Failed to open session tab: ' },
+  sessionOpening: { 'zh-CN': '正在打开会话…', en: 'Opening session…' },
+  sessionOpeningSlow: {
+    'zh-CN': '会话仍在打开中，比平时稍慢，请稍候…',
+    en: 'Still opening this session — taking longer than usual…',
+  },
   // The session has been deleted: its row no longer exists in the sessions
   // table, so "Open session" cannot point at it. Shown by the tabs layer when
   // openSession refuses to spawn a blank worker for a gone id (defense-in-depth

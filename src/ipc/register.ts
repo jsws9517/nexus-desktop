@@ -46,7 +46,12 @@ import {
   isBuiltinRole,
   invalidateAgentCache, MAX_AGENT_FILE_BYTES,
 } from '../tools/custom-agents.js';
-import { queryArtifacts, getArtifactMessageContent } from '../session-db.js';
+import {
+  queryArtifacts,
+  getArtifactMessageContent,
+  getMessageWindow,
+  getMessageLast,
+} from '../session-db.js';
 import { readState as readCoreOverlayState, coreDirFor } from '../bootstrap/overlay.js';
 import { isDedupPatched } from '../shared/core-dedup.js';
 import { recentLogLines } from '../shared/logger.js';
@@ -412,7 +417,28 @@ export function registerIpc(ctx: IpcContext): void {
     }
     return call('listSessions')(_e, params);
   });
-  ipcMain.handle(CHANNELS.getMessages, call('getMessages'));
+  // P0: history restore used to queue behind the global worker's single event
+  // loop (and its earlyInit gate), so opening a tab while other tabs were busy
+  // made the transcript pane blank long after the chip appeared. The windowed
+  // SQL here is identical to AgentService.getMessages() and reads through the
+  // main process's long-lived connection; fall back to the worker only when the
+  // DB is unavailable (fresh install / schema drift).
+  ipcMain.handle(CHANNELS.getMessages, async (_e, params?: Record<string, unknown>) => {
+    const sessionId = typeof params?.sessionId === 'string' ? params.sessionId : '';
+    if (sessionId) {
+      try {
+        if (typeof params?.last === 'number') {
+          return getMessageLast(sessionId, params.last);
+        }
+        const limit = typeof params?.limit === 'number' ? params.limit : 500;
+        const offset = typeof params?.offset === 'number' ? params.offset : 0;
+        return getMessageWindow(sessionId, offset, limit);
+      } catch (err) {
+        log(`getMessages: direct DB read failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return call('getMessages')(_e, params);
+  });
   ipcMain.handle(CHANNELS.getSlashLog, call('getSlashLog'));
   ipcMain.handle(CHANNELS.getSlashLogPath, call('getSlashLogPath'));
   ipcMain.handle(CHANNELS.deleteSession, call('deleteSession'));
