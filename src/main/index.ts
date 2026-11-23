@@ -685,7 +685,13 @@ function startWorker(): void {
   // launch.env always carries at least the shared _NEXUS_ENCRYPT_KEY, and the
   // session workers MUST receive the same key or their `mem:` blobs stay
   // undecryptable against the global worker's.
-  sessionWorkers.launch = { env: launch.env };
+  // Per-session workers open the same DB the global worker initialized, and
+  // resume history into a bounded LLM context (nexus-coder native support).
+  // Spread instead of mutating launch.env: that object is shared with the
+  // global worker, which must keep full initialization and unbounded resume.
+  sessionWorkers.launch = {
+    env: { ...launch.env, NEXUS_SESSION_WORKER_LITE: '1' },
+  };
   const savedCwd = desktopState.loadSavedCwd();
   const earlyParams = savedCwd ? { cwd: savedCwd } : undefined;
   // Phase 1 (fast): construct the Agent so session list + message reads respond
