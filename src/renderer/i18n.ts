@@ -424,6 +424,8 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   copiedSessionId: { 'zh-CN': '会话 ID 已复制', en: 'Session ID copied' },
   copiedProjectDir: { 'zh-CN': '项目目录已复制', en: 'Project dir copied' },
   copy: { 'zh-CN': '复制', en: 'Copy' },
+  copiedToast: { 'zh-CN': '已复制到剪贴板', en: 'Copied to clipboard' },
+  copyFailedToast: { 'zh-CN': '复制失败', en: 'Copy failed' },
   searchSessions: { 'zh-CN': '搜索会话（名称 / ID / graphId / 项目名）…', en: 'Search sessions (name / ID / graphId / project)…' },
   pinnedSessions: { 'zh-CN': '置顶', en: 'Pinned' },
   pin: { 'zh-CN': '置顶', en: 'Pin' },
@@ -896,6 +898,49 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
   inlinePreviewFavorite: { 'zh-CN': '收藏', en: 'Favorite' },
   inlinePreviewLike: { 'zh-CN': '点赞', en: 'Like' },
   inlinePreviewMore: { 'zh-CN': '更多', en: 'More' },
+
+  // Spend mode (消费模式) — sidebar chip + settings section + suggestion chip.
+  spendMode: { 'zh-CN': '消费模式', en: 'Spend Mode' },
+  spendModeHint: {
+    'zh-CN': '控制 harness 的空转 / 限速 / 扇出策略。全局默认 + 每个 provider 的记忆；会话内可用 /billing 切换。',
+    en: 'Paces the harness (idle / RPM / fan-out). Global default + per-provider memory; switch in-session with /billing.',
+  },
+  spendGlobalDefault: { 'zh-CN': '全局默认', en: 'Global default' },
+  spendModeToken: { 'zh-CN': 'Token（按量，省额度）', en: 'Token (metered)' },
+  spendModeCoding: { 'zh-CN': 'Coding Plan（包月）', en: 'Coding plan (subscription)' },
+  spendModeFree: { 'zh-CN': 'Free（免费 / 本地）', en: 'Free (free tier / local)' },
+  spendManual: { 'zh-CN': '手动', en: 'manual' },
+  spendDefault: { 'zh-CN': '默认', en: 'default' },
+  spendHostChanged: { 'zh-CN': '{mode} · {def} (host 已变)', en: '{mode} · {def} (host changed)' },
+  spendHostChangedTitle: {
+    'zh-CN': 'Provider "{provider}" 地址已变，暂按全局默认 {mode}',
+    en: 'Provider "{provider}" address changed; using global default {mode} for now',
+  },
+  spendManualTitle: {
+    'zh-CN': 'Provider "{provider}" 消费模式（{manual}）',
+    en: 'Provider "{provider}" spend mode ({manual})',
+  },
+  spendGlobalTitle: {
+    'zh-CN': 'Provider "{provider}" 消费模式（全局默认）',
+    en: 'Provider "{provider}" spend mode (global default)',
+  },
+  spendSuggestText: {
+    'zh-CN': '建议将 "{provider}" 设为 {mode} 消费模式',
+    en: 'Suggest "{provider}" → {mode} spend mode',
+  },
+  spendSuggestApply: { 'zh-CN': '设为 {mode}', en: 'set {mode}' },
+  spendSuggestApplied: {
+    'zh-CN': '已将 "{provider}" 设为 {mode}',
+    en: 'Set "{provider}" → {mode}',
+  },
+  spendSuggestDismiss: { 'zh-CN': '忽略', en: 'dismiss' },
+  spendClear: { 'zh-CN': '清除', en: 'clear' },
+  spendNoProviders: { 'zh-CN': '（尚无已记忆的 provider）', en: '(no providers remembered yet)' },
+
+  // Rate-limit status chips in the session-info panel (RPM row + toast).
+  rateBackoff: { 'zh-CN': '退避中', en: 'Backoff' },
+  rateQueued: { 'zh-CN': '排队', en: 'Queued' },
+  rateFull429: { 'zh-CN': '已满 (429)', en: 'Full (429)' },
 };
 
 export function setUiLang(lang: Lang): void {

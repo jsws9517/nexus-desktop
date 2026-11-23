@@ -2597,7 +2597,7 @@ label.field-label[for="model-select"]     { width: 58px; }
 }
 .info-value-multiline { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; white-space: normal; }
 .info-value-mono { font-family: monospace; font-size: 11px; }
-.info-value-copy { cursor: pointer; }
+.info-value-copy { cursor: pointer; user-select: none; }
 .info-value-copy:hover { text-decoration: underline; }
 .rside-rpm-normal    { color: var(--text-dim); }
 .rside-rpm-warning   { color: var(--warn); }

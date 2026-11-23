@@ -5037,8 +5037,10 @@ function wireCopy(el: HTMLElement, getText: () => string, msg: () => string): vo
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      showToast(msg());
-    } catch { /* ignore */ }
+      showToast(msg(), 'success');
+    } catch {
+      showToast(t('copyFailedToast'));
+    }
   });
 }
 
@@ -5054,10 +5056,10 @@ function makeMsgCopyBtn(getText: string | (() => string)): HTMLElement {
     try {
       await navigator.clipboard.writeText(text);
       btn.textContent = t('copied');
-      showToast('已复制到剪贴板');
+      showToast(t('copiedToast'));
       setTimeout(() => { btn.textContent = t('copy'); }, 1200);
     } catch {
-      showToast('复制失败');
+      showToast(t('copyFailedToast'));
     }
   });
   return btn;
@@ -5312,23 +5314,22 @@ function refreshSpendModeChip(): void {
     rsideSpendMode.className = 'info-value rside-spend';
     return;
   }
-  const zh = getUiLang() === 'zh-CN';
   void window.nexusDesktop.getSpendMode().then((st) => {
     const p = providers.find((x) => x.name === provider);
     const entry = st.providers?.[provider];
     const curHost = hostOfBaseUrl(p?.baseUrl);
     const entryHost = entry?.host ? hostOfBaseUrl(entry.host) : '';
-    const manual = zh ? '手动' : 'manual';
-    const def = zh ? '默认' : 'default';
+    const manual = t('spendManual');
+    const def = t('spendDefault');
     if (entry && entryHost && curHost && entryHost !== curHost) {
-      rsideSpendMode.textContent = `${st.default} · ${def} (host 已变)`;
-      rsideSpendMode.title = `Provider "${provider}" 地址已变，暂按全局默认 ${st.default}`;
+      rsideSpendMode.textContent = t('spendHostChanged', { mode: st.default, def });
+      rsideSpendMode.title = t('spendHostChangedTitle', { provider, mode: st.default });
     } else if (entry) {
       rsideSpendMode.textContent = `${entry.mode} · ${manual}`;
-      rsideSpendMode.title = `Provider "${provider}" 消费模式（${manual}）`;
+      rsideSpendMode.title = t('spendManualTitle', { provider, manual });
     } else {
       rsideSpendMode.textContent = `${st.default} · ${def}`;
-      rsideSpendMode.title = `Provider "${provider}" 消费模式（全局默认）`;
+      rsideSpendMode.title = t('spendGlobalTitle', { provider });
     }
     rsideSpendMode.className = 'info-value rside-spend';
   }).catch(() => {});
@@ -5338,31 +5339,28 @@ function refreshSpendModeChip(): void {
 function showSpendSuggest(ev: { provider: string; host?: string; suggested: string }): void {
   const key = `${ev.provider}:${ev.suggested}`;
   if (spendSuggestDismissed.has(key)) return;
-  const zh = getUiLang() === 'zh-CN';
   document.querySelector('#spend-suggest-chip')?.remove();
   const chip = document.createElement('div');
   chip.id = 'spend-suggest-chip';
   chip.className = 'spend-suggest-chip';
   const text = document.createElement('span');
   text.className = 'spend-suggest-text';
-  text.textContent = zh
-    ? `建议将 "${ev.provider}" 设为 ${ev.suggested} 消费模式`
-    : `Suggest "${ev.provider}" → ${ev.suggested} spend mode`;
+  text.textContent = t('spendSuggestText', { provider: ev.provider, mode: ev.suggested });
   const apply = document.createElement('button');
   apply.className = 'spend-suggest-apply';
-  apply.textContent = zh ? `设为 ${ev.suggested}` : `set ${ev.suggested}`;
+  apply.textContent = t('spendSuggestApply', { mode: ev.suggested });
   apply.addEventListener('click', () => {
     void window.nexusDesktop.setProviderSpendMode(ev.provider, ev.host ?? '', ev.suggested).then(() => {
       spendSuggestDismissed.add(key);
       chip.remove();
-      showToast(zh ? `已将 "${ev.provider}" 设为 ${ev.suggested}` : `Set "${ev.provider}" → ${ev.suggested}`, 'success');
+      showToast(t('spendSuggestApplied', { provider: ev.provider, mode: ev.suggested }), 'success');
       refreshSpendModeChip();
     });
   });
   const dismiss = document.createElement('button');
   dismiss.className = 'spend-suggest-dismiss';
   dismiss.textContent = '×';
-  dismiss.setAttribute('aria-label', zh ? '忽略' : 'dismiss');
+  dismiss.setAttribute('aria-label', t('spendSuggestDismiss'));
   dismiss.addEventListener('click', () => {
     spendSuggestDismissed.add(key);
     chip.remove();
@@ -5380,17 +5378,16 @@ function renderRateLimit(rl: StatusInfo['rateLimit']): void {
     rsideRateLimit.className = 'info-value';
     return;
   }
-  const zh = getUiLang() === 'zh-CN';
   if (rl.backoffMs > 0) {
-    rsideRateLimit.textContent = `${zh ? '退避中' : 'Backoff'} ${Math.round(rl.backoffMs / 1000)}s`;
+    rsideRateLimit.textContent = `${t('rateBackoff')} ${Math.round(rl.backoffMs / 1000)}s`;
     rsideRateLimit.title = `${rl.family} · ${rl.baseUrl}`;
   } else if ((rl.queuedMs ?? 0) > 0) {
     // M9: requests are waiting in the rate-limiter queue — show how long the
     // cumulative wait has been so a slow start isn't mistaken for a hang.
-    rsideRateLimit.textContent = `${zh ? '排队' : 'Queued'} ${Math.round((rl.queuedMs ?? 0) / 1000)}s`;
+    rsideRateLimit.textContent = `${t('rateQueued')} ${Math.round((rl.queuedMs ?? 0) / 1000)}s`;
     rsideRateLimit.title = `${rl.family} · ${rl.baseUrl}`;
   } else if (rl.recentRequests >= rl.rpm) {
-    rsideRateLimit.textContent = zh ? '已满 (429)' : 'Full (429)';
+    rsideRateLimit.textContent = t('rateFull429');
     rsideRateLimit.title = `${rl.providerName} · ${rl.rpm} RPM`;
   } else {
     rsideRateLimit.textContent = `${rl.recentRequests}/${rl.rpm}`;
@@ -7443,26 +7440,23 @@ function buildResourceSection(container?: HTMLElement): void {
  */
 function buildSpendModeSection(container: HTMLElement): void {
   container.querySelector('#spend-mode-block')?.remove();
-  const zh = getUiLang() === 'zh-CN';
   const block = document.createElement('div');
   block.id = 'spend-mode-block';
 
   const MODES: Array<{ value: string; label: string }> = [
-    { value: 'token', label: zh ? 'Token（按量，省额度）' : 'Token (metered)' },
-    { value: 'coding', label: zh ? 'Coding Plan（包月）' : 'Coding plan (subscription)' },
-    { value: 'free', label: zh ? 'Free（免费 / 本地）' : 'Free (free tier / local)' },
+    { value: 'token', label: t('spendModeToken') },
+    { value: 'coding', label: t('spendModeCoding') },
+    { value: 'free', label: t('spendModeFree') },
   ];
 
   const title = document.createElement('div');
   title.className = 'settings-section-title';
-  title.textContent = zh ? '消费模式' : 'Spend Mode';
+  title.textContent = t('spendMode');
   block.appendChild(title);
 
   const hint = document.createElement('div');
   hint.className = 'startup-hint';
-  hint.textContent = zh
-    ? '控制 harness 的空转 / 限速 / 扇出策略。全局默认 + 每个 provider 的记忆；会话内可用 /billing 切换。'
-    : 'Paces the harness (idle / RPM / fan-out). Global default + per-provider memory; switch in-session with /billing.';
+  hint.textContent = t('spendModeHint');
   block.appendChild(hint);
 
   // Global default selector.
@@ -7471,7 +7465,7 @@ function buildSpendModeSection(container: HTMLElement): void {
   const label = document.createElement('label');
   label.className = 'startup-toggle';
   const text = document.createElement('span');
-  text.textContent = zh ? '全局默认' : 'Global default';
+  text.textContent = t('spendGlobalDefault');
   const sel = document.createElement('select');
   sel.className = 'provider-field';
   for (const m of MODES) {
@@ -7506,7 +7500,7 @@ function buildSpendModeSection(container: HTMLElement): void {
     if (provs.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'startup-hint';
-      empty.textContent = zh ? '（尚无已记忆的 provider）' : '(no providers remembered yet)';
+      empty.textContent = t('spendNoProviders');
       list.appendChild(empty);
       return;
     }
@@ -7521,7 +7515,7 @@ function buildSpendModeSection(container: HTMLElement): void {
       modeEl.textContent = entry.mode;
       const clearBtn = document.createElement('button');
       clearBtn.className = 'spend-clear-btn';
-      clearBtn.textContent = zh ? '清除' : 'clear';
+      clearBtn.textContent = t('spendClear');
       clearBtn.addEventListener('click', () => {
         void window.nexusDesktop.setProviderSpendMode(name, entry.host ?? '', null).then(() => {
           prow.remove();
