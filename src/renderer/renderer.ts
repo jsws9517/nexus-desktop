@@ -5036,8 +5036,12 @@ function wireCopy(el: HTMLElement, getText: () => string, msg: () => string): vo
     const text = getText();
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
-      showToast(msg(), 'success');
+      const res = await window.nexusDesktop.writeClipboard(text);
+      if (res?.ok) {
+        showToast(msg(), 'success');
+      } else {
+        showToast(t('copyFailedToast'));
+      }
     } catch {
       showToast(t('copyFailedToast'));
     }
@@ -5054,10 +5058,14 @@ function makeMsgCopyBtn(getText: string | (() => string)): HTMLElement {
     const text = typeof getText === 'function' ? getText() : getText;
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
-      btn.textContent = t('copied');
-      showToast(t('copiedToast'));
-      setTimeout(() => { btn.textContent = t('copy'); }, 1200);
+      const res = await window.nexusDesktop.writeClipboard(text);
+      if (res?.ok) {
+        btn.textContent = t('copied');
+        showToast(t('copiedToast'));
+        setTimeout(() => { btn.textContent = t('copy'); }, 1200);
+      } else {
+        showToast(t('copyFailedToast'));
+      }
     } catch {
       showToast(t('copyFailedToast'));
     }
