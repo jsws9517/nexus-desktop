@@ -5040,9 +5040,11 @@ function wireCopy(el: HTMLElement, getText: () => string, msg: () => string): vo
       if (res?.ok) {
         showToast(msg(), 'success');
       } else {
+        console.warn('[wireCopy] writeClipboard returned', res, 'for text length', text.length);
         showToast(t('copyFailedToast'));
       }
-    } catch {
+    } catch (e) {
+      console.error('[wireCopy] writeClipboard threw:', e);
       showToast(t('copyFailedToast'));
     }
   });
@@ -5064,9 +5066,11 @@ function makeMsgCopyBtn(getText: string | (() => string)): HTMLElement {
         showToast(t('copiedToast'));
         setTimeout(() => { btn.textContent = t('copy'); }, 1200);
       } else {
+        console.warn('[copy] writeClipboard returned', res, 'for text length', text.length);
         showToast(t('copyFailedToast'));
       }
-    } catch {
+    } catch (e) {
+      console.error('[copy] writeClipboard threw:', e);
       showToast(t('copyFailedToast'));
     }
   });

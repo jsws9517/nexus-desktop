@@ -232,8 +232,10 @@ export function attachCodeCopy(
         if (res.ok) {
           btn.textContent = '✓';
           setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+        } else {
+          console.warn('[codeCopy] writeText returned', res, 'for text length', text.length);
         }
-      });
+      }).catch((e) => console.error('[codeCopy] writeText threw:', e));
     });
   });
 }
