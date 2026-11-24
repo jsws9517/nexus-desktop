@@ -31,7 +31,7 @@
 
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, rmSync, cpSync, watch, readdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, cpSync, watch, readdirSync, statSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +40,18 @@ const srcRoot = process.env.NEXUS_CODER_SRC || join(root, '..', 'nexus-coder');
 const srcDist = join(srcRoot, 'dist');
 const dstRoot = join(root, 'node_modules', 'nexus-coder');
 const dstDist = join(dstRoot, 'dist');
+
+// When node_modules/nexus-coder is a junction/symlink back to the source
+// checkout (a common dev setup), dstDist and srcDist resolve to the same
+// real directory. Detect this up front so the copy step does not
+// rmSync() the very directory it is about to read from.
+let sameRealDir = false;
+try {
+  sameRealDir =
+    existsSync(srcRoot) &&
+    existsSync(dstRoot) &&
+    realpathSync(srcRoot) === realpathSync(dstRoot);
+} catch { /* ENOENT — fall through, sameRealDir stays false */ }
 
 const WATCH_DEBOUNCE_MS = 300;
 const WATCH_FILTER = /\.(?:js|d\.ts|map)$|(?:^|[\\/])package\.json$/;
@@ -132,6 +144,16 @@ function syncOnce({ quiet = false, force = false } = {}) {
       }
       return false;
     }
+  }
+
+  if (sameRealDir) {
+    // Junction / symlink back to source: dstDist === srcDist in reality.
+    // The build already wrote the fresh files in place — nothing to copy.
+    // Just reconcile the version field and stamp.
+    syncCoreVersionField();
+    writeStamp(fp);
+    if (!quiet) console.log(`[sync-core] source and target are the same real dir (${realpathSync(srcRoot)}) — in-place, no copy needed`);
+    return false;
   }
 
   rmSync(dstDist, { recursive: true, force: true });
