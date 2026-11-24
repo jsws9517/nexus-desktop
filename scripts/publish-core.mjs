@@ -174,6 +174,11 @@ const CORE_BUNDLE_ALLOWLIST = [
   '@huggingface/transformers',
   '@larksuiteoapi/node-sdk',
   '@modelcontextprotocol/sdk',
+  // SMTP transport introduced by the nodemailer mail backend (nexus-coder
+  // 1.2.9-x): a direct core dependency, hoisted into the desktop baseline by
+  // npm ci after set-core-version pins the newest core. The overlay imports
+  // it from src/desktop/smtp-send.js only.
+  'nodemailer',
   'openai',
   'tiktoken',
   // Core-owned / CLI-side packages that appear in dist but never on the
