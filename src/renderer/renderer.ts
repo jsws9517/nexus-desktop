@@ -3088,7 +3088,7 @@ function linkifyPreviewPaths(container: HTMLElement): void {
 function renderAssistantStream(asst: { stream: HTMLElement; buffer: string }): void {
   try {
     asst.stream.innerHTML = renderBlocks(asst.buffer);
-    attachCodeCopy(asst.stream);
+    attachCodeCopy(asst.stream, (text) => window.nexusDesktop.writeClipboard(text));
     hydrateImages(asst.stream);
     linkifyPreviewPaths(asst.stream);
   } catch (err) {

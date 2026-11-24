@@ -695,7 +695,7 @@ export function mountFileBrowser(
     menu.appendChild(contextMenuItem(str('fbAddToChat', getLang()), () => ctx.addFileToChat?.(path)));
     menu.appendChild(contextMenuItem(str('fbOpenInEditor', getLang()), () => openFileInEditor(path)));
     menu.appendChild(contextMenuItem(str('fbCopyPath', getLang()), () => {
-      void navigator.clipboard?.writeText(path).catch(() => {});
+      void window.nexusDesktop.writeClipboard(path).catch(() => {});
     }));
     menu.appendChild(contextMenuItem(str('fbRevealInFolder', getLang()), () => {
       void window.nexusDesktop.revealFile(path).catch(() => {});

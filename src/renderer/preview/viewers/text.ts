@@ -50,7 +50,7 @@ export function mountTextViewer(state: PreviewState): ViewerHandle {
         md.innerHTML = renderBlocks(text);
         container.appendChild(md);
         hydrateImages(container);
-        attachCodeCopy(container);
+        attachCodeCopy(container, (text) => window.nexusDesktop.writeClipboard(text));
         return;
       }
 

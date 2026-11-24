@@ -211,23 +211,29 @@ export function renderBlocks(src: string): string {
   return out.join('\n');
 }
 
-/** Bind copy buttons inside `container` (after its innerHTML was set). */
-export function attachCodeCopy(container: HTMLElement): void {
+/** Bind copy buttons inside `container` (after its innerHTML was set).
+ *  `writeText` defaults to navigator.clipboard; pass the IPC variant in
+ *  Electron so the call is not subject to user-activation / permission
+ *  restrictions. */
+export function attachCodeCopy(
+  container: HTMLElement,
+  writeText?: (text: string) => Promise<{ ok: boolean }>,
+): void {
+  const doCopy = writeText ?? ((text: string) =>
+    navigator.clipboard.writeText(text).then(() => ({ ok: true })).catch(() => ({ ok: false })));
   container.querySelectorAll<HTMLButtonElement>('.code-copy').forEach((btn) => {
     if (btn.dataset.bound) return;
     btn.dataset.bound = '1';
     btn.addEventListener('click', () => {
       const code = btn.closest('.code-block')?.querySelector('code, pre');
       const text = code ? code.textContent ?? '' : '';
-      void navigator.clipboard
-        .writeText(text)
-        .then(() => {
+      if (!text) return;
+      void doCopy(text).then((res) => {
+        if (res.ok) {
           btn.textContent = '✓';
-          setTimeout(() => {
-            btn.textContent = 'Copy';
-          }, 1200);
-        })
-        .catch(() => {});
+          setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+        }
+      });
     });
   });
 }

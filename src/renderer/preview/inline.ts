@@ -246,7 +246,7 @@ export function createInlinePreviewCard(
     row.appendChild(b);
   };
   addRowBtn('⧉', t('inlinePreviewCopy'), () => {
-    void navigator.clipboard?.writeText(path).catch(() => {});
+    void window.nexusDesktop.writeClipboard(path).catch(() => {});
   });
   addRowBtn('⤓', t('inlinePreviewDownload'), () => { void downloadFile(path); });
   addRowBtn('⭐', t('inlinePreviewFavorite'), () => {});
