@@ -3037,7 +3037,28 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         return result;
       }
 
-      // Delivery failed or was suppressed — report to the session.
+      // Deliberate suppression is NOT a failure: route=off, or notifyOnProduct
+      // silenced a succeeded job that produced no deliverable artifact (the
+      // router returns ok:true with a `suppressed` detail). The in-session
+      // summary already told the user the job finished, so surface a quiet
+      // "suppressed" notice instead of the misleading "channel unavailable".
+      if (res.ok && (res.route === 'off' || res.route === 'none')) {
+        const detail = res.detail || '';
+        const suppressed = detail.includes('suppressed');
+        const result: JobNotificationResult = {
+          ...baseResult,
+          externalDelivered: false,
+          route: res.route,
+          detail,
+          reason: suppressed
+            ? 'suppressed: notifyOnProduct is ON and no deliverable artifact'
+            : 'route off: external delivery disabled (in-session summary only)',
+        };
+        this.onEvent?.({ type: 'job_notification_suppressed', ...result });
+        return result;
+      }
+
+      // A genuine delivery failure (ok:false) — report to the session.
       const reason = res.reason || res.code || 'no usable route';
       const hint =
         res.route === 'channel'

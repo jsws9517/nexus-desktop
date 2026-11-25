@@ -237,6 +237,7 @@ type AgentEvent =
   | { type: 'wake_skipped'; reason: string; jobId?: string }
   | { type: 'job_notification'; jobId: string; kind: string; route: string; detail?: string; summary?: string }
   | { type: 'job_notification_unavailable'; jobId: string; kind: string; reason: string; summary?: string }
+  | { type: 'job_notification_suppressed'; jobId: string; kind: string; reason?: string; route?: string; summary?: string }
   | { type: 'contract_manifest_error'; error: string }
   | {
       type: 'task_graph';
@@ -2748,6 +2749,20 @@ function handleEvent(event: AgentEvent): void {
         zh
           ? `⚠️ 后台任务 ${jobId} 通知渠道不可用：${reason}`
           : `⚠️ Background job ${jobId} notification unavailable: ${reason}`,
+      );
+      break;
+    }
+    case 'job_notification_suppressed': {
+      // Deliberate suppression (notifyOnProduct silenced a succeeded job with no
+      // deliverable, or route is off). NOT a channel failure — use a neutral
+      // "notified in-session only" notice, not the red "unavailable" alert.
+      const zh = getUiLang() === 'zh-CN';
+      const jobId = String(event.jobId ?? '');
+      const reason = String(event.reason ?? '');
+      addSystem(
+        zh
+          ? `ℹ️ 后台任务 ${jobId} 未推送外部通知（仅在会话内提示）：${reason || '已静默'}`
+          : `ℹ️ Background job ${jobId} not pushed externally (in-session notice only): ${reason || 'suppressed'}`,
       );
       break;
     }
