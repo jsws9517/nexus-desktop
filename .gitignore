@@ -43,3 +43,4 @@ ESCAPE-HATCH-publish-core.ps1
 
 # Local publish-core build log (never committed)
 release-build.log
+docs/checklist-h*.md
