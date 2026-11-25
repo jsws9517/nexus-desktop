@@ -8,44 +8,35 @@
 
 ### coder 侧（`nexus-coder`）
 
-- [ ] `src/mcp/builtin-tools.ts`：
-  - [ ] 新增 `tmp_cleanup` 工具定义
-  - [ ] 参数：`target`（enum: trash / scratch / all）、`olderThanHours`（默认 24）、`dryRun`（默认 false）
-  - [ ] 实现：
-    - [ ] `trash` → 清理 `~/.nexus/trash/`（调现有 `cleanTrash` 逻辑 + 项目 `.nexus/trash/`）
-    - [ ] `scratch` → 清理会话 scratch 目录（`process.cwd()/.nexus/trash/`）
-    - [ ] `all` → 两者
-    - [ ] `dryRun=true` → 列出将被删除的文件 + 总大小，不实际删除
-    - [ ] 只删 `olderThanHours` 以内的文件（0 = 全删）
-  - [ ] 返回 `{ removed: N, freedBytes: X, files: [...] }` 或 dryRun 的 `{ wouldRemove: N, wouldFreeBytes: X }`
-
-- [ ] `src/hooks/permissions.ts`：
-  - [ ] `tmp_cleanup` 加入 `DRY_RUN_FILE_TOOLS`（dry_run 预放行）
-  - [ ] `tmp_cleanup` 加入 `DEFAULT_PERMISSIONS` 为 `Allow`（非破坏性清理）
-  - [ ] unattended 模式下 `target: 'trash'` + `olderThanHours >= 1` 自动放行
-  - [ ] unattended 模式下 `target: 'all'` 或 `olderThanHours: 0` 需确认（Prompt）
-
-- [ ] `src/contract.ts`：
-  - [ ] `CORE_TOOL_NAMES` 加 `tmp_cleanup`
+- [x] `src/mcp/builtin-tools.ts`：
+  - [x] 新增 `tmp_cleanup` 工具定义（`target` / `olderThanHours` / `dryRun`）
+  - [x] `trash` → 清理 `~/.nexus/trash/`；`scratch` → 清理 `<cwd>/.nexus/trash/`；`all` → 两者
+  - [x] `dryRun=true` 列出将被删除的文件 + 总大小，不实际删除
+  - [x] `olderThanHours=0` 全删（cutoffMs=Infinity）；默认 24
+  - [x] 返回 `Cleaned up N file(s), freed ~X` 或 `[dry_run] Would remove N file(s)`
+- [x] `src/hooks/permissions.ts`：
+  - [x] `tmp_cleanup` 加入 `DRY_RUN_FILE_TOOLS`（dry_run 预放行）
+  - [x] `tmp_cleanup` 加入 `DEFAULT_PERMISSIONS` 为 `Allow`（非破坏性清理）
+  - [x] unattended 模式下 `target: 'all'` 或 `olderThanHours: 0` 被 deny（防误删）
+  - [x] unattended 模式下 `target: 'trash'` + `olderThanHours >= 1` 自动放行
+- [x] `src/contract.ts`：`CORE_TOOL_NAMES` 加 `tmp_cleanup`
 
 ### desktop 侧（`nexus-desktop`）
 
-- [ ] `src/tools/routing.ts`：
-  - [ ] `tmp_cleanup` 路由关键词（'清理' / 'cleanup' / '临时文件' / 'trash' / 'clean up temp'）
-- [ ] `test/contract.test.mjs`：契约更新（自动，无需手改）
+- [x] `src/tools/routing.ts`：`tmp_cleanup` 路由关键词
+- [x] `test/contract.test.mjs` 契约通过
 
 ### 测试
 
-- [ ] `nexus-coder/tests/mcp/tmp-cleanup.test.ts`（新建，6 用例）：
-  - [ ] trash 目标删除 > 24h 的文件
-  - [ ] dry_run=true 不实际删除
-  - [ ] olderThanHours=0 全删
-  - [ ] 空 trash 目录返回 removed: 0
-  - [ ] 项目 `.nexus/trash/` 也被清理（scratch 目标）
-  - [ ] 不碰 tracked 文件（只碰 `.nexus/trash/`）
+- [x] `test/tmp-cleanup.test.mjs`（新建，6 用例）：
+  - [x] trash 目标删除 > 24h 的文件
+  - [x] dry_run=true 不实际删除
+  - [x] olderThanHours=0 全删
+  - [x] 空 trash 目录返回 0
+  - [x] 项目 `.nexus/trash/` 也被清理（scratch 目标）
+  - [x] 不碰 tracked 文件（只碰 `.nexus/trash/`）
 
 ### 回归
 
-- [ ] `nexus-coder` mcp tests 全量通过
-- [ ] `nexus-desktop` contract.test.mjs 通过
-- [ ] `nexus-desktop` npm run test:unit 全量通过
+- [x] `nexus-coder` mcp tests：90 pass / 0 fail / 1 skipped ✅
+- [x] `nexus-desktop` npm run test:unit：1084 tests / 1075 pass / 0 fail / 9 skipped ✅
