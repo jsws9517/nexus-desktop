@@ -21,6 +21,8 @@ import {
   applyPermissionMode,
   BYPASS_USAGE,
   BYPASS_HELP_LINES,
+  dispatchJobNotification,
+  snapshotFromConfig,
 } from 'nexus-coder/dist/src/desktop-api.js';
 // Desktop-only voice input: reuse core's exported STT implementation without
 // going through a core RPC (and without importing it into the main process).
@@ -33,6 +35,7 @@ import type {
   WakeTurnRequest,
   WakeKind,
   JobManager,
+  JobNotificationResult,
   EmbeddingProvider,
   Config,
   ProviderConfig,
@@ -148,6 +151,7 @@ import {
   buildDecisionRequest,
   classifyToolResult,
   describeBlocked,
+  type GrantHint,
 } from './capability-gate.js';
 import { configForTaskKind, loadCorrectionConfig, applySpendScale, type CorrectionConfig } from './correction-config.js';
 import { redactConfig } from './config-read.js';
@@ -576,6 +580,9 @@ export class AgentService {
   private blockedActions: string[] = [];
   private blockedCommandSeen = new Set<string>();
   private blockedSteerSent = false;
+  /** Grant hints collected this turn — fed to buildBlockedSteer so the model
+   *  sees the legitimate path when a capability denial happens. */
+  private blockedHints: GrantHint[] = [];
   /** Last manifest read error, so a broken checks file is surfaced once. */
   private manifestReadError = '';
   /** Session-scoped counters: they survive turn_end by design. */
@@ -1857,7 +1864,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         }
         this.noteMediaArtifact(resultName, resultContent, resultIsError);
         if (classifyToolResult(resultIsError, resultContent) === 'blocked') {
-          this.noteBlockedAction(resultName, observedCmd, resultContent);
+          const hint = this.buildGrantHint(resultName, observedCmd, resultContent);
+          this.noteBlockedAction(resultName, observedCmd, resultContent, hint);
         }
         this.stepOutcomes.push({ tool: resultName, ok: !resultIsError });
         if (resultContent) {
@@ -2133,6 +2141,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.stepObservations = [];
     this.blockedActions = [];
     this.blockedCommandSeen.clear();
+    this.blockedHints = [];
     this.mediaArtifacts = [];
     this.blockedSteerSent = false;
     this.lastTurnVerdict = null;
@@ -2391,23 +2400,104 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
+   * Build a GrantHint for the blocked tool + command. Returns undefined when
+   * no specific legitimate path is known (the model keeps the default steer
+   * without a hint). Hints point at the policy surface (config key, mode,
+   * one-tap grant) — never at a syntax workaround.
+   */
+  private buildGrantHint(tool: string, cmd: string, content: string): GrantHint | undefined {
+    const lowerCmd = (cmd || '').toLowerCase();
+    const lowerContent = (content || '').toLowerCase();
+
+    // exec_command with destructive / privileged patterns
+    if (tool === 'exec_command' || tool === 'shell') {
+      // rm -rf / del /R / format / diskpart / reg delete — destructive
+      if (/\brm\s+(-[a-z]*r[a-z]*\s|.*--recursive)|\bdel\s+\/R\b|\bformat\s+\w:\b|\bdiskpart\b|\breg\s+delete\b/i.test(lowerCmd)) {
+        return {
+          kind: 'config',
+          instruction: `Add {"command": "${(cmd || '').slice(0, 60)}*"} to permissions.allow in config.json, or switch to auto mode to allow destructive commands.`,
+          configKey: 'permissions.allow',
+          suggestedValue: JSON.stringify({ command: `${lowerCmd.slice(0, 40)}*` }),
+        };
+      }
+      // Generic exec blocked — suggest mode switch
+      if (lowerContent.includes('unattended') || lowerContent.includes('unattended mode blocked')) {
+        return {
+          kind: 'switch_mode',
+          instruction: 'The command was blocked by the unattended safety gate. Switch to auto mode (/mode auto) to allow it, or add a specific allow rule in permissions.allow.',
+          targetMode: 'auto',
+        };
+      }
+      return undefined;
+    }
+
+    // File mutation tools (delete_file / move_file / copy_file / edit_file / write_file)
+    if (tool === 'delete_file' || tool === 'move_file' || tool === 'copy_file') {
+      return {
+        kind: 'one_tap',
+        instruction: `The ${tool} call was denied by policy. Grant it once from the permission card, or add the target path to permissions.allowPaths in config.json.`,
+        configKey: 'permissions.allowPaths',
+      };
+    }
+
+    // ACP tools
+    if (tool === 'acp_route') {
+      if (lowerContent.includes('not found') || lowerContent.includes('not initialized')) {
+        return {
+          kind: 'config',
+          instruction: 'ACP is not registered or the requested agent is missing from engines.json. Enable ACP (acp.enabled=true in config.json) and ensure the agent binary is installed, or use spawn_subagent for local delegation.',
+          configKey: 'acp.enabled',
+          suggestedValue: 'true',
+        };
+      }
+      return undefined;
+    }
+
+    // acp_router — role not found
+    if (tool === 'acp_router') {
+      if (lowerContent.includes('not found')) {
+        const roleMatch = lowerContent.match(/role\s+"?(\w+)"?/);
+        const role = roleMatch?.[1] || '<role>';
+        return {
+          kind: 'config',
+          instruction: `Role "${role}" is not defined. Create it at .nexus/agents/${role}/SKILL.md (front-matter + body) or use acp_router(action=list_roles) to see available roles.`,
+          configKey: `.nexus/agents/${role}/SKILL.md`,
+        };
+      }
+      return undefined;
+    }
+
+    // spawn_subagent — quota or policy denial
+    if (tool === 'spawn_subagent' && (lowerContent.includes('quota') || lowerContent.includes('blocked_policy'))) {
+      return {
+        kind: 'config',
+        instruction: 'Sub-agent quota exhausted or policy blocked the spawn. Check subAgents.maxTurns in config.json, or skip this step and report the gap.',
+        configKey: 'subAgents.maxTurns',
+      };
+    }
+
+    return undefined;
+  }
+
+  /**
    * Record a policy denial. It is sticky for the turn: a completion claim made
    * after a blocked action can never be `passed`, because the thing the model
    * says it produced was refused by the harness itself.
    */
-  private noteBlockedAction(tool: string, cmd: string, content: string): void {
+  private noteBlockedAction(tool: string, cmd: string, content: string, hint?: GrantHint): void {
     const label = `${tool}: ${describeBlocked(cmd || content)}`;
     if (!this.blockedActions.includes(label)) this.blockedActions.push(label);
+    if (hint) this.blockedHints.push(hint);
     const key = cmd || label;
     if (!this.blockedCommandSeen.has(key)) {
       this.blockedCommandSeen.add(key);
-      this.onEvent?.({ ...buildDecisionRequest(tool, cmd, content) });
+      this.onEvent?.({ ...buildDecisionRequest(tool, cmd, content, hint) });
     }
     if (!this.blockedSteerSent) {
       this.blockedSteerSent = true;
-      this.agent?.enqueueSteer?.(buildBlockedSteer(this.blockedActions));
+      this.agent?.enqueueSteer?.(buildBlockedSteer(this.blockedActions, this.blockedHints));
     }
-    this.onLog?.('warn', `[capability-gate] blocked: ${label}`);
+    this.onLog?.('warn', `[capability-gate] blocked: ${label}${hint ? ` (hint: ${hint.instruction.slice(0, 80)})` : ''}`);
   }
 
   /**
@@ -2881,7 +2971,97 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
         runWakeTurn: (req) => this.runWakeTurn(req),
         canWake: () => !this.wakeTurnRunning && !this.busy,
       },
+      // H-2: dispatch external notifications (IM / mail) on terminal states.
+      // The in-session summary is already emitted via emitOutOfBand above;
+      // this hook adds the out-of-band push so a user who closed the app
+      // still gets told a job failed.
+      onJobNotification: (job, kind, summaryText) =>
+        this.handleJobNotification(job, kind, summaryText),
     });
+  }
+
+  /**
+   * H-2: dispatch a background-job terminal notification to external channels
+   * (feishu / telegram / SMTP mail). The in-session summary was already
+   * emitted via emitOutOfBand; this method adds the out-of-band push so a
+   * user who closed the app still gets told a job failed or succeeded.
+   *
+   * Routing is owned by the core's notify-router (decideRoute +
+   * dispatchJobNotification). The desktop just feeds the result back as an
+   * AgentEvent so the renderer can show "pushed to feishu:oc_xxx" or
+   * "channel unavailable — run `nexus config channels notify set`".
+   */
+  private async handleJobNotification(
+    job: import('nexus-coder/dist/src/jobs/types.js').BgJob,
+    kind: string,
+    summaryText: string,
+  ): Promise<JobNotificationResult> {
+    const agent = this.agent;
+    const baseResult: JobNotificationResult = {
+      jobId: job.id,
+      kind,
+      summary: summaryText,
+    };
+
+    // No agent / no config → session-only (pre-H-2 behaviour).
+    if (!agent?.config) {
+      this.onEvent?.({ type: 'job_notification_unavailable', ...baseResult, reason: 'agent not initialized' });
+      return baseResult;
+    }
+
+    try {
+      // Narrow reload only the mail/bg domains before routing so a
+      // long-lived desktop worker does not keep using stale mail config.
+      try {
+        (agent.config as { reloadMailAndBg?: () => void }).reloadMailAndBg?.();
+      } catch { /* notification must never fail because of the narrow reload */ }
+
+      const snapshot = snapshotFromConfig(agent.config);
+      const res = await dispatchJobNotification(
+        snapshot,
+        job.notify,
+        summaryText,
+        undefined,
+        {},
+        { job, kind },
+      );
+
+      if (res.ok && res.route !== 'off' && res.route !== 'none') {
+        const result: JobNotificationResult = {
+          ...baseResult,
+          externalDelivered: true,
+          route: res.route,
+          detail: res.detail,
+        };
+        this.onEvent?.({ type: 'job_notification', ...result });
+        return result;
+      }
+
+      // Delivery failed or was suppressed — report to the session.
+      const reason = res.reason || res.code || 'no usable route';
+      const hint =
+        res.route === 'channel'
+          ? 'configure or repair an IM channel'
+          : res.route === 'mail'
+            ? 'configure SMTP mail and bg.notifyEmail in config.json'
+            : "configure a route with `nexus config channels notify set <auto|channel|mail>`";
+      const result: JobNotificationResult = {
+        ...baseResult,
+        externalDelivered: false,
+        route: res.route,
+        reason: `${reason} — ${hint}`,
+      };
+      this.onEvent?.({ type: 'job_notification_unavailable', ...result });
+      return result;
+    } catch (err) {
+      const result: JobNotificationResult = {
+        ...baseResult,
+        externalDelivered: false,
+        reason: `notification dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+      this.onEvent?.({ type: 'job_notification_unavailable', ...result });
+      return result;
+    }
   }
 
   /**

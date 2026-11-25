@@ -30,6 +30,7 @@
     "createEmbeddingProvider",
     "createProvider",
     "decryptApiKey",
+    "dispatchJobNotification",
     "extractForRag",
     "formatPermissionStatus",
     "getAuthorizedRoots",
@@ -44,6 +45,7 @@
     "resolveBypassArg",
     "revalidateSymlinkGuard",
     "searchVault",
-    "setPermissionPrompter"
+    "setPermissionPrompter",
+    "snapshotFromConfig"
   ]
 }

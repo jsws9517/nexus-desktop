@@ -224,9 +224,18 @@ type AgentEvent =
       reason: string;
       options?: Array<{ id: string; label: string }>;
       note?: string;
+      grant_hint?: {
+        kind: string;
+        instruction: string;
+        configKey?: string;
+        suggestedValue?: string;
+        targetMode?: string;
+      };
     }
   | { type: 'spin_break'; kind: string; severity: string; evidence?: string[] }
   | { type: 'wake_skipped'; reason: string; jobId?: string }
+  | { type: 'job_notification'; jobId: string; kind: string; route: string; detail?: string; summary?: string }
+  | { type: 'job_notification_unavailable'; jobId: string; kind: string; reason: string; summary?: string }
   | { type: 'contract_manifest_error'; error: string }
   | {
       type: 'task_graph';
@@ -2683,11 +2692,15 @@ function handleEvent(event: AgentEvent): void {
       const body = document.createElement('div');
       body.className = 'security-blocked-body';
       const opts = (event.options ?? []).map((o) => o.label).join(' / ');
+      const grantHintText = event.grant_hint
+        ? `\n${zh ? '🔓 授权路径' : '🔓 Grant path'}: ${event.grant_hint.instruction}`
+        : '';
       body.textContent =
         (zh ? '该操作被策略拦截。' : 'was blocked by policy.') +
         (opts ? `\n${zh ? '可选' : 'Options'}: ${opts}` : '') +
         (event.reason ? `\n${event.reason}` : '') +
-        (event.note ? `\n${event.note}` : '');
+        (event.note ? `\n${event.note}` : '') +
+        grantHintText;
       bubble.appendChild(title);
       bubble.appendChild(body);
       wrap.appendChild(bubble);
@@ -2710,6 +2723,29 @@ function handleEvent(event: AgentEvent): void {
         zh
           ? `⏸ 后台任务已结束，但上一轮结论未被验证，自动续跑已跳过：${event.reason}`
           : `⏸ Background job finished, but the previous turn was unverified — auto-continue skipped: ${event.reason}`,
+      );
+      break;
+    }
+    case 'job_notification': {
+      const zh = getUiLang() === 'zh-CN';
+      const jobId = String(event.jobId ?? '');
+      const route = String(event.route ?? 'unknown');
+      const detail = String(event.detail ?? '');
+      addSystem(
+        zh
+          ? `✅ 后台任务 ${jobId} 已推送至 ${route}${detail ? ` (${detail})` : ''}`
+          : `✅ Background job ${jobId} pushed to ${route}${detail ? ` (${detail})` : ''}`,
+      );
+      break;
+    }
+    case 'job_notification_unavailable': {
+      const zh = getUiLang() === 'zh-CN';
+      const jobId = String(event.jobId ?? '');
+      const reason = String(event.reason ?? 'no usable route');
+      addSystem(
+        zh
+          ? `⚠️ 后台任务 ${jobId} 通知渠道不可用：${reason}`
+          : `⚠️ Background job ${jobId} notification unavailable: ${reason}`,
       );
       break;
     }

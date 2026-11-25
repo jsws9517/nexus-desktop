@@ -72,6 +72,25 @@ export interface DecisionOption {
   label: string;
 }
 
+/**
+ * A grant_hint tells the model the LEGITIMATE path to get the capability it
+ * was denied — which config key to edit, which mode to switch to, or how to
+ * one-tap grant. It is NEVER a syntax workaround: the hint points at the
+ * policy surface, not at a different spelling of the same command.
+ */
+export interface GrantHint {
+  /** How the user / model can acquire the capability. */
+  kind: 'config' | 'switch_mode' | 'one_tap';
+  /** Human-readable instruction, e.g. "Add {\"command\": \"rm -rf *\"} to permissions.allow in config.json". */
+  instruction: string;
+  /** The config key to modify (kind='config'), e.g. "permissions.allow". */
+  configKey?: string;
+  /** Suggested value to set (kind='config'). */
+  suggestedValue?: string;
+  /** Target permission mode to switch to (kind='switch_mode'), e.g. "auto". */
+  targetMode?: string;
+}
+
 export interface DecisionRequest {
   type: 'decision_request';
   tool: string;
@@ -80,9 +99,16 @@ export interface DecisionRequest {
   options: DecisionOption[];
   /** Never a suggestion to work around the gate — see buildBlockedSteer. */
   note: string;
+  /** When present, tells the model the legitimate way to acquire this capability. */
+  grant_hint?: GrantHint;
 }
 
-export function buildDecisionRequest(tool: string, command: string, rawReason: string): DecisionRequest {
+export function buildDecisionRequest(
+  tool: string,
+  command: string,
+  rawReason: string,
+  grantHint?: GrantHint,
+): DecisionRequest {
   return {
     type: 'decision_request',
     tool,
@@ -93,7 +119,11 @@ export function buildDecisionRequest(tool: string, command: string, rawReason: s
       { id: 'switch_mode', label: 'Switch to a mode that allows it' },
       { id: 'skip', label: 'Skip this step and report what is missing' },
     ],
-    note: 'Re-spelling the blocked action as a script or another tool is not an option: the policy is about the action, not its syntax.',
+    note: grantHint
+      ? 'Re-spelling the blocked action as a script or another tool is not an option: the policy is about the action, not its syntax. ' +
+        'The legitimate path is documented in grant_hint — follow it instead of retrying the same args.'
+      : 'Re-spelling the blocked action as a script or another tool is not an option: the policy is about the action, not its syntax.',
+    grant_hint: grantHint,
   };
 }
 
@@ -102,9 +132,9 @@ export function buildDecisionRequest(tool: string, command: string, rawReason: s
  * NOT offer a syntax workaround (the old core hint said "write the logic to a
  * script file and run it", which is how 46 one-off probe scripts were born).
  */
-export function buildBlockedSteer(blocked: string[]): string {
+export function buildBlockedSteer(blocked: string[], grantHints?: GrantHint[]): string {
   const shown = blocked.slice(0, 3).map((b) => `- ${b}`).join('\n');
-  return [
+  const lines: string[] = [
     '<harness_correction kind="capability_blocked">',
     'A required action was refused by policy:',
     shown,
@@ -113,8 +143,16 @@ export function buildBlockedSteer(blocked: string[]): string {
     '1) Do NOT describe the blocked action as done/deleted/cleaned/completed. It did not happen.',
     '2) Do NOT rewrite it as a script, a different tool, or a different shell spelling to route around the gate.',
     '3) Ask the user for a decision (grant / switch mode / skip) and state exactly what remains undone.',
-    '</harness_correction>',
-  ].join('\n');
+  ];
+  if (grantHints && grantHints.length > 0) {
+    lines.push('', 'Legitimate paths to acquire the blocked capability:');
+    for (const h of grantHints.slice(0, 3)) {
+      lines.push(`   - ${h.instruction}`);
+    }
+    lines.push('   If you already followed the path above and it still fails, STOP retrying and report the gap to the user.');
+  }
+  lines.push('</harness_correction>');
+  return lines.join('\n');
 }
 
 /** One-line user-facing summary for the decision event. */
