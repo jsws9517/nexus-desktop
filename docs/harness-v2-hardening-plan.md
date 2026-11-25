@@ -17,7 +17,9 @@
 | H-5 | 中断传播不完整（sub-agent/ACP） | 🟡 P1 | ~1.5d | 第 3 天 | coder | ✅ 完成（ACP sendTask abortSignal 传播） |
 | H-6 | 工具名/能力误判（后端可用性） | 🟡 P1 | ~1d | 第 3-4 天 | coder + desktop | ✅ 完成 |
 
-**Day 1 完成：H-1 + H-2。** 下一步：H-3（tmp_cleanup）→ H-4（热更新审计）→ H-5（中断传播）→ H-6（后端标注）。
+**Day 1 完成：H-1 + H-2。** Day 2 完成：H-3 + H-4。Day 3 完成：H-5 + H-6。
+
+**全部 6 项已完成。**
 
 ---
 
