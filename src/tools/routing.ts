@@ -30,6 +30,8 @@ export interface ToolRouting {
   /** Case-insensitive substrings, any language. */
   keywords?: string[];
   readOnly?: boolean;
+  /** H-6: which backend this tool depends on. Used for relevance scoring demotion. */
+  backend?: 'local' | 'acp' | 'mcp' | 'builtin';
 }
 
 const GIT_ROUTING: Record<string, ToolRouting> = {
@@ -165,6 +167,7 @@ const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   // model silently falls back to spawn_subagent.
   acp_route: {
     group: 'acp',
+    backend: 'acp',
     keywords: [
       'acp', 'delegate', 'handoff', 'route',
       '委派', '派发', '派给', '路由', '交给', '转交', '外包',

@@ -79,6 +79,14 @@ const W_MENTION = 0.5;
 /** Small boost for Windows log/status observation intent to prefer bg_job/read tools. */
 const W_WIN32_OBS = 0.15;
 
+/**
+ * H-6: backend-aware demotion. When a tool's description signals it is
+ * unavailable (e.g. "ACP not initialized", "No agents registered"), its
+ * relevance score is reduced by this factor so the model prefers alternatives
+ * (spawn_subagent, local tools) over a tool that would fail.
+ */
+const W_BACKEND_DEMOTION = 0.5;
+
 function isWin32LogIntent(inputLower: string): boolean {
   if (process.platform !== 'win32') return false;
   if (!inputLower) return false;
@@ -290,6 +298,20 @@ export function scoreTool(
   const sim = similarity(def, inputBigrams);
   score += W_SIMILARITY * sim;
   if (sim >= SIMILARITY_KEEP) score += W_GROUP;
+
+  // H-6: demote tools whose description signals unavailability. The dynamic
+  // description (set by the core's getToolsForContext) already contains
+  // "(ACP not initialized)" or "(No agents registered)" — detecting those
+  // substrings is the cheapest signal that the backend is down.
+  const desc = def.description ?? '';
+  if (
+    desc.includes('ACP not initialized') ||
+    desc.includes('No agents registered') ||
+    desc.includes('will fail')
+  ) {
+    score *= (1 - W_BACKEND_DEMOTION);
+  }
+
   return score;
 }
 
