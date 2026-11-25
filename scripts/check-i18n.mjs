@@ -1,8 +1,9 @@
 /**
  * i18n sanity check (D4):
  *  1. every dictionary key has non-empty zh-CN + en,
- *  2. every data-i18n / data-i18n-title / data-i18n-placeholder attribute used
- *     in static/index.html maps to an existing key.
+ *  2. every data-i18n / data-i18n-title / data-i18n-placeholder /
+ *     data-i18n-aria-label attribute used in static/index.html maps to an
+ *     existing key.
  * Runs against the compiled dist (needs `npm run build` first).
  * Exits non-zero on any violation so CI fails on missing translations.
  */
@@ -27,7 +28,7 @@ try {
 }
 
 const used = new Set();
-for (const m of html.matchAll(/data-i18n(?:-title|-placeholder)?="([^"]+)"/g)) used.add(m[1]);
+for (const m of html.matchAll(/data-i18n(?:-title|-placeholder|-aria-label)?="([^"]+)"/g)) used.add(m[1]);
 
 for (const key of used) {
   if (!(key in STR)) fail(`used in index.html but missing from dictionary: ${key}`);

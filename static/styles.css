@@ -1627,6 +1627,70 @@ label.field-label[for="model-select"]     { width: 58px; }
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 
+/* Slash command autocomplete panel */
+.slash-menu-panel {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: calc(100% + 4px);
+  z-index: 61;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated, var(--bg-sidebar, var(--bg)));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+.slash-menu-panel.hidden { display: none; }
+.slash-menu-group {
+  padding: 6px 8px 3px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.slash-menu-option {
+  display: grid;
+  grid-template-columns: minmax(96px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+.slash-menu-option:hover,
+.slash-menu-option.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.slash-menu-name {
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.slash-menu-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slash-menu-usage {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.slash-menu-hint {
+  margin-top: 4px;
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
 .input-actions {
   display: flex;
   align-items: center;

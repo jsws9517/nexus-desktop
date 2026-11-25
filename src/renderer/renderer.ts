@@ -30,6 +30,7 @@ import { findPreviewablePaths, partitionPreviewPaths, findRawPathHits } from './
 import { registerPreviewPaths } from './preview/register.js';
 import { installHistorySelectionCopy, installRightClickPaste } from './clipboard-behavior.js';
 import { AtMentionController } from './at-mention.js';
+import { SlashMenuController, SLASH_COMMANDS } from './slash-menu.js';
 import { VoiceInputController, type VoiceTranscribeResult } from './voice-input.js';
 import { hydrateIcons, iconEl } from './icons.js';
 
@@ -892,6 +893,7 @@ const inputStatus = $('#input-status');
 const attachmentsEl = $('#attachments');
 const attachBtn = $('#btn-attach');
 const atMentionPanel = $('#at-mention-panel') as HTMLElement;
+const slashMenuPanel = $('#slash-menu-panel') as HTMLElement;
 // One-time attachment RAG: its own state + row, fully separate from `+`.
 const ragAttachmentsEl = $('#rag-attachments');
 const ragAttachBtn = $('#btn-rag');
@@ -8998,6 +9000,29 @@ const atMention = new AtMentionController({
   },
 });
 
+// ---------- slash command autocomplete ----------
+// Also created before the composer keydown handlers so ↑↓/Enter/Tab/Esc are
+// consumed before Enter-to-send / Escape-to-stop. Labels are getters so a
+// runtime language switch updates an open panel via applyLanguage().
+const slashMenu = new SlashMenuController({
+  input: inputEl,
+  panel: slashMenuPanel,
+  commands: SLASH_COMMANDS,
+  labels: {
+    get panelAria() { return t('slashMenuPanelAria'); },
+    get hint() { return t('slashMenuHint'); },
+    categories: {
+      get session() { return t('slashCategorySession'); },
+      get model() { return t('slashCategoryModel'); },
+      get tools() { return t('slashCategoryTools'); },
+      get tasks() { return t('slashCategoryTasks'); },
+      get other() { return t('slashCategoryOther'); },
+    },
+    desc: (descKey) => t(descKey),
+  },
+});
+onI18nApplied(() => slashMenu.applyLanguage());
+
 // ---------- voice input picker ----------
 // Read-only view of the configured STT provider: the panel never switches it.
 // One click starts recording; trailing silence auto-transcribes and inserts the
@@ -9033,6 +9058,7 @@ syncVoiceAvailability(); // reflect the config already loaded during init
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     if (atMention.isOpen()) return; // menu owns Enter while visible (AC-7)
+    if (slashMenu.isOpen()) return; // slash menu owns Enter while visible
     if (voiceInput?.isOpen()) return; // voice picker owns the composer while open
     e.preventDefault();
     void sendMessage();

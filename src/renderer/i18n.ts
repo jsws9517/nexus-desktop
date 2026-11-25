@@ -14,6 +14,7 @@ export const STR: Record<string, { 'zh-CN': string; en: string }> = {
   settings: { 'zh-CN': '设置', en: 'Settings' },
   sessions: { 'zh-CN': '会话', en: 'Sessions' },
   newSession: { 'zh-CN': '新建', en: 'New' },
+  appLabel: { 'zh-CN': 'Nexus Desktop', en: 'Nexus Desktop' },
   chatEmptyHint: { 'zh-CN': '点击「新建」或输入 /new 开始新会话，也可以直接输入第一条消息', en: 'Start with "New" or /new, or just type your first message' },
   collapseSidebar: { 'zh-CN': '折叠侧栏', en: 'Collapse sidebar' },
   expandSidebar: { 'zh-CN': '展开侧栏', en: 'Expand sidebar' },
@@ -135,6 +136,51 @@ ragReasonError: { 'zh-CN': '提取失败', en: 'extraction failed' },
     'zh-CN': '目录文件较多，仅引用前 {n} 个',
     en: 'Folder has many files — only the first {n} were attached',
   },
+
+  // Slash command autocomplete panel.
+  slashMenuPanelAria: { 'zh-CN': 'Slash 命令候选', en: 'Slash command candidates' },
+  slashMenuHint: {
+    'zh-CN': '↑↓ 选择 · Enter/Tab 补全 · Esc 关闭',
+    en: '↑↓ navigate · Enter/Tab complete · Esc close',
+  },
+  slashCategorySession: { 'zh-CN': '会话', en: 'Session' },
+  slashCategoryModel: { 'zh-CN': '模型与权限', en: 'Model & Permissions' },
+  slashCategoryTools: { 'zh-CN': '工具', en: 'Tools' },
+  slashCategoryTasks: { 'zh-CN': '任务', en: 'Tasks' },
+  slashCategoryOther: { 'zh-CN': '其他', en: 'Other' },
+  slashDescNew: { 'zh-CN': '新建会话（携带父会话摘要）', en: 'Create a new session (carries parent summary)' },
+  slashDescSession: { 'zh-CN': '查看当前会话信息', en: 'Show current session info' },
+  slashDescInfo: { 'zh-CN': '简要会话信息', en: 'Brief current session info' },
+  slashDescRename: { 'zh-CN': '重命名当前会话', en: 'Rename the current session' },
+  slashDescView: { 'zh-CN': '查看会话消息记录', en: 'View stored session messages' },
+  slashDescResume: { 'zh-CN': '恢复指定会话', en: 'Resume a session' },
+  slashDescClear: { 'zh-CN': '清空当前上下文', en: 'Clear the current context' },
+  slashDescSetdir: { 'zh-CN': '设置会话记录的项目目录', en: "Set the session's recorded project dir" },
+  slashDescChcwd: { 'zh-CN': '临时切换运行目录（desktop）', en: 'Temporarily switch runtime cwd (desktop)' },
+  slashDescRenameProject: { 'zh-CN': '重命名项目目录与元数据（desktop）', en: 'Rename project dir and metadata (desktop)' },
+  slashDescModel: { 'zh-CN': '查看或切换模型', en: 'Show or switch the model' },
+  slashDescProvider: { 'zh-CN': '查看或切换供应商', en: 'Show or switch providers' },
+  slashDescDepth: { 'zh-CN': '查看或切换思考深度', en: 'Show or switch thinking depth' },
+  slashDescBypass: { 'zh-CN': '切换权限白名单', en: 'Toggle the permission whitelist' },
+  slashDescBilling: { 'zh-CN': '设置供应商计费模式（desktop）', en: 'Set provider billing mode (desktop)' },
+  slashDescTools: { 'zh-CN': '列出可用工具', en: 'List available tools' },
+  slashDescMcp: { 'zh-CN': '查看 MCP 服务器状态', en: 'View MCP server status' },
+  slashDescPlugins: { 'zh-CN': '查看已加载插件', en: 'View loaded plugins' },
+  slashDescSkills: { 'zh-CN': '查看自动发现的技能', en: 'View auto-discovered skills' },
+  slashDescPlan: { 'zh-CN': '生成执行计划', en: 'Generate an execution plan' },
+  slashDescGo: { 'zh-CN': '执行当前计划', en: 'Execute the current plan' },
+  slashDescTasks: { 'zh-CN': '查看任务图或任务详情', en: 'View task graph or task detail' },
+  slashDescRuns: { 'zh-CN': '查看子代理运行记录', en: 'View sub-agent runs' },
+  slashDescJobs: { 'zh-CN': '管理后台任务', en: 'Manage background jobs' },
+  slashDescRevise: { 'zh-CN': '修订上一条结果（desktop）', en: 'Revise the last result (desktop)' },
+  slashDescCommit: { 'zh-CN': '提交计划执行结果（desktop）', en: 'Commit the executed plan (desktop)' },
+  slashDescMemory: { 'zh-CN': '查看记忆信息', en: 'Show memory info' },
+  slashDescPersona: { 'zh-CN': '查看用户画像', en: 'Show the user persona' },
+  slashDescInsight: { 'zh-CN': '跨会话记忆分析', en: 'Cross-session memory analysis' },
+  slashDescTheme: { 'zh-CN': '查看主题信息', en: 'Show theme info' },
+  slashDescLive: { 'zh-CN': '切换实时计划/子代理输出', en: 'Toggle live plan/sub-agent output' },
+  slashDescManual: { 'zh-CN': '查看命令帮助', en: 'Show command help' },
+  slashDescCompact: { 'zh-CN': '压缩上下文（desktop）', en: 'Compress the context (desktop)' },
   composerHint: { 'zh-CN': 'Enter 发送 · Shift+Enter 换行', en: 'Enter to send · Shift+Enter for newline' },
   send: { 'zh-CN': '发送', en: 'Send' },
   stop: { 'zh-CN': '停止', en: 'Stop' },
@@ -980,6 +1026,9 @@ export function applyI18n(): void {
   });
   document.querySelectorAll<HTMLInputElement>('[data-i18n-placeholder]').forEach((el) => {
     el.placeholder = t(el.dataset.i18nPlaceholder!);
+  });
+  document.querySelectorAll<HTMLElement>('[data-i18n-aria-label]').forEach((el) => {
+    el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel!));
   });
   for (const fn of applyListeners) {
     try { fn(); } catch { /* listener errors must not break i18n apply */ }
