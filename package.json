@@ -1,7 +1,7 @@
 {
   "name": "nexus-desktop",
   "version": "0.4.4-beta.2",
-  "nexusCoreVersion": "1.2.9-2",
+  "nexusCoreVersion": "1.2.9-3",
   "nexusDesktopProtocol": 4,
   "description": "Nexus — where every agent finds home.",
   "type": "module",
@@ -21,7 +21,7 @@
     "pretypecheck": "npm run sync:core",
     "compile": "tsc -p tsconfig.json && tsc -p tsconfig.preload.json && node scripts/copy-assets.mjs",
     "build": "npm run compile",
-    "start": "npm run compile && electron .",
+    "start": "cross-env NEXUS_DISABLE_CORE_OVERLAY=1 npm run compile && cross-env NEXUS_DISABLE_CORE_OVERLAY=1 electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:unit": "npm run build && node --test \"test/*.test.mjs\"",
@@ -74,6 +74,7 @@
     "electron": "^43.7.7",
     "electron-builder": "^26.15.3",
     "happy-dom": "^21.0.4",
+    "cross-env": "^10.0.0",
     "node-gyp": "^12.4.0",
     "typescript": "^6.0.3"
   },
