@@ -59,4 +59,38 @@ describe('onPermissionRequest mode contract', () => {
     assert.deepEqual(verdict, { verdict: 'allow' });
     assert.match(seenQuestion, /hypothetical_tool/);
   });
+
+  it('setPermissionsOverride mirrors the effective mode into acp.permissionMode', async () => {
+    await svc.setPermissionsOverride('unattended');
+    assert.equal(svc.getActiveMode(), 'unattended');
+    assert.equal(svc.agent.config.getAcpConfig()?.permissionMode, 'auto');
+
+    await svc.setPermissionsOverride('auto');
+    assert.equal(svc.getActiveMode(), 'auto');
+    assert.equal(svc.agent.config.getAcpConfig()?.permissionMode, 'auto');
+
+    await svc.setPermissionsOverride('prompt');
+    assert.equal(svc.getActiveMode(), 'prompt');
+    assert.equal(svc.agent.config.getAcpConfig()?.permissionMode, 'prompt');
+  });
+
+  it('auto never opens a card even if a stray caller reaches askPermission', async () => {
+    await svc.setPermissionsOverride('auto');
+    let cards = 0;
+    svc.onPermission = () => { cards += 1; };
+    const answer = await svc.askPermission('Tool "hypothetical_tool" requested permission.\nArgs: {}');
+    assert.equal(answer, 'y');
+    assert.equal(cards, 0);
+  });
+
+  it('ACP registration re-asserts the desktop bridge instead of an ACP handler', async () => {
+    await svc.setPermissionsOverride('auto');
+    svc.agent.onPermissionRequest = async () => ({ verdict: 'deny' });
+    let cards = 0;
+    svc.onPermission = () => { cards += 1; };
+    await svc.initAcp();
+    const verdict = await svc.agent.onPermissionRequest('hypothetical_tool', 'call-3', { a: 3 });
+    assert.deepEqual(verdict, { verdict: 'allow' });
+    assert.equal(cards, 0);
+  });
 });

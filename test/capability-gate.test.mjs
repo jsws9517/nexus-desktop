@@ -167,19 +167,15 @@ describe('buildGrantHint (via AgentService)', () => {
     await svc.earlyInit();
   });
 
-  it('exec_command with rm -rf: kind=config, configKey=permissions.allow', () => {
-    const hint = svc.buildGrantHint
-      ? svc.buildGrantHint('exec_command', 'rm -rf /tmp/old', '')
-      : // private method — call via noteBlockedAction path
-        undefined;
-    // buildGrantHint is private; verify via the public surface instead.
-    // We test it indirectly: noteBlockedAction with a hint → event carries it.
-    // For a direct unit test we need to access the private method.
-    // Use the internal getter (TS private is compile-time only).
+  it('exec_command with rm -rf: hard class, no config escape — use a dedicated tool', () => {
     const internalHint = svc['buildGrantHint']('exec_command', 'rm -rf /tmp/old', '');
     assert.ok(internalHint, 'should produce a hint for rm -rf');
-    assert.equal(internalHint.kind, 'config');
-    assert.equal(internalHint.configKey, 'permissions.allow');
+    assert.equal(internalHint.kind, 'one_tap', 'hard-class commands are not config-unlockable');
+    assert.equal(internalHint.configKey, undefined, 'there is no config key for a hard-class command');
+    assert.match(internalHint.instruction, /hard-blocked|hard-class|always denied/i);
+    assert.match(internalHint.instruction, /delete_file|remove_file/);
+    assert.match(internalHint.instruction, /tmp_cleanup|\.nexus\/trash/);
+    assert.doesNotMatch(internalHint.instruction, /permissions\.allow/i, 'permissions.allow does not exist');
   });
 
   it('exec_command with unattended block: kind=switch_mode', () => {
@@ -187,12 +183,21 @@ describe('buildGrantHint (via AgentService)', () => {
     assert.ok(internalHint, 'should produce a hint for unattended block');
     assert.equal(internalHint.kind, 'switch_mode');
     assert.equal(internalHint.targetMode, 'auto');
+    assert.match(internalHint.instruction, /execCommandOverrides/);
+    assert.doesNotMatch(internalHint.instruction, /permissions\.allow/i, 'permissions.allow does not exist');
   });
 
   it('delete_file: kind=one_tap', () => {
     const internalHint = svc['buildGrantHint']('delete_file', 'path/to/file.txt', 'permission denied');
     assert.ok(internalHint, 'should produce a hint for delete_file');
     assert.equal(internalHint.kind, 'one_tap');
+  });
+
+  it('file grant hint: specific directory, not drive root; mode switch is not a path grant', () => {
+    const internalHint = svc['buildGrantHint']('delete_file', 'path/to/file.txt', 'permission denied');
+    assert.match(internalHint.instruction, /project directory|具体/i);
+    assert.match(internalHint.instruction, /drive root|C:\\/i, 'warns against granting a drive root');
+    assert.match(internalHint.instruction, /does NOT change the path boundary/i);
   });
 
   it('acp_route with not found: kind=config, configKey=acp.enabled', () => {

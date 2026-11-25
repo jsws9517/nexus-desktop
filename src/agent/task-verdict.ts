@@ -13,6 +13,9 @@
  *   claimed && nothing checkable was observed             -> unverified
  *   no claim                                              -> unclaimed
  *
+ * Exception: when the user asked for refusals to be reported, a blocked action
+ * is evidence rather than a failure — it never decides the verdict on its own.
+ *
  * `unverified` is the important one: it is the legitimate outcome of "the
  * model says it is done and no evidence exists", and it exists so that the
  * harness never has to pick between lying and staying silent.
@@ -52,12 +55,21 @@ export interface VerdictInput {
   lastAssistantText: string;
   blockedActions?: string[];
   sawToolActivity?: boolean;
+  /**
+   * The user asked for refusals to be reported as results. Blocked actions are
+   * still recorded as evidence, but they no longer decide the verdict — a
+   * refusal can be the requested deliverable in that shape.
+   */
+  denialReportExpected?: boolean;
 }
 
 export function deriveTurnVerdict(input: VerdictInput): TurnVerdict {
   const findings = input.findings ?? [];
   const blocking = findings.filter((f) => f.severity === 'high');
+  // Keep the raw list for telemetry, but only let it decide the verdict when
+  // the refusal was NOT explicitly requested as a result to report.
   const blockedActions = input.blockedActions ?? [];
+  const verdictBlocked = input.denialReportExpected ? [] : blockedActions;
   const claimed = claimsCompletion(input.lastAssistantText ?? '');
   const at = Date.now();
 
@@ -74,14 +86,15 @@ export function deriveTurnVerdict(input: VerdictInput): TurnVerdict {
   }
   evidence.push(`acceptance checked: ${checked}, failed: ${failed.length}, skipped: ${skipped.length}`);
   if (blockedActions.length) evidence.push(`blocked actions: ${blockedActions.join(' | ')}`);
+  if (input.denialReportExpected) evidence.push('refusals were requested as reportable results');
   if (input.sawToolActivity) evidence.push('tool activity observed');
 
   const claims: ClaimRecord[] = [];
   let status: VerdictStatus;
 
   if (!claimed) {
-    status = blockedActions.length ? 'blocked' : 'unclaimed';
-  } else if (blockedActions.length) {
+    status = verdictBlocked.length ? 'blocked' : 'unclaimed';
+  } else if (verdictBlocked.length) {
     // A turn that asserts success after a capability denial has no basis for
     // the assertion: whatever the blocked action would have produced does not
     // exist. This is the "said deleted, command was blocked" class.
@@ -120,7 +133,7 @@ export function deriveTurnVerdict(input: VerdictInput): TurnVerdict {
       skipped: skipped.length,
       checked,
       blocking: blocking.length,
-      blocked: blockedActions.length,
+      blocked: verdictBlocked.length,
     }),
     failed,
     skipped,

@@ -674,6 +674,29 @@ export function antiCheatChecks(input: AntiCheatInput): CheatFinding[] {
   return findings;
 }
 
+/**
+ * True when the user explicitly asked for a per-step report that includes
+ * refusals ("每一步报告成功/被拒绝/报错", "report success/denied for each
+ * step"). In that shape a policy denial IS a requested result, not evidence
+ * that the deliverable was never produced: the gate must not turn it into a
+ * turn-level failure or inject a steer that overrides the user's checklist.
+ */
+export function expectsDenialReport(userRequest: string): boolean {
+  if (!userRequest) return false;
+  const text = userRequest;
+  const stepFirst =
+    /(?:每一步|每步|逐(?:步|项)|每个(?:步骤|操作)|for each step|each step|every step)[^。.\n]{0,80}(?:报告|说明|记录|列出|report|describe|state)/i.test(
+      text,
+    );
+  const reportFirst =
+    /(?:报告|说明|记录|report|describe)[^。.\n]{0,80}(?:成功|被拒绝|拒绝|失败|报错|denied|refused|blocked|error|fail)/i.test(
+      text,
+    );
+  const mentionsDenial =
+    /(?:被拒绝|拒绝|失败|报错|拦截|禁止|denied|refused|blocked)/i.test(text);
+  return (stepFirst || reportFirst) && mentionsDenial;
+}
+
 /** Completion claim detection with a negation guard ("未完成" is not a claim). */
 export function claimsCompletion(text: string): boolean {
   if (!text) return false;

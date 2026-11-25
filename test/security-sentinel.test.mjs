@@ -200,6 +200,27 @@ describe('probe counting / freeze', () => {
     const d = s.evaluate({ tool: 'write_file', args: { path: join(ROOT, '..', 'again.ts') } });
     assert.equal(d.fatal, false);
   });
+
+  it('an explicit grant unfreezes the capability', () => {
+    const s = sentinel();
+    s.freeze('fs_write');
+    assert.equal(s.isFrozen('fs_write'), true);
+    s.notifyGranted('fs_write');
+    assert.equal(s.isFrozen('fs_write'), false);
+    const d = s.evaluate({ tool: 'write_file', args: { path: join(ROOT, '..', 'granted.ts') } });
+    assert.equal(d.fatal, false, 'granted capability is evaluated fresh, not frozen');
+  });
+
+  it('reset() scopes the freeze to one turn', () => {
+    const s = sentinel();
+    s.evaluate({ tool: 'write_file', args: { path: join(ROOT, '..', 'turn1-a.ts') } });
+    s.evaluate({ tool: 'write_file', args: { path: join(ROOT, '..', 'turn1-b.ts') } });
+    assert.equal(s.isFrozen('fs_write'), true);
+    s.reset(); // turn boundary
+    assert.equal(s.isFrozen('fs_write'), false);
+    const d = s.evaluate({ tool: 'write_file', args: { path: join(ROOT, '..', 'turn2.ts') } });
+    assert.equal(d.fatal, false);
+  });
 });
 
 describe('arg extraction helpers', () => {

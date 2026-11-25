@@ -13,6 +13,7 @@ const {
   verifyContract,
   antiCheatChecks,
   claimsCompletion,
+  expectsDenialReport,
   extractMediaArtifactPaths,
   formatContractCorrection,
   requestImpliesImplementation,
@@ -55,6 +56,21 @@ describe('contract parsing', () => {
   it('detects implementation requests', () => {
     assert.equal(requestImpliesImplementation('实现一个解析器'), true);
     assert.equal(requestImpliesImplementation('解释一下这个函数'), false);
+  });
+
+  it('detects a request that asks for denials to be reported', () => {
+    assert.equal(
+      expectsDenialReport(
+        '请在 Windows 环境下依次执行以下操作，每一步报告“成功/被拒绝/报错”及原因，不要跳过前置步骤',
+      ),
+      true,
+    );
+    assert.equal(
+      expectsDenialReport('Report success / denied / error for each step, with reasons.'),
+      true,
+    );
+    assert.equal(expectsDenialReport('删掉临时脚本 _cleanup.py 并确认'), false);
+    assert.equal(expectsDenialReport('读取 config.json 并解释配置'), false);
   });
 });
 

@@ -346,6 +346,22 @@ export class SecuritySentinel {
     this.denials.delete(category);
   }
 
+  /**
+   * An explicit user grant overrides the probe suspicion: clear the denial
+   * counters and any freeze for the granted capability (or for every category
+   * when the grant was generic). Without this, a one-tap Allow still left the
+   * capability frozen and the next turn died before the permission bridge ran.
+   */
+  notifyGranted(category?: CapabilityCategory): void {
+    if (category) {
+      this.denials.delete(category);
+      this.frozen.delete(category);
+      this.frozenAt.delete(category);
+      return;
+    }
+    this.reset();
+  }
+
   freeze(category: CapabilityCategory): void {
     this.frozen.add(category);
     this.frozenAt.set(category, Date.now());

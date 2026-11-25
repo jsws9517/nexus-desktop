@@ -167,12 +167,12 @@ test('e2e: an untrusted network result taints the next privileged action', async
 // ===========================================================================
 // fail_seq spin guard: keying (args-dependent arg-invalid) + tier threshold
 // ===========================================================================
-// All three failures land in ONE model turn (turn_start … turn_end) because
-// the monitor resets its fail counters on every turn_start. The fail key for
-// arg-invalid carries the arg digest, so the model "repairing its args" (each
-// attempt a different path) must NOT be read as a spin — that was the
-// coding-mode false kill. The sandbox provider resolves to the frugal tier
-// (failSeqMax 3) unless a test explicitly re-points it to `coding` (failSeqMax 6).
+// The fail_seq counters now span the whole user turn (core emits turn_start
+// for EVERY LLM step, so resetting there made the storm guard unreachable).
+// The fail key for arg-invalid carries the arg digest, so the model "repairing
+// its args" (each attempt a different path) must NOT be read as a spin — that
+// was the coding-mode false kill. The sandbox provider resolves to the frugal
+// tier (failSeqMax 3) unless a test re-points it to `coding` (failSeqMax 6).
 
 function argInvalidCall(path) {
   return [
@@ -228,6 +228,65 @@ test('e2e: the SAME bad args failing 3× in one turn still trips fail_seq (fruga
   assert.equal(stalls[0].kind, 'fail_seq');
   assert.match(stalls[0].repr, /read_media_file:arg-invalid:/);
   assert.equal(fake.aborted, 1, 'same-args failure storm still aborts the turn');
+});
+
+test('e2e: fail_seq accumulates across core turn_start (one failure per LLM step)', async () => {
+  // Regression: core emits turn_start for each LLM step. The old bridge reset
+  // RepetitionMonitor there, clearing failSeqCount after every single failed
+  // tool call — so a 13-step rmdir storm never tripped the guard and the model
+  // burned every turn. Counters must survive turn_start for the USER turn.
+  const step = (i) => [
+    { type: 'turn_start', turn: i },
+    { type: 'tool_call_start', name: 'exec_command', args: { command: `rmdir variant ${i}` } },
+    {
+      type: 'tool_result',
+      name: 'exec_command',
+      args: { command: `rmdir variant ${i}` },
+      content: `Command failed: rmdir variant ${i} — directory in use`,
+      isError: true,
+    },
+    { type: 'turn_end', turn: i },
+  ];
+  const script = [step(1), step(2), step(3)].flat();
+  const { svc, fake, emitted } = makeService(script);
+
+  await svc.runTurn('清理临时目录');
+
+  const stalls = emitted.filter((e) => e.type === 'repetition_stall');
+  assert.equal(stalls.length, 1, 'a 3-step same-class storm must trip fail_seq');
+  assert.equal(stalls[0].kind, 'fail_seq');
+  assert.equal(fake.aborted, 1, 'the storm now stops the turn instead of exhausting maxTurns');
+});
+
+test('e2e: a denial-report turn gets one soft fail_seq steer instead of an abort', async () => {
+  // When the user asked for each step's error to be reported, a failed delete
+  // is reportable evidence. The guard must steer once ("record it, move on"),
+  // not kill the turn before the checklist finishes.
+  const step = (i) => [
+    { type: 'turn_start', turn: i },
+    { type: 'tool_call_start', name: 'exec_command', args: { command: `rmdir variant ${i}` } },
+    {
+      type: 'tool_result',
+      name: 'exec_command',
+      args: { command: `rmdir variant ${i}` },
+      content: `Command failed: rmdir variant ${i} — directory in use`,
+      isError: true,
+    },
+    { type: 'turn_end', turn: i },
+  ];
+  const { svc, fake, emitted } = makeService([step(1), step(2), step(3)].flat());
+
+  await svc.runTurn(
+    '请在 Windows 环境下依次执行以下操作，每一步报告"成功/被拒绝/报错"及原因，不要跳过前置步骤：' +
+      '递归删除 C:\\agent_test 整个目录并确认。',
+  );
+
+  assert.equal(fake.aborted, 0, 'first storm in a denial-report turn is not a hard kill');
+  assert.equal(emitted.filter((e) => e.type === 'repetition_stall').length, 0);
+  assert.ok(
+    fake.steers.some((s) => /已连续失败/.test(s.text) && /继续下一步/.test(s.text)),
+    'must steer the model to report the error and continue',
+  );
 });
 
 test('e2e: the coding tier raises the fail_seq threshold (6) so a 5× same-class storm survives', async () => {

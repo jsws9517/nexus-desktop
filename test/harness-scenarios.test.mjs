@@ -246,6 +246,102 @@ test('scenario C: a blocked action invalidates the "already deleted" narration',
 });
 
 /**
+ * Scenario E — "report the refusal" is a valid deliverable.
+ *
+ * When the user asks for every step's success/denial to be reported, a policy
+ * refusal is evidence to describe, not a failed task. The harness must still
+ * surface the decision card, but must not inject a steer that overwrites the
+ * user's checklist or mark the turn `blocked`.
+ */
+test('scenario E: an expected denial report is not a blocked verdict', async () => {
+  const dir = makeFixture(null);
+  const prev = process.cwd();
+  process.chdir(dir);
+  const request =
+    '请在 Windows 环境下依次执行以下操作，每一步报告“成功/被拒绝/报错”及原因，不要跳过前置步骤：' +
+    '创建目录 C:\\agent_test\\，然后创建 C:\\agent_test\\readme.txt。';
+  try {
+    const script = [
+      { type: 'turn_start', turn: 1 },
+      { type: 'tool_call_start', name: 'create_directory', args: { path: 'C:\\agent_test' } },
+      {
+        type: 'tool_result',
+        name: 'create_directory',
+        args: { path: 'C:\\agent_test' },
+        content: 'Access denied: parent of "C:\\agent_test"',
+        isError: true,
+      },
+      { type: 'text', text: '第 0 步：创建目录 C:\\agent_test → 被拒绝，原因：越界。' },
+      { type: 'turn_end', turn: 1 },
+    ];
+    const { svc, fake, emitted } = makeService(script);
+
+    await svc.runTurn(request);
+
+    const verdict = emitted.find((e) => e.type === 'turn_verdict');
+    assert.notEqual(verdict.status, 'blocked');
+    // The refusal is still recorded for telemetry and the decision card.
+    assert.ok(verdict.blocked.length >= 1);
+    assert.ok(emitted.some((e) => e.type === 'decision_request'));
+    const steers = fake.steers.map((s) => s.text).join('\n');
+    assert.doesNotMatch(steers, /harness_correction kind="capability_blocked"/);
+    assert.doesNotMatch(steers, /abandon any remaining plan/);
+  } finally {
+    process.chdir(prev);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Scenario G — a probe freeze is scoped to the USER turn that produced it.
+ *
+ * Core emits `turn_start` for every internal LLM step, so the boundary is
+ * beginCorrectionTurn(), not that event. Two out-of-root writes in one user
+ * request still freeze fs_write; the next `runTurn()` gets a clean sentinel.
+ */
+test('scenario G: sentinel freeze does not leak into the next user turn', async () => {
+  const dir = makeFixture(null);
+  const prev = process.cwd();
+  process.chdir(dir);
+  const outside = join(tmpdir(), `nexus-outside-probe-${seq++}.txt`);
+  const probe = (name) => [
+    { type: 'tool_call_start', name: 'create_directory', args: { path: outside.replace('.txt', name) } },
+    {
+      type: 'tool_result',
+      name: 'create_directory',
+      args: { path: outside.replace('.txt', name) },
+      content: `Access denied: ${outside.replace('.txt', name)}`,
+      isError: true,
+    },
+  ];
+  try {
+    const script = [
+      { type: 'turn_start', turn: 1 },
+      ...probe('-a'),
+      ...probe('-b'),
+      { type: 'turn_end', turn: 1 },
+    ];
+    const { svc, emitted } = makeService(script);
+    const request = '在 C:\\agent_test 下创建文件并报告结果';
+
+    await svc.runTurn(request);
+    const first = emitted.filter((e) => e.type === 'security_probe');
+    assert.equal(first.length, 2);
+    assert.equal(first[0].fatal, false);
+    assert.equal(first[1].fatal, true, 'two probes in one user turn still freeze');
+
+    emitted.length = 0;
+    await svc.runTurn(request);
+    const second = emitted.filter((e) => e.type === 'security_probe');
+    assert.equal(second.length, 2);
+    assert.equal(second[0].fatal, false, 'a fresh user turn starts from a clean slate');
+  } finally {
+    process.chdir(prev);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
  * Scenario D — cross-turn spin. Each turn stays under the per-turn thresholds
  * (so every existing guard is silent); only the session-scoped budget sees the
  * same probe on turns 1, 2 and 3.

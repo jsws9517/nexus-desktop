@@ -7310,6 +7310,14 @@ async function buildPermissionsSection(container?: HTMLElement): Promise<void> {
   modeRow.appendChild(modeNote);
   form.appendChild(modeRow);
 
+  // Path-boundary clarification: granting a specific project directory is not
+  // the same as switching permission mode. auto/prompt only changes prompting;
+  // the security boundary follows projectDir / authorized roots.
+  const boundaryNote = document.createElement('div');
+  boundaryNote.className = 'startup-hint';
+  boundaryNote.textContent = t('permissionsPathBoundaryNote');
+  form.appendChild(boundaryNote);
+
   const mcpAllowlist = addArea('permissionsMcpAllowlist', permArrayToText(perms.mcpAllowlist));
   const allowlist = addArea('permissionsAllowlist', permArrayToText(perms.allowlist));
 

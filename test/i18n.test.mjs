@@ -21,6 +21,19 @@ test('new A/B/E feature keys are present and complete', () => {
   }
 });
 
+test('path-boundary note explains specific-directory grant and mode independence', () => {
+  const key = 'permissionsPathBoundaryNote';
+  assert.ok(STR[key], `expected key "${key}"`);
+  for (const lang of ['zh-CN', 'en']) {
+    const text = STR[key][lang];
+    assert.match(text, /agent_test/, 'names a concrete project directory');
+    assert.match(text, /root|根目录/i, 'warns against granting the drive root');
+    assert.match(text, /auto/i, 'says switching mode does not change the boundary');
+    assert.match(text, /prompt/i, 'says switching mode does not change the boundary');
+    assert.match(text, /boundary|边界/i, 'explicitly mentions the path boundary');
+  }
+});
+
 test('t() interpolates placeholders', () => {
   const out = t('toolsCount', { n: 3 });
   assert.match(out, /3/);

@@ -133,6 +133,7 @@ import {
   antiCheatChecks,
   claimsCompletion,
   describeAcceptance,
+  expectsDenialReport,
   extractMediaArtifactPaths,
   formatContractCorrection,
   parseContract,
@@ -528,7 +529,11 @@ export class AgentService {
   private mediaArtifacts: Array<{ tool: string; paths: string[] }> = [];
   private correctionConfig: CorrectionConfig | null = null;
   private toolPolicy: ToolPolicy | null = null;
+  /** True when the read-only policy was imposed by a sentinel FATAL, not by L2 narrowing. */
+  private sentinelReadOnly = false;
   private lastCorrectionAction: CorrectionAction | null = null;
+  /** One soft fail_seq intervention per user turn; a second storm hard-stops. */
+  private failSeqSteered = false;
 
   /** Per-step accumulators fed by handleAgentEvent, consumed at turn_end. */
   private stepThinking = '';
@@ -1441,40 +1446,7 @@ export class AgentService {
       onTurnEnd: async (ctx) => this.evaluateCompletionGate(ctx.assistantText ?? ''),
     };
 
-    // Route ALL permission prompts to the UI — both the MCP/tool prompt and the
-    // path authorization (read_text_file etc.) use this single bridge. The CLI
-    // wires the same via setPermissionPrompter; without it the path prompter
-    // falls back to a dead stdin readline inside the worker and instantly denies.
-    const { setPermissionPrompter } = await import('nexus-coder/dist/src/desktop-api.js');
-    // Only prompt mode may surface a path card. auto/unattended are
-    // non-interactive: an out-of-scope path is denied with no UI prompt
-    // (session 47f9e6c7, §7.8). Project roots the user chose are pre-authorized
-    // in core via grantProjectRoot, so legitimate work never reaches the
-    // prompter in the first place.
-    setPermissionPrompter(
-      (question: string) => this.askPermission(question),
-      () => this.getActiveMode() === 'prompt',
-    );
-
-    // The audit manager (remember tool / user_info / dangerous-command gates) also
-    // ships an askUser bridge, but the CLI is the only path that wires it. Without
-    // it the worker falls back to a dead-stdin readline here: remember's
-    // requestApproval() never resolves and the agent kills the tool at 60s
-    // ("Tool 'remember' timed out after 60s"). recall has no audit gate, which is
-    // why reads keep working while every remember write times out.
-    // Normalize the UI's 'y' (once) / 'a' (always) to the audit's expected 'y'.
-    this.agent.audit.setAskUser(async (question: string) => {
-      // auto/unattended treat the audit gates as auto-approved: remember only
-      // writes the user's knowledge graph and user_info is a preference note —
-      // both non-destructive, and unattended mode keeps its own safety net for
-      // destructive operations. The audit bridge receives only prompt text (not
-      // the tool name), so gating on mode is the allowlist-equivalent here.
-      const mode = this.getActiveMode();
-      if (mode === 'auto' || mode === 'unattended') return 'y';
-      const answer = await this.askPermission(question);
-      const norm = answer.trim().toLowerCase();
-      return norm === 'y' || norm === 'a' ? 'y' : norm;
-    });
+    await this.installPermissionBridges();
 
     this.agent.onEvent = (event: AgentEvent) => this.handleAgentEvent(event);
     // onOutput is used by slash-command and non-streaming paths (e.g. runRemoteSlashCommand's
@@ -1486,38 +1458,6 @@ export class AgentService {
         return;
       }
       this.onEvent?.({ type: 'text', text });
-    };
-    this.agent.onPermissionRequest = async (
-      toolName: string,
-      _toolCallId: string,
-      toolArgs: unknown,
-    ) => {
-      // Both auto and unattended are non-interactive: this bridge must never
-      // surface a UI card for either (docs/permissions-modes.md, §unattended).
-      //
-      // - auto: trust the allowlist + safe paths; no safety gate runs.
-      // - unattended: the core safety gate is the SOLE arbiter and runs in
-      //   preToolUse BEFORE any batch verdict (agent.js: preToolUse → batch).
-      //   Core already skips batch permission in unattended precisely so no
-      //   card is shown; if a caller still reaches here, the tool has passed
-      //   the gate and must be allowed — prompting would violate the
-      //   "never interactive" contract and could pin a card for the full
-      //   permission timeout. Only `prompt` asks the user.
-      const mode = this.getActiveMode();
-      if (mode === 'auto' || mode === 'unattended') {
-        return { verdict: 'allow' as const };
-      }
-      const summary =
-        toolArgs && typeof toolArgs === 'object'
-          ? JSON.stringify(toolArgs).slice(0, 200)
-          : '';
-      const answer = await this.askPermission(
-        `Tool "${toolName}" requested permission.\nArgs: ${summary}`,
-      );
-      // 'y' (once) and 'a' (always) both allow; the core has no per-tool
-      // persistence so 'a' behaves like a one-time allow here (path prompts
-      // still persist 'a' via the path-authorizer's GLOBAL_SCOPE).
-      return { verdict: ['y', 'a'].includes(answer.trim().toLowerCase()) ? 'allow' : 'deny' };
     };
     this.applyMcpProxy(this.agent);
     // Watch context-manager progress callbacks to detect repeated compressions.
@@ -1566,6 +1506,64 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
+   * Install the ONE permission bridge for this worker. Called from earlyInit
+   * and again after ACP registration: an ACP handler installed later must never
+   * replace the desktop's non-interactive auto/unattended contract and start
+   * surfacing batch cards. Reinstalling is idempotent.
+   */
+  private async installPermissionBridges(): Promise<void> {
+    const agent = this.agent;
+    if (!agent) return;
+    const { setPermissionPrompter } = await import('nexus-coder/dist/src/desktop-api.js');
+    // Only prompt mode may surface a path card. auto/unattended are
+    // non-interactive: an out-of-scope path is denied with no UI prompt
+    // (session 47f9e6c7, §7.8). Project roots the user chose are pre-authorized
+    // in core via grantProjectRoot, so legitimate work never reaches the
+    // prompter in the first place.
+    setPermissionPrompter(
+      (question: string) => this.askPermission(question),
+      () => this.getActiveMode() === 'prompt',
+    );
+
+    // Audit gates (remember / user_info / dangerous commands) also need a UI
+    // bridge; without it the worker falls back to a dead-stdin readline and the
+    // tool times out after 60s. auto/unattended auto-approve the non-destructive
+    // audit prompts; unattended keeps its own preToolUse safety gate.
+    agent.audit?.setAskUser?.(async (question: string) => {
+      const mode = this.getActiveMode();
+      if (mode === 'auto' || mode === 'unattended') return 'y';
+      const answer = await this.askPermission(question);
+      const norm = answer.trim().toLowerCase();
+      return norm === 'y' || norm === 'a' ? 'y' : norm;
+    });
+
+    agent.onPermissionRequest = async (
+      toolName: string,
+      _toolCallId: string,
+      toolArgs: unknown,
+    ) => {
+      // Both auto and unattended are non-interactive: this bridge must never
+      // surface a UI card for either (docs/permissions-modes.md, §unattended).
+      // - auto: trust the allowlist + safe paths; no safety gate runs.
+      // - unattended: the core safety gate is the SOLE arbiter and runs in
+      //   preToolUse BEFORE any batch verdict. Core already skips batch
+      //   permission in unattended precisely so no card is shown.
+      const mode = this.getActiveMode();
+      if (mode === 'auto' || mode === 'unattended') {
+        return { verdict: 'allow' as const };
+      }
+      const summary =
+        toolArgs && typeof toolArgs === 'object'
+          ? JSON.stringify(toolArgs).slice(0, 200)
+          : '';
+      const answer = await this.askPermission(
+        `Tool "${toolName}" requested permission.\nArgs: ${summary}`,
+      );
+      return { verdict: ['y', 'a'].includes(answer.trim().toLowerCase()) ? 'allow' : 'deny' };
+    };
+  }
+
+  /**
    * Phase 2 of startup: full init (skills load). MCP is owned by the shared
    * main-process hub, NOT by this worker, so no shadow MCP processes are
    * spawned per worker/tab. This method keeps the core from connecting MCP
@@ -1587,6 +1585,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     } finally {
       if (savedMcp) cfg.mcpServers = savedMcp;
     }
+    // agent.init() registers ACP internally; re-assert the desktop bridge so a
+    // later ACP install cannot turn auto into an interactive permission flow.
+    await this.installPermissionBridges();
     // Kick the hub so MCP servers connect once (globally), without blocking
     // this worker. Tools appear in every tab once the hub they proxy is ready.
     void this.mcpRequest('connect')
@@ -1641,6 +1642,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     // — `engines.json` said `claude` was enabled, the binary was on PATH, and
     // every acp_route in every tab still failed with "Agent claude not found".
     const ids = await agent.ensureAcpRegistered();
+    // ACP setup can install its own permission handler; the desktop bridge is
+    // authoritative for this worker, so install it last (idempotent).
+    await this.installPermissionBridges();
     logger.info(
       `[acp-init] worker registered=${ids.length} agents=${ids.join(',') || '(none)'}`,
     );
@@ -1990,7 +1994,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
           }
         }
       } else if (event.type === 'turn_start') {
-        rep?.reset();
+        // Core emits turn_start for EVERY LLM step, not for each user turn.
+        // Resetting the RepetitionMonitor here cleared failSeqCount after each
+        // single tool failure, so a 3-failure storm never reached its threshold
+        // and the model spun until maxTurns. Monitor state lives for the whole
+        // user turn (a fresh RepetitionMonitor is created in runTurn).
         this.toolCallsAcc = [];
         this.gitSlowHinted = false;
         this.subagentPolicyHinted = false;
@@ -2071,6 +2079,26 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
    */
   private handleRepetitionGuard(rv: { kind: string; repeatCount: number; repr: string }): void {
     const model = this.getActiveModel() || 'active model';
+    // When the user asked for each step's success/denial/error to be REPORTED,
+    // a repeated tool failure is reportable evidence, not a reason to kill the
+    // turn before the checklist is finished. Give one steer that says exactly
+    // that; a SECOND storm in the same turn is still a hard stop so the model
+    // cannot spin forever by re-spelling the same failing command.
+    if (rv.kind === 'fail_seq' && this.isDenialReportTurn() && !this.failSeqSteered) {
+      this.failSeqSteered = true;
+      // Give the model a fresh window: the soft steer asks it to record the
+      // error and move on, so the old counter must not immediately re-trip on
+      // the very next step. A later 3-failure storm still hard-stops.
+      this.activeRepMonitor?.reset();
+      this.onLog?.(
+        'warn',
+        `[repetition-guard] ${rv.repr} failed ${rv.repeatCount} times; denial-report turn — steering to report the error and continue instead of aborting.`,
+      );
+      this.agent?.enqueueSteer?.(
+        `[harness] "${rv.repr}" 已连续失败 ${rv.repeatCount} 次。用户要求逐步报告成功/被拒绝/报错，请不要再换 shell/命令拼写重试同一种做法：把这一步记为「报错 + 原因」，然后继续下一步。`,
+      );
+      return;
+    }
     this.onLog?.(
       'warn',
       `[repetition-guard] model "${model}" repeated the same ${rv.kind} ` +
@@ -2107,6 +2135,11 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
     this.activeContract = this.buildContract(input);
     this.mediaArtifacts = [];
+    // A freeze is scoped to the user turn that produced it. `turn_start` fires
+    // for every internal LLM step, so the boundary here — not there — is the
+    // place to drop a read-only policy left by a FATAL sentinel decision.
+    this.toolPolicy = null;
+    this.sentinelReadOnly = false;
     this.activeSentinel = new SecuritySentinel({
       root: this.getCwd(),
       immutablePaths: cfg.immutablePaths,
@@ -2144,6 +2177,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.blockedHints = [];
     this.mediaArtifacts = [];
     this.blockedSteerSent = false;
+    this.failSeqSteered = false;
     this.lastTurnVerdict = null;
     this.getSessionBudget(cfg);
   }
@@ -2411,20 +2445,30 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
     // exec_command with destructive / privileged patterns
     if (tool === 'exec_command' || tool === 'shell') {
-      // rm -rf / del /R / format / diskpart / reg delete — destructive
+      // rm -rf / del /R / format / diskpart / reg delete are CLASSIFIED AS HARD
+      // by classifyCommand(). permissionCheckHook denies hard commands with NO
+      // escape: execCommandOverrides only applies to session/prompt classes,
+      // and the unattended gate hard-denies them too. There is no
+      // `permissions.allow` key at all (the desktop config merge only accepts
+      // allowlist / safePaths / mcpAllowlist). So never tell the user a config
+      // edit or a mode switch can unlock this — point at the dedicated tools.
       if (/\brm\s+(-[a-z]*r[a-z]*\s|.*--recursive)|\bdel\s+\/R\b|\bformat\s+\w:\b|\bdiskpart\b|\breg\s+delete\b/i.test(lowerCmd)) {
         return {
-          kind: 'config',
-          instruction: `Add {"command": "${(cmd || '').slice(0, 60)}*"} to permissions.allow in config.json, or switch to auto mode to allow destructive commands.`,
-          configKey: 'permissions.allow',
-          suggestedValue: JSON.stringify({ command: `${lowerCmd.slice(0, 40)}*` }),
+          kind: 'one_tap',
+          instruction:
+            `This is a hard-blocked destructive command: no config key or permission mode can allow it — hard-class exec is always denied. ` +
+            `Use delete_file / remove_file instead: a dedicated tool you can grant once, confined to the authorized project directory. ` +
+            `For stale scratch files under .nexus/trash/, use tmp_cleanup. Never respell the deletion as a script.`,
         };
       }
-      // Generic exec blocked — suggest mode switch
+      // Generic exec blocked — prompt/session classes have a real mode/config
+      // exit; say so, but do not imply that hard-class commands are unlockable.
       if (lowerContent.includes('unattended') || lowerContent.includes('unattended mode blocked')) {
         return {
           kind: 'switch_mode',
-          instruction: 'The command was blocked by the unattended safety gate. Switch to auto mode (/mode auto) to allow it, or add a specific allow rule in permissions.allow.',
+          instruction:
+            'The command was blocked by the unattended safety gate. Prompt/session-class commands can be allowed by switching to auto mode (/bypass auto) ' +
+            'or via permissions.execCommandOverrides; hard-class destructive commands cannot be allowed by any config — use a dedicated tool instead.',
           targetMode: 'auto',
         };
       }
@@ -2435,8 +2479,15 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     if (tool === 'delete_file' || tool === 'move_file' || tool === 'copy_file') {
       return {
         kind: 'one_tap',
-        instruction: `The ${tool} call was denied by policy. Grant it once from the permission card, or add the target path to permissions.allowPaths in config.json.`,
-        configKey: 'permissions.allowPaths',
+        // The path boundary is the authorized project directory (grantProjectRoot
+        // / effectiveRoots), NOT permissions.safePaths (that is exec-only) and
+        // NOT the permission mode. Switching auto/prompt only changes prompting,
+        // so the hint must not imply a mode toggle is a path grant.
+        instruction:
+          `The ${tool} call was denied: the target is outside the authorized project directory. ` +
+          `Open the exact project directory as the project (e.g. C:\\agent_test — NOT a drive root like C:\\) ` +
+          `or grant it once from the permission card. ` +
+          `Switching auto/prompt only changes per-tool prompting; it does NOT change the path boundary.`,
       };
     }
 
@@ -2480,9 +2531,23 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
   }
 
   /**
+   * True when this turn's request asks for refusals as reportable results.
+   * In that shape a denial is evidence the model must describe, not a missing
+   * deliverable — so neither the gate nor the verdict may override the user's
+   * checklist with "abandon the remaining steps".
+   */
+  private isDenialReportTurn(): boolean {
+    return expectsDenialReport(this.currentTurnInput ?? '');
+  }
+
+  /**
    * Record a policy denial. It is sticky for the turn: a completion claim made
    * after a blocked action can never be `passed`, because the thing the model
    * says it produced was refused by the harness itself.
+   *
+   * Exception: when the user asked to report each step's success/denial, the
+   * refusal is part of the deliverable. It is still emitted as a decision card
+   * and logged, but no override steer is injected into the model's turn.
    */
   private noteBlockedAction(tool: string, cmd: string, content: string, hint?: GrantHint): void {
     const label = `${tool}: ${describeBlocked(cmd || content)}`;
@@ -2493,7 +2558,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       this.blockedCommandSeen.add(key);
       this.onEvent?.({ ...buildDecisionRequest(tool, cmd, content, hint) });
     }
-    if (!this.blockedSteerSent) {
+    if (!this.blockedSteerSent && !this.isDenialReportTurn()) {
       this.blockedSteerSent = true;
       this.agent?.enqueueSteer?.(buildBlockedSteer(this.blockedActions, this.blockedHints));
     }
@@ -2560,7 +2625,9 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     // never checked (no observed run of the declared command) cannot be
     // satisfied by prose. This is the hole that let "修复成功！" through.
     const noEvidence = verdict.checked === 0 || unverified.length > 0;
-    const blocked = this.blockedActions.length > 0;
+    // A requested denial report is satisfied by reporting the refusal; it must
+    // not loop the model through the completion gate forever.
+    const blocked = !this.isDenialReportTurn() && this.blockedActions.length > 0;
     if (failed.length === 0 && blocking.length === 0 && !noEvidence && !blocked) {
       return undefined;
     }
@@ -2696,6 +2763,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       lastAssistantText: lastAssistant,
       blockedActions: this.blockedActions,
       sawToolActivity: this.turnTranscript.some((t) => t.role === 'tool'),
+      denialReportExpected: this.isDenialReportTurn(),
     });
     this.lastTurnVerdict = turnVerdict;
     this.recordVerdict(turnVerdict);
@@ -2792,6 +2860,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
 
     this.onLog?.('warn', `[security-sentinel] FATAL: ${decision.reason ?? 'security boundary crossed'}`);
     this.toolPolicy = { active: true, readOnly: true };
+    this.sentinelReadOnly = true;
     // forceTerminate applies the L4 action, which calls the abort executor.
     if (this.activeCorrection) {
       this.activeCorrection.forceTerminate(
@@ -2919,6 +2988,7 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       this.activeContract = null;
       this.mediaArtifacts = [];
       this.toolPolicy = null;
+      this.sentinelReadOnly = false;
       this.resetCorrectionStep();
       const status = this.rateLimiter.getStatus(family, providerCfg?.baseUrl);
       if (status && this.onRateLimitReport) this.onRateLimitReport(status);
@@ -5106,6 +5176,17 @@ private resetAttachmentRagRoundCache(): void {
     const resolution = resolveBypassArg(mode);
     if (resolution.kind !== 'mode') throw new Error(`Invalid mode: ${mode}`);
     applyPermissionMode(this.agent.config, resolution.mode, { persist: false });
+    // Keep the ACP view on the same mode as the effective permissions mode.
+    // Without this, `acp.permissionMode` stayed at its persisted value while
+    // /bypass changed `permissions.mode`, giving the same worker two answers
+    // to "is this turn interactive?". ACP has no `unattended` enum value, so
+    // unattended maps to its non-interactive `auto`.
+    const acpConfigHost = this.agent.config as typeof this.agent.config & {
+      setAcpPermissionModeInMemory?: (mode: 'auto' | 'prompt' | 'session' | null) => void;
+    };
+    acpConfigHost.setAcpPermissionModeInMemory?.(
+      resolution.mode === 'prompt' ? 'prompt' : 'auto',
+    );
     const sid = sessionId || this.agent.getCurrentSessionId?.() || '';
     if (sid) {
       try {
@@ -5891,6 +5972,18 @@ reloadConfig(): { ok: boolean } {
   }
 
   async resolvePermission(id: string, answer: string): Promise<void> {
+    const normalized = answer.trim().toLowerCase();
+    if (normalized === 'y' || normalized === 'a') {
+      // An explicit grant is the legitimate exit from a probe loop. Clear the
+      // sentinel's counters/freeze and the cached FATAL decisions so the next
+      // tool call is evaluated fresh instead of being denied by a stale verdict.
+      this.activeSentinel?.notifyGranted();
+      this.sentinelDecisions.clear();
+      if (this.sentinelReadOnly) {
+        this.toolPolicy = null;
+        this.sentinelReadOnly = false;
+      }
+    }
     const resolve = this.pendingPermissions.get(id);
     if (resolve) {
       this.pendingPermissions.delete(id);
@@ -5905,6 +5998,18 @@ reloadConfig(): { ok: boolean } {
 
   /** Bridge for __nexusPermissionPrompter / onPermissionRequest. Returns 'y'|''. */
   private askPermission(question: string): Promise<string> {
+    // Defence in depth for item 3: auto is non-interactive by contract. If a
+    // stray handler (e.g. an ACP install that ran after our bridge) routes a
+    // batch tool-permission prompt here, allow it instead of pinning a card
+    // until the 10-minute timeout. Path prompts never reach this branch in
+    // auto — setPermissionPrompter's predicate gates them to prompt mode only.
+    const firstLine = question.split('\n')[0]?.trim() ?? '';
+    if (
+      this.getActiveMode() === 'auto' &&
+      /^Tool\s+"[^"]+"\s+requested permission\.$/.test(firstLine)
+    ) {
+      return Promise.resolve('y');
+    }
     return new Promise<string>((resolve) => {
       const id = String(this.nextPermissionId++);
       this.pendingPermissions.set(id, resolve);
