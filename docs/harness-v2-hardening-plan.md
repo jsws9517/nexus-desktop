@@ -13,8 +13,8 @@
 | H-1 | capability_blocked 无 grant_hint | 🔴 P0 | ~1d | 第 1 天 | desktop | ✅ 完成 |
 | H-2 | bg_job 失败无外部通知 | 🔴 P0 | ~0.5d | 第 1 天 | coder + desktop | ✅ 完成 |
 | H-3 | 临时文件泄漏（无 tmp_cleanup） | 🔴 P0 | ~1d | 第 2 天 | coder + desktop | ✅ 完成 |
-| H-4 | 配置热更新完整性 | 🟡 P1 | ~0.5d | 第 2 天 | coder | ⬜ 待实现 |
-| H-5 | 中断传播不完整（sub-agent/ACP） | 🟡 P1 | ~1.5d | 第 3 天 | coder | ⬜ 待实现 |
+| H-4 | 配置热更新完整性 | 🟡 P1 | ~0.5d | 第 2 天 | coder | ✅ 完成（审计确认无需改动，契约测试锁定） |
+| H-5 | 中断传播不完整（sub-agent/ACP） | 🟡 P1 | ~1.5d | 第 3 天 | coder | ✅ 完成（ACP sendTask abortSignal 传播） |
 | H-6 | 工具名/能力误判（后端可用性） | 🟡 P1 | ~1d | 第 3-4 天 | coder + desktop | ⬜ 待实现 |
 
 **Day 1 完成：H-1 + H-2。** 下一步：H-3（tmp_cleanup）→ H-4（热更新审计）→ H-5（中断传播）→ H-6（后端标注）。
