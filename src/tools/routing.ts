@@ -180,6 +180,8 @@ const DESKTOP_ROUTING: Record<string, ToolRouting> = {
   move_file: { group: 'fs', keywords: ['move', 'rename', '移动', '重命名', '改名', '挪走'] },
   copy_file: { group: 'fs', keywords: ['copy', '复制', '拷贝', '副本'] },
   delete_file: { group: 'fs', keywords: ['delete', 'remove', '删除', '删掉', '移除文件'] },
+  // H-3: scratch / temp file cleanup (project + global .nexus/trash/)
+  tmp_cleanup: { group: 'fs', keywords: ['清理', 'cleanup', '临时文件', 'trash', 'clean up temp', '删临时', '清垃圾'] },
   fetch_url: { group: 'web', keywords: ['fetch', 'url', '网页', '抓取', '网址', '抓取网页', 'http'] },
 
   // core builtins: skill authoring
