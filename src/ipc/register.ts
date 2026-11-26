@@ -491,7 +491,13 @@ export function registerIpc(ctx: IpcContext): void {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   });
-  ipcMain.handle(CHANNELS.reloadConfig, call('reloadConfig'));
+  ipcMain.handle(CHANNELS.reloadConfig, async (event, params?: Record<string, unknown>) => {
+    const res = await call('reloadConfig')(event, params);
+    // Session workers each hold their own ConfigManager/core i18n state; reload
+    // them too so language/permission changes take effect everywhere.
+    try { await ctx.sessionWorkers.reloadAll(); } catch { /* session workers */ }
+    return res;
+  });
   // Read the core intent-recognition toggles straight from config.json instead of
   // routing through the worker: the renderer needs them early (to decide whether
   // to steer/roll back an in-flight turn and whether to show the rollback

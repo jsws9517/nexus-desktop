@@ -27,6 +27,7 @@ import {
   dispatchJobNotification,
   snapshotFromConfig,
 } from 'nexus-coder/dist/src/desktop-api.js';
+import { refreshLang } from 'nexus-coder/dist/src/i18n/index.js';
 // Desktop-only voice input: reuse core's exported STT implementation without
 // going through a core RPC (and without importing it into the main process).
 import { transcribeAudio } from 'nexus-coder/dist/src/stt/index.js';
@@ -3721,6 +3722,8 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     return { cmd: raw.slice(1).toLowerCase(), args: parts.slice(1) };
   }
 
+
+
   private emitText(text: string): void {
     if (this.slashTurn) {
       this.pushSlashText(text);
@@ -3786,27 +3789,39 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     this.pendingRevise = false;
     const { cmd, args } = parsed;
     if (cmd === 'manual' || cmd === 'help') {
-      // /manual is normally rendered by the core registry (getManualText). The
-      // desktop appends a short section for its own commands that are missing
-      // from that registry (desktop-only /chcwd, plus a note clarifying that
-      // /setdir also switches the worker immediately on this client).
+      // Core registry owns the manual text and its i18n. Desktop only appends
+      // commands/features that are desktop-specific and not in core registry.
       let text = '';
       try {
         const { getManualText } = await import('nexus-coder/dist/src/slash/registry.js');
-        text = getManualText();
+        text = getManualText(this.agent);
       } catch {
         text = '';
       }
-      text += '\n' +
-        'Desktop (Nexus Desktop) only:\n' +
-        '  /chcwd [path]        Temporarily switch runtime working directory (not persisted)\n' +
-        '  /setdir [path]       (desktop) also switches the worker now (core records only projectDir)\n' +
-        '  /rename-project <name>  Rename project across dirs, DB, and metadata (lowercase+hyphens)\n' +
-        '  /billing [mode]      Set how this provider bills: token | coding | free | status | auto\n' +
-        '  /compact             Compress the current context (summarize/truncate) to free window space\n' +
-        '  Scheduled automations: no slash command — ask in-session ("create a scheduled task: …")\n' +
-        '    and the agent calls automation_create; run-now / enable / history live in the sidebar\n' +
-        '    ⏰ Automations panel. Query: ask for "list my automations / run history".\n';
+      const lang = this.agent?.config?.getLanguage?.() ?? 'en';
+      if (lang === 'zh-CN') {
+        text += '\n' +
+          'Desktop（Nexus Desktop）专用：\n' +
+          '  /chcwd [path]                              临时切换运行目录（不持久化）\n' +
+          '  /setdir [path]                             同时切换 worker 运行目录（desktop 行为）\n' +
+          '  /rename-project <name>                     重命名项目目录、DB 与元数据（小写+连字符）\n' +
+          '  /billing [mode]                            设置供应商计费模式：token | coding | free | status | auto\n' +
+          '  /compact                                   压缩当前上下文，释放窗口空间\n' +
+          '  定时自动化：没有 slash 命令 —— 在会话里直接说“创建一个定时任务…”\n' +
+          '    agent 会调用 automation_create；立即运行 / 启停 / 历史在侧边栏 ⏰ Automations 面板。\n' +
+          '    查询可直接问：“列出我的自动化 / 查看运行历史”。\n';
+      } else {
+        text += '\n' +
+          'Desktop (Nexus Desktop) only:\n' +
+          '  /chcwd [path]        Temporarily switch runtime working directory (not persisted)\n' +
+          '  /setdir [path]       (desktop) also switches the worker now (core records only projectDir)\n' +
+          '  /rename-project <name>  Rename project across dirs, DB, and metadata (lowercase+hyphens)\n' +
+          '  /billing [mode]      Set how this provider bills: token | coding | free | status | auto\n' +
+          '  /compact             Compress the current context (summarize/truncate) to free window space\n' +
+          '  Scheduled automations: no slash command — ask in-session ("create a scheduled task: …")\n' +
+          '    and the agent calls automation_create; run-now / enable / history live in the sidebar\n' +
+          '    ⏰ Automations panel. Query: ask for "list my automations / run history".\n';
+      }
       this.emitText(text + '\n');
       return true;
     }
@@ -5731,6 +5746,9 @@ private resetAttachmentRagRoundCache(): void {
 reloadConfig(): { ok: boolean } {
     if (!this.agent?.config) return { ok: false };
     this.agent.config.reload?.();
+    // Keep core i18n in sync with config.json language changes so worker-side
+    // slash command output (e.g. /bypass) follows the UI language.
+    try { refreshLang(); } catch { /* i18n refresh must not block config reload */ }
     // .Ӧ. contextWindow ѹ.Web .屣.ʱ.Ч.
     this.agent.applyContextWindow?.();
     // Embedding re-rank reads `knowledge.*`, so a reload can flip it on/off.
