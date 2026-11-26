@@ -50,8 +50,12 @@ test('problem 4: setProjectLocation reauthorizes root and rebase prevents fs_wri
     assert.equal(prompts.length, 0, 'A must not prompt');
 
     // Real Agent.setProjectLocation(B): grants B + emits projectLocationChanged.
-    const msg = agent.setProjectLocation(B, { projectDir: B });
-    assert.ok(msg.includes(B), `success text must use effectiveDir, got: ${msg}`);
+    // Core now returns a structured result ({ ok, message, projectDir }) instead
+    // of a bare string — assert the contract, still checking effectiveDir usage.
+    const res = agent.setProjectLocation(B, { projectDir: B });
+    assert.equal(res?.ok, true, `setProjectLocation must succeed, got: ${JSON.stringify(res)}`);
+    assert.ok(String(res?.message).includes(B), `success text must use effectiveDir, got: ${res?.message}`);
+    assert.equal(res?.projectDir, B, 'result must report the effective dir');
     const locEvt = events.find((e) => e.type === 'projectLocationChanged');
     assert.ok(locEvt, 'projectLocationChanged must be emitted');
     assert.equal(locEvt.projectDir, B);
