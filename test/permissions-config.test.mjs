@@ -66,6 +66,9 @@ test('array fields reject non-string members', () => {
 test('mode and execPermission enums are validated', () => {
   const cfg = { permissions: {} };
   assert.equal(mergePermissionsIntoConfig(cfg, { permissions: { mode: 'bogus' } }).ok, false);
+  assert.equal(mergePermissionsIntoConfig(cfg, { permissions: { mode: 'basic' } }).ok, true);
+  assert.equal(mergePermissionsIntoConfig(cfg, { permissions: { mode: 'prompt' } }).ok, true);
+  assert.equal(mergePermissionsIntoConfig(cfg, { permissions: { mode: 'auto' } }).ok, true);
   assert.equal(mergePermissionsIntoConfig(cfg, { permissions: { mode: 'unattended' } }).ok, true);
   assert.equal(mergePermissionsIntoConfig(cfg, { permissions: { execPermission: 'bogus' } }).ok, false);
   assert.equal(mergePermissionsIntoConfig(cfg, { permissions: { execPermission: 'deny' } }).ok, true);

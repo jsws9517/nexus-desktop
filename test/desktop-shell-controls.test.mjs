@@ -172,3 +172,27 @@ test('compact action is semi-hidden, danger-styled, and warns of data loss', () 
   assert.match(css, /\.compact-caution \{[^}]*visibility:\s*hidden/s);
   assert.match(css, /\.input-left:hover \.compact-caution,[^}]*opacity: 1; visibility: visible/s);
 });
+
+// ── the session mode picker offers all four core modes, basic first ──────────
+
+test('permission picker offers basic / prompt / auto / unattended', () => {
+  const html = read('static/index.html');
+  const i18n = read('src/renderer/i18n.ts');
+  const renderer = read('src/renderer/renderer.ts');
+  const css = read('static/styles.css');
+  const shared = read('src/shared/permissions-config.ts');
+
+  const options = [...html.matchAll(/class="perm-option" data-mode="([a-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(options, ['basic', 'prompt', 'auto', 'unattended']);
+  assert.match(html, /id="perm-box" class="perm-box" data-mode="basic"/);
+  // The default badge belongs to basic, not prompt.
+  const basicBlock = html.slice(html.indexOf('data-mode="basic"'), html.indexOf('data-mode="prompt"'));
+  assert.match(basicBlock, /perm-badge default/);
+
+  assert.match(i18n, /permModeBasic:/);
+  assert.match(i18n, /permDescBasic:/);
+  assert.match(renderer, /function permLabel[\s\S]*?mode === 'basic'/);
+  assert.match(renderer, /mode === 'basic' \|\| mode === 'prompt'/);
+  assert.match(css, /\.perm-box\[data-mode="basic"\] \.perm-trigger/);
+  assert.match(shared, /PERMISSION_MODES = \['basic', 'prompt', 'auto', 'unattended'\]/);
+});

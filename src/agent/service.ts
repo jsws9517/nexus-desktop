@@ -19,8 +19,11 @@ import {
   createEmbeddingProvider,
   resolveBypassArg,
   applyPermissionMode,
+  formatPermissionStatus,
+  bypassSuccessMessage,
   BYPASS_USAGE,
   BYPASS_HELP_LINES,
+  permissionStatusText,
   dispatchJobNotification,
   snapshotFromConfig,
 } from 'nexus-coder/dist/src/desktop-api.js';
@@ -1515,14 +1518,19 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
     const agent = this.agent;
     if (!agent) return;
     const { setPermissionPrompter } = await import('nexus-coder/dist/src/desktop-api.js');
-    // Only prompt mode may surface a path card. auto/unattended are
-    // non-interactive: an out-of-scope path is denied with no UI prompt
+    // prompt and basic are interactive: an out-of-scope path may surface a
+    // path card. In basic this is what lets an `external_path: ask` rule be
+    // approved in the UI (the CLI installs no gate, so it behaves the same).
+    // auto/unattended are non-interactive and silently deny out-of-scope paths
     // (session 47f9e6c7, §7.8). Project roots the user chose are pre-authorized
     // in core via grantProjectRoot, so legitimate work never reaches the
     // prompter in the first place.
     setPermissionPrompter(
       (question: string) => this.askPermission(question),
-      () => this.getActiveMode() === 'prompt',
+      () => {
+        const mode = this.getActiveMode();
+        return mode === 'prompt' || mode === 'basic';
+      },
     );
 
     // Audit gates (remember / user_info / dangerous commands) also need a UI
@@ -3939,20 +3947,30 @@ this.onLog?.('info', `Nexus core ready for reads (cwd=${process.cwd()})`);
       // CLI and slash registry use — the three entry points cannot drift
       // (session 47f9e6c7, §7.9).
       const resolution = resolveBypassArg(args[0]);
+      const text = permissionStatusText();
+      // The allowlist is ONE shared persisted list. Never dump its tool names
+      // here: prompt/basic do not consult it, so a long comma-joined list reads
+      // as "these tools are pre-approved" when they still ask. The core helper
+      // reports only a count + whether it is active, exactly like the CLI.
+      const renderStatus = () => {
+        const live = this.agent?.config?.getPermissions?.() ?? { mode: 'basic' as const, allowlist: [] };
+        const view = formatPermissionStatus(live, text);
+        this.emitText(`${view.heading}\n`);
+        this.emitText(`  ${text.modeLabel} ${view.mode}\n`);
+        this.emitText(`  ${view.allowlist}\n`);
+      };
       if (resolution.kind === 'help') {
         this.emitText(`${BYPASS_USAGE}\n`);
         for (const line of BYPASS_HELP_LINES) this.emitText(`${line}\n`);
       } else if (resolution.kind === 'status') {
-        const perms = this.agent?.config?.getPermissions?.();
-        this.emitText(`Permission mode: ${this.getActiveMode()}\n`);
-        this.emitText(`Allowlist (${perms?.allowlist?.length ?? 0}): ${(perms?.allowlist ?? []).join(', ')}\n`);
+        renderStatus();
       } else if (resolution.kind === 'invalid') {
         this.emitText(`${BYPASS_USAGE}\n`);
       } else {
-        await this.setPermissionsOverride(resolution.mode);
-        if (resolution.mode === 'auto') this.emitText('Bypass ON: whitelist active, tools run without prompting.\n');
-        else if (resolution.mode === 'unattended') this.emitText('Unattended mode ON: auto-approve with safety gate (destructive ops hard-blocked).\n');
-        else this.emitText('Bypass OFF: reverted to prompt mode (each tool asks).\n');
+        const { appliedPreset } = await this.setPermissionsOverride(resolution.mode);
+        if (appliedPreset) this.emitText(`${text.presetApplied}\n`);
+        this.emitText(`${bypassSuccessMessage(resolution.mode, text)}\n`);
+        renderStatus();
       }
       return true;
     }
@@ -5171,16 +5189,18 @@ private resetAttachmentRagRoundCache(): void {
    * emitted so the input-toolbar picker stays in sync even when the change came
    * from the in-session `/bypass` slash command instead of the toolbar.
    */
-  async setPermissionsOverride(mode: string, sessionId?: string): Promise<{ mode: string }> {
+  async setPermissionsOverride(mode: string, sessionId?: string): Promise<{ mode: string; appliedPreset: boolean }> {
     if (!this.agent) throw new Error('Agent not initialized');
     const resolution = resolveBypassArg(mode);
     if (resolution.kind !== 'mode') throw new Error(`Invalid mode: ${mode}`);
-    applyPermissionMode(this.agent.config, resolution.mode, { persist: false });
+    const { appliedPreset } = applyPermissionMode(this.agent.config, resolution.mode, { persist: false });
     // Keep the ACP view on the same mode as the effective permissions mode.
     // Without this, `acp.permissionMode` stayed at its persisted value while
     // /bypass changed `permissions.mode`, giving the same worker two answers
-    // to "is this turn interactive?". ACP has no `unattended` enum value, so
-    // unattended maps to its non-interactive `auto`.
+    // to "is this turn interactive?". ACP has no `unattended` / `basic` enum
+    // value: both map to its non-interactive `auto`. That is safe because the
+    // core's ACP fast-path guard keys off `permissions.mode`, not this mirror —
+    // `basic` still reaches permissionCheckHook() and its rule set.
     const acpConfigHost = this.agent.config as typeof this.agent.config & {
       setAcpPermissionModeInMemory?: (mode: 'auto' | 'prompt' | 'session' | null) => void;
     };
@@ -5194,7 +5214,7 @@ private resetAttachmentRagRoundCache(): void {
       } catch { /* metadata bind is best-effort; the in-memory override already applied */ }
       this.onEvent?.({ type: 'permission_mode_changed', sessionId: sid, mode: resolution.mode });
     }
-    return { mode: resolution.mode };
+    return { mode: resolution.mode, appliedPreset };
   }
 
   /** Single source of truth for the active permission mode (core config). */

@@ -392,7 +392,7 @@ export class SessionWorkers {
         'getSessionMetadata(permissionMode)',
       )) as Record<string, unknown> | undefined;
       const boundMode = meta?.permissionMode;
-      if (boundMode === 'prompt' || boundMode === 'auto' || boundMode === 'unattended') {
+      if (boundMode === 'basic' || boundMode === 'prompt' || boundMode === 'auto' || boundMode === 'unattended') {
         await withTimeout(
           bound.worker.request('setPermissionsOverride', {
             mode: boundMode,

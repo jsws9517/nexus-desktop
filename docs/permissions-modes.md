@@ -1,7 +1,7 @@
 # Permission Modes for Tool Authorization
 
-> Scope: how nexus-desktop authorizes tool calls under the three modes
-> `prompt` / `auto` / `unattended`. The authoritative policy lives in the
+> Scope: how nexus-desktop authorizes tool calls under the four modes
+> `basic` / `prompt` / `auto` / `unattended`. The authoritative policy lives in the
 > `nexus-coder` core (`hooks/permissions.js`, `security/unattended-safety.ts`);
 > this document covers the desktop bridges and how they interact with it.
 > All line references point to the live implementation — `src/agent/service.ts`
@@ -11,8 +11,10 @@
 
 The mode is chosen by the user and read by the desktop worker via
 `AgentService.getActiveMode()` (`src/agent/service.ts:4867`), which simply
-forwards to the core config. Valid values: `prompt | auto | unattended`,
-defaulting to `prompt` (`src/shared/permissions-config.ts:10`).
+forwards to the core config. Valid values: `basic | prompt | auto | unattended`,
+defaulting to `basic` (`src/shared/permissions-config.ts:10`). The per-session
+picker next to the composer and the `/bypass` command both route through
+`AgentService.setPermissionsOverride()`, so they cannot drift.
 
 ## Authorization Flow
 
@@ -22,6 +24,9 @@ active mode:
 
 ```
 Tool call
+   │
+   ├─ mode = basic       → core rule set decides allow / ask / deny; an `ask`
+   │                       rule opens one card via this bridge (interactive).
    │
    ├─ mode = auto        → direct { verdict: 'allow' }, no card (:1470)
    │
@@ -54,10 +59,10 @@ Other bridges on the same worker:
 
 ## Mode Comparison
 
-| | prompt (interactive) | auto (automatic) | unattended (no user) |
-|---|---|---|---|
-| **Shows a permission card** | Yes, per call | No | No — never |
-| **Ordinary tools** | Card; user decides | Allow | Allow |
+| | basic (rules, default) | prompt (interactive) | auto (automatic) | unattended (no user) |
+|---|---|---|---|---|
+| **Shows a permission card** | Only for `ask` rules | Yes, per call | No | No — never |
+| **Ordinary tools** | Rules decide: reads free, edits only in `.nexus/basic/*` | Card; user decides | Allow | Allow |
 | **High-risk MCP tools** (`delete_*`, `exec*`, `upload_*`, …) | Card; user decides | Whole-server trust `mcp:<server>` required for allowlist auto-approval; otherwise core gate prompts | Trusted server → allow; **untrusted server → silent deny** (core `permissions.js:314-321`) |
 | **`exec_command`** | Per-call card | Config-driven (`execPermission`, `safePaths`, overrides); hard commands always denied | Safety gate vets first; hard / inline-eval commands hard-denied; `execPermission` / `safePaths` ignored |
 | **Destructive structured writes** (sqlite `execute`, `drop-table`, memory `delete_*`, destructive git mutators) | Card; user decides | Allow | **Hard-denied by core safety gate** (Group A/B/D) |
@@ -89,7 +94,11 @@ non-destructive autonomous surface is the same.
 - Builtin `fetch` / `time` are read-only (no write gate): `fetch` honors
   robots.txt; `time` is pure computation.
 - Knowledge-graph write bridge (`audit.setAskUser`): auto-approved in
-  `auto` / `unattended`, card in `prompt` (`src/agent/service.ts:1429-1440`).
+  `auto` / `unattended`, card in `prompt` and in `basic` when a rule asks
+  (`src/agent/service.ts:1429-1440`).
+- Path authorization (`setPermissionPrompter`): interactive in `prompt` and
+  `basic`, so an `external_path: ask` rule can be approved in the UI; silent
+  deny in `auto` / `unattended`.
 - The git write set (`src/main/git-internal.ts:166-193`) covers 26 mutating
   tools; the destructive subset is gated by core safety rules in unattended.
 - Not applicable to the AIAC panel: the `auto` branch skips the bridge and
@@ -113,7 +122,7 @@ non-destructive autonomous surface is the same.
 
 | Field | Purpose | Exposed in Desktop UI |
 |---|---|---|
-| `permissions.mode` | prompt / auto / unattended | Yes |
+| `permissions.mode` | basic / prompt / auto / unattended | Yes |
 | `permissions.mcpAllowlist` | MCP persistent allowlist: `mcp:<server>` or exact tool name | No |
 | `permissions.allowlist` | General tool allowlist (`"*"` or exact name) | No |
 | `permissions.execPermission` | exec_command level determination (`auto` only) | No |

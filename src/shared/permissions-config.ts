@@ -7,7 +7,7 @@
  * unrelated config. Pure functions here are unit-tested independently of IPC.
  */
 
-export const PERMISSION_MODES = ['prompt', 'auto', 'unattended'] as const;
+export const PERMISSION_MODES = ['basic', 'prompt', 'auto', 'unattended'] as const;
 export const EXEC_PERMISSIONS = ['auto', 'prompt', 'deny'] as const;
 export const SAFETY_CHOICES = ['deny', 'ask'] as const;
 
@@ -57,7 +57,7 @@ export function mergePermissionsIntoConfig(
 
   if ('mode' in patch) {
     if (!inSet(PERMISSION_MODES, patch.mode)) {
-      return { ok: false, error: 'mode must be one of prompt | auto | unattended' };
+      return { ok: false, error: 'mode must be one of basic | prompt | auto | unattended' };
     }
     next.mode = patch.mode;
   }

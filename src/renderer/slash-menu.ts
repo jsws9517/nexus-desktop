@@ -50,7 +50,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'model', aliases: ['models'], usage: '/model [set <id>]', category: 'model', descKey: 'slashDescModel' },
   { name: 'provider', aliases: ['providers'], usage: '/provider [switch] <name>', category: 'model', descKey: 'slashDescProvider' },
   { name: 'depth', usage: '/depth <level>', category: 'model', descKey: 'slashDescDepth' },
-  { name: 'bypass', aliases: ['permissions', 'perm'], usage: '/bypass [auto|off|status]', category: 'model', descKey: 'slashDescBypass' },
+  { name: 'bypass', aliases: ['permissions', 'perm'], usage: '/bypass [basic|auto|unattended|prompt|off|status]', category: 'model', descKey: 'slashDescBypass' },
   { name: 'billing', usage: '/billing [mode]', category: 'model', descKey: 'slashDescBilling' },
   // Tools
   { name: 'tools', usage: '/tools', category: 'tools', descKey: 'slashDescTools' },

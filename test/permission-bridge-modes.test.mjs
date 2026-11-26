@@ -60,7 +60,44 @@ describe('onPermissionRequest mode contract', () => {
     assert.match(seenQuestion, /hypothetical_tool/);
   });
 
+  it('basic: still interactive — rule asks go through a card, never auto-allow', async () => {
+    const applied = await svc.setPermissionsOverride('basic');
+    assert.equal(applied.mode, 'basic');
+    assert.equal(applied.appliedPreset, false, 'basic must not apply the allowlist preset');
+    let seenQuestion = '';
+    svc.onPermission = ({ id, question }) => {
+      seenQuestion = question;
+      void svc.resolvePermission(id, 'y');
+    };
+    const verdict = await svc.agent.onPermissionRequest('hypothetical_tool', 'call-basic', { a: 1 });
+    assert.deepEqual(verdict, { verdict: 'allow' });
+    assert.match(seenQuestion, /hypothetical_tool/);
+  });
+
+  it('/bypass status reports a count, never the persisted allowlist tool names', async () => {
+    await svc.setPermissionsOverride('prompt');
+    svc.agent.config.setPermissionsInMemory({ allowlist: ['write_file', 'exec_command'] });
+    const chunks = [];
+    const prevOnEvent = svc.onEvent;
+    svc.onEvent = (e) => { if (e?.type === 'text') chunks.push(String(e.text ?? '')); };
+    try {
+      await svc.handleDagCommand('/bypass status');
+    } finally {
+      svc.onEvent = prevOnEvent;
+    }
+    const output = chunks.join('');
+    assert.match(output, /Permission mode:/);
+    assert.match(output, /Saved allowlist \(2\)/, 'report the count + inactive note, like the CLI');
+    assert.doesNotMatch(output, /write_file|exec_command/, 'never dump tool names');
+  });
+
   it('setPermissionsOverride mirrors the effective mode into acp.permissionMode', async () => {
+    await svc.setPermissionsOverride('basic');
+    assert.equal(svc.getActiveMode(), 'basic');
+    // ACP has no `basic` enum. `auto` here is safe: the core fast-path guard
+    // decides from `permissions.mode`, so basic still reaches the rules.
+    assert.equal(svc.agent.config.getAcpConfig()?.permissionMode, 'auto');
+
     await svc.setPermissionsOverride('unattended');
     assert.equal(svc.getActiveMode(), 'unattended');
     assert.equal(svc.agent.config.getAcpConfig()?.permissionMode, 'auto');

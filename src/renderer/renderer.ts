@@ -5132,6 +5132,7 @@ function makeMsgCopyBtn(getText: string | (() => string)): HTMLElement {
 
 function permLabel(mode: string): string {
   const zh = getUiLang() === 'zh-CN';
+  if (mode === 'basic') return zh ? 'basic（按规则授权）' : 'basic (rule-based)';
   if (mode === 'auto') return zh ? 'auto（自动放行）' : 'auto (auto-approve)';
   if (mode === 'unattended') return zh ? 'unattended（无人值守·安全门）' : 'unattended (auto + guard)';
   if (mode === 'prompt') return zh ? 'prompt（每次询问）' : 'prompt (ask each time)';
@@ -5158,7 +5159,9 @@ function setPermPopover(open: boolean): void {
  * came from (a worker event, a bound-metadata replay, or an explicit pick).
  */
 function applyPermModeUI(mode: string): void {
-  const valid = mode === 'prompt' || mode === 'auto' || mode === 'unattended' ? mode : 'prompt';
+  const valid = mode === 'basic' || mode === 'prompt' || mode === 'auto' || mode === 'unattended'
+    ? mode
+    : 'basic';
   if (permBoxEl) permBoxEl.dataset.mode = valid;
   if (permNameEl) permNameEl.textContent = valid;
   permPopoverEl?.querySelectorAll<HTMLElement>('.perm-option').forEach((opt) => {
@@ -5177,24 +5180,24 @@ function applyPermModeUI(mode: string): void {
  * `session.metadata.permissionMode` is the "last bind" and the source of truth;
  * a session with no bind simply shows the worker's current active mode, i.e. it
  * inherits the global setting — no metadata is written for such sessions. A
- * bound `prompt` is applied explicitly even when the global default is
- * auto/unattended, so an explicit session override is never silently dropped.
+ * A bound mode is applied explicitly even when it differs from the global
+ * default, so an explicit session override is never silently dropped.
  */
 async function refreshPermMode(sessionId: string): Promise<void> {
   if (!sessionId) {
-    applyPermModeUI(await window.nexusDesktop.getActiveMode().catch(() => 'prompt'));
+    applyPermModeUI(await window.nexusDesktop.getActiveMode().catch(() => 'basic'));
     return;
   }
   let bound = '';
   try {
     const meta = (await window.nexusDesktop.getSessionMetadata(sessionId)) as Record<string, unknown>;
     const raw = meta?.permissionMode;
-    if (raw === 'prompt' || raw === 'auto' || raw === 'unattended') bound = raw;
+    if (raw === 'basic' || raw === 'prompt' || raw === 'auto' || raw === 'unattended') bound = raw;
   } catch { /* no metadata / no bind → inherit the worker's global default */ }
   let active = '';
   try {
     active = await window.nexusDesktop.getActiveMode({ sessionId });
-  } catch { /* fall back to bound or prompt below */ }
+  } catch { /* fall back to bound or basic below */ }
   if (bound && bound !== active) {
     try {
       await window.nexusDesktop.setPermissionsOverride(bound, { sessionId });
@@ -5202,7 +5205,7 @@ async function refreshPermMode(sessionId: string): Promise<void> {
       return;
     } catch { /* replay failed — display whatever the worker reports */ }
   }
-  applyPermModeUI(active || bound || 'prompt');
+  applyPermModeUI(active || bound || 'basic');
 }
 
 /** Handle a user pick from the toolbar popover. Session-scoped, never global. */

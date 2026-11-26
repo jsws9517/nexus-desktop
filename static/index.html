@@ -157,19 +157,27 @@
                     <div id="mcp-servers"></div>
                   </div>
                 </div>
-                <div id="perm-box" class="perm-box" data-mode="prompt">
+                <div id="perm-box" class="perm-box" data-mode="basic">
                   <button id="perm-trigger" class="perm-trigger" data-i18n-title="permPickTitle" title="权限模式（仅当前会话）">
                     <span class="perm-sigil" aria-hidden="true"></span>
-                    <span id="perm-name" class="perm-name">prompt</span>
+                    <span id="perm-name" class="perm-name">basic</span>
                     <span class="perm-caret" aria-hidden="true"><span class="icon-slot" data-icon="chevron-down"></span></span>
                   </button>
                   <div id="perm-popover" class="perm-popover hidden">
                     <div class="perm-popover-title" data-i18n="permPopoverTitle">权限模式</div>
                     <div class="perm-popover-sub" data-i18n="permPopoverSub">仅对当前会话生效，不修改全局设置。</div>
+                    <div class="perm-option" data-mode="basic" role="button" tabindex="0">
+                      <span class="opt-sigil" aria-hidden="true"></span>
+                      <div class="opt-body">
+                        <div class="opt-name"><span data-i18n="permModeBasic">basic</span><span class="perm-badge default" data-i18n="permBadgeDefault">默认</span></div>
+                        <div class="opt-desc" data-i18n="permDescBasic">按规则授权：读取放行，外部路径询问，写入仅限 .nexus/basic/*。</div>
+                      </div>
+                      <span class="opt-check" aria-hidden="true"><span class="icon-slot" data-icon="check"></span></span>
+                    </div>
                     <div class="perm-option" data-mode="prompt" role="button" tabindex="0">
                       <span class="opt-sigil" aria-hidden="true"></span>
                       <div class="opt-body">
-                        <div class="opt-name"><span data-i18n="permModePrompt">prompt</span><span class="perm-badge default" data-i18n="permBadgeDefault">默认</span></div>
+                        <div class="opt-name"><span data-i18n="permModePrompt">prompt</span></div>
                         <div class="opt-desc" data-i18n="permDescPrompt">每次调用工具都询问确认。</div>
                       </div>
                       <span class="opt-check" aria-hidden="true"><span class="icon-slot" data-icon="check"></span></span>
