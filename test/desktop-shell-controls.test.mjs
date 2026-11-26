@@ -165,12 +165,15 @@ test('compact action is semi-hidden, danger-styled, and warns of data loss', () 
   // Bold danger-red label (the icon inherits currentColor from the button).
   assert.match(css, /\.compact-label \{[^}]*color:\s*var\(--danger\)[^}]*font-weight:\s*700/s);
 
-  // A caution tooltip, hidden until the region is hovered, with a bilingual warning.
+  // A caution tooltip, hidden until the compact control itself is hovered
+  // (or keyboard-focused) — hovering the whole action bar must NOT reveal it.
   assert.match(html, /class="compact-caution" id="compact-caution-tip" role="tooltip"/);
   assert.match(html, /<span data-i18n="compactCaution">/);
   assert.match(i18n, /compactCaution:\s*\{ 'zh-CN': '[^']+', en: '[^']+' \}/);
   assert.match(css, /\.compact-caution \{[^}]*visibility:\s*hidden/s);
-  assert.match(css, /\.input-left:hover \.compact-caution,[^}]*opacity: 1; visibility: visible/s);
+  assert.match(css, /\.input-left \.compact-btn:hover \.compact-caution,[^}]*opacity: 1; visibility: visible/s);
+  assert.match(css, /\.input-left \.compact-btn:focus-visible \.compact-caution/);
+  assert.equal(css.includes('.input-left:hover .compact-caution'), false, 'tooltip must not trigger on the whole action bar');
 });
 
 // ── the session mode picker offers all four core modes, basic first ──────────

@@ -1964,7 +1964,8 @@ label.field-label[for="model-select"]     { width: 58px; }
 /* Compact-context chip: a sibling of the mode selector in .input-left.
    Compaction is lossy, so the control stays semi-hidden until the pointer
    enters the action-bar region, is rendered in bold danger-red, and reveals a
-   caution tooltip on hover/focus. */
+   caution tooltip only when the pointer is over the control itself (or it is
+   keyboard-focused) — hovering the whole action bar must not trigger it. */
 .input-left .compact-btn {
   position: relative;
   display: inline-flex; align-items: center; gap: 5px;
@@ -1989,7 +1990,8 @@ label.field-label[for="model-select"]     { width: 58px; }
   color: var(--danger); font-weight: 700; letter-spacing: 0.01em; white-space: nowrap;
 }
 
-/* Lossy-operation warning: hidden until the action-bar region is hovered. */
+/* Lossy-operation warning: hidden until the compact control itself is
+   hovered/focused — NOT merely the surrounding action-bar region. */
 .compact-caution {
   position: absolute; bottom: calc(100% + 8px); left: 50%;
   display: flex; align-items: flex-start; gap: 6px;
@@ -2008,7 +2010,7 @@ label.field-label[for="model-select"]     { width: 58px; }
 }
 .compact-caution .icon-slot { flex: 0 0 auto; margin-top: 1px; }
 .compact-caution .icon-slot svg { width: 13px; height: 13px; }
-.input-left:hover .compact-caution,
+.input-left .compact-btn:hover .compact-caution,
 .input-left .compact-btn:focus-visible .compact-caution {
   opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
 }
